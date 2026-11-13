@@ -61,7 +61,7 @@ DETAIL_ROLE = Qt.ItemDataRole.UserRole + 3
 # that the point-detail fields claim +3.
 LEGS_LOADED_ROLE = Qt.ItemDataRole.UserRole + 4
 MUTED = QColor("#b0b0ad")
-POINT_COORDINATE = QColor("#8a8a87")
+POINT_DETAIL = QColor("#8a8a87")
 ROUNDING_COLOR = MUTED
 # Port and starboard are distinct side constraints; sail-to-mark and gate stay
 # neutral so only a real side choice draws the eye.
@@ -73,10 +73,8 @@ ROUNDING_SIDES = {label: side for side, label in ROUNDING_SHORT.items()}
 ROUNDING_GAP = 8
 DETAIL_GAP = 12
 DETAIL_MIN_LABEL = 48
-# A point row gives up coordinate room before it gives up the name.
+# A point row gives up detail fields before it gives up the name.
 POINT_MIN_LABEL = 56
-COORDINATE_FRACTION = 0.6
-COORDINATE_DECIMALS = (4, 2)
 NAME_COLUMN = 0
 VISIBLE_COLUMN = 1
 TYPE_ICONS = {
@@ -114,76 +112,24 @@ def rounding_color(short_label):
     return ROUNDING_COLORS.get(ROUNDING_SIDES.get(short_label), ROUNDING_COLOR)
 
 
-def _shorter_coordinate(text, decimals):
-    """Trim a ``lat, lon`` pair to ``decimals`` places, dropping zero tails."""
-    parts = []
-    for part in text.split(","):
-        number = part.strip()
-        if "." in number:
-            whole, fraction = number.split(".", 1)
-            fraction = fraction[:decimals].rstrip("0")
-            number = whole if not fraction else f"{whole}.{fraction}"
-        parts.append(number)
-    return ", ".join(parts)
+def point_columns(rect, metrics, label_left=None):
+    """The rounding slot for a point row, anchored to the row's right edge.
 
-
-def fit_coordinate(text, metrics, width):
-    """Shorten a coordinate so its leading degrees stay readable.
-
-    Fewer decimal places come first: eliding the tail of a fixed-point
-    coordinate leaves a meaningless run of digits. Only a coordinate that still
-    does not fit is elided, and then from the right so the latitude survives.
-    """
-    if width <= 0 or not text:
-        return ""
-    if metrics.horizontalAdvance(text) <= width:
-        return text
-    shortest = text
-    for decimals in COORDINATE_DECIMALS:
-        shortened = _shorter_coordinate(text, decimals)
-        if shortened == shortest:
-            continue
-        shortest = shortened
-        if metrics.horizontalAdvance(shortened) <= width:
-            return shortened
-    # Elide the shortest form, not the original: the leading degrees of both
-    # the latitude and the longitude survive.
-    return metrics.elidedText(shortest, Qt.TextElideMode.ElideRight, width)
-
-
-def point_columns(rect, metrics, coordinate_text="", label_left=None):
-    """Split the space right of the label into rounding and coordinate slots.
-
-    The name is placed first: ``POINT_MIN_LABEL`` and the gap that separates it
-    from the rounding slot are reserved before either right-hand slot is
-    allocated. The rounding slot has a fixed width and a position derived from
-    the row rect alone, so every point row that shows a rounding label starts it
-    at the same x whatever its coordinates are. The coordinate takes the room
-    that remains to the right of the rounding slot and is shortened to fit it.
-    A row too narrow for the rounding slot beside a readable name shows the
-    elided name alone rather than an empty name with right-hand fields.
+    Coordinates are no longer painted on point rows, so the rounding label
+    takes the row's right edge and every point row starts it at the same
+    offset from that edge whatever its name. The slot has a fixed width sized
+    for the longest short label, which also fixes the right edge of the detail
+    fields beside it. A row too narrow for the slot beside a readable name
+    shows the elided name alone rather than an empty name with right-hand
+    fields.
     """
     left = rect.left() if label_left is None else max(rect.left(), label_left)
-    right = rect.right()
-    available = max(0, right - left + 1)
+    available = max(0, rect.right() - left + 1)
     slot = rounding_column_width(metrics)
     minimum = min(POINT_MIN_LABEL, available)
-    remaining = available - minimum - ROUNDING_GAP
-    if slot <= 0 or remaining < slot:
-        # No rounding slot fits beside a readable name, so the name takes the
-        # row and the coordinate is dropped rather than pushing the name out.
-        empty = QRect(right + 1, rect.top(), 0, rect.height())
-        return empty, empty, ""
-    reserve = int(available * COORDINATE_FRACTION)
-    reserve = max(0, min(reserve, remaining - slot - ROUNDING_GAP))
-    gap = ROUNDING_GAP if reserve > 0 else 0
-    rounding_left = right + 1 - reserve - gap - slot
-    rounding = QRect(rounding_left, rect.top(), slot, rect.height())
-    coordinate_left = min(right + 1, rounding_left + slot + gap)
-    width = max(0, right - coordinate_left + 1)
-    coordinate = QRect(coordinate_left, rect.top(), width, rect.height())
-    shown = fit_coordinate(str(coordinate_text), metrics, width)
-    return rounding, coordinate, shown
+    if slot <= 0 or available - minimum - ROUNDING_GAP < slot:
+        return QRect(rect.right() + 1, rect.top(), 0, rect.height())
+    return QRect(rect.right() - slot + 1, rect.top(), slot, rect.height())
 
 
 def point_label_width(label_rect, rounding_rect):
@@ -191,14 +137,12 @@ def point_label_width(label_rect, rounding_rect):
     return max(0, rounding_rect.left() - label_rect.left() - ROUNDING_GAP)
 
 
-def row_geometry(rect, metrics, coordinates, icon_width):
-    """Rects a point row paints into: icon, label, rounding and coordinates."""
+def row_geometry(rect, metrics, icon_width):
+    """Rects a point row paints into: icon, label and rounding label."""
     icon = QRect(rect.left(), rect.top(), icon_width, rect.height())
     label = rect.adjusted(icon_width, 0, 0, 0)
-    rounding, coordinate, shown = point_columns(
-        rect, metrics, coordinates, label.left()
-    )
-    return icon, label, rounding, coordinate, shown
+    rounding = point_columns(rect, metrics, label.left())
+    return icon, label, rounding
 
 
 def detail_columns(rect, metrics, values, label_left, min_label=DETAIL_MIN_LABEL):
@@ -238,22 +182,22 @@ def detail_columns(rect, metrics, values, label_left, min_label=DETAIL_MIN_LABEL
     return columns
 
 
-def point_detail_columns(rect, metrics, values, coordinate_rect, coordinate_text):
+def point_detail_columns(rect, metrics, values, label_left, rounding_rect):
     """Rects for a point row's detail segments, highest priority first.
 
-    Point rows already place the name, the rounding slot and the right-aligned
-    coordinate. Details use only the slack left of the coordinate, so those
-    three keep their positions and a row too narrow for any detail is drawn
-    exactly like a point row without detail fields.
+    Point rows paint the name and the right-aligned rounding label. Details
+    fill the slack left of the rounding slot, which is the room the coordinate
+    slot used to hold, and stop while ``POINT_MIN_LABEL`` remains for the name.
+    A row too narrow for any detail is drawn exactly like a point row without
+    detail fields.
     """
-    natural = metrics.horizontalAdvance(str(coordinate_text or ""))
-    left = coordinate_rect.left()
-    right = coordinate_rect.right() - natural - DETAIL_GAP
-    available = right - left + 1
-    if available <= 0:
+    right = (
+        rounding_rect.left() if rounding_rect.width() > 0 else rect.right() + 1
+    ) - DETAIL_GAP
+    if right <= label_left:
         return []
-    block = QRect(left, rect.top(), available, rect.height())
-    return detail_columns(block, metrics, values, left, min_label=0)
+    block = QRect(label_left, rect.top(), right - label_left, rect.height())
+    return detail_columns(block, metrics, values, label_left, min_label=POINT_MIN_LABEL)
 
 
 def _visibility_style():
@@ -421,11 +365,12 @@ class SceneTree(QTreeWidget):
 
 
 class SceneItemDelegate(QStyledItemDelegate):
-    """Paint a row's detail fields, point coordinates and mark rounding.
+    """Paint a row's detail fields and mark rounding.
 
-    Point rows keep the rounding slot and the right-aligned coordinates. Track
-    and routing rows carry detail fields instead, painted as right-aligned
-    segments before the label so they never cover the name.
+    Point rows paint the name and the right-aligned rounding label; their
+    coordinates live in the tooltip only. Track and routing rows carry detail
+    fields instead, painted as right-aligned segments before the label so they
+    never cover the name.
     """
 
     def paint(self, painter, option, index):
@@ -448,7 +393,7 @@ class SceneItemDelegate(QStyledItemDelegate):
         selected = bool(adjusted.state & QStyle.StateFlag.State_Selected)
         if selected:
             label_color = adjusted.palette.color(QPalette.ColorRole.HighlightedText)
-            coordinate_color = label_color
+            detail_color = label_color
         else:
             foreground = index.data(Qt.ItemDataRole.ForegroundRole)
             label_color = (
@@ -456,7 +401,7 @@ class SceneItemDelegate(QStyledItemDelegate):
                 if isinstance(foreground, QBrush)
                 else adjusted.palette.color(QPalette.ColorRole.Text)
             )
-            coordinate_color = POINT_COORDINATE
+            detail_color = POINT_DETAIL
 
         rect = adjusted.rect.adjusted(4, 0, -4, 0)
         metrics = adjusted.fontMetrics
@@ -477,24 +422,27 @@ class SceneItemDelegate(QStyledItemDelegate):
                 label,
                 details,
                 label_color,
-                coordinate_color,
+                detail_color,
             )
             return
 
         rounding_text = str(index.data(ROUNDING_ROLE) or "")
-        _, label_rect, rounding_rect, coordinate_rect, coordinate_text = row_geometry(
-            rect, metrics, coordinates, icon_width
-        )
-        label_width = point_label_width(label_rect, rounding_rect)
-        label_text = metrics.elidedText(
-            str(label), Qt.TextElideMode.ElideRight, label_width
-        )
+        _, label_rect, rounding_rect = row_geometry(rect, metrics, icon_width)
         segments = (
             point_detail_columns(
-                rect, metrics, details, coordinate_rect, coordinate_text
+                rect, metrics, details, label_rect.left(), rounding_rect
             )
             if details
             else []
+        )
+        if segments:
+            label_width = max(0, segments[0][1].left() - label_rect.left() - DETAIL_GAP)
+        elif rounding_rect.width() > 0:
+            label_width = point_label_width(label_rect, rounding_rect)
+        else:
+            label_width = max(0, rect.right() - label_rect.left() + 1)
+        label_text = metrics.elidedText(
+            str(label), Qt.TextElideMode.ElideRight, label_width
         )
 
         painter.save()
@@ -509,23 +457,17 @@ class SceneItemDelegate(QStyledItemDelegate):
             painter.setPen(label_color if selected else rounding_color(rounding_text))
             painter.drawText(
                 rounding_rect,
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                 rounding_text,
             )
         if segments:
-            painter.setPen(coordinate_color)
+            painter.setPen(detail_color)
             for text, segment in segments:
                 painter.drawText(
                     segment,
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                     text,
                 )
-        painter.setPen(coordinate_color)
-        painter.drawText(
-            coordinate_rect,
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-            coordinate_text,
-        )
         painter.restore()
 
     @staticmethod

@@ -4,11 +4,12 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QPoint, QRect, Qt
+from PySide6.QtCore import QEvent, QPoint, QRect, QSignalBlocker, Qt
 from PySide6.QtGui import (
     QFontMetrics,
     QGuiApplication,
     QHelpEvent,
+    QImage,
     QMouseEvent,
     QWheelEvent,
 )
@@ -42,7 +43,6 @@ from sailworks.qt.scenepanel import (
     TOOLTIP_OFFSET_X,
     TOOLTIP_OFFSET_Y,
     detail_columns,
-    fit_coordinate,
     point_detail_columns,
     point_label_width,
     row_geometry,
@@ -648,52 +648,57 @@ def test_point_row_rects_never_overlap_icon_or_each_other(tmp_path):
     application()
     panel = panel_for(tmp_path)
     metrics = QFontMetrics(panel.tree.font())
-    coordinates = "48.100000, -123.100000"
+    values = ["01/01 00:00", "45°", "12.5", "6.4", "270°"]
 
     for width in (200, 600):
         rect = QRect(0, 0, width - 8, 20)
-        icon, label, rounding, coordinate, _ = row_geometry(
-            rect, metrics, coordinates, 20
-        )
+        icon, label, rounding = row_geometry(rect, metrics, 20)
+        segments = point_detail_columns(rect, metrics, values, label.left(), rounding)
 
         assert icon.right() <= label.left()
         assert rounding.left() >= label.left()
-        assert coordinate.left() >= label.left()
-        assert rounding.right() <= coordinate.left()
-        assert coordinate.right() <= rect.right()
+        assert rounding.right() == rect.right()
+        for _text, segment in segments:
+            assert segment.left() >= label.left()
+            assert segment.right() < rounding.left()
+        for earlier, later in zip(segments, segments[1:]):
+            assert later[1].left() - earlier[1].right() - 1 == DETAIL_GAP
+        if segments:
+            assert segments[0][1].left() - label.left() >= POINT_MIN_LABEL
 
 
-def test_narrow_panel_elides_coordinates_instead_of_overlapping(tmp_path):
+def test_narrow_point_row_drops_details_instead_of_overlapping(tmp_path):
     application()
     panel = panel_for(tmp_path)
     metrics = QFontMetrics(panel.tree.font())
-    coordinates = "48.100000, -123.100000"
-    rect = QRect(0, 0, 192, 20)
+    values = ["01/01 00:00", "45°", "12.5", "6.4", "270°"]
 
-    _, label, rounding, coordinate, shown = row_geometry(rect, metrics, coordinates, 20)
+    narrow = QRect(0, 0, 96, 20)
+    _, label, rounding = row_geometry(narrow, metrics, 20)
+    assert point_detail_columns(narrow, metrics, values, label.left(), rounding) == []
 
-    assert shown != coordinates
-    assert shown
-    assert rounding.left() >= label.left()
-    assert coordinate.right() <= rect.right()
+    wide = QRect(0, 0, 760, 20)
+    _, wide_label, wide_rounding = row_geometry(wide, metrics, 20)
+    segments = point_detail_columns(
+        wide, metrics, values, wide_label.left(), wide_rounding
+    )
+    assert [text for text, _ in segments] == values
 
 
-def test_coordinates_share_one_right_edge_and_rounding_slot_is_fixed(tmp_path):
+def test_rounding_slot_is_fixed_and_anchored_to_the_row_edge(tmp_path):
     application()
     panel = panel_for(tmp_path)
     metrics = QFontMetrics(panel.tree.font())
     rect = QRect(0, 0, 400, 20)
-    coordinates = "48.100000, -123.100000"
 
-    sail = row_geometry(rect, metrics, coordinates, 20)
-    stbd = row_geometry(rect, metrics, coordinates, 20)
+    sail = row_geometry(rect, metrics, 20)
+    stbd = row_geometry(rect, metrics, 20)
 
-    # The rounding slot is sized for the widest short label, so Sail and Stbd
-    # occupy the same slot and the coordinates keep one right edge.
+    # The rounding slot is sized for the widest short label and pinned to the
+    # row's right edge, so every point row starts it at the same x.
     assert sail[2].left() == stbd[2].left()
-    assert sail[2].width() == stbd[2].width()
-    assert sail[3].left() == stbd[3].left()
-    assert sail[3].right() == stbd[3].right() == rect.right()
+    assert sail[2].width() == stbd[2].width() == rounding_column_width(metrics)
+    assert sail[2].right() == stbd[2].right() == rect.right()
     assert rounding_column_width(metrics) >= max(
         metrics.horizontalAdvance(label) for label in ROUNDING_SHORT.values()
     )
@@ -717,20 +722,22 @@ def test_rounding_colours_distinguish_sides(tmp_path):
     assert gate.name() == MUTED.name()
 
 
-def test_rounding_slot_position_ignores_coordinate_width(tmp_path):
+def test_rounding_slot_position_ignores_detail_fields(tmp_path):
     application()
     panel = panel_for(tmp_path)
     metrics = QFontMetrics(panel.tree.font())
     rect = QRect(0, 0, 400, 20)
 
-    wide = row_geometry(rect, metrics, "48.100000, -123.100000", 20)
-    narrow = row_geometry(rect, metrics, "48.1, -123.1", 20)
+    _, label, rounding = row_geometry(rect, metrics, 20)
+    segments = point_detail_columns(
+        rect, metrics, ["01/01 00:00", "45°"], label.left(), rounding
+    )
 
-    # The rounding slot is authoritative: its left edge comes from the row, so
-    # rows with different coordinate widths still align their rounding labels.
-    assert wide[2].left() == narrow[2].left()
-    assert wide[2].width() == narrow[2].width()
-    assert wide[3].right() == narrow[3].right() == rect.right()
+    # The rounding slot comes from the row alone: details grow leftward into
+    # the space the coordinate slot used to hold and never move it.
+    assert segments
+    assert all(segment.right() < rounding.left() for _, segment in segments)
+    assert row_geometry(rect, metrics, 20)[2] == rounding
 
 
 class PointRectRecorder(SceneItemDelegate):
@@ -788,9 +795,7 @@ def test_narrow_point_row_keeps_a_readable_name(tmp_path):
     # column, so it is the narrow row a synthetic full-width rect hid.
     assert rect.width() < 100
     paint_rect = rect.adjusted(4, 0, -4, 0)
-    _, label_rect, rounding_rect, coordinate_rect, shown = row_geometry(
-        paint_rect, metrics, "51.123457, -1.234568", 0
-    )
+    _, label_rect, rounding_rect = row_geometry(paint_rect, metrics, 0)
     label_width = point_label_width(label_rect, rounding_rect)
     label = metrics.elidedText("Morning", Qt.TextElideMode.ElideRight, label_width)
 
@@ -798,13 +803,11 @@ def test_narrow_point_row_keeps_a_readable_name(tmp_path):
     assert label and label != "…"
     assert metrics.horizontalAdvance(label) <= label_width
     assert label_rect.left() + label_width <= rounding_rect.left()
-    # The rounding slot and the coordinate are dropped before the name shrinks.
+    # The rounding label is dropped before the name shrinks.
     assert rounding_rect.width() == 0
-    assert coordinate_rect.width() == 0
-    assert shown == ""
 
 
-def test_point_row_shows_name_then_rounding_then_coordinates(tmp_path):
+def test_point_row_shows_name_then_rounding_label(tmp_path):
     application()
     track = FakeTrack("t1", "Morning")
     track.set_point_rounding(0, ROUNDING_PORT)
@@ -812,7 +815,6 @@ def test_point_row_shows_name_then_rounding_then_coordinates(tmp_path):
     panel = panel_for(tmp_path, tracks=[track])
     metrics = QFontMetrics(panel.tree.font())
     slot_width = rounding_column_width(metrics)
-    coordinates = "51.123457, -1.234568"
 
     measured = {}
     for width in (200, 224, 304, 400, 600):
@@ -820,79 +822,34 @@ def test_point_row_shows_name_then_rounding_then_coordinates(tmp_path):
         first = rects[("point", KIND_TRACK, "t1", 0)]
         second = rects[("point", KIND_TRACK, "t1", 1)]
         paint_rect = first.adjusted(4, 0, -4, 0)
-        _, label_rect, rounding_rect, coordinate_rect, shown = row_geometry(
-            paint_rect, metrics, coordinates, 0
-        )
+        _, label_rect, rounding_rect = row_geometry(paint_rect, metrics, 0)
         label_width = point_label_width(label_rect, rounding_rect)
         label = metrics.elidedText("Morning", Qt.TextElideMode.ElideRight, label_width)
-        measured[width] = (
-            paint_rect.width(),
-            label_width,
-            rounding_rect,
-            coordinate_rect,
-            shown,
-        )
+        measured[width] = (paint_rect.width(), label_width, rounding_rect)
 
-        # The name survives at every width and never reaches a right-hand slot.
+        # The name survives at every width and never reaches the rounding slot.
         assert label and label != "…"
         assert label_width >= POINT_MIN_LABEL
         assert metrics.horizontalAdvance(label) <= label_width
         assert label_rect.left() + label_width <= rounding_rect.left()
 
-        # The coordinate is placed from what is left, so it never moves the
-        # name or the rounding slot.
-        _, short_label, short_rounding, _, _ = row_geometry(
-            paint_rect, metrics, "51.1, -1.2", 0
-        )
-        assert point_label_width(short_label, short_rounding) == label_width
-        assert short_rounding.left() == rounding_rect.left()
-
-        # Rows at one width share the rounding slot's x.
+        # Rows at one width share the rounding slot's x, whatever their name.
         other = second.adjusted(4, 0, -4, 0)
-        _, _, other_rounding, _, _ = row_geometry(other, metrics, coordinates, 0)
-        assert other_rounding.left() == rounding_rect.left()
+        assert row_geometry(other, metrics, 0)[2].left() == rounding_rect.left()
 
         if rounding_rect.width():
             assert rounding_rect.width() == slot_width
-            assert coordinate_rect.left() >= rounding_rect.right() + 1
-            assert coordinate_rect.right() == paint_rect.right()
-            assert shown
-            # A coordinate with no room left elides to the ellipsis itself.
-            assert metrics.horizontalAdvance(shown) <= max(
-                coordinate_rect.width(), metrics.horizontalAdvance("…")
-            )
-        else:
-            assert coordinate_rect.width() == 0
-            assert shown == ""
+            assert rounding_rect.right() == paint_rect.right()
 
     assert measured[200][2].width() == 0
-    assert measured[200][3].width() == 0
     assert measured[600][2].width() == slot_width
-    for width, (paint_width, _, rounding_rect, coordinate_rect, _) in measured.items():
+    for width, (paint_width, _, rounding_rect) in measured.items():
         # The rounding slot is drawn exactly when it still fits beside the
         # name's floor, and never at the name's expense.
         fits = (
             paint_width - min(POINT_MIN_LABEL, paint_width) - ROUNDING_GAP >= slot_width
         )
         assert bool(rounding_rect.width()) == fits, width
-        assert bool(coordinate_rect.width()) == fits, width
-    assert measured[600][3].width() > measured[304][3].width()
-
-
-def test_fit_coordinate_prefers_fewer_decimals_over_elision(tmp_path):
-    application()
-    panel = panel_for(tmp_path)
-    metrics = QFontMetrics(panel.tree.font())
-    full = "48.123456, -123.654321"
-
-    four = metrics.horizontalAdvance("48.1234, -123.6543")
-    assert fit_coordinate(full, metrics, four) == "48.1234, -123.6543"
-    two = metrics.horizontalAdvance("48.12, -123.65")
-    assert fit_coordinate(full, metrics, two) == "48.12, -123.65"
-    # Trailing zeros are dropped rather than padded.
-    short = metrics.horizontalAdvance("48.1, -123.1")
-    assert fit_coordinate("48.100000, -123.100000", metrics, short) == "48.1, -123.1"
-    assert fit_coordinate(full, metrics, 0) == ""
 
 
 def test_track_marks_carry_side_colours(tmp_path):
@@ -1239,6 +1196,44 @@ def test_point_row_tooltip_shows_side_and_coordinate(tmp_path):
     assert not tooltip.endswith("\n")
 
 
+def row_image(panel):
+    """Rendered pixels of the scene tree, for glyph-level assertions."""
+    image = panel.tree.grab().toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+    return bytes(image.constBits())
+
+
+def test_point_row_paints_name_and_rounding_without_coordinates(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    track.set_point_rounding(0, ROUNDING_PORT)
+    panel = panel_for(tmp_path, tracks=[track])
+
+    rect = rendered_point_rects(panel, track, 700)[("point", KIND_TRACK, "t1", 0)]
+    assert rect.width() > 100
+    child = panel.item_row(KIND_TRACK, track.uid).child(0)
+    coordinates = child.data(NAME_COLUMN, COORDINATE_ROLE)
+    assert coordinates == "51.123457, -1.234568"
+    # The coordinates moved from the row into its tooltip.
+    assert coordinates in child.toolTip(NAME_COLUMN)
+
+    painted = row_image(panel)
+    with QSignalBlocker(panel.tree):
+        child.setData(NAME_COLUMN, COORDINATE_ROLE, "10.000000, 10.000000")
+    # Changing the coordinate data paints nothing: the row draws no glyphs for
+    # it, so the two renderings are pixel-identical.
+    assert row_image(panel) == painted
+
+    with QSignalBlocker(panel.tree):
+        child.setData(NAME_COLUMN, COORDINATE_ROLE, coordinates)
+        child.setText(NAME_COLUMN, "")
+    assert row_image(panel) != painted
+
+    with QSignalBlocker(panel.tree):
+        child.setText(NAME_COLUMN, "Morning")
+        child.setData(NAME_COLUMN, ROUNDING_ROLE, None)
+    assert row_image(panel) != painted
+
+
 def test_routing_detail_fields_match_the_summary(tmp_path):
     application()
     route = route_with_points()
@@ -1297,7 +1292,7 @@ def test_scene_rows_carry_detail_fields_for_their_type(tmp_path):
     assert panel.item_row(KIND_POI, "p1").data(NAME_COLUMN, DETAIL_ROLE) is None
 
 
-def test_point_rows_keep_rounding_and_coordinates_without_detail_fields(tmp_path):
+def test_point_rows_keep_rounding_and_coordinate_data_without_detail_fields(tmp_path):
     application()
     panel = panel_for(tmp_path, routes=[route_with_points()])
     row = panel.item_row(KIND_ROUTING, "r1")
@@ -1306,8 +1301,10 @@ def test_point_rows_keep_rounding_and_coordinates_without_detail_fields(tmp_path
     child = panel.tree_item(("routing-legs", KIND_ROUTING, "r1")).child(0)
 
     assert child.data(NAME_COLUMN, DETAIL_ROLE) is None
+    # The data stays on the item even though the row no longer paints it.
     assert child.data(NAME_COLUMN, COORDINATE_ROLE) == "48.000000, -123.000000"
     assert child.data(NAME_COLUMN, ROUNDING_ROLE) == ROUNDING_SHORT[ROUNDING_SAIL_TO]
+    assert child.toolTip(NAME_COLUMN) == "Sail to mark\n48.000000, -123.000000"
 
 
 def test_routing_mark_rows_carry_the_table_figures(tmp_path):
@@ -1355,22 +1352,14 @@ def routing_mark_segments(panel, route, width, index=0):
     rect = rects[("point", KIND_ROUTING, route.uid, index)]
     paint_rect = rect.adjusted(4, 0, -4, 0)
     point = route.points[index]
-    coordinates = f"{point[0]:.6f}, {point[1]:.6f}"
-    _, label_rect, rounding_rect, coordinate_rect, shown = row_geometry(
-        paint_rect, metrics, coordinates, ROUTING_MARK_ICON_WIDTH
+    _, label_rect, rounding_rect = row_geometry(
+        paint_rect, metrics, ROUTING_MARK_ICON_WIDTH
     )
     values = [value for _, value in routing_point_detail_fields(point)]
-    segments = point_detail_columns(paint_rect, metrics, values, coordinate_rect, shown)
-    return (
-        paint_rect,
-        metrics,
-        label_rect,
-        rounding_rect,
-        coordinate_rect,
-        shown,
-        segments,
-        values,
+    segments = point_detail_columns(
+        paint_rect, metrics, values, label_rect.left(), rounding_rect
     )
+    return paint_rect, metrics, label_rect, rounding_rect, segments, values
 
 
 def test_routing_mark_details_adapt_to_the_panel_width(tmp_path):
@@ -1380,17 +1369,10 @@ def test_routing_mark_details_adapt_to_the_panel_width(tmp_path):
     expected = [value for _, value in routing_point_detail_fields(route.points[0])]
 
     measured = {}
-    for width in (960, 700, 480):
-        (
-            paint_rect,
-            metrics,
-            label_rect,
-            rounding_rect,
-            coordinate_rect,
-            shown,
-            segments,
-            values,
-        ) = routing_mark_segments(panel, route, width)
+    for width in (960, 700, 480, 360):
+        paint_rect, metrics, label_rect, rounding_rect, segments, values = (
+            routing_mark_segments(panel, route, width)
+        )
         measured[width] = (paint_rect.width(), segments)
         assert values == expected
         texts = [text for text, _ in segments]
@@ -1401,48 +1383,55 @@ def test_routing_mark_details_adapt_to_the_panel_width(tmp_path):
         assert label_width >= POINT_MIN_LABEL
         label = metrics.elidedText("Mark 1", Qt.TextElideMode.ElideRight, label_width)
         assert label and label != "…"
+        assert metrics.horizontalAdvance(label) <= label_width
 
         if segments:
-            # The rounding slot, the details and the coordinate never overlap.
+            # The details and the rounding slot never overlap, and the name
+            # keeps its floor clear of the highest priority field.
             assert rounding_rect.width() > 0
-            assert segments[0][1].left() > rounding_rect.right()
-            assert segments[-1][1].right() < (
-                coordinate_rect.right() - metrics.horizontalAdvance(shown)
-            )
+            assert segments[-1][1].right() < rounding_rect.left()
+            assert segments[0][1].left() - label_rect.left() >= POINT_MIN_LABEL
+            for text, segment in segments:
+                # Each segment is exactly as wide as its glyphs, so disjoint
+                # rects cannot overlap the glyphs of a neighbour.
+                assert segment.width() == metrics.horizontalAdvance(text)
             for earlier, later in zip(segments, segments[1:]):
                 assert later[1].left() - earlier[1].right() - 1 == DETAIL_GAP
 
-    wide, medium, narrow = (measured[width] for width in (960, 700, 480))
-    assert wide[1] and len(wide[1]) == len(expected)
-    assert 0 < len(medium[1]) < len(expected)
-    assert narrow[1] == []
+    # The coordinate slot's removal lets the fields appear far narrower: the
+    # whole block at 700 and most of it already at 480.
+    assert len(measured[960][1]) == len(expected)
+    assert len(measured[700][1]) == len(expected)
+    assert len(measured[480][1]) > 0
+    assert len(measured[360][1]) > 0
+    counts = [len(measured[width][1]) for width in (960, 700, 480, 360)]
+    assert counts == sorted(counts, reverse=True)
+
+    # A row narrower than the name floor keeps the name and drops everything
+    # else rather than painting over it.
+    _, _, narrow_label, narrow_rounding, narrow_segments, _ = routing_mark_segments(
+        panel, route, 200
+    )
+    assert narrow_segments == []
+    assert point_label_width(narrow_label, narrow_rounding) < POINT_MIN_LABEL
 
 
-def test_narrow_routing_mark_row_keeps_name_rounding_and_coordinate(tmp_path):
+def test_routing_mark_row_keeps_name_and_rounding_beside_details(tmp_path):
     application()
     route = route_with_detail_points()
     route.set_point_rounding(0, ROUNDING_PORT)
     panel = panel_for(tmp_path, routes=[route])
-    (
-        paint_rect,
-        metrics,
-        label_rect,
-        rounding_rect,
-        coordinate_rect,
-        shown,
-        segments,
-        values,
-    ) = routing_mark_segments(panel, route, 480)
-    coordinates = "48.000000, -123.000000"
+    paint_rect, metrics, label_rect, rounding_rect, segments, values = (
+        routing_mark_segments(panel, route, 480)
+    )
 
     assert values
-    assert segments == []
-    # No detail block consumes room, so the coordinate keeps its full text and
-    # the right-aligned slot it has always had.
-    assert shown == coordinates
-    assert coordinate_rect.right() == paint_rect.right()
+    assert segments
+    # Details take the room the coordinate slot used to hold; the rounding
+    # label keeps the row's right edge and the name keeps its floor.
     assert rounding_rect.width() == rounding_column_width(metrics)
-    assert rounding_rect.right() < coordinate_rect.left()
+    assert rounding_rect.right() == paint_rect.right()
+    assert segments[-1][1].right() < rounding_rect.left()
     assert point_label_width(label_rect, rounding_rect) >= POINT_MIN_LABEL
 
 
