@@ -1092,7 +1092,16 @@ class RoutingPanel(QWidget):
         if isinstance(target, Track):
             spec_getter = getattr(target, "point_rounding_spec", None)
             if callable(spec_getter):
-                roundings = tuple(spec_getter(index) for index in range(len(waypoints)))
+                values = []
+                for index in range(len(waypoints)):
+                    spec = spec_getter(index)
+                    if spec is not None:
+                        spec = dict(spec)
+                        name = target.point_name(index)
+                        if name:
+                            spec["name"] = name
+                    values.append(spec)
+                roundings = tuple(values)
             if roundings and self.start_mode.currentData() == "first-track-point":
                 # The first point is the start, not a rounding mark.
                 roundings = (None,) + roundings[1:]

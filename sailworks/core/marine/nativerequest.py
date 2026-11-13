@@ -33,8 +33,10 @@ class Rounding:
     radius_nm: float
     exit_bearing_min_deg: float | None = None
     exit_bearing_max_deg: float | None = None
+    name: str = ""
 
     def __post_init__(self):
+        object.__setattr__(self, "name", str(self.name or "").strip())
         side = str(self.side).strip().lower()
         if side not in ("port", "starboard"):
             raise ValueError("Rounding side must be port or starboard")
@@ -70,6 +72,7 @@ class Rounding:
             radius_nm=self.radius_nm,
             exit_bearing_min_deg=self.exit_bearing_min_deg,
             exit_bearing_max_deg=self.exit_bearing_max_deg,
+            name=self.name,
         )
 
 

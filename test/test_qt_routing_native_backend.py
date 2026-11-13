@@ -199,6 +199,7 @@ def test_panel_reads_mark_rounding_from_track_points(app):
         [(48.0, -123.5), (48.05, -123.45), (48.1, -123.4)],
     )
     track.set_point_rounding_spec(0, {"side": "starboard", "radius_nm": 3.0})
+    track.rename_point(1, "Duntze Rock")
     track.set_point_rounding_spec(
         1,
         {
@@ -225,6 +226,7 @@ def test_panel_reads_mark_rounding_from_track_points(app):
         radius_nm=0.4,
         exit_bearing_min_deg=30.0,
         exit_bearing_max_deg=60.0,
+        name="Duntze Rock",
     )
     assert request.roundings[2] is None
     panel.deleteLater()

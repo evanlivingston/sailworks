@@ -165,6 +165,45 @@ def test_rounding_disc_may_not_contain_a_previous_point(polar):
         )
 
 
+def test_rounding_name_survives_freeze_and_native_settings(polar):
+    rounding = Rounding("port", 0.5, name="Duntze Rock")
+    request = replace(
+        _request(polar),
+        use_currents=False,
+        roundings=(rounding, None),
+    )
+    (job,) = freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+    assert job.roundings[0].name == "Duntze Rock"
+    assert job.roundings[0].to_native()["name"] == "Duntze Rock"
+
+
+def test_rounding_report_gets_the_mark_name():
+    from types import SimpleNamespace
+
+    from sailworks.core.marine.nativeexecution import _attach_rounding_names
+
+    mark = (48.255, -123.6)
+    job = SimpleNamespace(
+        start=(48.25, -123.65),
+        waypoints=(mark,),
+        destination=mark,
+        roundings=(Rounding("starboard", 0.15, name="Duntze Rock"),),
+    )
+    run = {
+        "roundings": [
+            {
+                "mark": {"latitude": mark[0], "longitude": mark[1]},
+                "side": "starboard",
+                "radius_nm": 0.15,
+                "satisfied": True,
+                "failure_code": "none",
+            }
+        ]
+    }
+    _attach_rounding_names(run, job)
+    assert run["roundings"][0]["mark_name"] == "Duntze Rock"
+
+
 def test_rounding_requires_the_native_engine(polar):
     request = replace(
         _request(polar),

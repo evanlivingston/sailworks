@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from PySide6.QtWidgets import QApplication
 
@@ -99,6 +101,30 @@ def test_panel_lists_layers_with_exact_time_and_direction(app):
     assert "2026-01-01T00:45:00Z" in text
     assert "+1800 s" in text
     assert "reverse" in text
+
+
+def test_panel_diagnostics_lists_mark_roundings_by_name(app):
+    rounding = {
+        "mark": {"latitude": 48.255, "longitude": -123.6},
+        "mark_name": "Duntze Rock",
+        "side": "starboard",
+        "radius_nm": 0.3,
+        "achieved_closest_distance_nm": 0.12,
+        "achieved_terminal_course_deg": 167.3,
+        "satisfied": True,
+        "failure_code": "none",
+    }
+    result = replace(
+        _result(),
+        provenance=Provenance("2026-01-01T00:00:00Z", "recorded", (rounding,)),
+    )
+    panel = RoutingInspectorPanel()
+    panel.set_result(result)
+
+    text = panel.diagnostics.text()
+    assert "Mark roundings:" in text
+    assert "Duntze Rock: starboard" in text
+    assert "achieved 0.12 nm" in text
 
 
 def test_panel_readout_shows_recorded_values_and_unknown_absent_fields(app):

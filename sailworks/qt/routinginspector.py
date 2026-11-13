@@ -343,7 +343,9 @@ class RoutingInspectorPanel(QWidget):
             terminal = report.get("achieved_terminal_course_deg")
             satisfied = report.get("satisfied")
             failure = report.get("failure_code", "unknown")
-            text = f"rounding: {side} {float(radius):.2f} nm"
+            name = report.get("mark_name")
+            prefix = f"{name} — " if name else ""
+            text = f"rounding: {prefix}{side} {float(radius):.2f} nm"
             if achieved is not None:
                 text += f", achieved {float(achieved):.2f} nm"
             if terminal is not None:
@@ -358,6 +360,37 @@ class RoutingInspectorPanel(QWidget):
             self.diagnostics.setText("No routing result loaded")
             return
         lines = [f"{state.code}: {state.state}" for state in diagnostics(self._result)]
+        roundings = self._result.provenance.roundings
+        if roundings:
+            lines.append("")
+            lines.append("Mark roundings:")
+            for report in roundings:
+                name = report.get("mark_name")
+                mark = report.get("mark")
+                if not name and isinstance(mark, Mapping):
+                    latitude = mark.get("latitude")
+                    longitude = mark.get("longitude")
+                    if latitude is not None and longitude is not None:
+                        name = f"{float(latitude):.4f}, {float(longitude):.4f}"
+                name = name or "mark"
+                side = report.get("side", "unknown")
+                text = f"{name}: {side}"
+                radius = report.get("radius_nm")
+                if radius is not None:
+                    text += f", radius {float(radius):.2f} nm"
+                achieved = report.get("achieved_closest_distance_nm")
+                if achieved is not None:
+                    text += f", achieved {float(achieved):.2f} nm"
+                course = report.get("achieved_terminal_course_deg")
+                if course is not None:
+                    text += f", terminal {float(course):.1f}°"
+                if not report.get("satisfied", False):
+                    text += (
+                        " (not satisfied: "
+                        + str(report.get("failure_code", "unknown"))
+                        + ")"
+                    )
+                lines.append("  " + text)
         if self._restore_missing:
             lines.append(
                 "inspection context: stored "
