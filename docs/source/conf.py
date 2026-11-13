@@ -10,9 +10,9 @@ sys.path.append(os.path.abspath(os.path.join("..", "..")))
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
-project = "sailworks"
-copyright = "2017-2026, Davide Gessa (dakk) and Sailworks contributors"
-author = "Davide Gessa (dakk) and Sailworks contributors"
+project = "Sailworks"
+copyright = ""  # No copyright line in the page footer; see NOTICE for attribution.
+author = "Sailworks contributors"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -53,9 +53,9 @@ html_static_path = ["_static"]
 html_css_files = ["custom.css"]
 
 html_theme_options = {
+    # Text-only brand: the navbar renders this string instead of a header image.
     "logo": {
-        "image_light": "_static/logo.png",
-        "image_dark": "_static/logo-dark.png",
+        "text": "Sailworks",
     },
     # https://pydata-sphinx-theme.readthedocs.io/en/stable/user_guide/header-links.html#fontawesome-icons
     "icon_links": [

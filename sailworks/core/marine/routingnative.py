@@ -341,6 +341,9 @@ READOUT_NUMBERS = (
     "wave_period_seconds",
     "wave_direction_from_degrees",
     "estimated_fuel_litres",
+    # Recorded sail-plan selector for the leg. Kept with the other numbers so
+    # saved results retain it; missing values stay absent rather than zero.
+    "sail_plan",
 )
 READOUT_TEXT = ("propulsion_mode", "tack", "profile_identity", "profile_role")
 

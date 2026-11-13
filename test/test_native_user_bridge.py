@@ -3,6 +3,7 @@
 import os
 import importlib.util
 import sys
+import threading
 import unittest
 from pathlib import Path
 from uuid import uuid4
@@ -81,6 +82,7 @@ def _run(
     *,
     waves=None,
     wave_coverage=None,
+    cancel_event=None,
 ):
     return _bridge().route_user_request(
         wind,
@@ -93,6 +95,7 @@ def _run(
         "selected-polar",
         "main",
         progress=progress,
+        cancel_event=cancel_event,
         waves=waves,
         wave_coverage=wave_coverage,
     )
@@ -351,3 +354,28 @@ class NativeUserBridgeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NativeUserBridgeCancellationTest(unittest.TestCase):
+    def test_cancel_event_stops_the_search_cooperatively(self):
+        cancel_event = threading.Event()
+        updates = []
+
+        def progress(update):
+            updates.append(update)
+            cancel_event.set()
+
+        run = _run(SETTINGS, progress=progress, cancel_event=cancel_event)
+
+        self.assertTrue(updates, "engine never reported progress")
+        self.assertEqual(run["status"], "cancelled")
+        self.assertFalse(run["accepted"])
+        self.assertFalse(run["validation"]["passed"])
+        self.assertFalse(run["independent_validation"]["passed"])
+        self.assertEqual(run["legs"], [])
+
+    def test_unset_cancel_event_does_not_change_the_solve(self):
+        run = _run(SETTINGS, cancel_event=threading.Event())
+
+        self.assertTrue(run["accepted"], run["message"])
+        self.assertTrue(run["validation"]["passed"])

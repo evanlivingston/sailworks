@@ -11,8 +11,6 @@ from PySide6.QtCore import QDateTime, QPoint, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QDateTimeEdit,
-    QDoubleSpinBox,
-    QSpinBox,
     QLineEdit,
     QMessageBox,
     QFormLayout,
@@ -38,7 +36,8 @@ from sailworks.core.routingoptions import (
     parameter_values,
 )
 from .scrollchrome import style_scrollarea
-from .dropdown import Dropdown
+from .dropdown import Dropdown, FieldRow
+from .slider import Slider
 from .theme import section_label
 from .text import qt_text
 
@@ -173,6 +172,11 @@ SAFETY_HELP = {
     ),
 }
 
+BACKEND_HELP = (
+    "Legacy runs the selected weatherrouting algorithm. Native runs the "
+    "bounded local native engine on the selected forecast and request."
+)
+
 WAVE_DATA_HELP = (
     "Samples real wave height (m), period (s) and direction (degrees coming "
     "from true north) from a published wave forecast in the active tranche. "
@@ -214,10 +218,7 @@ class RoutingPanel(QWidget):
         self.backend = Dropdown("Calculation")
         self.backend.addItem("Legacy (default)", "legacy")
         self.backend.addItem("Native (experimental)", "native")
-        self.backend.setToolTip(
-            "Legacy runs the selected weatherrouting algorithm. Native runs the "
-            "bounded local native engine on the selected forecast and request."
-        )
+        self.backend.setToolTip(BACKEND_HELP)
         self.backend.currentIndexChanged.connect(self._backend_changed)
         form.addRow(self.backend)
         self.wave_data = Dropdown("Wave data")
@@ -225,10 +226,6 @@ class RoutingPanel(QWidget):
         self.wave_data.setToolTip(WAVE_DATA_HELP)
         self.wave_data.currentIndexChanged.connect(self._wave_changed)
         form.addRow(self._row_with_info(self.wave_data, WAVE_DATA_HELP))
-        self.wave_data_note = QLabel()
-        self.wave_data_note.setWordWrap(True)
-        self.wave_data_note.setProperty("secondary", True)
-        form.addRow(self.wave_data_note)
         self._wave_entries = ()
         self._wave_entry_id = ""
         self.polar = Dropdown("Polar")
@@ -241,11 +238,12 @@ class RoutingPanel(QWidget):
             )
             self.algorithm.addItem(label, entry["class"])
         form.addRow(self.algorithm)
-        self._build_parameter_controls(form)
+        self._build_parameter_controls()
         self.departure = QDateTimeEdit(QDateTime(controller.time_control.time))
         self.departure.setCalendarPopup(True)
         self.departure.setDisplayFormat("yyyy-MM-dd HH:mm")
-        form.addRow("Departure (local)", self.departure)
+        self.departure.setAccessibleName("Departure (local)")
+        form.addRow(FieldRow("Departure (local)", self.departure))
         self.departure.dateTimeChanged.connect(lambda *_: self.options_changed.emit())
         self.map_start = None
         self.map_destination = None
@@ -262,33 +260,22 @@ class RoutingPanel(QWidget):
         self.coastlines = QCheckBox("Check coastlines")
         self.coastlines.setChecked(True)
         form.addRow(self.coastlines)
-        self.coastline_clearance = QDoubleSpinBox()
-        self.coastline_clearance.setRange(0, 100)
+        self.coastline_clearance = Slider("Keep off coast")
         self.coastline_clearance.setDecimals(1)
+        self.coastline_clearance.setRange(0, 100)
         self.coastline_clearance.setSingleStep(0.5)
         self.coastline_clearance.setSuffix(" nm")
         self.coastline_clearance.setToolTip(
             "Reject route legs within this distance of the coastline."
         )
-        self.coastline_label = QLabel("Keep off coast")
-        form.addRow(self.coastline_label, self.coastline_clearance)
+        self.coastline_clearance.setAccessibleName("Keep off coast")
+        form.addRow(self.coastline_clearance)
         self.coastline_clearance.valueChanged.connect(
             lambda *_: self.options_changed.emit()
         )
         self.coastlines.toggled.connect(self._sync_coastline_clearance)
         self._sync_coastline_clearance(self.coastlines.isChecked())
         setup_layout.addLayout(form)
-        self.backend_note = QLabel()
-        self.backend_note.setWordWrap(True)
-        self.backend_note.setProperty("secondary", True)
-        setup_layout.addWidget(self.backend_note)
-        hint = QLabel(
-            "Choose a waypoint track or saved POI. "
-            "You can also select start and destination points on the map."
-        )
-        hint.setWordWrap(True)
-        hint.setProperty("secondary", True)
-        setup_layout.addWidget(hint)
         setup_layout.addStretch()
         actions = QHBoxLayout()
         self.calculate = QPushButton("Calculate route")
@@ -308,8 +295,9 @@ class RoutingPanel(QWidget):
         self._native_elapsed_timer.setInterval(1000)
         self._native_elapsed_timer.timeout.connect(self._tick_native_heartbeat)
         layout.addLayout(actions)
-        self._build_advanced_pages()
+        self._build_option_pages()
         self._build_safety_controls()
+        self._build_current_priority()
         form.addRow(self.parameters_section)
         self.inputs = (
             self.backend,
@@ -328,7 +316,7 @@ class RoutingPanel(QWidget):
         analysis = getattr(controller, "analysis", None)
         if analysis is not None and hasattr(analysis, "changed"):
             analysis.changed.connect(self._refresh_wave_sources)
-        self.options_changed.connect(self._update_backend_note)
+        self.options_changed.connect(self._update_backend_help)
         self.refresh_destinations()
         self._refresh_wave_sources()
         self._backend_changed()
@@ -338,30 +326,28 @@ class RoutingPanel(QWidget):
         self.safety_form = QFormLayout()
         self.safety_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         self.safety_form.addRow(section_label("Routing limits"))
-        self.limit_wind = QCheckBox("Maximum true wind")
+        self.limit_wind = QCheckBox("Limit maximum true wind")
         self.limit_wind.setAccessibleDescription(SAFETY_HELP["limit_wind"])
-        self.maximum_wind = self._speed_control(30, 100)
+        self.maximum_wind = self._speed_control(30, 100, "Maximum wind")
         self.maximum_wind.setAccessibleDescription(SAFETY_HELP["limit_wind"])
         self.safety_form.addRow(
-            self._row_with_info(self.limit_wind, SAFETY_HELP["limit_wind"]),
-            self.maximum_wind,
+            self._row_with_info(self.limit_wind, SAFETY_HELP["limit_wind"])
         )
-        self.motor_fallback = QCheckBox("Motor when sailing speed is below")
+        self.safety_form.addRow(self.maximum_wind)
+        self.motor_fallback = QCheckBox("Use motor below sailing speed")
         self.motor_fallback.setAccessibleDescription(SAFETY_HELP["motor_fallback"])
-        self.minimum_sailing_speed = self._speed_control(3, 30)
+        self.minimum_sailing_speed = self._speed_control(3, 30, "Sailing speed")
         self.minimum_sailing_speed.setAccessibleDescription(
             SAFETY_HELP["motor_fallback"]
         )
         self.safety_form.addRow(
-            self._row_with_info(self.motor_fallback, SAFETY_HELP["motor_fallback"]),
-            self.minimum_sailing_speed,
+            self._row_with_info(self.motor_fallback, SAFETY_HELP["motor_fallback"])
         )
-        self.motor_speed = self._speed_control(5, 30)
+        self.safety_form.addRow(self.minimum_sailing_speed)
+        self.motor_speed = self._speed_control(5, 30, "Motoring speed")
         self.motor_speed.setAccessibleDescription(SAFETY_HELP["motor_speed"])
-        motor_label = QLabel("Motoring speed")
         self.safety_form.addRow(
-            self._row_with_info(motor_label, SAFETY_HELP["motor_speed"]),
-            self.motor_speed,
+            self._row_with_info(self.motor_speed, SAFETY_HELP["motor_speed"])
         )
         self.wave_proxy = QCheckBox("Wind-based speed reduction (wave proxy)")
         self.wave_proxy.setAccessibleDescription(SAFETY_HELP["wave_proxy"])
@@ -380,10 +366,11 @@ class RoutingPanel(QWidget):
         self._refresh_safety()
 
     @staticmethod
-    def _speed_control(value, maximum):
-        widget = QDoubleSpinBox()
-        widget.setRange(0.1, maximum)
+    def _speed_control(value, maximum, label):
+        widget = Slider(label)
         widget.setDecimals(1)
+        widget.setRange(0.1, maximum)
+        widget.setSingleStep(0.5)
         widget.setSuffix(" kn")
         widget.setValue(value)
         return widget
@@ -400,7 +387,7 @@ class RoutingPanel(QWidget):
         for control in (self.minimum_sailing_speed, self.motor_speed):
             control.setEnabled(enabled and self.motor_fallback.isChecked())
 
-    def _build_parameter_controls(self, form):
+    def _build_parameter_controls(self):
         self.parameter_cache = {}
         self.parameter_widgets = {}
         self.parameter_name = ""
@@ -430,7 +417,6 @@ class RoutingPanel(QWidget):
         section_layout.addWidget(self.parameters_header)
         section_layout.addWidget(self.parameters_box)
         self.parameters_box.setVisible(False)
-        form.addRow(self.parameters_section)
 
         self.algorithm.currentIndexChanged.connect(self._algorithm_changed)
         self._algorithm_changed()
@@ -442,7 +428,6 @@ class RoutingPanel(QWidget):
         self.parameters_box.setVisible(expanded)
 
     def _sync_coastline_clearance(self, checked):
-        self.coastline_label.setVisible(checked)
         self.coastline_clearance.setVisible(checked)
 
     def _changed_legacy_parameter_names(self):
@@ -459,10 +444,10 @@ class RoutingPanel(QWidget):
             )
         )
 
-    def _update_backend_note(self, *_):
+    def _update_backend_help(self, *_):
         if self.backend.currentData() == "native":
             changed = self._changed_legacy_parameter_names()
-            note = (
+            help_text = (
                 "Native (experimental) uses the selected forecast, currents, "
                 "polar, waypoints, safety limits and shoreline. It runs its own "
                 "engine options: the selected Legacy algorithm and Advanced "
@@ -470,37 +455,36 @@ class RoutingPanel(QWidget):
                 "data."
             )
             if changed:
-                note += (
+                help_text += (
                     " Changed Legacy parameters must be reset before a Native "
                     "calculation: " + ", ".join(changed) + "."
                 )
             if self._wave_entry_id:
-                note += (
+                help_text += (
                     " Real wave heights will be sampled for coverage and "
                     "provenance; the wind-based speed reduction remains a "
                     "separate Legacy-style proxy."
                 )
-            self.backend_note.setText(note)
         else:
-            note = (
+            help_text = (
                 "Legacy (default) uses the selected algorithm and Advanced "
                 "parameters."
             )
             if self._wave_entry_id:
-                note += (
+                help_text += (
                     " Wave data is a Native input: set Wave data to None or "
                     "switch to Native."
                 )
-            self.backend_note.setText(note)
+        self.backend.setToolTip(BACKEND_HELP + "\n\n" + help_text)
 
     def _backend_changed(self, *_):
         self._refresh_wave_sources()
-        self._update_backend_note()
+        self._update_backend_help()
         self.options_changed.emit()
 
     def _wave_changed(self, *_):
         self._wave_entry_id = str(self.wave_data.currentData() or "")
-        self._update_backend_note()
+        self._update_backend_help()
         self.options_changed.emit()
 
     def _refresh_wave_sources(self, *_):
@@ -541,19 +525,18 @@ class RoutingPanel(QWidget):
         finally:
             self.wave_data.blockSignals(False)
         if not entries:
-            self.wave_data_note.setText(
-                "No wave forecast is published with the active forecast."
-            )
+            wave_status = "No wave forecast is published with the active forecast."
         elif self.backend.currentData() != "native":
-            self.wave_data_note.setText("Real wave data applies to Native only.")
+            wave_status = "Real wave data applies to Native only."
         else:
-            self.wave_data_note.setText("Wave coverage must include the route window.")
+            wave_status = "Wave coverage must include the route window."
+        self.wave_data.setToolTip(WAVE_DATA_HELP + "\n\n" + wave_status)
         self.wave_data.setEnabled(
             not self.routing.busy
             and self.backend.currentData() == "native"
             and bool(entries)
         )
-        self._update_backend_note()
+        self._update_backend_help()
 
     @staticmethod
     def _info_button(text):
@@ -589,21 +572,17 @@ class RoutingPanel(QWidget):
             widget = self._parameter_widget(param, values.get(key, param.value))
             if widget is None:
                 continue
-            widget.setAccessibleDescription(
-                PARAMETER_HELP.get(key, param.tooltip or param.name)
-            )
+            help_text = PARAMETER_HELP.get(key, param.tooltip or param.name)
+            widget.setAccessibleDescription(help_text)
             widget.setAccessibleName(param.name)
-            label = QLabel(qt_text(param.name))
-            label.setWordWrap(True)
-            label_row = QWidget()
-            label_layout = QHBoxLayout(label_row)
-            label_layout.setContentsMargins(0, 0, 0, 0)
-            label_layout.setSpacing(4)
-            label_layout.addWidget(label, 1)
-            label_layout.addWidget(
-                self._info_button(PARAMETER_HELP.get(key, param.tooltip or param.name))
-            )
-            self.parameter_form.addRow(label_row, widget)
+            label = qt_text(param.name)
+            if isinstance(widget, QCheckBox):
+                widget.setText(label)
+                row = self._row_with_info(widget, help_text)
+            else:
+                widget.setLabel(label)
+                row = self._row_with_info(widget, help_text)
+            self.parameter_form.addRow(row)
             self.parameter_widgets[key] = widget
         self.parameters_section.setVisible(True)
         self.options_changed.emit()
@@ -616,14 +595,13 @@ class RoutingPanel(QWidget):
             return check
         if param.ttype not in ("int", "float"):
             return None
-        number = QSpinBox() if param.ttype == "int" else QDoubleSpinBox()
-        if isinstance(number, QDoubleSpinBox):
-            number.setDecimals(param.digits)
-        number.setRange(param.lower, param.upper)
-        number.setSingleStep(param.step)
-        number.setValue(value)
-        number.valueChanged.connect(lambda *_: self.options_changed.emit())
-        return number
+        slider = Slider()
+        slider.setDecimals(param.digits if param.ttype == "float" else 0)
+        slider.setRange(param.lower, param.upper)
+        slider.setSingleStep(param.step)
+        slider.setValue(value)
+        slider.valueChanged.connect(lambda *_: self.options_changed.emit())
+        return slider
 
     @staticmethod
     def _scroll_page(content):
@@ -633,12 +611,9 @@ class RoutingPanel(QWidget):
         scroll.setWidget(content)
         return scroll
 
-    def _build_advanced_pages(self):
+    def _build_option_pages(self):
         compare_page = QWidget()
         compare = QVBoxLayout(compare_page)
-        note = QLabel("Enable each axis to compare and enter comma-separated values.")
-        note.setWordWrap(True)
-        compare.addWidget(note)
         self.comparison_axes = {}
         for key, label, text, _ in AXES:
             enabled, values = QCheckBox(label), QLineEdit(text)
@@ -647,7 +622,7 @@ class RoutingPanel(QWidget):
             enabled.toggled.connect(lambda *_: self.options_changed.emit())
             values.textChanged.connect(lambda *_: self.options_changed.emit())
             compare.addWidget(enabled)
-            compare.addWidget(values)
+            compare.addWidget(FieldRow("Values", values))
             self.comparison_axes[key] = (enabled, values)
         compare.addStretch()
         self.pages.addTab(self._scroll_page(compare_page), "Compare")
@@ -657,14 +632,13 @@ class RoutingPanel(QWidget):
         self.use_currents.setToolTip("Include ocean and tidal currents in routing.")
         self.use_currents.toggled.connect(self._currents_toggled)
         currents.addWidget(self.use_currents)
-        note = QLabel("Missing wind and current coverage downloads automatically.")
-        note.setWordWrap(True)
-        currents.addWidget(note)
         currents.addStretch()
         self.pages.addTab(self._scroll_page(currents_page), "Currents")
-        advanced_page = QWidget()
-        advanced = QVBoxLayout(advanced_page)
-        advanced.addWidget(section_label("Currents"))
+        self.wind_algorithm_name = self.algorithm.currentText()
+        self.preflight_dialog = None
+
+    def _build_current_priority(self):
+        self.parameters_box.layout().addWidget(section_label("Currents"))
         priority_row = QHBoxLayout()
         self.current_priority = Dropdown("Overlapping models")
         self.current_priority.addItem("Finest detail", "finest")
@@ -681,11 +655,7 @@ class RoutingPanel(QWidget):
         self.priority_info.setToolTip("Why this matters")
         self.priority_info.clicked.connect(self._explain_priority)
         priority_row.addWidget(self.priority_info)
-        advanced.addLayout(priority_row)
-        advanced.addStretch()
-        self.pages.addTab(self._scroll_page(advanced_page), "Advanced")
-        self.wind_algorithm_name = self.algorithm.currentText()
-        self.preflight_dialog = None
+        self.parameters_box.layout().addLayout(priority_row)
 
     @staticmethod
     def _explain_priority():

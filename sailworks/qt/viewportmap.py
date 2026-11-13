@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QWidget
 
 from sailworks.core.aismanager import SHIP_TYPE_COLORS
 from sailworks.core.mapviewport import MercatorProjection
+from sailworks.core.geo.routing import DEFAULT_ISOCHRONE_COLOUR_MODE
 from sailworks.rendering.isochrones import IsochroneFrame, isochrone_overlay_data
 from sailworks.rendering.routingoverlay import routing_overlay_data
 from .mapcoverage import MapCoverageMixin
@@ -647,15 +648,18 @@ class ViewportMap(
         if item is None:
             return False
         camera = self.camera_state
+        colour_by = getattr(self, "isochrone_colour_by", DEFAULT_ISOCHRONE_COLOUR_MODE)
         signature = (
             id(model),
             model.geometry_digest,
             model.geometry_revision,
             bool(model.traces_visible),
+            bool(model.contours_visible),
+            colour_by,
             tuple(
                 layer.layer_id
                 for layer in model.layers
-                if model.is_layer_visible(layer.layer_id)
+                if model.contour_visible(layer.layer_id)
             ),
         )
         if getattr(self, "_retained_segments_signature", None) != signature:
@@ -670,8 +674,11 @@ class ViewportMap(
                 if (polyline.kind != "trace" or model.traces_visible)
                 and (
                     polyline.kind != "contour"
-                    or model.is_layer_visible(polyline.layer_id)
+                    or model.contour_visible(polyline.layer_id)
                 )
+                # Time colouring is painted on the canvas, so the single-colour
+                # retained item must not also draw the contours.
+                and not (colour_by == "time" and polyline.kind == "contour")
             ]
             item.setProperty("polylines", polylines)
             self._retained_segments_signature = signature
@@ -869,7 +876,9 @@ def _viewport_overlay_key(host):
         _overlay_ais(host),
         id(frame),
         id(getattr(host, "native_routing", None)),
+        getattr(host, "isochrone_error", None),
         getattr(getattr(host, "native_routing", None), "geometry_revision", -1),
+        getattr(host, "isochrone_colour_by", DEFAULT_ISOCHRONE_COLOUR_MODE),
         bool(getattr(host, "_retained_active", False)),
         (
             tuple(
@@ -877,11 +886,12 @@ def _viewport_overlay_key(host):
                 for layer in getattr(
                     getattr(host, "native_routing", None), "layers", ()
                 )
-                if host.native_routing.is_layer_visible(layer.layer_id)
+                if host.native_routing.contour_visible(layer.layer_id)
             )
             if getattr(host, "native_routing", None) is not None
             else None
         ),
+        getattr(getattr(host, "native_routing", None), "contours_visible", None),
         getattr(getattr(host, "native_routing", None), "traces_visible", None),
         _overlay_size(getattr(frame, "isochrones", ())),
         _overlay_size(getattr(frame, "path", ())),
@@ -1055,7 +1065,10 @@ def _build_viewport_route_overlay(host):
         "caption": _viewport_caption(
             host.move_callback,
             host.controller.chart_errors,
-            _routing_absence_caption(getattr(host, "native_routing", None)),
+            _routing_absence_caption(
+                getattr(host, "native_routing", None),
+                getattr(host, "isochrone_error", None),
+            ),
         ),
         "dashboard_visible": host.dashboard_visible,
     }
@@ -1206,15 +1219,18 @@ def _routing_overlay(host):
     """
     model = getattr(host, "native_routing", None)
     if model is not None:
-        payload = routing_overlay_data(model)
+        colour_by = getattr(host, "isochrone_colour_by", DEFAULT_ISOCHRONE_COLOUR_MODE)
+        payload = routing_overlay_data(model, colour_by)
         if getattr(host, "_retained_active", False):
             # The retained item draws this geometry, so the canvas payload only
             # suppresses duplicates. "retained" keeps that case distinct from
-            # a result with no drawable geometry.
+            # a result with no drawable geometry. The retained native item has
+            # a single colour, so in time mode it draws only traces and the
+            # canvas paints the time-coloured contours.
             payload.update(
                 {
                     "retained": True,
-                    "frontiers": [],
+                    "frontiers": [] if colour_by != "time" else payload["frontiers"],
                     "traces": [],
                     "path": [],
                     "exclusions": [],
@@ -1225,11 +1241,13 @@ def _routing_overlay(host):
     return isochrone_overlay_data(host.isochrone_frame)
 
 
-def _routing_absence_caption(model):
+def _routing_absence_caption(model, isochrone_error=None):
     """Disclosure for missing routing geometry or trace times."""
-    if model is None:
-        return ""
     parts = []
+    if isochrone_error:
+        parts.append(f"Isochrones unavailable: {isochrone_error}")
+    if model is None:
+        return " · ".join(parts)
     state = model.geometry_state
     if state == "absent":
         parts.append("No routing layers in this result")

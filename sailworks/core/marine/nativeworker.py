@@ -2,8 +2,10 @@
 
 One worker slot isolates the native engine from the caller. A new submission
 supersedes the running generation, so a superseded calculation can never
-publish a result. Cancellation terminates the process, and an abnormal exit is
-reported as a failure rather than as "no feasible route".
+publish a result. Cancellation is cooperative first: a shared event trips the
+engine's cancellation token at its progress checkpoint, and termination is the
+bounded fallback. An abnormal exit is reported as a failure rather than as "no
+feasible route".
 
 The bridge forwards the vendored engine's own ``RoutingProgressUpdate`` values.
 They travel over the same pipe as the result, are throttled in the child, and a
@@ -20,6 +22,15 @@ from typing import Any, Dict, Optional
 
 STATES = frozenset({"queued", "running", "completed", "cancelled", "failed"})
 PROGRESS_INTERVAL_SECONDS = 0.1
+# Cooperative stop is checked at the engine's progress checkpoint (at most
+# once per second). Give it a few checkpoints before terminating the child.
+CANCEL_GRACE_SECONDS = 5.0
+
+
+def _is_alive(process) -> bool:
+    """``is_alive`` with a defensive default for simple test doubles."""
+    check = getattr(process, "is_alive", None)
+    return True if check is None else bool(check())
 
 
 class NativeProgressThrottle:
@@ -62,7 +73,9 @@ class NativeJobStatus:
         }
 
 
-def _worker_main(connection, job, engine: str, generation: int) -> None:
+def _worker_main(
+    connection, job, engine: str, generation: int, cancel_event=None
+) -> None:
     """Child-process entry point; import provider handles only after spawn."""
     throttle = NativeProgressThrottle()
 
@@ -89,7 +102,9 @@ def _worker_main(connection, job, engine: str, generation: int) -> None:
         else:
             from .nativeexecution import run_native_request
 
-            payload = run_native_request(job, progress=report)
+            payload = run_native_request(
+                job, progress=report, cancel_event=cancel_event
+            )
         connection.send(
             {"kind": "result", "generation": generation, "payload": payload}
         )
@@ -125,6 +140,7 @@ class NativeRoutingWorker:
         self._status: Optional[NativeJobStatus] = None
         self._status_consumed = False
         self._pending_progress: Optional[Dict[str, Any]] = None
+        self._cancel_event = self._context.Event()
 
     @property
     def generation(self) -> int:
@@ -137,7 +153,7 @@ class NativeRoutingWorker:
 
     @property
     def running(self) -> bool:
-        return self._process is not None and self._process.is_alive()
+        return self._process is not None and _is_alive(self._process)
 
     @property
     def superseded_generation(self) -> Optional[int]:
@@ -165,10 +181,11 @@ class NativeRoutingWorker:
         self._supersede()
         self._generation += 1
         generation = self._generation
+        self._cancel_event.clear()
         parent, child = self._context.Pipe(duplex=False)
         process = self._context.Process(
             target=_worker_main,
-            args=(child, job, engine, generation),
+            args=(child, job, engine, generation, self._cancel_event),
             daemon=True,
         )
         try:
@@ -234,9 +251,12 @@ class NativeRoutingWorker:
             return None
         self._release()
         if message.get("kind") == "result":
-            return self._publish(
-                NativeJobStatus(generation, "completed", payload=message["payload"])
-            )
+            payload = message["payload"]
+            state = "completed"
+            if isinstance(payload, dict) and payload.get("status") == "cancelled":
+                # A cooperatively stopped child never reports a completion.
+                state = "cancelled"
+            return self._publish(NativeJobStatus(generation, state, payload=payload))
         return self._publish(
             NativeJobStatus(
                 generation,
@@ -262,10 +282,17 @@ class NativeRoutingWorker:
         return True
 
     def cancel(self) -> Optional[NativeJobStatus]:
-        """Terminate the running worker; never publishes a completion."""
+        """Stop the running worker; never publishes a completion.
+
+        Cooperative first: trip the shared cancel event, which the bridge
+        observes at the engine's progress checkpoint, and wait a bounded time
+        for the child to exit. Termination is only the fallback.
+        """
         if self._active_generation is None:
             return None
         generation = self._active_generation
+        self._request_stop()
+        self._await_exit(CANCEL_GRACE_SECONDS)
         self._terminate()
         # The caller gets the status here, and a poll-only caller still gets it
         # once from poll(); neither can turn it into a completion.
@@ -288,15 +315,41 @@ class NativeRoutingWorker:
         self._superseded_generation = self._active_generation
         self._terminate()
 
+    def _request_stop(self) -> None:
+        """Trip the event the bridge polls at its engine checkpoints."""
+        setter = getattr(self._cancel_event, "set", None)
+        if setter is None:
+            return
+        try:
+            setter()
+        except (ValueError, OSError):  # pragma: no cover - defensive
+            pass
+
+    def _await_exit(self, timeout: float) -> None:
+        """Give a cooperative child its bounded grace period to exit."""
+        join = getattr(self._process, "join", None)
+        if join is None:
+            return
+        try:
+            join(timeout=timeout)
+        except (AssertionError, ValueError):  # pragma: no cover - defensive
+            pass
+
     def _terminate(self) -> None:
         self._pending_progress = None
         if self._process is not None:
-            if self._process.is_alive():
-                self._process.terminate()
-            self._process.join(timeout=5)
-            if self._process.is_alive():  # pragma: no cover - defensive
-                self._process.kill()
-                self._process.join(timeout=5)
+            if _is_alive(self._process):
+                terminate = getattr(self._process, "terminate", None)
+                if terminate is not None:
+                    terminate()
+            join = getattr(self._process, "join", None)
+            if join is not None:
+                join(timeout=5)
+                if _is_alive(self._process):  # pragma: no cover - defensive
+                    kill = getattr(self._process, "kill", None)
+                    if kill is not None:
+                        kill()
+                    join(timeout=5)
         self._release()
 
     def _release(self) -> None:

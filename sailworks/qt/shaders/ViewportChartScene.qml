@@ -328,6 +328,108 @@ Item {
                            `${Math.round(b * 255)},${alpha})`
                 }
 
+                function rgbColor(color, alpha) {
+                    if (!color || color.length < 3)
+                        return `rgba(140,140,140,${alpha})`
+                    return `rgba(${Math.round(color[0] * 255)},` +
+                           `${Math.round(color[1] * 255)},` +
+                           `${Math.round(color[2] * 255)},${alpha})`
+                }
+
+                function drawRouteLegend(context, legend) {
+                    if (!legend || !legend.entries || !legend.entries.length)
+                        return
+                    context.save()
+                    context.font = "10px sans-serif"
+                    let width = context.measureText(legend.title || "").width
+                    for (let i = 0; i < legend.entries.length; ++i)
+                        width = Math.max(width,
+                            context.measureText(legend.entries[i][0]).width)
+                    const rowHeight = 15
+                    const boxWidth = width + 38
+                    const boxHeight =
+                        rowHeight * (legend.entries.length + 1) + 10
+                    context.fillStyle = "rgba(0,0,0,0.55)"
+                    context.fillRect(12, 12, boxWidth, boxHeight)
+                    context.fillStyle = "rgba(255,255,255,0.9)"
+                    context.fillText(legend.title || "", 20, 27)
+                    for (let i = 0; i < legend.entries.length; ++i) {
+                        const rowY = 37 + rowHeight * i
+                        context.fillStyle =
+                            rgbColor(legend.entries[i][1], 1.0)
+                        context.fillRect(20, rowY, 10, 10)
+                        context.fillStyle = "rgba(255,255,255,0.9)"
+                        context.fillText(legend.entries[i][0], 36, rowY + 9)
+                    }
+                    context.restore()
+                }
+
+                function drawIsochroneLegend(context, legend) {
+                    if (!legend || (!legend.note &&
+                        (!legend.entries || !legend.entries.length)))
+                        return
+                    context.save()
+                    context.font = "10px sans-serif"
+                    const rowHeight = 15
+                    // Keep clear of the top-left route legend when one is drawn.
+                    let topLimit = 12
+                    if (routes && routes.length) {
+                        for (let r = 0; r < routes.length; ++r) {
+                            const other = routes[r].legend
+                            if (other && other.entries && other.entries.length)
+                                topLimit = Math.max(topLimit,
+                                    12 + rowHeight * (other.entries.length + 1) +
+                                    10 + 8)
+                        }
+                    }
+                    const entries = legend.entries || []
+                    const maxRows = Math.max(0,
+                        Math.floor((height - topLimit - 24) / rowHeight) - 1)
+                    const shown = []
+                    if (entries.length <= maxRows) {
+                        for (let i = 0; i < entries.length; ++i)
+                            shown.push(entries[i])
+                    } else if (maxRows === 1) {
+                        shown.push(entries[entries.length - 1])
+                    } else if (maxRows > 1) {
+                        // Sample evenly, always keeping the oldest and newest.
+                        for (let i = 0; i < maxRows; ++i)
+                            shown.push(entries[Math.round(
+                                i * (entries.length - 1) / (maxRows - 1))])
+                    }
+                    if (!shown.length && !legend.note)
+                        return
+                    let width = context.measureText(legend.title || "").width
+                    for (let i = 0; i < shown.length; ++i)
+                        width = Math.max(width,
+                            context.measureText(shown[i][0]).width)
+                    if (legend.note)
+                        width = Math.max(width,
+                            context.measureText(legend.note).width)
+                    const rowCount = shown.length + (legend.note ? 1 : 0)
+                    const boxWidth = width + 38
+                    const boxHeight = rowHeight * (rowCount + 1) + 10
+                    const top = Math.max(topLimit, height - boxHeight - 12)
+                    context.fillStyle = "rgba(0,0,0,0.55)"
+                    context.fillRect(12, top, boxWidth, boxHeight)
+                    context.fillStyle = "rgba(255,255,255,0.9)"
+                    context.fillText(legend.title || "", 20, top + 15)
+                    for (let i = 0; i < shown.length; ++i) {
+                        const rowY = top + 25 + rowHeight * i
+                        context.fillStyle =
+                            rgbColor(shown[i][1], 1.0)
+                        context.fillRect(20, rowY, 10, 10)
+                        context.fillStyle = "rgba(255,255,255,0.9)"
+                        context.fillText(shown[i][0], 36, rowY + 9)
+                    }
+                    if (legend.note) {
+                        const rowY = top + 25 + rowHeight * shown.length
+                        context.fillStyle = "rgba(255,220,150,0.95)"
+                        context.fillText(legend.note, 20, rowY + 9)
+                    }
+                    context.restore()
+                }
+
                 function roundedRect(context, x, y, w, h, r) {
                     context.beginPath()
                     context.moveTo(x + r, y)
@@ -470,9 +572,12 @@ Item {
                             // Selected native layer is emphasised; a legacy
                             // preview frontier has no selection identity.
                             const selected = frontier.selected === true
-                            context.strokeStyle = selected
-                                ? "rgba(255,140,0,0.95)"
-                                : "rgba(0,0,204,0.5)"
+                            const timeColour = frontier.colour
+                            context.strokeStyle = timeColour
+                                ? rgbColor(timeColour, selected ? 0.95 : 0.55)
+                                : (selected
+                                    ? "rgba(255,140,0,0.95)"
+                                    : "rgba(0,0,204,0.5)")
                             context.lineWidth = selected ? 2.5 : 1.5
                             context.setLineDash([])
                             for (let s = 0; s < frontier.segments.length; ++s) {
@@ -484,7 +589,9 @@ Item {
                                 context.lineTo(second.x, second.y)
                                 context.stroke()
                             }
-                            context.fillStyle = "rgba(0,0,204,0.5)"
+                            context.fillStyle = timeColour
+                                ? rgbColor(timeColour, 0.65)
+                                : "rgba(0,0,204,0.5)"
                             for (let p = 0; p < frontier.points.length; ++p) {
                                 const point = screenPoint(frontier.points[p])
                                 context.beginPath()
@@ -551,6 +658,8 @@ Item {
                             }
                         }
                     }
+                    if (isochrones && isochrones.legend)
+                        drawIsochroneLegend(context, isochrones.legend)
                     drawRoute(context, routePlan, "#5295d2")
                     drawRoute(context, routePreview, "#ef5a8c")
                     if (trackPoints && trackPoints.length > 1) {
@@ -571,10 +680,14 @@ Item {
                     if (routes && routes.length) {
                         for (let r = 0; r < routes.length; ++r) {
                             const route = routes[r]
+                            if (route.legend)
+                                drawRouteLegend(context, route.legend)
                             const points = route.points
                             if (!points || points.length < 2)
                                 continue
                             const highlight = Boolean(route.highlight)
+                            const categorical = route.colour_by &&
+                                                route.colour_by !== "speed"
                             for (let i = 1; i < points.length; ++i) {
                                 const previous = screenPoint(points[i - 1])
                                 const point = screenPoint(points[i])
@@ -582,8 +695,18 @@ Item {
                                 context.moveTo(previous.x, previous.y)
                                 context.lineTo(point.x, point.y)
                                 context.lineWidth = highlight ? 3 : 2
-                                context.strokeStyle = speedColor(
-                                    points[i][2] || 0, highlight ? 0.9 : 0.63)
+                                const segmentColor =
+                                    route.segment_colors &&
+                                    route.segment_colors.length >= i
+                                        ? route.segment_colors[i - 1] : null
+                                context.strokeStyle = segmentColor
+                                    ? rgbColor(segmentColor,
+                                               highlight ? 0.9 : 0.63)
+                                    : categorical
+                                        ? rgbColor(null,
+                                                   highlight ? 0.9 : 0.63)
+                                        : speedColor(points[i][2] || 0,
+                                                     highlight ? 0.9 : 0.63)
                                 context.stroke()
                             }
                             context.font = "10px sans-serif"
@@ -595,9 +718,36 @@ Item {
                                 context.beginPath()
                                 context.arc(point.x, point.y,
                                             highlight ? 3 : 2, 0, Math.PI * 2)
-                                context.fillStyle = speedColor(
-                                    points[i][2] || 0, 1.0)
+                                context.fillStyle =
+                                    route.point_colors &&
+                                    route.point_colors.length > i
+                                        ? rgbColor(route.point_colors[i], 1.0)
+                                        : categorical
+                                            ? rgbColor(null, 1.0)
+                                            : speedColor(points[i][2] || 0, 1.0)
                                 context.fill()
+                            }
+                            if (route.sail_changes && route.sail_changes.length) {
+                                const changes = route.sail_changes
+                                const markerColor = route.sail_change_color
+                                    ? rgbColor(route.sail_change_color, 1.0)
+                                    : "rgba(250,209,51,1)"
+                                const side = highlight ? 6 : 5
+                                for (let c = 0; c < changes.length; ++c) {
+                                    const index = changes[c]
+                                    if (!(index >= 0 && index < points.length))
+                                        continue
+                                    const marker = screenPoint(points[index])
+                                    context.fillStyle = markerColor
+                                    context.fillRect(marker.x - side / 2,
+                                                     marker.y - side / 2,
+                                                     side, side)
+                                    context.strokeStyle = "rgba(26,26,26,0.9)"
+                                    context.lineWidth = 1
+                                    context.strokeRect(marker.x - side / 2,
+                                                       marker.y - side / 2,
+                                                       side, side)
+                                }
                             }
                             if (route.boat && route.boat.length === 2) {
                                 const boat = screenPoint(route.boat)

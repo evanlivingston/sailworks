@@ -5,9 +5,12 @@ from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
+    QHBoxLayout,
+    QLabel,
     QSizePolicy,
     QStyle,
     QStyledItemDelegate,
+    QWidget,
 )
 
 FIELD_FRACTION = 0.55
@@ -202,3 +205,36 @@ class Dropdown(QComboBox):
         cy = field.center().y()
         painter.drawLine(QPointF(cx - 4, cy - 2), QPointF(cx, cy + 2))
         painter.drawLine(QPointF(cx, cy + 2), QPointF(cx + 4, cy - 2))
+
+
+class FieldRow(QWidget):
+    """A dropdown-style label row around an arbitrary compact field."""
+
+    def __init__(self, label="", field=None, parent=None):
+        super().__init__(parent)
+        self._field = field
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self._label = QLabel(label)
+        self._label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        layout.addWidget(self._label, 1)
+        if field is not None:
+            field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            layout.addWidget(field)
+        if label:
+            self.setAccessibleName(label)
+
+    def field(self):
+        return self._field
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt virtual method name
+        super().resizeEvent(event)
+        if self._field is None:
+            return
+        width = self.width()
+        field_width = max(0, round(width * FIELD_FRACTION) - 2)
+        self._field.setFixedWidth(field_width)
+        self._label.setFixedWidth(max(0, width - field_width - 8))

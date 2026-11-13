@@ -1,0 +1,78 @@
+{
+  "generator": "tools/capture_manual.py",
+  "window": "1440x900",
+  "scenes": [
+    {
+      "name": "chart-pnwo",
+      "title": "Chart with satellite basemap",
+      "description": "Satellite imagery under the chart for the Pacific NW Offshore course and boats.",
+      "file": "chart-pnwo.png",
+      "sha256": "650d6ad8790cc2d9f356ba393ea61a132f9a2c036d8ef963895f879ed344041f",
+      "width": 1668,
+      "height": 1614
+    },
+    {
+      "name": "data-library-charts",
+      "title": "Data Library: charts and downloads",
+      "description": "The Downloads && base maps section that installs coastlines and seamarks.",
+      "file": "data-library-charts.png",
+      "sha256": "70dead5c6b0d857f4845001bc39ef50dda12c35b6101df6327279758bdb42833",
+      "width": 2080,
+      "height": 1400
+    },
+    {
+      "name": "data-library-forecasts",
+      "title": "Data Library: forecasts",
+      "description": "Weather model, region and time range for a forecast download.",
+      "file": "data-library-forecasts.png",
+      "sha256": "dca055dfedbe5da029d3e0f2887c28ca7e692ece9497224c418718f5a1f6be94",
+      "width": 2080,
+      "height": 1400
+    },
+    {
+      "name": "panel-navigation",
+      "title": "Navigation panel",
+      "description": "Tracks, routings, POIs and AIS targets, with the Tracks tab selected.",
+      "file": "panel-navigation.png",
+      "sha256": "b1e7e4966c81a567236bf9581396e4698e75c5b3664423ad37ed8d9f3cd1f432",
+      "width": 920,
+      "height": 1056
+    },
+    {
+      "name": "panel-navigation-routings",
+      "title": "Navigation panel: routings",
+      "description": "Saved and calculated routes, with the legs of the selected route.",
+      "file": "panel-navigation-routings.png",
+      "sha256": "5dd88e356f6248993fe7bf23e4abb42f253eb30b3a72f6757e4af348847e7356",
+      "width": 920,
+      "height": 1056
+    },
+    {
+      "name": "panel-polar-selector",
+      "title": "Polar selector",
+      "description": "Choose the polar used for routing and performance readouts.",
+      "file": "panel-polar-selector.png",
+      "sha256": "01ce157aafce752e8330e2c4b8e4da5d35e505780cf901e15c5685378af2ab44",
+      "width": 920,
+      "height": 480
+    },
+    {
+      "name": "panel-routing",
+      "title": "Routing panel",
+      "description": "Polar, departure and limit options, plus the Calculate route button.",
+      "file": "panel-routing.png",
+      "sha256": "bf5ce58de7fedb626ab72c26c90fc32c3f5aab8f338c6ab3e7f59ea4b1068513",
+      "width": 920,
+      "height": 1080
+    },
+    {
+      "name": "panel-weather",
+      "title": "Weather panel",
+      "description": "Forecast selection and the displayed weather fields.",
+      "file": "panel-weather.png",
+      "sha256": "c54c744da569fc3ebd9418ef906154edfbe2baf93e58fa7b1f47af4e21be2c60",
+      "width": 908,
+      "height": 1794
+    }
+  ]
+}

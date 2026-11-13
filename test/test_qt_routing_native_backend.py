@@ -128,10 +128,10 @@ def _request(**overrides):
 def test_panel_defaults_to_legacy_and_discloses_native_limits(app):
     panel = RoutingPanel(FakeController())
     assert panel.backend.currentData() == "legacy"
-    assert "Legacy (default)" in panel.backend_note.text()
+    assert "Legacy (default)" in panel.backend.toolTip()
 
     panel.backend.setCurrentIndex(panel.backend.findData("native"))
-    note = panel.backend_note.text()
+    note = panel.backend.toolTip()
     assert "experimental" in note
     assert "not applied" in note
     assert "does not download" in note
@@ -657,6 +657,10 @@ def test_failed_native_then_legacy_clears_overlay_and_inspector(app):
         _routing_active_route=None,
     )
     window._native_cleared = MethodType(PreviewWindow._native_cleared, window)
+    window._native_owns_route = MethodType(PreviewWindow._native_owns_route, window)
+    window._sync_isochrone_colour_mode = MethodType(
+        PreviewWindow._sync_isochrone_colour_mode, window
+    )
     window._sync_route_isochrones = MethodType(
         PreviewWindow._sync_route_isochrones, window
     )

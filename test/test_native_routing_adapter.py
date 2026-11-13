@@ -327,6 +327,7 @@ def test_leg_readout_records_engine_values_and_absence():
                 true_wind_angle_degrees=152.6,
                 propulsion_mode="sail",
                 tack="starboard",
+                sail_plan=2,
                 stationary_wait=False,
                 warnings=[{"code": "search_pruned", "message": "pruned"}],
                 safety_margins={"wind": 3.0},
@@ -344,6 +345,8 @@ def test_leg_readout_records_engine_values_and_absence():
     assert readout["warning_count"] == 1
     assert readout["warning_codes"] == "search_pruned"
     assert readout["margin_wind"] == 3.0
+    # The selected sail plan crosses the bridge and must survive the adapter.
+    assert readout["sail_plan"] == 2
     # Fields the bridge did not supply are absent, not zero.
     assert "estimated_fuel_litres" not in readout
     assert "wind_gust_knots" not in readout
@@ -352,5 +355,7 @@ def test_leg_readout_records_engine_values_and_absence():
 def test_leg_readout_roundtrips_losslessly():
     run = _run(legs=[_leg(1767225600, 1767226500, heading_degrees=12.5)])
     result = _convert(run)
+    # A leg without a recorded sail plan stays absent rather than plan zero.
+    assert "sail_plan" not in result.legs[0].readout
     reloaded = type(result).from_json(result.to_json())
     assert dict(reloaded.legs[0].readout) == dict(result.legs[0].readout)

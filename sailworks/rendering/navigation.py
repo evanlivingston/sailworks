@@ -25,7 +25,33 @@ import dateutil.parser
 from sailworks.core import utils
 
 from sailworks.core.mapviewport import MapPoint
-from .style import Style, route_speed_color as _speed_color
+from .style import (
+    ROUTE_SAIL_CHANGE_COLOUR,
+    ROUTE_UNKNOWN_COLOUR,
+    Style,
+    route_leg_colour,
+    route_legend_entries,
+    route_legend_title,
+    route_speed_color as _speed_color,
+)
+
+
+def sail_change_indices(identities):
+    """Point indices where the recorded sail plan changes between two legs.
+
+    ``identities`` holds one recorded plan identity per leg, matching
+    ``_result_points``. Point ``i`` is the boundary shared by legs ``i - 1``
+    and ``i``; it is a sail change only when both legs have a known identity
+    and the identities differ. The first leg has no preceding leg, and an
+    unknown neighbouring identity never produces a marker.
+    """
+    indices = []
+    for index in range(1, len(identities)):
+        previous = identities[index - 1]
+        current = identities[index]
+        if previous and current and previous != current:
+            indices.append(index)
+    return tuple(indices)
 
 
 def draw_current_exclusions(gpsmap, cr, samples):
@@ -186,6 +212,34 @@ def routing_summary(r):
     return " | ".join(value for _, value in fields) + _routing_source_note(r)
 
 
+def _draw_route_legend(cr, title, entries, x=12.0, y=12.0):
+    """Draw a compact on-map legend for the highlighted saved routing."""
+    cr.save()
+    cr.set_font_size(10)
+    rows = list(entries)
+    width = cr.text_extents(title).width
+    for label, _colour in rows:
+        width = max(width, cr.text_extents(label).width)
+    row_height = 15.0
+    box_width = width + 38.0
+    box_height = row_height * (len(rows) + 1) + 10.0
+    cr.set_source_rgba(0.0, 0.0, 0.0, 0.55)
+    cr.rectangle(x, y, box_width, box_height)
+    cr.fill()
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.9)
+    cr.move_to(x + 8.0, y + 15.0)
+    cr.show_text(title)
+    for index, (label, colour) in enumerate(rows):
+        row_y = y + 18.0 + row_height * (index + 1)
+        cr.set_source_rgba(colour[0], colour[1], colour[2], 1.0)
+        cr.rectangle(x + 8.0, row_y - 8.0, 10.0, 10.0)
+        cr.fill()
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.9)
+        cr.move_to(x + 24.0, row_y)
+        cr.show_text(label)
+    cr.restore()
+
+
 class NavigationRenderer:
     def __init__(self, core):
         self.core = core
@@ -194,6 +248,9 @@ class NavigationRenderer:
         self.hl_track_item = None
         self.edit_track = None
         self._route_geometry = {}
+        # Per-route colour arrays cached by (revision, mode) so frames do not
+        # reclassify legs or re-read the saved result.
+        self._route_styles = {}
 
     def draw_routes(self, gpsmap, cr, display_time, draw_routes=True):  # noqa: C901
         # Legacy route times and the map clock are local and naive; newer
@@ -216,6 +273,11 @@ class NavigationRenderer:
                 prevy = None
                 prevp = None
                 points_list = [point for point in tr if len(point) >= 7]
+                mode = getattr(tr, "colour_by", "speed")
+                point_colours, segment_colours, legend = self._route_colours(tr, mode)
+                _points, _rows, _stamps, _twas, sail_changes = (
+                    self._route_overlay_geometry(tr)
+                )
 
                 for i, p in enumerate(points_list):
                     x, y = gpsmap.convert_geographic_to_screen(
@@ -269,12 +331,17 @@ class NavigationRenderer:
                             cr.arc(xx, yy, 8, 0, 2 * math.pi)
                             cr.stroke()
 
-                    # Draw segment line colored by boat speed
+                    # Draw segment line colored by the selected per-leg mode
                     if prevx is not None and prevy is not None:
                         speed = p[5] if p[5] is not None else 0
                         lw = 3.0 if highlight else 2.0
 
-                        r, g, b, a = _speed_color(speed)
+                        if mode == "speed":
+                            r, g, b, a = _speed_color(speed)
+                        elif 0 < i <= len(segment_colours):
+                            r, g, b, a = segment_colours[i - 1]
+                        else:
+                            r, g, b, a = ROUTE_UNKNOWN_COLOUR
                         cr.set_source_rgba(r, g, b, a if highlight else a * 0.7)
                         cr.set_line_width(lw)
                         cr.move_to(prevx, prevy)
@@ -283,25 +350,55 @@ class NavigationRenderer:
 
                     # Waypoint markers
                     speed = p[5] if p[5] is not None else 0
-                    r, g, b, a = _speed_color(speed)
+                    if mode == "speed":
+                        r, g, b, a = _speed_color(speed)
+                    elif i < len(point_colours):
+                        r, g, b, a = point_colours[i]
+                    else:
+                        r, g, b, a = ROUTE_UNKNOWN_COLOUR
                     radius = 3 if highlight else 2
 
                     cr.set_source_rgba(r, g, b, 1.0)
                     cr.arc(x, y, radius, 0, 2 * math.pi)
                     cr.fill()
 
+                    # A recorded sail-plan transition sits on the shared point
+                    # between two legs. A square keeps it distinct from the
+                    # circular waypoint dots without changing the geometry.
+                    if i in sail_changes:
+                        side = 6.0 if highlight else 5.0
+                        cr.set_source_rgba(*ROUTE_SAIL_CHANGE_COLOUR)
+                        cr.rectangle(x - side / 2, y - side / 2, side, side)
+                        cr.fill()
+                        cr.set_source_rgba(0.1, 0.1, 0.1, 0.9)
+                        cr.set_line_width(1.0)
+                        cr.rectangle(x - side / 2, y - side / 2, side, side)
+                        cr.stroke()
+
                     prevx = x
                     prevy = y
                     prevp = p
 
+                if highlight and legend:
+                    entries = tuple(legend)
+                    if sail_changes:
+                        entries += (("Sail change", ROUTE_SAIL_CHANGE_COLOUR),)
+                    _draw_route_legend(cr, route_legend_title(mode), entries)
+
     def _route_overlay_geometry(self, route):
-        """Static route geometry, cached until ``route.revision`` changes."""
-        key = (id(route), route.revision)
+        """Static route geometry, cached until its revision or artifact changes.
+
+        Sail-change markers derive from the referenced artifact's per-leg
+        readouts, so the cache key includes the reference identity as well as
+        the route revision; replacing the artifact must rebuild them.
+        """
+        key = (id(route), route.revision, id(getattr(route, "result_ref", None)))
         cached = self._route_geometry.get(key)
         if cached is not None and cached[0] is route:
             return cached[1]
         points = []
         rows = []
+        twas = []
         for p in route:
             if len(p) < 7:
                 continue
@@ -311,9 +408,75 @@ class NavigationRenderer:
             heading = None if p[6] is None else math.radians(p[6])
             rows.append((lat, lon, speed, stamp, heading))
             points.append([lat, lon, speed])
-        geometry = (points, tuple(rows), tuple(row[3] for row in rows))
+            twas.append(p[3])
+        changes = ()
+        loader = getattr(route, "leg_profile_identities", None)
+        if callable(loader):
+            identities = loader()
+            # Only trust the recorded plans when they line up one-for-one with
+            # the displayed legs. A mismatched polyline (legacy points or an
+            # overridden point list) would otherwise mark the wrong point.
+            if len(identities) == max(0, len(points) - 1):
+                changes = sail_change_indices(identities)
+        geometry = (
+            points,
+            tuple(rows),
+            tuple(row[3] for row in rows),
+            tuple(twas),
+            changes,
+        )
         self._route_geometry[key] = (route, geometry)
         return geometry
+
+    def _route_colours(self, route, mode):
+        """Per-leg colour arrays for one route in the requested mode.
+
+        Segment ``j`` runs from point ``j`` to ``j + 1`` and belongs to leg
+        ``j``, matching ``_result_points``. Speed keeps the historical
+        destination-point sample so the default rendering does not change.
+        """
+        key = (
+            id(route),
+            route.revision,
+            id(getattr(route, "result_ref", None)),
+            mode,
+        )
+        cached = self._route_styles.get(key)
+        if cached is not None and cached[0] is route:
+            return cached[1]
+        points, _rows, _stamps, twas, _changes = self._route_overlay_geometry(route)
+        legs = max(0, len(points) - 1)
+        tacks = ()
+        if mode == "tack":
+            loader = getattr(route, "leg_tacks", None)
+            if callable(loader):
+                recorded = loader()
+                # Only trust recorded tacks when they line up one-for-one with
+                # the displayed legs, the same guard the sail markers use. A
+                # mid-route point insert would otherwise shift every colour
+                # onto the wrong leg; mismatched readouts stay unknown.
+                if len(recorded) == legs:
+                    tacks = recorded
+        segment_colours = []
+        for index in range(legs):
+            speed = points[index + 1][2] if mode == "speed" else None
+            twa = twas[index] if index < len(twas) else None
+            tack = tacks[index] if index < len(tacks) else None
+            segment_colours.append(route_leg_colour(mode, speed, twa, tack))
+        point_colours = []
+        for index, point in enumerate(points):
+            leg = min(index, legs - 1) if legs else 0
+            speed = point[2] if mode == "speed" else None
+            twa = twas[leg] if leg < len(twas) else None
+            tack = tacks[leg] if leg < len(tacks) else None
+            point_colours.append(route_leg_colour(mode, speed, twa, tack))
+        colours = (
+            tuple(point_colours),
+            tuple(segment_colours),
+            route_legend_entries(mode),
+        )
+        self._route_styles[key] = (route, colours)
+        return colours
 
     def route_overlay_data(self, display_time):
         """Route geometry for a QML overlay, including the interpolated boat."""
@@ -324,7 +487,9 @@ class NavigationRenderer:
                 continue
             key = (id(tr), tr.revision)
             live.add(key)
-            points, rows, stamps = self._route_overlay_geometry(tr)
+            points, rows, stamps, _twas, sail_changes = self._route_overlay_geometry(tr)
+            mode = getattr(tr, "colour_by", "speed")
+            point_colours, segment_colours, legend = self._route_colours(tr, mode)
             boat = None
             index = bisect.bisect_left(stamps, display_time)
             if 0 < index < len(rows):
@@ -339,17 +504,33 @@ class NavigationRenderer:
                     )
                     rp = utils.routage_point_distance(prev[0], prev[1], dl, curr[4])
                     boat = [float(rp[0]), float(rp[1])]
-            routes.append(
-                {
-                    "name": str(tr.name),
-                    "points": points,
-                    "highlight": tr.name == self.hl_routing,
-                    "boat": boat,
+            route_data = {
+                "name": str(tr.name),
+                "points": points,
+                "highlight": tr.name == self.hl_routing,
+                "boat": boat,
+                "colour_by": mode,
+                "point_colors": [list(colour[:3]) for colour in point_colours],
+                "segment_colors": [list(colour[:3]) for colour in segment_colours],
+                # Recorded plan transitions only, as indices into ``points``.
+                "sail_changes": list(sail_changes),
+                "sail_change_color": list(ROUTE_SAIL_CHANGE_COLOUR[:3]),
+            }
+            if route_data["highlight"]:
+                entries = list(legend)
+                if sail_changes:
+                    entries.append(("Sail change", ROUTE_SAIL_CHANGE_COLOUR))
+                route_data["legend"] = {
+                    "title": route_legend_title(mode),
+                    "entries": [[label, list(colour[:3])] for label, colour in entries],
                 }
-            )
+            routes.append(route_data)
         for stale in tuple(self._route_geometry):
-            if stale not in live:
+            if stale[:2] not in live:
                 del self._route_geometry[stale]
+        for stale in tuple(self._route_styles):
+            if stale[:2] not in live:
+                del self._route_styles[stale]
         return routes
 
     def draw_navigation(self, gpsmap, cr, draw_tracks=True):  # noqa: C901

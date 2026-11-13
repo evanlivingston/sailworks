@@ -114,6 +114,15 @@ class RetainedOverlayMixin:
         self._native_routing = value
 
     @property
+    def isochrone_colour_by(self):
+        """Portrayal mode for the native isochrone layers ("uniform"/"time")."""
+        return getattr(self, "_isochrone_colour_by", "uniform")
+
+    @isochrone_colour_by.setter
+    def isochrone_colour_by(self, value):
+        self._isochrone_colour_by = value
+
+    @property
     def marine(self):
         services = getattr(self, "_overlay_services", None)
         if services is not None:

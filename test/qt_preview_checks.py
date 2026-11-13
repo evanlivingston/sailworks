@@ -3737,6 +3737,8 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertEqual(pages.tabText(pages.currentIndex()), expected)
         self.window.workspace._restore_routing({"page": 1, "page_name": "Compare"})
         self.assertEqual(pages.tabText(pages.currentIndex()), "Compare")
+        self.window.workspace._restore_routing({"page_name": "Advanced"})
+        self.assertEqual(pages.tabText(pages.currentIndex()), "Plan")
 
     def test_routing_has_no_coordinate_entry_and_map_selection_survives_refresh(self):
         from PySide6.QtWidgets import QDoubleSpinBox, QPushButton

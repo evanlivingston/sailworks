@@ -47,3 +47,13 @@ def test_cancelled_request_is_deterministic(engine):
     assert first["status"] == second["status"] == "cancelled"
     assert first["digest"] == second["digest"]
     assert first["accepted"] is second["accepted"] is False
+
+
+def test_capabilities_state_the_cooperative_cancellation_mechanism():
+    bridge = _bridge()
+    scope = bridge.identity()["capabilities"]["cancellation_scope"]
+
+    assert "cooperative mid-route stop" in scope
+    assert "progress checkpoint" in scope
+    assert "termination" in scope
+    assert "never publishes an accepted or partial route" in scope
