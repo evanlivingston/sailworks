@@ -600,6 +600,10 @@ def test_failed_native_then_legacy_clears_overlay_and_inspector(app):
         _routing_active_route=None,
     )
     window._native_cleared = MethodType(PreviewWindow._native_cleared, window)
+    window._native_owns_route = MethodType(PreviewWindow._native_owns_route, window)
+    window._sync_isochrone_colour_mode = MethodType(
+        PreviewWindow._sync_isochrone_colour_mode, window
+    )
     window._sync_route_isochrones = MethodType(
         PreviewWindow._sync_route_isochrones, window
     )

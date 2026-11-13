@@ -194,6 +194,28 @@ def test_retained_item_suppresses_the_duplicate_canvas_geometry():
     assert _routing_overlay(host)["frontiers"]
 
 
+def test_time_mode_keeps_canvas_contours_when_retained_draws_traces():
+    from types import SimpleNamespace
+
+    from sailworks.qt.viewportmap import _routing_overlay
+
+    model = RoutingOverlayModel(_result(layer_count=2))
+    host = SimpleNamespace(
+        native_routing=model,
+        _retained_active=True,
+        isochrone_colour_by="time",
+    )
+    payload = _routing_overlay(host)
+
+    # The retained native item has one colour, so time mode leaves the contours
+    # to the canvas and keeps only the traces there.
+    assert payload["retained"] is True
+    assert payload["frontiers"]
+    assert payload["frontiers"][0]["colour"]
+    assert payload["legend"]["entries"]
+    assert payload["traces"] == []
+
+
 def test_retained_sync_does_not_rebuild_segments_per_publish():
     from types import SimpleNamespace
 

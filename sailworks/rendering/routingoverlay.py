@@ -17,6 +17,10 @@ from dataclasses import dataclass, field
 from math import isfinite
 from typing import Dict, Iterable, Optional, Tuple
 
+from ..core.geo.routing import (
+    DEFAULT_ISOCHRONE_COLOUR_MODE,
+    normalize_isochrone_colour_by,
+)
 from ..core.marine.routingresult import RoutingResult
 
 
@@ -53,6 +57,7 @@ class _Style:
     selected_layer_id: Optional[str] = None
     thickness: Dict[str, float] = field(default_factory=dict)
     traces_visible: bool = True
+    contours_visible: bool = True
 
 
 def _split_world_wrap(
@@ -203,7 +208,7 @@ class RoutingOverlayModel:
         """Explicit drawable state: drawn, hidden, empty or absent."""
         if any(
             (polyline.kind == "trace" and self._style.traces_visible)
-            or (polyline.kind == "contour" and self.is_layer_visible(polyline.layer_id))
+            or (polyline.kind == "contour" and self.contour_visible(polyline.layer_id))
             for polyline in self._polylines
         ):
             return "drawn"
@@ -226,6 +231,23 @@ class RoutingOverlayModel:
 
     def is_layer_visible(self, layer_id: str) -> bool:
         return self._style.visible.get(layer_id, True)
+
+    @property
+    def contours_visible(self) -> bool:
+        """Independent isochrone display flag; layer state is left intact."""
+        return self._style.contours_visible
+
+    def set_contours_visible(self, visible: bool) -> None:
+        if not isinstance(visible, bool):
+            raise TypeError("contour visibility must be a boolean")
+        if self._style.contours_visible == visible:
+            return
+        self._style.contours_visible = visible
+        self._style_revision += 1
+
+    def contour_visible(self, layer_id: str) -> bool:
+        """Whether a contour layer is actually drawn right now."""
+        return self._style.contours_visible and self.is_layer_visible(layer_id)
 
     def set_traces_visible(self, visible: bool) -> None:
         if not isinstance(visible, bool):
@@ -304,7 +326,7 @@ class RoutingOverlayModel:
             polyline
             for polyline in self._polylines
             if (polyline.kind == "trace" and self._style.traces_visible)
-            or (polyline.kind == "contour" and self.is_layer_visible(polyline.layer_id))
+            or (polyline.kind == "contour" and self.contour_visible(polyline.layer_id))
         )
 
     def nearest_layer(self, epoch_s: int) -> Optional[str]:
@@ -342,6 +364,123 @@ class RoutingOverlayModel:
         return digest.hexdigest()
 
 
+# Oldest to newest. Deep blue, blue, cyan, green, yellow, orange, red: the same
+# ordering the eye reads as "later in the forecast". Kept here rather than in
+# QML so the payload, legend and tests share one definition.
+ISOCHRONE_TIME_GRADIENT = (
+    (0.02, 0.05, 0.35),
+    (0.00, 0.30, 0.85),
+    (0.00, 0.68, 0.75),
+    (0.35, 0.82, 0.35),
+    (0.95, 0.85, 0.15),
+    (0.95, 0.50, 0.05),
+    (0.65, 0.05, 0.05),
+)
+
+
+def _gradient_colour(position: float) -> list:
+    """Sample ``ISOCHRONE_TIME_GRADIENT``; 0 is oldest, 1 is newest."""
+    position = min(1.0, max(0.0, float(position)))
+    stops = ISOCHRONE_TIME_GRADIENT
+    scaled = position * (len(stops) - 1)
+    index = min(int(scaled), len(stops) - 2)
+    fraction = scaled - index
+    first, second = stops[index], stops[index + 1]
+    return [
+        round(first[channel] + (second[channel] - first[channel]) * fraction, 4)
+        for channel in range(3)
+    ]
+
+
+def _epoch_value(value) -> Optional[int]:
+    """Return a non-negative whole epoch, accepting int-like numerics.
+
+    Saved results may carry numpy integers or whole floats from other writers.
+    Anything fractional, negative, boolean or non-numeric is unusable.
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        epoch = int(value)
+        if float(value) != epoch:
+            return None
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return epoch if epoch >= 0 else None
+
+
+def _epoch_label(epoch_s: int, show_date: bool, show_seconds: bool = False) -> str:
+    from datetime import datetime, timezone
+
+    moment = datetime.fromtimestamp(int(epoch_s), tz=timezone.utc)
+    clock = moment.strftime("%H:%M:%SZ" if show_seconds else "%H:%MZ")
+    return moment.strftime("%m-%d ") + clock if show_date else clock
+
+
+def isochrone_time_colours(layers):
+    """Colour usable layers from their recorded epoch, oldest to newest.
+
+    Returns ``(colours, unavailable_layer_ids)``. A layer with no usable epoch
+    is left without a colour so it draws uniformly; the caller discloses that
+    instead of inventing a time or downgrading every layer. Positions are
+    index-based, so equal epochs still spread across the gradient and a lone
+    visible layer gets a mid-gradient colour rather than the oldest extreme.
+    """
+    usable = []
+    unavailable = []
+    for layer in layers:
+        epoch = _epoch_value(getattr(layer, "epoch_s", None))
+        if epoch is None:
+            unavailable.append(layer.layer_id)
+        else:
+            usable.append((epoch, layer.layer_id))
+    usable.sort()
+    last = len(usable) - 1
+    colours = {
+        layer_id: _gradient_colour(index / last if last else 0.5)
+        for index, (_epoch, layer_id) in enumerate(usable)
+    }
+    return colours, tuple(unavailable)
+
+
+def isochrone_time_legend(layers, colours, unavailable=()) -> dict:
+    """Gradient legend entries oldest to newest, with distinguishable labels."""
+    from datetime import datetime, timezone
+
+    usable = []
+    for layer in layers:
+        epoch = _epoch_value(getattr(layer, "epoch_s", None))
+        if epoch is None or layer.layer_id not in colours:
+            continue
+        usable.append((epoch, layer.layer_id))
+    usable.sort()
+    days = {
+        datetime.fromtimestamp(epoch, tz=timezone.utc).date()
+        for epoch, _layer_id in usable
+    }
+    show_date = len(days) > 1
+    labels = [_epoch_label(epoch, show_date) for epoch, _layer_id in usable]
+    # Layers in the same minute need seconds; identical seconds get an index.
+    if len(set(labels)) < len(labels):
+        labels = [_epoch_label(epoch, show_date, True) for epoch, _layer_id in usable]
+    counters = {}
+    entries = []
+    for label, (_epoch, layer_id) in zip(labels, usable):
+        counters[label] = counters.get(label, 0) + 1
+        if counters[label] > 1:
+            label = f"{label} #{counters[label]}"
+        entries.append([label, list(colours[layer_id])])
+    legend = {"title": "Isochrones (UTC)", "entries": entries}
+    if unavailable:
+        count = len(unavailable)
+        legend["note"] = (
+            f"{count} layer without recorded time (uniform)"
+            if count == 1
+            else f"{count} layers without recorded time (uniform)"
+        )
+    return legend
+
+
 def _selected_trace_ids(model: RoutingOverlayModel):
     """Trace ids the shared selection currently pins, if any."""
     selection = getattr(model, "selection", None)
@@ -351,7 +490,10 @@ def _selected_trace_ids(model: RoutingOverlayModel):
     return () if trace_id is None else (trace_id,)
 
 
-def routing_overlay_data(model: RoutingOverlayModel) -> dict:
+def routing_overlay_data(
+    model: RoutingOverlayModel,
+    isochrone_colour_by: str = DEFAULT_ISOCHRONE_COLOUR_MODE,
+) -> dict:
     """QML-ready payload built only from engine-provided routing geometry.
 
     Segments are consecutive engine points; no point is joined to another
@@ -359,15 +501,26 @@ def routing_overlay_data(model: RoutingOverlayModel) -> dict:
     crossing stays split. ``frontiers`` mirrors the shape the existing viewport
     isochrone overlay already consumes, so the native layer can replace the
     proximity-joined preview without changing the QML consumer.
+
+    ``isochrone_colour_by="time"`` adds a gradient colour to each visible layer
+    and frontier plus a legend keyed to the layers' recorded epochs. When the
+    epochs are unavailable the payload reports the uniform fallback explicitly
+    instead of inventing times. The uniform payload is unchanged.
     """
 
     if not isinstance(model, RoutingOverlayModel):
         raise TypeError("model must be a RoutingOverlayModel")
+    mode = normalize_isochrone_colour_by(isochrone_colour_by)
+    visible_layers = [
+        layer for layer in model.layers if model.contour_visible(layer.layer_id)
+    ]
+    layer_colours = {}
+    unavailable = ()
+    if mode == "time":
+        layer_colours, unavailable = isochrone_time_colours(visible_layers)
     layers = []
     frontiers = []
-    for layer in model.layers:
-        if not model.is_layer_visible(layer.layer_id):
-            continue
+    for layer in visible_layers:
         segments = []
         closed = []
         for polyline in model.polylines:
@@ -378,26 +531,28 @@ def routing_overlay_data(model: RoutingOverlayModel) -> dict:
                 for first, second in zip(polyline.points, polyline.points[1:])
             )
             closed.append(polyline.closed)
-        layers.append(
-            {
-                "id": layer.layer_id,
-                "time": layer.epoch_s,
-                "reverse": layer.reverse,
-                "segments": segments,
-                "contour_count": len(closed),
-                "closed": closed,
-            }
-        )
-        frontiers.append(
-            {
-                "segments": segments,
-                "points": [],
-                "layer_id": layer.layer_id,
-                "time": layer.epoch_s,
-                "reverse": layer.reverse,
-                "selected": layer.layer_id == model.selected_layer_id,
-            }
-        )
+        layer_payload = {
+            "id": layer.layer_id,
+            "time": layer.epoch_s,
+            "reverse": layer.reverse,
+            "segments": segments,
+            "contour_count": len(closed),
+            "closed": closed,
+        }
+        frontier_payload = {
+            "segments": segments,
+            "points": [],
+            "layer_id": layer.layer_id,
+            "time": layer.epoch_s,
+            "reverse": layer.reverse,
+            "selected": layer.layer_id == model.selected_layer_id,
+        }
+        if layer.layer_id in layer_colours:
+            colour = layer_colours[layer.layer_id]
+            layer_payload["colour"] = list(colour)
+            frontier_payload["colour"] = list(colour)
+        layers.append(layer_payload)
+        frontiers.append(frontier_payload)
     traces = []
     if model.trace_ids and model.traces_visible:
         for polyline in model.polylines:
@@ -414,7 +569,7 @@ def routing_overlay_data(model: RoutingOverlayModel) -> dict:
                     ],
                 }
             )
-    return {
+    payload = {
         "schema_version": 1,
         "calculation_id": model.calculation_id,
         "geometry_revision": model.geometry_revision,
@@ -430,3 +585,18 @@ def routing_overlay_data(model: RoutingOverlayModel) -> dict:
         "path": [],
         "exclusions": [],
     }
+    if mode == "time":
+        # Time stays selected even when a layer has no usable epoch: that layer
+        # draws uniformly and the fallback is surfaced, never silently applied
+        # to the whole result.
+        payload["isochrone_colour_by"] = "time"
+        payload["legend"] = isochrone_time_legend(
+            visible_layers, layer_colours, unavailable
+        )
+        if unavailable:
+            payload["isochrone_fallback"] = (
+                "no recorded layer times"
+                if len(unavailable) == len(visible_layers)
+                else f"{len(unavailable)} layer(s) without recorded time"
+            )
+    return payload

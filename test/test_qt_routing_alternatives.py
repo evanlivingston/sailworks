@@ -70,6 +70,7 @@ def test_show_saved_routing_route_loads_from_controller_collection(monkeypatch):
         routing_inspector_dock=Mock(),
         _select_saved_route=Mock(),
         _present_routing_result=Mock(),
+        _sync_route_isochrones=Mock(),
     )
     window.controller.routing = SimpleNamespace(
         show_native_result=Mock(return_value=model)

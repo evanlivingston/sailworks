@@ -58,6 +58,41 @@ def contour_frontiers(result):
     ]
 
 
+# Per-route visual modes saved with the route. "speed" is the historical
+# default; the categorical modes read recorded leg metrics instead.
+ROUTE_COLOUR_MODES = ("speed", "wind_angle", "tack")
+DEFAULT_ROUTE_COLOUR_MODE = "speed"
+ROUTE_COLOUR_MODE_LABELS = {
+    "speed": "Speed",
+    "wind_angle": "Upwind / Downwind",
+    "tack": "Port / Starboard",
+}
+
+# Independent of the route-line colour mode: how the calculated contour layers
+# themselves are drawn. "uniform" is the historical single blue/orange look;
+# "time" colours each layer from its recorded epoch, oldest to newest.
+ISOCHRONE_COLOUR_MODES = ("uniform", "time")
+DEFAULT_ISOCHRONE_COLOUR_MODE = "uniform"
+ISOCHRONE_COLOUR_MODE_LABELS = {
+    "uniform": "Uniform",
+    "time": "Time",
+}
+
+
+def normalize_route_colour_mode(value):
+    """Return a supported mode, falling back to speed for missing/legacy data."""
+    if isinstance(value, str) and value in ROUTE_COLOUR_MODES:
+        return value
+    return DEFAULT_ROUTE_COLOUR_MODE
+
+
+def normalize_isochrone_colour_by(value):
+    """Return a supported isochrone mode, defaulting to uniform."""
+    if isinstance(value, str) and value in ISOCHRONE_COLOUR_MODES:
+        return value
+    return DEFAULT_ISOCHRONE_COLOUR_MODE
+
+
 def _json_value(value):
     """Return a JSON-serialisable copy of record-like metadata."""
     if value is None:
@@ -122,6 +157,10 @@ class Routing(Track):
         result_summary=None,
         result_verified=False,
         inspection_context=None,
+        isochrones_visible=True,
+        colour_by=DEFAULT_ROUTE_COLOUR_MODE,
+        isochrone_colour_by=DEFAULT_ISOCHRONE_COLOUR_MODE,
+        traces_visible=False,
     ):
         super().__init__(name, points, visible, collection)
         # None means schema-v1 contours have not been hydrated for display yet.
@@ -140,6 +179,137 @@ class Routing(Track):
         self._result_verified = bool(result_verified) and result_ref is not None
         # Set when a referenced artifact could not be read for display.
         self.contour_error = None
+        # Independent display flag for the calculated contours. Scene
+        # visibility keeps the route line itself; this only gates isochrones.
+        self.isochrones_visible = bool(isochrones_visible)
+        # Independent display flag for the route's trace web, separate from the
+        # isochrones and from the route line. Off by default in every saved
+        # route: the dense trace web makes the map unreadable, so it is only
+        # drawn after the user asks for it.
+        self._traces_visible = bool(traces_visible)
+        # Visual mode for the drawn route line. Changing it bumps ``revision``
+        # so overlay caches rebuild without touching the saved result.
+        self._colour_by = normalize_route_colour_mode(colour_by)
+        # Independent portrayal for the contour layers themselves. Changing it
+        # bumps ``revision`` so overlay caches rebuild.
+        self._isochrone_colour_by = normalize_isochrone_colour_by(isochrone_colour_by)
+        # Lazily loaded per-leg readouts for the "tack" and sail-change
+        # overlays; None means the saved result has not been read yet.
+        self._leg_readouts = None
+        self._leg_readouts_ref = None
+        # A failed read is remembered so frames never retry artifact I/O; an
+        # explicit mode change calls refresh_leg_tacks() to try again.
+        self._leg_readouts_failed = False
+
+    @property
+    def colour_by(self):
+        return self._colour_by
+
+    @colour_by.setter
+    def colour_by(self, value):
+        mode = normalize_route_colour_mode(value)
+        if mode == self._colour_by:
+            return
+        self._colour_by = mode
+        if self._leg_readouts_failed:
+            self.refresh_leg_tacks()
+        self.touch()
+
+    @property
+    def isochrone_colour_by(self):
+        return self._isochrone_colour_by
+
+    @isochrone_colour_by.setter
+    def isochrone_colour_by(self, value):
+        mode = normalize_isochrone_colour_by(value)
+        if mode == self._isochrone_colour_by:
+            return
+        self._isochrone_colour_by = mode
+        self.touch()
+
+    @property
+    def traces_visible(self):
+        return self._traces_visible
+
+    @traces_visible.setter
+    def traces_visible(self, value):
+        visible = bool(value)
+        if visible == self._traces_visible:
+            return
+        self._traces_visible = visible
+        # Overlay and viewport caches key on the flag, so bump the revision to
+        # invalidate them and repaint without re-reading the result artifact.
+        self.touch()
+
+    def refresh_leg_tacks(self):
+        """Drop cached leg readouts so the next read retries once."""
+        self._leg_readouts = None
+        self._leg_readouts_ref = None
+        self._leg_readouts_failed = False
+
+    def _leg_readout_values(self):
+        """Recorded readouts for each saved leg, in leg order.
+
+        Artifact I/O happens lazily and is shared by every overlay that needs
+        per-leg readouts (tack colour and sail-change markers). Legacy routes
+        and unreadable artifacts yield no entries, which callers must render
+        as unknown. A failed read stays failed until an explicit mode change
+        refreshes it, so repeated frames do not hammer the artifact store.
+        """
+        # The cache records the artifact reference it was built from, so a
+        # replaced reference rebuilds both tack colours and sail markers.
+        if self._leg_readouts is not None and self._leg_readouts_ref != self.result_ref:
+            self.refresh_leg_tacks()
+        if self._leg_readouts_failed and self._leg_readouts_ref != self.result_ref:
+            self.refresh_leg_tacks()
+        if self._leg_readouts is not None:
+            return self._leg_readouts
+        if self._leg_readouts_failed:
+            return ()
+        if self.result_ref is None:
+            self._leg_readouts = ()
+            self._leg_readouts_ref = self.result_ref
+            return self._leg_readouts
+        store = self._attached_store()
+        if store is None:
+            # Stay unset so attaching a collection later can still load them.
+            return ()
+        try:
+            result = self.load_result(store)
+        except (OSError, KeyError, ValueError, LookupError) as exc:
+            self._leg_readouts_failed = True
+            self._leg_readouts_ref = self.result_ref
+            self.contour_error = f"{type(exc).__name__}: {exc}"
+            return ()
+        self.contour_error = None
+        self._leg_readouts = tuple(
+            getattr(leg, "readout", None) or {} for leg in getattr(result, "legs", ())
+        )
+        self._leg_readouts_ref = self.result_ref
+        return self._leg_readouts
+
+    def leg_tacks(self):
+        """Recorded per-leg tacks from the saved result, in leg order.
+
+        Only the tack mode needs these values, so the artifact is read lazily
+        and cached. Legacy routes and unreadable artifacts yield no entries,
+        which callers must render as unknown rather than as port/starboard.
+        """
+        return tuple(readout.get("tack") for readout in self._leg_readout_values())
+
+    def leg_profile_identities(self):
+        """Recorded per-leg sail-plan identities, in leg order.
+
+        The identity is the engine's ``profile_identity`` readout. A missing,
+        blank or non-text value stays ``None`` so callers cannot mistake an
+        unknown plan for a recorded one, and therefore never invent a sail
+        change at an unknown boundary.
+        """
+        identities = []
+        for readout in self._leg_readout_values():
+            value = readout.get("profile_identity")
+            identities.append(value if isinstance(value, str) and value else None)
+        return tuple(identities)
 
     @property
     def isochrones(self):
@@ -249,8 +419,17 @@ class Routing(Track):
             c["result_ref"] = self.result_ref.to_dict()
             c["result_summary"] = _json_value(self.result_summary or {})
             c["provenance"] = _json_value(self.provenance)
+            c["isochrones_visible"] = bool(self.isochrones_visible)
             if self.inspection_context is not None:
                 c["inspection_context"] = _json_value(self.inspection_context)
+            if self.colour_by != DEFAULT_ROUTE_COLOUR_MODE:
+                c["colour_by"] = self.colour_by
+            if self.isochrone_colour_by != DEFAULT_ISOCHRONE_COLOUR_MODE:
+                c["isochrone_colour_by"] = self.isochrone_colour_by
+            # Only serialise the non-default value so existing payloads keep
+            # their shape and absent means off.
+            if self._traces_visible:
+                c["traces_visible"] = True
             # Isochrones are deliberately omitted: the referenced artifact is
             # authoritative and duplicating them would grow the collection file
             # without adding information.
@@ -258,12 +437,24 @@ class Routing(Track):
         c["isochrones"] = list(
             map(lambda x: list(map(lambda y: y.to_list(), x)), self.isochrones)
         )
+        c["isochrones_visible"] = bool(self.isochrones_visible)
         c["provenance"] = deepcopy(self.provenance)
+        if self.colour_by != DEFAULT_ROUTE_COLOUR_MODE:
+            c["colour_by"] = self.colour_by
+        if self.isochrone_colour_by != DEFAULT_ISOCHRONE_COLOUR_MODE:
+            c["isochrone_colour_by"] = self.isochrone_colour_by
+        if self._traces_visible:
+            c["traces_visible"] = True
         return c
 
     @staticmethod
     def from_json(j):
         d = Track.from_json(j)
+        traces_visible = j.get("traces_visible", False)
+        if type(traces_visible) is not bool:
+            from sailworks.core.marine.routingrecord import SchemaError
+
+            raise SchemaError("traces_visible must be a boolean")
         result_ref = j.get("result_ref")
         result_schema = j.get("result_schema")
         if result_ref is not None or result_schema is not None:
@@ -282,6 +473,24 @@ class Routing(Track):
                 result_ref=_artifact_ref_from_json(result_ref),
                 result_summary=_summary_from_json(j.get("result_summary")),
                 inspection_context=j.get("inspection_context"),
+                isochrones_visible=bool(j.get("isochrones_visible", True)),
+                colour_by=normalize_route_colour_mode(j.get("colour_by")),
+                isochrone_colour_by=normalize_isochrone_colour_by(
+                    j.get("isochrone_colour_by")
+                ),
+                traces_visible=traces_visible,
             )
         ic = list(map(lambda x: list(map(IsoPoint.from_list, x)), j["isochrones"]))
-        return Routing(d.name, d.points, ic, d.visible, provenance=j.get("provenance"))
+        return Routing(
+            d.name,
+            d.points,
+            ic,
+            d.visible,
+            provenance=j.get("provenance"),
+            isochrones_visible=bool(j.get("isochrones_visible", True)),
+            colour_by=normalize_route_colour_mode(j.get("colour_by")),
+            isochrone_colour_by=normalize_isochrone_colour_by(
+                j.get("isochrone_colour_by")
+            ),
+            traces_visible=traces_visible,
+        )

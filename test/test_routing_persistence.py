@@ -153,6 +153,7 @@ def test_legacy_routing_json_roundtrips_unchanged(tmp_path, monkeypatch):
             ]
         ],
         "provenance": {"source": "legacy"},
+        "isochrones_visible": True,
     }
 
     collection, _ = _collection(tmp_path, monkeypatch)
@@ -228,6 +229,86 @@ def test_reloaded_schema_eligibility_requires_verified_artifact(tmp_path, monkey
     assert reader.load_result(reloaded).status == "failed"
     assert reloaded.export_eligible is False
     assert reloaded.result_summary["export_eligible"] is False
+
+
+def test_isochrone_visibility_persists_independently_of_route_visibility(
+    tmp_path, monkeypatch
+):
+    collection, _store = _collection(tmp_path, monkeypatch)
+    route = collection.save_result("alpha", _result())
+    route.isochrones_visible = False
+
+    reloaded = Routing.from_json(route.to_json())
+    assert reloaded.isochrones_visible is False
+    assert reloaded.visible is True
+    assert "isochrones" not in route.to_json()
+
+    legacy = Routing("legacy", [], [], True, isochrones_visible=False)
+    again = Routing.from_json(legacy.to_json())
+    assert again.is_legacy
+    assert again.isochrones_visible is False
+    assert again.visible is True
+
+
+def test_trace_visibility_defaults_off_and_persists_only_when_enabled(
+    tmp_path, monkeypatch
+):
+    collection, _store = _collection(tmp_path, monkeypatch)
+    route = collection.save_result("alpha", _result())
+
+    # Absent means off, and the default payload keeps its existing shape.
+    assert route.traces_visible is False
+    assert "traces_visible" not in route.to_json()
+
+    route.traces_visible = True
+    assert route.traces_visible is True
+    assert route.to_json()["traces_visible"] is True
+    assert Routing.from_json(route.to_json()).traces_visible is True
+
+    legacy = Routing("legacy", [], [], True)
+    assert legacy.traces_visible is False
+    assert "traces_visible" not in legacy.to_json()
+    legacy.traces_visible = True
+    again = Routing.from_json(legacy.to_json())
+    assert again.is_legacy
+    assert again.traces_visible is True
+    assert again.isochrones == []
+    assert again.visible is True
+
+
+def test_trace_visibility_rejects_non_booleans_and_touches_on_change():
+    payload = {
+        "name": "legacy",
+        "visible": True,
+        "points": [[48.0, -124.0]],
+        "isochrones": [],
+    }
+    assert Routing.from_json(payload).traces_visible is False
+    with pytest.raises(SchemaError):
+        Routing.from_json({**payload, "traces_visible": 1})
+    with pytest.raises(SchemaError):
+        Routing.from_json({**payload, "traces_visible": None})
+
+    route = Routing("legacy", [], [], True)
+    revision = route.revision
+    # Re-setting the same value must not invalidate caches.
+    route.traces_visible = False
+    assert route.revision == revision
+    route.traces_visible = True
+    assert route.revision == revision + 1
+
+
+def test_schema_result_loads_contours_without_isochrones_flag_change(
+    tmp_path, monkeypatch
+):
+    collection, _store = _collection(tmp_path, monkeypatch)
+    route = collection.save_result("alpha", _result())
+    route.isochrones_visible = False
+
+    # Hiding the display layer must not prevent the artifact from hydrating
+    # when inspection explicitly asks for its contours.
+    assert route.isochrones
+    assert route.isochrones_visible is False
 
 
 def test_eligible_schema_route_unlocks_export_after_verification(tmp_path, monkeypatch):
