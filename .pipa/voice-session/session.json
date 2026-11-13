@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "managed_by": "pipa-huddle-beta",
+  "script_path": "/Users/elivingston/.agents/skills/pipa-huddle-beta/scripts/start-voice-session.mjs",
+  "mode": "local",
+  "pid": 53582,
+  "opencode_session_id": "ses_e334d6a88ffe8yxhgcV421D7f2",
+  "opencode_model": "opencode-go/deepseek-v4.1-flash",
+  "huddle_session_state": "existing_huddle_session",
+  "huddle_context": "none",
+  "pid_path": "/Users/elivingston/gweatherrouting/.pipa/voice-session/bridge.pid",
+  "log_path": "/Users/elivingston/gweatherrouting/.pipa/voice-session/bridge.log",
+  "metadata_path": "/Users/elivingston/gweatherrouting/.pipa/voice-session/session.json",
+  "ready_path": "/Users/elivingston/gweatherrouting/.pipa/voice-session/ready.json",
+  "browser_url": "http://127.0.0.1:8787",
+  "relay_state": "local_ready",
+  "pairing_expires_at": null,
+  "stop_command": "kill 53582"
+}
