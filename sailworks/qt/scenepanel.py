@@ -946,8 +946,8 @@ class ScenePanel(QWidget):
         """Add calculated-result wrappers below a routing item.
 
         These are display wrappers over the saved result, not editable
-        waypoints. Neither wrapper reads the artifact until Legs is expanded,
-        so a collapsed tree never hydrates contours.
+        waypoints. Neither wrapper reads the artifact until the Marks node is
+        expanded, so a collapsed tree never hydrates contours.
         """
         identity = (entry.kind, entry.key)
         visible = bool(getattr(element, "isochrones_visible", True))
@@ -1022,14 +1022,16 @@ class ScenePanel(QWidget):
         # Route marks are editable waypoints, like track points, but they stay
         # grouped with the calculated legs. Legacy routes without a result still
         # get the wrapper so their marks keep one consistent location.
-        legs = QTreeWidgetItem(["Legs", ""])
+        # The node groups the route's marks; calculated legs appear below them
+        # when it is expanded. Its "routing-legs" id and LEGS_LOADED_ROLE keep
+        # their original names because expansion state is keyed on them.
+        legs = QTreeWidgetItem(["Marks", ""])
         legs.setData(NAME_COLUMN, NODE_ROLE, ("routing-legs", entry.kind, entry.key))
         legs.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
         legs.setIcon(NAME_COLUMN, symbol_icon("track-symbolic"))
         legs.setToolTip(
             NAME_COLUMN,
-            "Route marks and calculated result legs. Expand to read calculated "
-            "legs from the saved result.",
+            "Route marks. Expand to read calculated legs from the saved result.",
         )
         legs.setChildIndicatorPolicy(QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
         row.addChild(legs)

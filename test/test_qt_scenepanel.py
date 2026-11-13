@@ -501,6 +501,22 @@ def test_traces_row_is_a_sibling_overlay_not_a_scene_item(tmp_path):
     assert traces is not panel.item_row(KIND_ROUTING, "r1")
 
 
+def test_routing_marks_wrapper_is_labelled_marks(tmp_path):
+    application()
+    panel = panel_for(tmp_path, routes=[FakeRoute("r1", "Route")])
+    panel.item_row(KIND_ROUTING, "r1").setExpanded(True)
+
+    # The wrapper's immediate children are marks, so the label names them even
+    # though calculated legs are appended below once it is expanded.
+    marks = panel.tree_item(("routing-legs", KIND_ROUTING, "r1"))
+    assert marks is not None
+    assert marks.text(NAME_COLUMN) == "Marks"
+    tooltip = marks.toolTip(NAME_COLUMN)
+    assert tooltip.startswith("Route marks.")
+    assert "calculated legs" in tooltip
+    assert "Legs" not in tooltip
+
+
 def test_legacy_route_marks_live_under_legs_wrapper_without_artifact(tmp_path):
     application()
     route = FakeRoute("r1", "Route")
