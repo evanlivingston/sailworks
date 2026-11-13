@@ -14,6 +14,13 @@ Usage::
 ``--check`` does not open a window: it verifies that every committed image
 still matches its manifest entry, which is what CI runs to catch a hand-edited
 or missing screenshot.
+
+Captures run against a temporary profile, so the developer's own workspace,
+scenes and caches are never read or written.
+
+Scenes that show live satellite tiles (``chart-pnwo``) or render timing
+(``panel-routing``) depend on network tile availability and GPU timing, so
+regenerating them can produce byte diffs that are not real UI changes.
 """
 
 from __future__ import annotations
@@ -252,7 +259,11 @@ def _write_manifest(out_dir: Path, scenes: list[dict]) -> None:
 
 
 class _IsolatedApp:
-    """A window backed by a temporary profile, like the Qt integration tests."""
+    """A window backed by a temporary profile, like the Qt integration tests.
+
+    Every data path the application would otherwise resolve under the real
+    profile is redirected into the temporary directory.
+    """
 
     def __init__(self) -> None:
         self.stack = ExitStack()
@@ -267,6 +278,19 @@ class _IsolatedApp:
         self.temporary = tempfile.TemporaryDirectory()
         self.stack.callback(self.temporary.cleanup)
         self.path = Path(self.temporary.name)
+
+        from sailworks.core import storage
+
+        # Modules that do ``from ...storage import DATA_DIR`` snapshot the
+        # string at import time, so patch the live attribute and every copy.
+        live_data_dir = storage.DATA_DIR
+        data_dir = str(self.path)
+        self.stack.enter_context(patch("sailworks.core.storage.DATA_DIR", data_dir))
+        for module in list(sys.modules.values()):
+            if getattr(module, "__name__", "").startswith("sailworks.") and (
+                getattr(module, "DATA_DIR", None) == live_data_dir
+            ):
+                self.stack.enter_context(patch.object(module, "DATA_DIR", data_dir))
 
         from sailworks.core.marine.manager import MarineManager
 
