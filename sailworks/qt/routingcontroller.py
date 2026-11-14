@@ -135,8 +135,7 @@ class RoutingController(QObject):
         if backend not in ("legacy", "native"):
             return self.fail("Choose the Legacy or Native calculation backend.")
         if backend != "native" and any(
-            getattr(item, "wave_entry_id", None)
-            for item in (request, *tuple(scenarios))
+            getattr(item, "wave_entry_id", None) for item in (request, *tuple(scenarios))
         ):
             return self.fail(
                 "Real wave data is a Native calculation input. Set Wave data "
@@ -176,17 +175,13 @@ class RoutingController(QObject):
         self.progress_indeterminate = backend == "native"
         self.native_started_at = time.monotonic() if backend == "native" else None
         self.native_counters = {}
-        self.message = (
-            "Native calculation queued…" if backend == "native" else "Calculating…"
-        )
+        self.message = "Native calculation queued…" if backend == "native" else "Calculating…"
         self.scenario_index, self.scenario_count, self.saved_count = (
             0,
             len(scenarios) or 1,
             0,
         )
-        providers = tuple(
-            self.session_controller.charts.get_line_point_validity_providers()
-        )
+        providers = tuple(self.session_controller.charts.get_line_point_validity_providers())
         marine_manager = getattr(self.core, "marine_manager", None)
         selection = (
             marine_manager.fields.snapshot(request.current_priority)
@@ -203,9 +198,7 @@ class RoutingController(QObject):
                     token, request, scenarios, sources, providers, cancel, selection
                 )
             else:
-                self._run_requests(
-                    token, request, scenarios, sources, providers, cancel, selection
-                )
+                self._run_requests(token, request, scenarios, sources, providers, cancel, selection)
 
         self.worker_thread = Thread(target=worker, name="qt-routing", daemon=True)
         self.worker_thread.start()
@@ -243,13 +236,9 @@ class RoutingController(QObject):
         self.message = "Historical bound run queued…"
         self._bound_member_callback = on_member_outcome
         self._bound_finish_callback = on_finished
-        providers = tuple(
-            self.session_controller.charts.get_line_point_validity_providers()
-        )
+        providers = tuple(self.session_controller.charts.get_line_point_validity_providers())
         marine_manager = getattr(self.core, "marine_manager", None)
-        marine_directory = (
-            str(marine_manager.directory) if marine_manager is not None else None
-        )
+        marine_directory = str(marine_manager.directory) if marine_manager is not None else None
         self.changed.emit()
         self.preview_changed.emit(())
         self.isochrones_changed.emit(())
@@ -277,13 +266,9 @@ class RoutingController(QObject):
             return unapplied_legacy_parameter_message(algorithm_name, changed)
         return ""
 
-    def _run_requests(
-        self, token, request, scenarios, sources, providers, cancel, selection
-    ):
+    def _run_requests(self, token, request, scenarios, sources, providers, cancel, selection):
         error = None
-        jobs, descriptors = self._scenario_jobs(
-            request, scenarios, sources, providers, selection
-        )
+        jobs, descriptors = self._scenario_jobs(request, scenarios, sources, providers, selection)
         try:
             if self._parallel_eligible(jobs, descriptors):
                 self._run_parallel(token, jobs, sources, providers, cancel, selection)
@@ -310,9 +295,7 @@ class RoutingController(QObject):
         )
         if entry is None:
             raise ValueError("Selected wave forecast is not in the active tranche")
-        resolved = store.resolve(
-            AnalysisSelection(sources.tranche.tranche_id, entry_id)
-        )
+        resolved = store.resolve(AnalysisSelection(sources.tranche.tranche_id, entry_id))
         if resolved.tranche.tranche_id != sources.tranche.tranche_id:
             raise ValueError("Selected wave forecast changed tranche")
         return resolved
@@ -375,15 +358,11 @@ class RoutingController(QObject):
                 if status.state == "cancelled":
                     raise RoutingCancelledError()
                 if status.state != "completed":
-                    raise RuntimeError(
-                        status.message or "native worker did not publish a result"
-                    )
+                    raise RuntimeError(status.message or "native worker did not publish a result")
                 run = status.payload
                 identity = run.get("engine_identity") if isinstance(run, dict) else None
                 if not isinstance(identity, dict):
-                    raise ValueError(
-                        "Native routing result did not report its engine identity"
-                    )
+                    raise ValueError("Native routing result did not report its engine identity")
                 result = to_routing_result(
                     run,
                     calculation_id=job.calculation_id,
@@ -447,9 +426,7 @@ class RoutingController(QObject):
                 # stored identity the coordinator links the member to. The
                 # engine reports no arrival time, so duration stays None and the
                 # coordinator derives it from the saved route.
-                route = self._ui_call(
-                    token, self._save_result, execution.request, result
-                )
+                route = self._ui_call(token, self._save_result, execution.request, result)
                 return getattr(route, "uid", None), None
 
             outcomes = run_bound_members(
@@ -502,9 +479,7 @@ class RoutingController(QObject):
             else None
         )
         current_field_ids = (
-            tuple(field.id for field in selection.fields)
-            if selection is not None
-            else ()
+            tuple(field.id for field in selection.fields) if selection is not None else ()
         )
         priority = getattr(selection, "priority", None) or request.current_priority
         jobs = tuple(
@@ -559,11 +534,7 @@ class RoutingController(QObject):
                         token,
                         (index * 100 + percent) / self.scenario_count,
                         points,
-                        (
-                            getattr(points, "isochrones", ())
-                            if points is not None
-                            else None
-                        ),
+                        (getattr(points, "isochrones", ()) if points is not None else None),
                     )
 
             options = {}
@@ -571,9 +542,7 @@ class RoutingController(QObject):
                 options = dict(
                     report=lambda message: self._message.emit(token, message),
                     confirm=lambda report: self._ui_call(token, self.confirm, report),
-                    save_fields=lambda fields: self._ui_call(
-                        token, self._save_fields, fields
-                    ),
+                    save_fields=lambda fields: self._ui_call(token, self._save_fields, fields),
                     current_selection=selection,
                 )
             result = calculate_bound_route(
@@ -632,9 +601,7 @@ class RoutingController(QObject):
                         for future in pending:
                             future.cancel()
                         break
-                    done, pending = wait(
-                        pending, timeout=0.05, return_when=FIRST_COMPLETED
-                    )
+                    done, pending = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
                     for future in done:
                         job = futures[future]
                         if future.cancelled():
@@ -659,9 +626,7 @@ class RoutingController(QObject):
                                 worker_cancel.set()
                                 break
                             if failed_index is None or job.job_id < failed_index:
-                                first_error = scenariopool.error_from_failure(
-                                    outcome.failure
-                                )
+                                first_error = scenariopool.error_from_failure(outcome.failure)
                                 failed_index = job.job_id
                                 for other in pending:
                                     if futures[other].job_id > failed_index:
@@ -724,9 +689,7 @@ class RoutingController(QObject):
                 percent, points, isochrones = values
                 self._parallel_progress[job_id] = min(100.0, float(percent))
                 active = sum(self._parallel_progress.values()) / 100.0
-                overall = (
-                    (self.saved_count + active) / max(1, self.scenario_count) * 100
-                )
+                overall = (self.saved_count + active) / max(1, self.scenario_count) * 100
                 self._progress.emit(token, min(100.0, overall), points, isochrones)
             elif kind == "message":
                 self._message.emit(token, values[0])
@@ -889,12 +852,7 @@ class RoutingController(QObject):
 
     @Slot(int, float, object, object)
     def _apply_progress(self, token, percent, points, isochrones=None):
-        if (
-            self.closed
-            or not self.busy
-            or token != self.generation
-            or self.cancel_event.is_set()
-        ):
+        if self.closed or not self.busy or token != self.generation or self.cancel_event.is_set():
             return
         self.percent = percent
         prefix = (
@@ -931,9 +889,7 @@ class RoutingController(QObject):
             "closest_approach_nm",
         )
         self.native_counters = {
-            key: update[key]
-            for key in counter_keys
-            if key in update and update[key] is not None
+            key: update[key] for key in counter_keys if key in update and update[key] is not None
         }
         stage = _NATIVE_PROGRESS_STAGES.get(
             str(update.get("stage", "")), str(update.get("stage", "Engine"))
@@ -975,9 +931,7 @@ class RoutingController(QObject):
             error, (RoutingCancelledError, DownloadCancelledError)
         ):
             self.message = (
-                "Native routing cancelled"
-                if self.backend == "native"
-                else "Routing cancelled"
+                "Native routing cancelled" if self.backend == "native" else "Routing cancelled"
             )
         elif error is not None:
             self.error = str(error) or (
@@ -986,9 +940,7 @@ class RoutingController(QObject):
                 else type(error).__name__
             )
             self.message = (
-                "Native calculation failed: "
-                if self.backend == "native"
-                else "Routing failed: "
+                "Native calculation failed: " if self.backend == "native" else "Routing failed: "
             ) + self.error
         else:
             assert self.request is not None
@@ -1004,16 +956,10 @@ class RoutingController(QObject):
                     f"{self.saved_count}/{self.scenario_count} scenarios complete"
                     if self.scenario_count > 1
                     else "Route calculated and saved · "
-                    + (
-                        "currents included"
-                        if self.request.use_currents
-                        else "wind only"
-                    )
+                    + ("currents included" if self.request.use_currents else "wind only")
                 )
         if self.scenario_count > 1 and error is not None:
-            self.message += (
-                f" · {self.saved_count}/{self.scenario_count} scenarios saved"
-            )
+            self.message += f" · {self.saved_count}/{self.scenario_count} scenarios saved"
         self.changed.emit()
 
     @Slot(int, object, object)

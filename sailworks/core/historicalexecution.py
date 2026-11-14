@@ -93,9 +93,7 @@ def current_time_shift(plan, target_departure_utc: datetime) -> float:
     return (plan.resolved_departure_utc - target_departure_utc).total_seconds()
 
 
-def current_hold_epoch(
-    plan, target_departure_utc: datetime, coverage_end_utc: datetime
-) -> float:
+def current_hold_epoch(plan, target_departure_utc: datetime, coverage_end_utc: datetime) -> float:
     """The instant, in member time, at which the current field stops advancing.
 
     The native engine hands the callback member epochs, so the hold is the
@@ -154,9 +152,7 @@ def build_native_request(
         engine=engine,
     )
     if len(frozen) != 1:
-        raise ValueError(
-            f"Expected exactly one frozen native request, got {len(frozen)}."
-        )
+        raise ValueError(f"Expected exactly one frozen native request, got {len(frozen)}.")
     request = frozen[0]
     if execution.request.use_currents:
         return dataclasses.replace(
@@ -164,10 +160,7 @@ def build_native_request(
             current_time_shift_s=execution.current_time_shift_s,
             current_hold_epoch_s=execution.current_hold_epoch_s,
         )
-    if (
-        execution.current_time_shift_s != 0.0
-        or execution.current_hold_epoch_s is not None
-    ):
+    if execution.current_time_shift_s != 0.0 or execution.current_hold_epoch_s is not None:
         raise ValueError("Inactive currents cannot carry a time shift or hold.")
     return request
 
@@ -230,8 +223,7 @@ def _default_convert(payload, job, *, sequence: int):
     blockers = export_blockers(result)
     if blockers:
         raise ValueError(
-            "native calculation did not produce a validated route: "
-            + ", ".join(blockers)
+            "native calculation did not produce a validated route: " + ", ".join(blockers)
         )
     return result
 
@@ -268,9 +260,7 @@ def run_bound_members(
                 execution, marine_directory=marine_directory, providers=providers
             )
         except Exception as exc:
-            outcomes.append(
-                MemberOutcome(execution.member_id, "failed", None, error=str(exc))
-            )
+            outcomes.append(MemberOutcome(execution.member_id, "failed", None, error=str(exc)))
             continue
         cancel()
         worker.submit(job)
@@ -287,9 +277,7 @@ def run_bound_members(
         try:
             kind = classify_status(getattr(status, "state", None))
         except ValueError as exc:
-            outcomes.append(
-                MemberOutcome(execution.member_id, "failed", None, error=str(exc))
-            )
+            outcomes.append(MemberOutcome(execution.member_id, "failed", None, error=str(exc)))
             continue
         if kind == "cancelled":
             raise BoundRunCancelled(outcomes=outcomes)
@@ -311,16 +299,12 @@ def run_bound_members(
                 else convert(status.payload, job)
             )
         except Exception as exc:
-            outcomes.append(
-                MemberOutcome(execution.member_id, "failed", None, error=str(exc))
-            )
+            outcomes.append(MemberOutcome(execution.member_id, "failed", None, error=str(exc)))
             continue
         try:
             route_uid, duration_hours = save(execution, result)
         except (ValueError, OSError) as exc:
-            outcomes.append(
-                MemberOutcome(execution.member_id, "failed", None, error=str(exc))
-            )
+            outcomes.append(MemberOutcome(execution.member_id, "failed", None, error=str(exc)))
             continue
         outcomes.append(
             MemberOutcome(

@@ -105,9 +105,7 @@ def test_conversion_failure_is_a_member_failure(monkeypatch):
     saved = []
 
     def convert(payload, job):
-        raise ValueError(
-            "native calculation did not produce a validated route: landfall"
-        )
+        raise ValueError("native calculation did not produce a validated route: landfall")
 
     outcomes = run_bound_members(
         [_execution("a")],
@@ -160,9 +158,7 @@ def test_check_cancel_stops_before_the_next_submit(monkeypatch):
         run_bound_members(
             [_execution("a"), _execution("b")],
             worker=worker,
-            save=lambda execution, result: (
-                saved.append(execution.member_id) or ("uid", 1.0)
-            ),
+            save=lambda execution, result: (saved.append(execution.member_id) or ("uid", 1.0)),
             marine_directory=MARINE_DIRECTORY,
             convert=_echo,
             check_cancel=check_cancel,

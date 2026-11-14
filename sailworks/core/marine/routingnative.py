@@ -297,9 +297,7 @@ def _engine_identity(identity: Mapping[str, Any]) -> EngineIdentity:
     )
 
 
-def _feature_states(
-    identity: Mapping[str, Any], run: Mapping[str, Any]
-) -> Mapping[str, str]:
+def _feature_states(identity: Mapping[str, Any], run: Mapping[str, Any]) -> Mapping[str, str]:
     """Explicit per-feature state so absent services are never implied."""
 
     inspection = run.get("inspection_geometry")
@@ -334,9 +332,7 @@ def _capabilities(
         and not isinstance(cadence, bool)
         and cadence >= 1
     )
-    trace_times = (
-        "per_position" if any(trace.times is not None for trace in traces) else "absent"
-    )
+    trace_times = "per_position" if any(trace.times is not None for trace in traces) else "absent"
     return Capabilities(
         producer=_text(run.get("engine", "unknown"), "native engine"),
         trace_times=trace_times,
@@ -364,9 +360,7 @@ def _leg(value: Any, label: str) -> Leg:
     )
 
 
-def _leg_environment(
-    leg: Mapping[str, Any], label: str
-) -> Optional[Mapping[str, Observation]]:
+def _leg_environment(leg: Mapping[str, Any], label: str) -> Optional[Mapping[str, Observation]]:
     environment: dict[str, Observation] = {}
     for prefix in ("wind", "current"):
         east = _optional_number(leg.get(f"{prefix}_east_knots"))
@@ -398,9 +392,7 @@ def _leg_environment(
             )
         elif "waves_available" in leg:
             environment[key] = Observation(None, unit, "unknown")
-    if not any(
-        observation.availability == "reported" for observation in environment.values()
-    ):
+    if not any(observation.availability == "reported" for observation in environment.values()):
         # No recorded value at all: the leg has no route environment rather than
         # a set of unknown observations that could be misread as recorded data.
         return None
@@ -470,9 +462,7 @@ def _layer(value: Any, label: str) -> Layer:
     layer_id = _text(data.get("id", label), f"{label}.id")
     contours = tuple(
         _contour(item, f"{label}.contours[{index}]", layer_id, index)
-        for index, item in enumerate(
-            _sequence(data.get("contours", ()), f"{label}.contours")
-        )
+        for index, item in enumerate(_sequence(data.get("contours", ()), f"{label}.contours"))
     )
     return Layer(
         layer_id=layer_id,
@@ -487,9 +477,7 @@ def _contour(value: Any, label: str, layer_id: str, index: int) -> Contour:
     data = _mapping(value, label)
     points = tuple(
         _point(item, f"{label}.points[{position}]")
-        for position, item in enumerate(
-            _sequence(data.get("points", ()), f"{label}.points")
-        )
+        for position, item in enumerate(_sequence(data.get("points", ()), f"{label}.points"))
     )
     contour_id = _text(data.get("id", f"{layer_id}-contour-{index}"), f"{label}.id")
     return Contour(contour_id, _bool(data.get("closed"), f"{label}.closed"), points)
@@ -512,19 +500,13 @@ def _layer_traces(value: Any, label: str) -> tuple[Trace, ...]:
         if times is not None:
             times = tuple(
                 _epoch(item, f"{trace_label}.times[{position}]")
-                for position, item in enumerate(
-                    _sequence(times, f"{trace_label}.times")
-                )
+                for position, item in enumerate(_sequence(times, f"{trace_label}.times"))
             )
             if len(times) != len(route):
-                raise SchemaError(
-                    f"{trace_label}.times must align with the route positions"
-                )
+                raise SchemaError(f"{trace_label}.times must align with the route positions")
         traces.append(
             Trace(
-                _text(
-                    trace.get("id", f"{layer_id}-trace-{index}"), f"{trace_label}.id"
-                ),
+                _text(trace.get("id", f"{layer_id}-trace-{index}"), f"{trace_label}.id"),
                 _point(trace.get("endpoint"), f"{trace_label}.endpoint"),
                 route,
                 times,

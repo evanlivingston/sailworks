@@ -134,13 +134,9 @@ class ClampedCurrentCallableTest(unittest.TestCase):
         hold = START.timestamp() + 3600
         clamped = clamped_current_callable(self.sample, hold)
 
-        self.assertEqual(
-            clamped(1.0, 2.0, int(hold - 600)), (0.1, 0.2, True, "dataset-1")
-        )
+        self.assertEqual(clamped(1.0, 2.0, int(hold - 600)), (0.1, 0.2, True, "dataset-1"))
         self.assertEqual(clamped(1.0, 2.0, int(hold)), (0.1, 0.2, True, "dataset-1"))
-        self.assertEqual(
-            clamped(1.0, 2.0, int(hold + 86400)), (0.1, 0.2, True, "dataset-1")
-        )
+        self.assertEqual(clamped(1.0, 2.0, int(hold + 86400)), (0.1, 0.2, True, "dataset-1"))
         self.assertEqual(
             [call[2] for call in self.calls],
             [int(hold - 600), int(hold), int(hold)],
@@ -214,9 +210,7 @@ class NativeRequestShiftFieldsTest(unittest.TestCase):
 
     def test_shift_and_hold_survive_pickling(self):
         hold = START.timestamp() + 3600
-        request = native_request(
-            current_time_shift_s=-86400.0, current_hold_epoch_s=hold
-        )
+        request = native_request(current_time_shift_s=-86400.0, current_hold_epoch_s=hold)
 
         restored = pickle.loads(pickle.dumps(request))
 

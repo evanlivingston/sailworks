@@ -214,10 +214,7 @@ def _distance_nm(left, right):
     lat2, lon2 = (math.radians(value) for value in right)
     dlat = lat2 - lat1
     dlon = lon2 - lon1
-    h = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    )
+    h = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
     return 2 * 3440.065 * math.asin(min(1.0, math.sqrt(h)))
 
 
@@ -281,9 +278,7 @@ def _check_wave_window(entry, start, destination, departure, wind_end=None):
             if wind_end is not None and wind_end > departure
             else nominal_seconds
         )
-        nominal_end = departure + timedelta(
-            seconds=min(nominal_seconds, available_seconds)
-        )
+        nominal_end = departure + timedelta(seconds=min(nominal_seconds, available_seconds))
         if nominal_end > last:
             covered = False
     if covered:
@@ -348,9 +343,7 @@ def _resolve_roundings(item, start, waypoints):
         return ()
     if item.start is None:
         if normalized[0] is not None:
-            raise ValueError(
-                "The first waypoint is the start; remove its rounding spec"
-            )
+            raise ValueError("The first waypoint is the start; remove its rounding spec")
         normalized = normalized[1:]
 
     if not waypoints:
@@ -362,9 +355,7 @@ def _resolve_roundings(item, start, waypoints):
         for point, rounding in zip(waypoints, normalized):
             if point == chain[-1]:
                 if rounding is not None:
-                    raise ValueError(
-                        "Rounding is set on a duplicate waypoint that is skipped"
-                    )
+                    raise ValueError("Rounding is set on a duplicate waypoint that is skipped")
                 continue
             chain.append(point)
             marks.append((point, rounding))
@@ -421,15 +412,11 @@ def freeze_native_requests(
         if wave_forecast.tranche.tranche_id != forecast.tranche.tranche_id:
             raise ValueError("Selected wave forecast is not in the active tranche")
         if wave_forecast.entry.entry_id != request.wave_entry_id:
-            raise ValueError(
-                "Selected wave forecast changed while freezing the request"
-            )
+            raise ValueError("Selected wave forecast changed while freezing the request")
         validate_wave_forecast(wave_forecast)
     elif wave_forecast is not None:
         raise ValueError("Wave forecast supplied without a selected wave entry")
-    wind_times = tuple(
-        dict(getattr(forecast.entry, "field_times", ()) or ()).get("wind") or ()
-    )
+    wind_times = tuple(dict(getattr(forecast.entry, "field_times", ()) or ()).get("wind") or ())
     wind_end = max(wind_times) if wind_times else None
     descriptors = provider_descriptors(providers) if request.coastline_checks else ()
     if descriptors is None:
@@ -439,9 +426,7 @@ def freeze_native_requests(
     if request.coastline_checks and not descriptors:
         raise ValueError("Native coastline checks require installed shoreline data")
     if request.use_currents and (current_selection is None or not marine_directory):
-        raise ValueError(
-            "Native currents require selected local fields and their store"
-        )
+        raise ValueError("Native currents require selected local fields and their store")
     if request.use_currents and not current_selection.fields:
         raise ValueError("Native currents require at least one selected local field")
     if request.use_currents and current_selection.priority != request.current_priority:
@@ -491,9 +476,7 @@ def freeze_native_requests(
             departure = departure.astimezone()
         algorithm_name, changed = changed_legacy_parameters(item)
         if changed:
-            raise ValueError(
-                unapplied_legacy_parameter_message(algorithm_name, changed)
-            )
+            raise ValueError(unapplied_legacy_parameter_message(algorithm_name, changed))
         destination = _point(item.destination, "destination")
         start_point = _point(start, "start")
         resolved_waypoints = tuple(_point(point, "waypoint") for point in waypoints)
@@ -501,16 +484,10 @@ def freeze_native_requests(
         if engine not in {"main", "professional"} and any(
             rounding is not None for rounding in resolved_roundings
         ):
-            raise ValueError(
-                "Rounding constraints require the main or professional native engine"
-            )
+            raise ValueError("Rounding constraints require the main or professional native engine")
         if wave_forecast is not None:
-            _check_wave_window(
-                wave_forecast.entry, start_point, destination, departure, wind_end
-            )
-        unchanged = tuple(
-            (str(key), value) for key, value in dict(item.parameters).items()
-        )
+            _check_wave_window(wave_forecast.entry, start_point, destination, departure, wind_end)
+        unchanged = tuple((str(key), value) for key, value in dict(item.parameters).items())
         frozen.append(
             NativeRequest(
                 version=1,
