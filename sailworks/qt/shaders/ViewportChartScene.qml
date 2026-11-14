@@ -301,6 +301,8 @@ Item {
                 property var measurePoints: []
                 property var measurePreview: []
                 property real measureDistance: -1
+                property var mapShapes: null
+                property var shapeDraft: null
                 property var movePreview: []
                 property real centerLatitude: 0
                 property real centerLongitude: 0
@@ -557,6 +559,257 @@ Item {
                         context.arc(first.x, first.y, 4, 0, Math.PI * 2)
                         context.fill()
                     }
+                }
+
+                // Scene shapes are geo-anchored: the payload carries vertices
+                // and the label text only, so the canvas re-projects them from
+                // the same camera every pan and zoom without rebuilding.
+                function drawShapeRing(context, vertices, close) {
+                    if (!vertices || vertices.length === 0)
+                        return false
+                    context.beginPath()
+                    for (let i = 0; i < vertices.length; ++i) {
+                        const point = screenPoint(vertices[i])
+                        if (i === 0)
+                            context.moveTo(point.x, point.y)
+                        else
+                            context.lineTo(point.x, point.y)
+                    }
+                    if (close)
+                        context.closePath()
+                    return true
+                }
+
+                function drawShapeVertices(context, vertices, radius, fillStyle) {
+                    context.fillStyle = fillStyle
+                    for (let i = 0; i < vertices.length; ++i) {
+                        const point = screenPoint(vertices[i])
+                        context.beginPath()
+                        context.arc(point.x, point.y, radius, 0, Math.PI * 2)
+                        context.fill()
+                    }
+                }
+
+                // Latitudes and longitudes, in the payload's stored order.
+                function isGeoVertex(point) {
+                    return !!point && typeof point.length === "number"
+                        && point.length === 2
+                        && typeof point[0] === "number" && isFinite(point[0])
+                        && typeof point[1] === "number" && isFinite(point[1])
+                        && point[0] >= -90 && point[0] <= 90
+                        && point[1] >= -180 && point[1] <= 180
+                }
+
+                // Committed geometry is frozen for the whole corner drag: the
+                // document is only written on release. The paint therefore
+                // needs a ring of its own with the dragged corner replaced by
+                // the pointer position, otherwise the fill, halo, outline and
+                // corner dots keep drawing the old corner while only the
+                // handle follows the pointer. Every polygon pass for a shape
+                // in this frame reads this one ring.
+                function liveShapeVertices(shape, edit) {
+                    const committed = shape ? shape.vertices : null
+                    if (!committed || committed.length === 0)
+                        return null
+                    if (!edit || edit.dragging !== true || edit.uid !== shape.id)
+                        return committed
+                    const drag = edit.drag
+                    if (!drag || !isGeoVertex(drag.point))
+                        return committed
+                    const index = drag.index
+                    if (typeof index !== "number" || index % 1 !== 0
+                            || index < 0 || index >= committed.length)
+                        return committed
+                    if (!isGeoVertex(committed[index]))
+                        return committed
+                    const live = committed.slice()
+                    live[index] = [drag.point[0], drag.point[1]]
+                    return live
+                }
+
+                function drawMapShapes(context) {
+                    // The paint is shared with the measurement overlay, so every
+                    // font, alignment and dash change here is scoped.
+                    context.save()
+                    context.setLineDash([])
+                    context.textAlign = "left"
+                    context.textBaseline = "bottom"
+                    context.font = "11px sans-serif"
+                    const shapes = mapShapes && mapShapes.shapes ? mapShapes.shapes : []
+                    const edit = mapShapes && mapShapes.edit ? mapShapes.edit : null
+                    for (let s = 0; s < shapes.length; ++s) {
+                        const shape = shapes[s]
+                        // The live drag ring, so the polygon itself follows
+                        // the pointer and not just the corner handle.
+                        const vertices = liveShapeVertices(shape, edit)
+                        if (!vertices || vertices.length === 0)
+                            continue
+                        const avoid = shape.kind === "avoid"
+                        const disabled = shape.disabled === true
+                        const closed = vertices.length >= 3
+                        const colour = shape.colour && shape.colour.length >= 3
+                            ? shape.colour
+                            : (avoid ? [0.86, 0.35, 0.16] : [0.16, 0.55, 0.86])
+                        // A disabled avoidance shape does not route, but it is
+                        // still drawn: a fainter fill and a dashed outline keep
+                        // it on screen without reading as an active hazard.
+                        const fillAlpha = (avoid ? 0.16 : 0.12) * (disabled ? 0.5 : 1.0)
+                        if (closed) {
+                            drawShapeRing(context, vertices, true)
+                            context.fillStyle = rgbColor(colour, fillAlpha)
+                            context.fill()
+                        }
+                        drawShapeRing(context, vertices, closed)
+                        if (edit && edit.uid === shape.id) {
+                            // Selection halo: the same ring, wider and pale,
+                            // so the edited polygon reads as selected without
+                            // a second geometry path.
+                            context.strokeStyle = "rgba(255,255,255,0.9)"
+                            context.lineWidth = 4.5
+                            context.setLineDash([])
+                            context.stroke()
+                        }
+                        context.strokeStyle = rgbColor(colour, disabled ? 0.55 : 0.95)
+                        context.lineWidth = 1.5
+                        context.setLineDash(disabled ? [4, 3] : [])
+                        context.stroke()
+                        context.setLineDash([])
+                        drawShapeVertices(context, vertices, 2.5,
+                                          rgbColor(colour, disabled ? 0.6 : 1.0))
+                        const label = shape.label || shape.name || shape.note || ""
+                        if (label && label.length) {
+                            const anchor = screenPoint(vertices[0])
+                            const width = context.measureText(label).width
+                            context.fillStyle = "rgba(0,0,0,0.55)"
+                            context.fillRect(anchor.x + 4, anchor.y - 17,
+                                             width + 6, 14)
+                            context.fillStyle = disabled
+                                ? "rgba(255,255,255,0.65)"
+                                : "rgba(255,255,255,0.95)"
+                            context.fillText(label, anchor.x + 7, anchor.y - 5)
+                        }
+                    }
+
+                    if (edit && edit.point && edit.point.length === 2) {
+                        // The insertion preview is geo-anchored like the shape,
+                        // so it stays on the edge through pan and zoom.
+                        const anchor = screenPoint(edit.point)
+                        context.setLineDash([])
+                        context.beginPath()
+                        context.arc(anchor.x, anchor.y, 7, 0, Math.PI * 2)
+                        context.fillStyle = "rgba(255,196,64,0.30)"
+                        context.fill()
+                        context.strokeStyle = "rgba(255,255,255,0.95)"
+                        context.lineWidth = 1.5
+                        context.stroke()
+                        context.beginPath()
+                        context.arc(anchor.x, anchor.y, 3.5, 0, Math.PI * 2)
+                        context.fillStyle = "rgba(255,196,64,0.98)"
+                        context.fill()
+                        if (edit.error && edit.error.length) {
+                            const width = context.measureText(edit.error).width
+                            context.fillStyle = "rgba(0,0,0,0.65)"
+                            context.fillRect(anchor.x + 8, anchor.y + 4,
+                                             width + 6, 15)
+                            context.fillStyle = "rgba(255,190,150,0.98)"
+                            context.fillText(edit.error, anchor.x + 11, anchor.y + 16)
+                        }
+                    }
+
+                    // Corner handles share the insertion preview's visual
+                    // family: a pale ring with a warm filled dot. A dragged
+                    // corner draws at its live position, so the handle tracks
+                    // the pointer before the commit replaces the geometry.
+                    if (edit) {
+                        let editedVertices = null
+                        for (let s = 0; s < shapes.length; ++s) {
+                            const candidate = shapes[s]
+                            if (candidate && candidate.id === edit.uid
+                                    && candidate.vertices) {
+                                editedVertices = candidate.vertices
+                                break
+                            }
+                        }
+                        let handle = null
+                        if (editedVertices && edit.vertex !== null
+                                && edit.vertex !== undefined
+                                && edit.vertex >= 0
+                                && edit.vertex < editedVertices.length)
+                            handle = screenPoint(editedVertices[edit.vertex])
+                        if (edit.drag && edit.drag.point
+                                && edit.drag.point.length === 2) {
+                            const dragged = screenPoint(edit.drag.point)
+                            context.setLineDash([])
+                            context.beginPath()
+                            context.arc(dragged.x, dragged.y, 8, 0, Math.PI * 2)
+                            context.fillStyle = "rgba(255,196,64,0.30)"
+                            context.fill()
+                            context.strokeStyle = "rgba(255,255,255,0.98)"
+                            context.lineWidth = 2
+                            context.stroke()
+                            context.beginPath()
+                            context.arc(dragged.x, dragged.y, 4.5, 0, Math.PI * 2)
+                            context.fillStyle = "rgba(255,196,64,0.98)"
+                            context.fill()
+                            handle = dragged
+                        }
+                        if (handle) {
+                            context.setLineDash([])
+                            context.beginPath()
+                            context.arc(handle.x, handle.y, 7, 0, Math.PI * 2)
+                            context.strokeStyle = "rgba(255,255,255,0.95)"
+                            context.lineWidth = 1.5
+                            context.stroke()
+                            context.beginPath()
+                            context.arc(handle.x, handle.y, 4, 0, Math.PI * 2)
+                            context.fillStyle = "rgba(255,196,64,0.95)"
+                            context.fill()
+                        }
+                        if (handle && edit.error && edit.error.length
+                                && !(edit.point && edit.point.length === 2)) {
+                            const width = context.measureText(edit.error).width
+                            context.fillStyle = "rgba(0,0,0,0.65)"
+                            context.fillRect(handle.x + 8, handle.y + 4,
+                                             width + 6, 15)
+                            context.fillStyle = "rgba(255,190,150,0.98)"
+                            context.fillText(edit.error, handle.x + 11, handle.y + 16)
+                        }
+                    }
+
+                    if (!shapeDraft || !shapeDraft.points || !shapeDraft.points.length) {
+                        context.restore()
+                        return
+                    }
+                    const draft = shapeDraft
+                    const points = draft.points.slice()
+                    if (draft.preview)
+                        points.push(draft.preview)
+                    const colour = draft.colour && draft.colour.length >= 3
+                        ? draft.colour : [0.16, 0.55, 0.86]
+                    context.strokeStyle = rgbColor(colour, 1.0)
+                    context.lineWidth = 2.0
+                    context.setLineDash([5, 4])
+                    drawShapeRing(context, points, points.length >= 3)
+                    context.stroke()
+                    context.setLineDash([])
+                    context.strokeStyle = "rgba(255,255,255,0.95)"
+                    context.lineWidth = 1.2
+                    for (let i = 0; i < draft.points.length; ++i) {
+                        const point = screenPoint(draft.points[i])
+                        context.beginPath()
+                        context.arc(point.x, point.y, 3.5, 0, Math.PI * 2)
+                        context.stroke()
+                    }
+                    if (draft.error && draft.error.length) {
+                        const anchor = screenPoint(draft.points[draft.points.length - 1])
+                        context.fillStyle = "rgba(0,0,0,0.65)"
+                        const width = context.measureText(draft.error).width
+                        context.fillRect(anchor.x + 8, anchor.y + 4,
+                                         width + 6, 15)
+                        context.fillStyle = "rgba(255,190,150,0.98)"
+                        context.fillText(draft.error, anchor.x + 11, anchor.y + 16)
+                    }
+                    context.restore()
                 }
 
                 onPaint: {
@@ -1201,6 +1454,7 @@ Item {
                         }
                         context.textAlign = "left"
                     }
+                    drawMapShapes(context)
                     drawMeasurement(context)
                 }
                 onRoutePlanChanged: requestPaint()
@@ -1222,6 +1476,8 @@ Item {
                 onMeasurePointsChanged: requestPaint()
                 onMeasurePreviewChanged: requestPaint()
                 onMeasureDistanceChanged: requestPaint()
+                onMapShapesChanged: requestPaint()
+                onShapeDraftChanged: requestPaint()
                 onMovePreviewChanged: {
                     // A retained-track preview updates Shape geometry, not the
                     // remaining Canvas overlays. Clear still repaints once.

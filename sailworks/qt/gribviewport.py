@@ -3458,6 +3458,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 overlay.get("measure_points", []),
                 overlay.get("measure_preview", []),
                 overlay.get("measure_distance", -1.0),
+                overlay.get("map_shapes"),
+                overlay.get("shape_draft"),
             )
             # Only trusted builder payloads carry an identity token; arbitrary
             # callers retain full value-based mutation detection.
@@ -3523,6 +3525,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         "measurePoints",
                         "measurePreview",
                         "measureDistance",
+                        "mapShapes",
+                        "shapeDraft",
                     ),
                     content,
                 ):
@@ -7460,6 +7464,21 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
         def mousePressEvent(self, event):  # noqa: N802 - Qt virtual method name
             if event.button() == Qt.MouseButton.LeftButton:
                 canvas = self.measurement_canvas()
+                record_shape = getattr(canvas, "_record_shape_click", None)
+                if record_shape and record_shape(
+                    event.position().x(), event.position().y()
+                ):
+                    event.accept()
+                    return
+                press_edit = getattr(canvas, "_shape_edit_press", None)
+                if press_edit is None:
+                    # Legacy hosts only expose the insert-on-press hook.
+                    press_edit = getattr(canvas, "_record_shape_edit_click", None)
+                if press_edit and press_edit(
+                    event.position().x(), event.position().y()
+                ):
+                    event.accept()
+                    return
                 record_measurement = getattr(canvas, "_record_measurement_click", None)
                 if record_measurement and record_measurement(
                     event.position().x(), event.position().y()
@@ -7476,16 +7495,72 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             else:
                 super().mousePressEvent(event)
 
+        def mouseDoubleClickEvent(self, event):  # noqa: N802 - Qt virtual method name
+            """Finish a shape draft; Qt sends this instead of a second press."""
+            if event.button() == Qt.MouseButton.LeftButton:
+                canvas = self.measurement_canvas()
+                finish = getattr(canvas, "_record_shape_double_click", None)
+                if finish and finish(event.position().x(), event.position().y()):
+                    event.accept()
+                    return
+            super().mouseDoubleClickEvent(event)
+
+        def keyPressEvent(self, event):  # noqa: N802 - Qt virtual method name
+            # Drawing owns Escape and Return while a draft is open; every other
+            # key (and the same keys outside drawing) keeps its existing path.
+            canvas = self.measurement_canvas()
+            drawing = getattr(canvas, "is_shape_drawing", None)
+            if drawing is not None and drawing():
+                if event.key() == Qt.Key.Key_Escape:
+                    canvas.cancel_shape_drawing()
+                    event.accept()
+                    return
+                if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    canvas.finish_shape_drawing()
+                    event.accept()
+                    return
+            editing = getattr(canvas, "is_shape_editing", None)
+            if editing is not None and editing():
+                if event.key() == Qt.Key.Key_Escape:
+                    canvas.cancel_shape_edit()
+                    event.accept()
+                    return
+                if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    # Enter commits an active corner drag, then leaves edit
+                    # mode; a rejected drop keeps the mode and its error.
+                    finish = getattr(canvas, "finish_shape_edit", None)
+                    if finish is not None:
+                        finish()
+                    event.accept()
+                    return
+            super().keyPressEvent(event)
+
         def mouseMoveEvent(self, event):  # noqa: N802 - Qt virtual method name
             canvas = self.measurement_canvas()
+            position = event.position()
+            x, y = position.x(), position.y()
+            # Edit move owns the drag and the hover snap; it answers False
+            # outside edit mode so pan and the other overlays keep working.
+            move_edit = getattr(canvas, "_shape_edit_move", None)
+            if self._drag is None:
+                if move_edit is not None:
+                    if move_edit(x, y):
+                        event.accept()
+                        return
+                else:
+                    hover_edit = getattr(canvas, "_update_shape_edit_hover", None)
+                    if hover_edit and hover_edit(x, y):
+                        event.accept()
+                        return
+            preview_shape = getattr(canvas, "_update_shape_preview", None)
+            if preview_shape and preview_shape(x, y):
+                event.accept()
+                return
             update_preview = getattr(canvas, "_update_measurement_preview", None)
-            if update_preview and update_preview(
-                event.position().x(), event.position().y()
-            ):
+            if update_preview and update_preview(x, y):
                 event.accept()
                 return
             if self._drag is not None:
-                position = event.position()
                 delta = position - self._drag
                 self._drag = position
                 self._drag_velocity.add(time.monotonic(), position.x(), position.y())
@@ -7495,6 +7570,17 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 super().mouseMoveEvent(event)
 
         def mouseReleaseEvent(self, event):  # noqa: N802 - Qt virtual method name
+            canvas = self.measurement_canvas()
+            release_edit = getattr(canvas, "_shape_edit_release", None)
+            if (
+                event.button() == Qt.MouseButton.LeftButton
+                and release_edit is not None
+                and release_edit(event.position().x(), event.position().y())
+            ):
+                # A corner drag never armed pan, so there is no inertia to end.
+                self._drag = None
+                event.accept()
+                return
             if event.button() != Qt.MouseButton.LeftButton or self._drag is None:
                 super().mouseReleaseEvent(event)
                 return
