@@ -1,6 +1,6 @@
 """Blender-style dropdown rows: label left, compact field on the right."""
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QComboBox,
@@ -230,11 +230,24 @@ class FieldRow(QWidget):
     def field(self):
         return self._field
 
+    def minimumSizeHint(self):  # noqa: N802 - Qt virtual method name
+        """Report only a height minimum; the parent layout sets the width.
+
+        ``resizeEvent`` pins the label and field to fractions of the row
+        width. Fixed widths feed back into the layout's minimum size, so the
+        row's minimum width would track its current width and grow on every
+        resize, keeping the enclosing scroll areas from ever settling.
+        """
+        return QSize(0, super().minimumSizeHint().height())
+
     def resizeEvent(self, event):  # noqa: N802 - Qt virtual method name
         super().resizeEvent(event)
         if self._field is None:
             return
         width = self.width()
         field_width = max(0, round(width * FIELD_FRACTION) - 2)
-        self._field.setFixedWidth(field_width)
-        self._label.setFixedWidth(max(0, width - field_width - 8))
+        label_width = max(0, width - field_width - 8)
+        if self._field.width() != field_width:
+            self._field.setFixedWidth(field_width)
+        if self._label.width() != label_width:
+            self._label.setFixedWidth(label_width)
