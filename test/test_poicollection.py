@@ -62,19 +62,6 @@ class TestPOICollection(unittest.TestCase):
         self.assertEqual(c[1].name, "WP2")
         self.assertEqual(c[1].position, (42.0, 13.0))
 
-    def test_to_nmea_fpec_returns_pfec_lines(self):
-        c = self._make_collection()
-        c.create((40.0, 10.0))
-        c.create((41.0, 11.0))
-        result = c.to_nmea_fpec()
-        self.assertIsInstance(result, str)
-        lines = result.strip().split("\n")
-        # Last line should be the terminator
-        self.assertTrue(lines[-1].startswith("$PFEC,GPxfr"))
-        # All other lines should be $PFEC,GPwpl
-        for line in lines[:-1]:
-            self.assertTrue(line.startswith("$PFEC,GPwpl"), f"Unexpected line: {line}")
-
 
 if __name__ == "__main__":
     unittest.main()

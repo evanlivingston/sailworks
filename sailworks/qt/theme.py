@@ -18,6 +18,26 @@ MUTED = "#b0b0ad"
 ACCENT = "#3584e4"
 BORDER = "#454545"
 
+# Alternating row tint for dense lists such as the scene tree. Blender's
+# outliner separates rows with a barely visible band rather than a stripe, so
+# the tint is a small blend toward white of the row base, not a second colour.
+ROW_TINT = 0.04
+
+
+def alternate_row_base(base=SURFACE, amount=ROW_TINT):
+    """Row background for alternating rows, blended from ``base``.
+
+    Deriving the colour from the theme surface keeps the tint proportional in
+    any palette; a hard-coded hex would only suit this one.
+    """
+    color = QColor(base)
+    return QColor(
+        round(color.red() + (255 - color.red()) * amount),
+        round(color.green() + (255 - color.green()) * amount),
+        round(color.blue() + (255 - color.blue()) * amount),
+    )
+
+
 # Tooltip chrome: the native frame is a white outline that clashes with the
 # dark panels, so tooltips use the same surface, text and border as the rest.
 TOOLTIP_STYLE = (

@@ -1,126 +1,101 @@
-"""Focused regression coverage for selected-track editing behavior."""
+"""Focused regression coverage for selected-track editing behavior.
+
+Track editing lives in the scene tree since the navigation panel was removed;
+these tests drive the ScenePanel entry points and the shared undo commands.
+"""
 
 from types import SimpleNamespace
 
-from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QKeyEvent
-from PySide6.QtTest import QTest
-from PySide6.QtWidgets import (
-    QAbstractItemView,
-    QApplication,
-    QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
-)
+from PySide6.QtGui import QUndoStack
 
 from sailworks.core.geo.track import Track
-from sailworks.qt.navigationpanel import MovePointCommand, NavigationPanel
+from sailworks.core.scene import KIND_TRACK
+from sailworks.qt.navigationcommands import MovePointCommand
+from test.test_qt_scenepanel import FakeTrack, application, panel_for
 
 
-class _Tracks(list):
+def _node(kind, key, index):
+    return ("point", kind, key, index)
+
+
+def test_rename_point_updates_the_active_track(tmp_path):
+    application()
+    track = FakeTrack("t1", "Track")
+    panel = panel_for(tmp_path, tracks=[track])
+
+    panel._rename_point(_node(KIND_TRACK, "t1", 0), "Start")
+
+    assert track.point_name(0) == "Start"
+    assert tuple(track.points[0]) == (51.1234567, -1.2345678)
+
+
+def test_delete_point_is_undoable(tmp_path):
+    application()
+    track = FakeTrack("t1", "Track")
+    stack = QUndoStack()
+    panel = panel_for(tmp_path, tracks=[track], undo_stack=stack)
+
+    panel._delete_point(_node(KIND_TRACK, "t1", 0))
+
+    assert len(track) == 1
+    assert stack.count() == 1
+    stack.undo()
+    assert len(track) == 2
+    assert tuple(track.points[0]) == (51.1234567, -1.2345678)
+
+
+def test_add_point_appends_to_the_track_being_edited(tmp_path):
+    application()
+    track = FakeTrack("t1", "Track")
+    panel = panel_for(tmp_path, tracks=[track])
+
+    added = panel.add_point((5, 6))
+
+    assert added is track
+    assert tuple(track.points[-1]) == (5.0, 6.0)
+
+
+def test_add_point_creates_an_active_track_when_none_exists(tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+
+    added = panel.add_point((1, 2))
+
+    assert added is not None
+    assert panel.core.trackManager.get_active() is added
+    panel.add_point((3, 4))
+    assert [tuple(point) for point in added.points] == [(1.0, 2.0), (3.0, 4.0)]
+
+
+def test_move_point_request_emits_element_and_index(tmp_path):
+    application()
+    track = FakeTrack("t1", "Track")
+    panel = panel_for(tmp_path, tracks=[track])
+    emitted = []
+    panel.move_point_requested.connect(
+        lambda element, index: emitted.append((element, index))
+    )
+
+    panel._move_point(_node(KIND_TRACK, "t1", 1))
+
+    assert emitted == [(track, 1)]
+
+
+class _Collection(list):
+    """Minimal collection so Track.move can persist."""
+
     def __init__(self, *tracks):
-        super().__init__(track for track in tracks if track is not None)
-        self.active = self[0] if self else None
+        super().__init__(tracks)
         for track in self:
             track.collection = self
 
     def save(self):
         pass
 
-    def new_element(self, points):
-        track = Track("New", points, collection=self)
-        self.append(track)
-        return track
 
-    def get_active(self):
-        return self.active
-
-    def set_active(self, track):
-        self.active = track
-
-
-class _Panel:
-    """Minimal panel state for direct behavioral tests of NavigationPanel."""
-
-    def __init__(self, track):
-        self.core = SimpleNamespace(trackManager=_Tracks(track))
-        self.canvas = SimpleNamespace(
-            navigation=SimpleNamespace(edit_track=None, hl_track_item=None),
-            invalidate_race_geometry=lambda: None,
-            update=lambda: None,
-        )
-        self.track_buttons = [QPushButton(), QPushButton()]
-        self.point_index = 0
-        self.track_points = QTableWidget()
-        self.tracks = QTableWidget()
-        self.changed = SimpleNamespace(emit=lambda: None)
-
-    def refresh(self):
-        pass
-
-    def refresh_points(self):
-        pass
-
-    _set_track_editing = NavigationPanel._set_track_editing
-    _invalidate_race_geometry = NavigationPanel._invalidate_race_geometry
-    select_track = NavigationPanel.select_track
-    new_track = NavigationPanel.new_track
-
-
-def test_track_select_edit_and_escape(qtbot):
-    app = QApplication.instance()
-    assert app is not None
-    ordinary = Track("Editable", [(1, 2, None)])
-    panel = _Panel(ordinary)
-
-    NavigationPanel.edit_track(panel)
-    assert panel.canvas.navigation.edit_track is ordinary
-    assert panel.track_buttons[1].isEnabled()
-
-    event = QKeyEvent(
-        QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier
-    )
-    assert NavigationPanel.eventFilter(panel, panel.tracks, event) is True
-    assert event.isAccepted()
-    assert panel.canvas.navigation.edit_track is None
-
-    NavigationPanel.select_track(panel)
-    assert panel.canvas.navigation.edit_track is None
-    assert not panel.track_buttons[1].isEnabled()
-
-
-def test_point_modifications_require_selected_editable_track(qtbot):
-    track = Track("Track", [(1, 2, None), (3, 4, None)])
-    panel = _Panel(track)
-    panel.move_requested = SimpleNamespace(emit=lambda callback: None)
-    before = list(track.points)
-
-    NavigationPanel.edit_point(panel, "remove")
-    assert track.points == before
-
-    panel.canvas.navigation.edit_track = track
-    NavigationPanel.edit_point(panel, "remove")
-    assert len(track.points) == 1
-
-
-def test_edit_point_name_updates_active_track(qtbot):
+def test_move_point_command_undoes_and_redoes_relocation():
     track = Track("Track", [(1, 2, None)])
-    panel = _Panel(track)
-    panel.syncing = False
-    panel.track_points.setColumnCount(4)
-    panel.track_points.setRowCount(1)
-    item = QTableWidgetItem("Start")
-    panel.track_points.setItem(0, 1, item)
-
-    NavigationPanel._edit_point_name(panel, item)
-
-    assert track.point_name(0) == "Start"
-    assert track[0] == (1, 2, None)
-
-
-def test_move_point_command_undoes_and_redoes_relocation(qtbot):
-    track = Track("Track", [(1, 2, None)])
-    _Tracks(track)
+    _Collection(track)
     refreshed = []
     command = MovePointCommand(
         lambda: refreshed.append(True),
@@ -135,145 +110,6 @@ def test_move_point_command_undoes_and_redoes_relocation(qtbot):
     command.undo()
     assert track[0] == (1, 2, None)
     assert len(refreshed) == 2
-
-
-def test_add_point_requires_edit_mode_for_existing_tracks(qtbot):
-    track = Track("Track", [(1, 2, None)])
-    panel = _Panel(track)
-    panel.status = SimpleNamespace(setText=lambda text: None)
-    panel.tabs = SimpleNamespace(setCurrentIndex=lambda index: None)
-    panel.canvas._weather_presenter = SimpleNamespace(
-        invalidations=0,
-        invalidate_race_geometry=lambda: setattr(
-            panel.canvas._weather_presenter,
-            "invalidations",
-            panel.canvas._weather_presenter.invalidations + 1,
-        ),
-    )
-    panel.canvas.invalidations = 0
-    panel.canvas.invalidate_race_geometry = lambda: setattr(
-        panel.canvas, "invalidations", panel.canvas.invalidations + 1
-    )
-
-    NavigationPanel.add_point(panel, (5, 6))
-    assert len(track.points) == 1
-
-    panel.canvas.navigation.edit_track = track
-    NavigationPanel.add_point(panel, (5, 6))
-    assert len(track.points) == 2
-    assert panel.canvas.invalidations == 1
-    assert panel.canvas._weather_presenter.invalidations == 1
-
-
-def _new_track_panel():
-    panel = _Panel(None)
-    manager = panel.core.trackManager
-    panel.status = SimpleNamespace(setText=lambda text: None)
-    panel.tabs = SimpleNamespace(setCurrentIndex=lambda index: None)
-    panel.canvas._weather_presenter = SimpleNamespace(
-        invalidate_race_geometry=lambda: None
-    )
-    panel.canvas.invalidate_race_geometry = lambda: None
-    panel._set_track_editing = lambda enabled: setattr(
-        panel.canvas.navigation, "edit_track", manager.get_active() if enabled else None
-    )
-    panel._invalidate_race_geometry = lambda: None
-    return panel
-
-
-def test_new_track_enters_edit_mode_and_accepts_repeated_points(qtbot):
-    panel = _new_track_panel()
-
-    track = NavigationPanel.new_track(panel)
-    assert panel.canvas.navigation.edit_track is track
-    NavigationPanel.add_point(panel, (1, 2))
-    NavigationPanel.add_point(panel, (3, 4))
-    assert track.points == [(1, 2, None), (3, 4, None)]
-
-
-def test_add_point_implicitly_creates_editable_track(qtbot):
-    panel = _new_track_panel()
-
-    NavigationPanel.add_point(panel, (1, 2))
-    track = panel.core.trackManager.get_active()
-    assert track is not None
-    assert panel.canvas.navigation.edit_track is track
-    NavigationPanel.add_point(panel, (3, 4))
-    assert track.points == [(1, 2, None), (3, 4, None)]
-
-
-def test_context_click_preserves_multiselection_and_selects_unselected_row(qtbot):
-    from PySide6.QtWidgets import QTableWidgetItem
-
-    table = QTableWidget(2, 1)
-    qtbot.addWidget(table)
-    table.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-    table.setItem(0, 0, QTableWidgetItem("one"))
-    table.setItem(1, 0, QTableWidgetItem("two"))
-    table.selectRow(0)
-    table.selectRow(1)
-    NavigationPanel._select_context_item(table, table.item(0, 0))
-    assert {item.row() for item in table.selectedItems()} == {0, 1}
-    NavigationPanel._select_context_item(table, table.item(1, 0))
-    assert {item.row() for item in table.selectedItems()} == {0, 1}
-    table.clearSelection()
-    NavigationPanel._select_context_item(table, table.item(1, 0))
-    assert {item.row() for item in table.selectedItems()} == {1}
-
-
-def test_track_list_click_and_double_click_are_wired(qtbot):
-    table = QTableWidget(2, 1)
-    qtbot.addWidget(table)
-    ordinary = Track("Editable", [(1, 2, None)])
-    race = Track("Race", [(3, 4, None)])
-    manager = _Tracks(ordinary, race)
-    buttons = [QPushButton(), QPushButton()]
-    canvas = SimpleNamespace(
-        navigation=SimpleNamespace(edit_track=None, hl_track_item=None),
-        invalidate_race_geometry=lambda: None,
-        update=lambda: None,
-    )
-    panel = SimpleNamespace(
-        tracks=table,
-        core=SimpleNamespace(trackManager=manager),
-        canvas=canvas,
-        track_buttons=buttons,
-        syncing=False,
-        point_index=-1,
-        refresh_points=lambda: None,
-        _invalidate_race_geometry=lambda: None,
-        _set_track_editing=lambda enabled: NavigationPanel._set_track_editing(
-            panel, enabled
-        ),
-        _select_track=lambda row: NavigationPanel._select_track(panel, row),
-        edit_track=lambda: NavigationPanel.edit_track(panel),
-    )
-    for row, track in enumerate(manager):
-        table.setItem(row, 0, QTableWidgetItem(track.name))
-    NavigationPanel._wire_track_selection(panel)
-
-    table.show()
-    qtbot.waitExposed(table)
-    ordinary_cell = table.visualItemRect(table.item(0, 0)).center()
-    QTest.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=ordinary_cell)
-    QApplication.processEvents()
-    assert manager.get_active() is ordinary
-    assert canvas.navigation.edit_track is None
-    assert not buttons[1].isEnabled()
-
-    QTest.mouseDClick(table.viewport(), Qt.MouseButton.LeftButton, pos=ordinary_cell)
-    QApplication.processEvents()
-    assert canvas.navigation.edit_track is ordinary
-    assert buttons[1].isEnabled()
-
-    race_cell = table.visualItemRect(table.item(1, 0)).center()
-    QTest.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=race_cell)
-    QTest.mouseDClick(table.viewport(), Qt.MouseButton.LeftButton, pos=race_cell)
-    QApplication.processEvents()
-    assert manager.get_active() is race
-    assert canvas.navigation.edit_track is race
-    assert buttons[1].isEnabled()
 
 
 def test_only_edited_track_gets_point_handle_circles():

@@ -124,12 +124,11 @@ and double-clicking a track/POI/routing fit the map to that object. Routings sho
 existing Routing plan and results stay synchronized with the selected route. POI edits refresh destination choices without changing the route draft coordinates.
 
 Import reads GPX on a worker, validates coordinates before installation and adds tracks/waypoints to the existing Core collections on the UI thread. Repeated names receive unique
-names. As in GTK, GPX route elements are not imported. Export offers all navigation as GPX or POIs through the existing NMEA PFEC converter; track/routing menus also export the
-selected object as GPX. All file dialogs use the default native picker. Existing track/POI/routing JSON files and calculation models are shared with GTK.
+names. As in GTK, GPX route elements are not imported. Export offers all navigation as GPX; the scene tree's track and routing menus also export the selected object as GPX.
+All file dialogs use the default native picker. Existing track/POI/routing JSON files and calculation models are shared with GTK.
 
-AIS refreshes every three seconds using Core's active-target timeout. The tab appears when targets exist; valid-position targets list MMSI/name/type/SOG/COG and distance, ordered
-by GTK's haversine distance from the boat. Double-click a target to center it. The AIS toolbar switch controls map symbols and is saved. The table and both map views use the same
-target set; no live hardware was used for validation.
+AIS refreshes every three seconds using Core's active-target timeout. Valid-position targets are published to both map views as one shared target set; the AIS toolbar switch
+controls map symbols and is saved. Distance from the boat uses GTK's haversine. No live hardware was used for validation.
 
 GTK and Qt share production Cairo track, POI, routing and AIS drawing, including selected styles, speed colors, route-time interpolation, current-exclusion marks, AIS
 orientation/vectors and label-spacing rules. Twelve comparisons against the pre-extraction GTK code at three sizes, two pixel scales and with/without selection produced zero

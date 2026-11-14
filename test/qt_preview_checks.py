@@ -92,30 +92,23 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(self.controller.data.task.busy, "Timed out waiting for data")
 
     def test_navigation_remove_undo_restores_objects_order_and_selection(self):
-        from PySide6.QtCore import QItemSelection, QItemSelectionModel
+        from sailworks.core.scene import KIND_ROUTING, KIND_TRACK
 
-        panel = self.window.navigation_panel
         tracks = self.controller.core.trackManager
         first = tracks.new_element(points=[(1, 2)])
         second = tracks.new_element(points=[(3, 4)])
         third = tracks.new_element(points=[(5, 6)])
         tracks.set_active(second)
-        panel.refresh()
-        panel.tracks.selectionModel().select(
-            QItemSelection(
-                panel.tracks.model().index(0, 0),
-                panel.tracks.model().index(1, panel.tracks.columnCount() - 1),
-            ),
-            QItemSelectionModel.SelectionFlag.ClearAndSelect
-            | QItemSelectionModel.SelectionFlag.Rows,
+        self.window.scene_panel.refresh()
+
+        self.window._scene_delete(
+            [("item", KIND_TRACK, first.uid), ("item", KIND_TRACK, second.uid)]
         )
-        active_track = tracks.get_active()
-        panel.remove_track()
         self.assertEqual(list(tracks), [third])
         self.assertEqual(self.window.undo_action.shortcut().toString(), "Ctrl+Z")
         self.window.undo_stack.undo()
         self.assertEqual(list(tracks), [first, second, third])
-        self.assertIs(tracks.get_active(), active_track)
+        self.assertIs(tracks.get_active(), second)
         self.window.undo_stack.redo()
         self.assertEqual(list(tracks), [third])
         self.window.undo_stack.undo()
@@ -125,21 +118,18 @@ class QtPreviewChecks(unittest.TestCase):
         first_route = routes.new_element(points=[])
         second_route = routes.new_element(points=[])
         third_route = routes.new_element(points=[])
-        panel.route = second_route
-        panel.refresh()
-        panel.routes.selectionModel().select(
-            QItemSelection(
-                panel.routes.model().index(0, 0),
-                panel.routes.model().index(1, panel.routes.columnCount() - 1),
-            ),
-            QItemSelectionModel.SelectionFlag.ClearAndSelect
-            | QItemSelectionModel.SelectionFlag.Rows,
+        routes.set_active(second_route)
+        self.window.scene_panel.refresh()
+        self.window._scene_delete(
+            [
+                ("item", KIND_ROUTING, first_route.uid),
+                ("item", KIND_ROUTING, second_route.uid),
+            ]
         )
-        selected_route = panel.route
-        panel.remove_route()
+        self.assertEqual(list(routes), [third_route])
         self.window.undo_stack.undo()
         self.assertEqual(list(routes), [first_route, second_route, third_route])
-        self.assertIs(panel.route, selected_route)
+        self.assertIs(routes.get_active(), second_route)
         self.window.undo_stack.redo()
         self.assertEqual(list(routes), [third_route])
         self.app.processEvents()
@@ -746,6 +736,12 @@ class QtPreviewChecks(unittest.TestCase):
         self.drain()
         self.assertTrue(self.window._panel_visible("nmea"))
         self.assertEqual(tuple(self.controller.points), log.points)
+
+    def test_show_panel_ignores_unknown_name(self):
+        self.assertNotIn("navigation", self.window.panels)
+        self.window._show_panel("navigation")
+        self.drain()
+        self.assertFalse(self.window._panel_visible("navigation"))
 
     def test_recording_persists_for_record_toggle_and_shutdown(self):
         paths = []
@@ -1955,15 +1951,10 @@ class QtPreviewChecks(unittest.TestCase):
         # No instrument history may come back with the workspace.
         self.assertEqual(self.window.instruments.text(), "")
         self.assertIs(self.window.views.currentWidget(), self.window.logs_view)
-        navigation_action = self.window.panel_actions["navigation"]
-        self.assertFalse(navigation_action.isChecked())
-        self.assertFalse(self.window._panel_visible("navigation"))
-        navigation_action.trigger()
-        self.assertTrue(self.window._panel_visible("navigation"))
+        self.assertNotIn("navigation", self.window.panel_actions)
         self.assertTrue(self.window._panel_visible("routing"))
         self.assertTrue(self.window.panels["routing"].isVisible())
         self.assertEqual(self.window.routing_panel.pages.currentIndex(), 1)
-        self.assertEqual(self.window.navigation_panel.route.name, "second")
         self.assertFalse(self.window.routing_panel.coastlines.isChecked())
         self.assertAlmostEqual(self.window.map._center_lat, 44.2)
         self.assertAlmostEqual(self.window.map._center_lon, -127.1)
@@ -2381,62 +2372,12 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertIs(self.controller.session.log, source_log)
         self.assertEqual(tuple(self.controller.points), points)
 
-    def test_track_extended_selection_context_click_and_multi_delete(self):
-        from PySide6.QtCore import QItemSelection, QItemSelectionModel
-        from PySide6.QtWidgets import QTableWidget
-        from sailworks.core.geo.track import Track
-        from sailworks.qt.navigationpanel import NavigationPanel
-
-        panel = self.window.navigation_panel
-        manager = self.controller.core.trackManager
-        manager.append(Track("First", [(0, 0, None)]))
-        manager.append(Track("Second", [(1, 1, None)]))
-        manager.append(Track("Third", [(2, 2, None)]))
-        panel.refresh()
-
-        self.assertEqual(
-            panel.tracks.selectionMode(), QTableWidget.SelectionMode.ExtendedSelection
-        )
-        panel.tracks.selectionModel().select(
-            QItemSelection(
-                panel.tracks.model().index(0, 0),
-                panel.tracks.model().index(1, panel.tracks.columnCount() - 1),
-            ),
-            QItemSelectionModel.SelectionFlag.ClearAndSelect
-            | QItemSelectionModel.SelectionFlag.Rows,
-        )
-        self.assertEqual(
-            {index.row() for index in panel.tracks.selectionModel().selectedRows()},
-            {0, 1},
-        )
-        NavigationPanel._select_context_item(panel.tracks, panel.tracks.item(0, 0))
-        self.assertEqual(
-            {index.row() for index in panel.tracks.selectionModel().selectedRows()},
-            {0, 1},
-        )
-        NavigationPanel._select_context_item(panel.tracks, panel.tracks.item(2, 0))
-        self.assertEqual(
-            {index.row() for index in panel.tracks.selectionModel().selectedRows()},
-            {2},
-        )
-
-        panel.tracks.selectionModel().select(
-            QItemSelection(
-                panel.tracks.model().index(0, 0),
-                panel.tracks.model().index(1, panel.tracks.columnCount() - 1),
-            ),
-            QItemSelectionModel.SelectionFlag.ClearAndSelect
-            | QItemSelectionModel.SelectionFlag.Rows,
-        )
-        panel.remove_track()
-        self.assertEqual([track.name for track in manager], ["Third"])
-
     def test_navigation_gpx_native_picker_import_export_and_invalid_input(self):
         import gpxpy
-        from sailworks.qt.navigationpanel import gpx_document
         from sailworks.core.geo.routing import Routing
+        from sailworks.core.geo.track import Track
+        from sailworks.qt import navigationio
 
-        panel = self.window.navigation_panel
         source = self.path / "course.gpx"
         source.write_text(
             '<gpx version="1.1"><wpt lat="48.5" lon="-123.5"><name>Finish</name></wpt>'
@@ -2444,76 +2385,127 @@ class QtPreviewChecks(unittest.TestCase):
             '<trkpt lat="48.2" lon="-123.2"/></trkseg></trk></gpx>'
         )
         with patch(
-            "sailworks.qt.navigationpanel.QFileDialog.getOpenFileName",
+            "sailworks.qt.navigationio.QFileDialog.getOpenFileName",
             return_value=(str(source), ""),
         ) as picker:
-            panel.import_gpx()
+            navigationio.import_gpx(self.window)
             picker.assert_called_once()
         self.wait_for_navigation()
         track = self.controller.core.trackManager.get_active()
         self.assertEqual(track.points, [[48.1, -123.1], [48.2, -123.2]])
-        self.assertEqual(panel.pois.item(0, 0).text(), "Finish")
-        panel.import_path(source)
+        self.assertEqual(self.controller.core.poiManager[0].name, "Finish")
+        navigationio.import_path(self.window, source)
         self.wait_for_navigation()
         self.assertEqual(len(self.controller.core.trackManager), 2)
         self.assertEqual(len({t.name for t in self.controller.core.trackManager}), 2)
         bad = self.path / "bad.gpx"
         bad.write_text('<gpx><wpt lat="91" lon="-123"/></gpx>')
         previous = self.controller.core.poiManager.to_json()
-        panel.import_path(bad)
+        navigationio.import_path(self.window, bad)
         self.wait_for_navigation()
         self.assertEqual(self.controller.core.poiManager.to_json(), previous)
-        self.assertIn("Could not import", panel.status.text())
+        self.assertIn("Could not import", self.window.statusBar().currentMessage())
         route = Routing(
             "Route",
             [(48.1, -123.1, "2026-10-14T10:00:00", 45, 10, 5, 0)],
             collection=self.controller.core.routingManager,
         )
         self.controller.core.routingManager.append(route)
-        panel.route = route
+        self.controller.core.routingManager.set_active(route)
         for method, filename in (
-            (panel.export_track, "track.gpx"),
-            (panel.export_route, "route.gpx"),
-            (panel.export_all, "all.gpx"),
-            (panel.export_pfec, "pois.nmea"),
+            (navigationio.export_track, "track.gpx"),
+            (navigationio.export_route, "route.gpx"),
+            (navigationio.export_all, "all.gpx"),
         ):
             destination = self.path / filename
             with patch(
-                "sailworks.qt.navigationpanel.QFileDialog.getSaveFileName",
+                "sailworks.qt.navigationio.QFileDialog.getSaveFileName",
                 return_value=(str(destination), ""),
             ) as picker:
-                method()
+                method(self.window)
                 picker.assert_called_once()
-            if filename == "pois.nmea":
-                self.assertEqual(
-                    destination.read_text(),
-                    self.controller.core.poiManager.to_nmea_fpec(),
-                )
-            else:
-                parsed = gpxpy.parse(destination.read_text())
-                self.assertEqual(
-                    (len(parsed.tracks), len(parsed.routes), len(parsed.waypoints)),
-                    {
-                        "track.gpx": (1, 0, 0),
-                        "route.gpx": (0, 1, 0),
-                        "all.gpx": (2, 1, 2),
-                    }[filename],
-                )
-        self.assertTrue(gpx_document().to_xml())
+            parsed = gpxpy.parse(destination.read_text())
+            self.assertEqual(
+                (len(parsed.tracks), len(parsed.routes), len(parsed.waypoints)),
+                {
+                    "track.gpx": (1, 0, 0),
+                    "route.gpx": (0, 1, 0),
+                    "all.gpx": (2, 1, 2),
+                }[filename],
+            )
+        self.assertTrue(navigationio.gpx_document().to_xml())
+
+        # Names survive export: every <trk> and <rte> carries its element name and
+        # the waypoint keeps its POI name.
+        exported = {
+            filename: (self.path / filename).read_text()
+            for filename in ("track.gpx", "route.gpx", "all.gpx")
+        }
+        active_track = self.controller.core.trackManager.get_active()
+        self.assertIn(f"<name>{active_track.name}</name>", exported["track.gpx"])
+        self.assertIn("<name>Route</name>", exported["route.gpx"])
+        self.assertIn("<name>Finish</name>", exported["all.gpx"])
+        parsed_all = gpxpy.parse(exported["all.gpx"])
+        self.assertEqual(
+            {track.name for track in parsed_all.tracks},
+            {track.name for track in self.controller.core.trackManager},
+        )
+        self.assertEqual(
+            {route.name for route in parsed_all.routes},
+            {route.name for route in self.controller.core.routingManager},
+        )
+        self.assertIn("Finish", {waypoint.name for waypoint in parsed_all.waypoints})
+
+        # A named track and route survive an export/import round trip.
+        named_track = Track(
+            "GPX Round Trip Track",
+            [[48.3, -123.3], [48.4, -123.4]],
+            collection=self.controller.core.trackManager,
+        )
+        self.controller.core.trackManager.append(named_track)
+        self.controller.core.trackManager.set_active(named_track)
+        named_route = Routing(
+            "GPX Round Trip Route",
+            [(48.3, -123.3, "2026-10-14T10:00:00", 45, 10, 5, 0)],
+            collection=self.controller.core.routingManager,
+        )
+        self.controller.core.routingManager.append(named_route)
+        self.controller.core.routingManager.set_active(named_route)
+        for method, filename in (
+            (navigationio.export_track, "named-track.gpx"),
+            (navigationio.export_route, "named-route.gpx"),
+        ):
+            destination = self.path / filename
+            with patch(
+                "sailworks.qt.navigationio.QFileDialog.getSaveFileName",
+                return_value=(str(destination), ""),
+            ):
+                method(self.window)
+        round_trip_tracks = gpxpy.parse((self.path / "named-track.gpx").read_text())
+        self.assertEqual(round_trip_tracks.tracks[0].name, "GPX Round Trip Track")
+        self.controller.core.trackManager.import_from_gpx(round_trip_tracks)
+        self.assertEqual(
+            self.controller.core.trackManager.get_active().name,
+            "GPX Round Trip Track",
+        )
+        round_trip_routes = gpxpy.parse((self.path / "named-route.gpx").read_text())
+        self.assertEqual(round_trip_routes.routes[0].name, "GPX Round Trip Route")
+        # GPX routes are not imported by the app (see navigationio._import_finished);
+        # routingManager.import_from_gpx reads .segments and is not exercised here.
 
     def wait_for_navigation(self):
         deadline = time.monotonic() + 5
-        while self.window.navigation_panel.task.busy and time.monotonic() < deadline:
+        task = getattr(self.window, "gpx_import_task", None)
+        while task is not None and task.busy and time.monotonic() < deadline:
             self.drain()
             time.sleep(0.005)
-        self.assertFalse(self.window.navigation_panel.task.busy)
+        self.assertFalse(task.busy if task is not None else False)
         self.drain()
 
     def test_navigation_ais_sorting_visibility_expiry_and_map(self):
         from sailworks.core.aismanager import AISTarget, STALE_TIMEOUT
-        from sailworks.qt.navigationpanel import distance_nm
+        from sailworks.qt.navigationio import distance_nm
 
-        panel = self.window.navigation_panel
         manager = self.controller.core.ais_manager
         self.controller.core.set_boat_position(48.4, -123.4)
         near = AISTarget(123456789, 48.41, -123.4, 90, 5, 90, "Near", 36)
@@ -2521,30 +2513,22 @@ class QtPreviewChecks(unittest.TestCase):
         invalid = AISTarget(100000000)
         with manager._lock:
             manager._targets = {t.mmsi: t for t in (far, near, invalid)}
-        panel.refresh_ais()
-        self.assertTrue(panel.tabs.isTabVisible(3))
-        self.assertEqual(panel.ais.item(0, 0).text(), str(near.mmsi))
-        self.assertEqual(panel.ais.rowCount(), 2)
-        self.assertEqual(self.window.log_map.ais_targets, (near, far))
-        self.assertEqual(self.window.map.ais_targets, (near, far))
+        self.window._refresh_ais()
+        self.assertCountEqual(self.window.log_map.ais_targets, (near, far))
+        self.assertCountEqual(self.window.map.ais_targets, (near, far))
         self.assertAlmostEqual(distance_nm(0, 0, 1, 0), 60.04046, places=4)
-        panel.fit_ais(0)
-        self.assertEqual(self.window.map._center_lat, near.latitude)
         self.window.ais_action.setChecked(False)
         self.assertFalse(self.window.map.ais_visible)
         self.assertFalse(self.window.log_map.ais_visible)
         for target in (near, far, invalid):
             target.last_update = time.time() - STALE_TIMEOUT - 1
-        panel.refresh_ais()
-        self.assertFalse(panel.tabs.isTabVisible(3))
+        self.window._refresh_ais()
         self.assertFalse(self.window.map.ais_targets)
 
     def test_navigation_routes_support_multi_selection_and_removal(self):
-        from PySide6.QtCore import QItemSelection, QItemSelectionModel
-        from PySide6.QtWidgets import QTableWidget
         from sailworks.core.geo.routing import Routing
+        from sailworks.qt.navigationcommands import RemoveNavigationCommand
 
-        panel = self.window.navigation_panel
         manager = self.controller.core.routingManager
         routes = [
             Routing(
@@ -2561,36 +2545,30 @@ class QtPreviewChecks(unittest.TestCase):
         ]
         for route in routes:
             manager.append(route)
-        panel.route = routes[0]
-        panel.refresh()
+        manager.set_active(routes[0])
 
-        self.assertEqual(
-            panel.routes.selectionMode(), QTableWidget.SelectionMode.ExtendedSelection
+        self.window.undo_stack.push(
+            RemoveNavigationCommand(
+                lambda: None,
+                manager,
+                [(0, routes[0]), (1, routes[1])],
+                routes[0],
+                "route",
+            )
         )
-        panel.routes.selectionModel().select(
-            QItemSelection(
-                panel.routes.model().index(0, 0),
-                panel.routes.model().index(1, panel.routes.columnCount() - 1),
-            ),
-            QItemSelectionModel.SelectionFlag.ClearAndSelect
-            | QItemSelectionModel.SelectionFlag.Rows,
-        )
-        self.assertEqual(
-            {index.row() for index in panel.routes.selectionModel().selectedRows()},
-            {0, 1},
-        )
-
-        panel.remove_route()
 
         self.assertEqual(manager.elements, routes[2:])
-        self.assertIs(panel.route, routes[3])
+        self.assertIs(manager.get_active(), routes[3])
+        self.window.undo_stack.undo()
+        self.assertEqual(manager.elements, routes)
+        self.assertIs(manager.get_active(), routes[0])
 
     def test_navigation_route_controls_and_collection_persistence(self):
+        from sailworks.core.geo.poicollection import POICollection
         from sailworks.core.geo.routing import Routing
         from sailworks.core.geo.trackcollection import TrackCollection
-        from sailworks.core.geo.poicollection import POICollection
+        from sailworks.core.scene import KIND_ROUTING
 
-        panel = self.window.navigation_panel
         manager = self.controller.core.routingManager
         route = Routing(
             "Course",
@@ -2601,16 +2579,14 @@ class QtPreviewChecks(unittest.TestCase):
             collection=manager,
         )
         manager.append(route)
-        panel.refresh()
-        panel.routes.setCurrentCell(0, 0)
-        self.assertIs(self.window.navigation_panel.route, route)
+        manager.set_active(route)
+        self.window._select_saved_route(route)
         self.assertEqual(self.window.map.navigation.hl_routing, "Course")
-        self.assertEqual(panel.route_points.rowCount(), 2)
-        panel.route_points.setCurrentCell(1, 0)
-        self.assertEqual(self.window.map.selected_route_point, 1)
-        panel.routes.item(0, 0).setText("Renamed")
-        self.assertEqual(self.window.navigation_panel.route.name, "Renamed")
-        panel.routes.item(0, 2).setCheckState(Qt.CheckState.Unchecked)
+        self.assertEqual(len(route.points), 2)
+
+        route.name = "Renamed"
+        self.assertEqual(manager.get_active().name, "Renamed")
+        route.visible = False
         self.assertFalse(route.visible)
         with (
             patch("sailworks.core.storage.DATA_DIR", str(self.path)),
@@ -2621,17 +2597,15 @@ class QtPreviewChecks(unittest.TestCase):
                 self.controller.core.poiManager,
             ):
                 ORIGINAL_STORAGE_LOAD(collection.storage)
-            panel.new_track()
-            panel.add_point((48.4, -123.4))
-            panel.add_poi((48.5, -123.5))
-            panel.move_poi()
-            self.window.map.move_callback((48.6, -123.6))
-            self.window.map.cancel_move()
+            scene = self.window.scene_panel
+            scene.add_point((48.4, -123.4))
+            scene.add_poi((48.5, -123.5))
             with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
                 tracks, pois = TrackCollection(), POICollection()
             self.assertEqual(tracks.get_active().points, [[48.4, -123.4, None]])
-            self.assertEqual(pois[0].position, [48.6, -123.6])
-        panel.remove_route()
+            self.assertEqual(pois[0].position, [48.5, -123.5])
+        self.window.scene_panel.refresh()
+        self.window._scene_delete([("item", KIND_ROUTING, route.uid)])
         self.assertFalse(manager.elements)
         self.assertFalse(self.window.map.route)
 
@@ -2679,37 +2653,50 @@ class QtPreviewChecks(unittest.TestCase):
     def test_navigation_workspace_restore_and_late_import_shutdown(self):
         from threading import Event
 
-        panel = self.window.navigation_panel
-        self.window._show_panel("navigation")
-        panel.tabs.setCurrentIndex(2)
+        from sailworks.qt import navigationio
+
+        self.window._show_panel("scene")
         self.window.ais_action.setChecked(False)
         self.window.workspace.save()
         state = self.window.workspace.store.load()
-        self.assertEqual(state["navigation"]["tab"], "POIs")
+        self.assertFalse(state["ais_visible"])
+        self.assertNotIn("navigation", state)
         saved_panels = {entry["name"]: entry for entry in state["panels"]["panels"]}
-        self.assertTrue(saved_panels["navigation"]["visible"])
-        panel.tabs.setCurrentIndex(0)
+        self.assertNotIn("navigation", saved_panels)
         self.window.ais_action.setChecked(True)
-        self.window._set_panel_visible("navigation", False)
         self.window.workspace.restoring = True
         self.window.workspace.restore(state)
         self.window.workspace.restoring = False
-        self.assertEqual(panel.tabs.currentIndex(), 2)
         self.assertFalse(self.window.ais_action.isChecked())
-        self.assertTrue(self.window._panel_visible("navigation"))
+
+        # A workspace file written before the panel was removed still loads.
+        legacy = {
+            **state,
+            "navigation": {"tab": "POIs", "ais_visible": False},
+        }
+        legacy.pop("ais_visible")
+        legacy["panels"]["panels"].append(
+            {"name": "navigation", "side": "left", "visible": True, "collapsed": False}
+        )
+        self.window.ais_action.setChecked(True)
+        self.window.workspace.restoring = True
+        self.window.workspace.restore(legacy)
+        self.window.workspace.restoring = False
+        self.assertFalse(self.window.ais_action.isChecked())
+        self.assertFalse(self.window._panel_visible("navigation"))
+
         self.restart_workspace()
-        panel = self.window.navigation_panel
-        self.assertEqual(panel.tabs.currentIndex(), 2)
         self.assertFalse(self.window.ais_action.isChecked())
-        self.assertTrue(self.window._panel_visible("navigation"))
+
         event = Event()
-        panel.task.start("Pending import", lambda _: event.wait(3))
+        task = navigationio._task(self.window)
+        task.start("Pending import", lambda _: event.wait(3))
         self.window.close()
         event.set()
-        panel.task.worker_thread.join(2)
+        task.worker_thread.join(2)
         self.drain()
-        self.assertFalse(panel.timer.isActive())
-        self.assertTrue(panel.task.closed)
+        self.assertFalse(self.window.ais_timer.isActive())
+        self.assertTrue(task.closed)
         self.assertFalse(self.controller.core.trackManager.elements)
 
     def wait_for_cursor(self, done):
