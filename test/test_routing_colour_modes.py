@@ -561,7 +561,7 @@ def test_toggling_non_active_route_keeps_selection_and_persists_flag():
         _save_visible_elements=lambda kinds: saved.append(kinds),
         changed=SimpleNamespace(emit=lambda: signals.append("changed")),
         routing_visibility_changed=SimpleNamespace(
-            emit=lambda: signals.append("visibility")
+            emit=lambda *args: signals.append("visibility")
         ),
         selected=SimpleNamespace(emit=lambda *args: signals.append("selected")),
     )

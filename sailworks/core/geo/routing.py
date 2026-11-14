@@ -20,6 +20,7 @@ import gpxpy
 from weatherrouting import IsoPoint
 
 from sailworks.core.geo.track import Track
+from sailworks.rendering.palettes import isochrone_mode_labels, isochrone_modes
 
 _ARTIFACT_FIELDS = (
     "artifact_version",
@@ -59,24 +60,18 @@ def contour_frontiers(result):
 
 
 # Per-route visual modes saved with the route. "speed" is the historical
-# default; the categorical modes read recorded leg metrics instead.
-ROUTE_COLOUR_MODES = ("speed", "wind_angle", "tack")
+# default; the categorical modes read recorded leg metrics instead. The labels
+# and palettes live in the rendering metric registry, not here.
+ROUTE_COLOUR_MODES = ("speed", "wind_angle", "tack", "sail_plan", "propulsion")
 DEFAULT_ROUTE_COLOUR_MODE = "speed"
-ROUTE_COLOUR_MODE_LABELS = {
-    "speed": "Speed",
-    "wind_angle": "Upwind / Downwind",
-    "tack": "Port / Starboard",
-}
 
 # Independent of the route-line colour mode: how the calculated contour layers
 # themselves are drawn. "uniform" is the historical single blue/orange look;
-# "time" colours each layer from its recorded epoch, oldest to newest.
-ISOCHRONE_COLOUR_MODES = ("uniform", "time")
+# the other modes come from the rendering metric registry, which owns their
+# palettes and would rather add a dimension than a code path.
+ISOCHRONE_COLOUR_MODES = isochrone_modes()
 DEFAULT_ISOCHRONE_COLOUR_MODE = "uniform"
-ISOCHRONE_COLOUR_MODE_LABELS = {
-    "uniform": "Uniform",
-    "time": "Time",
-}
+ISOCHRONE_COLOUR_MODE_LABELS = isochrone_mode_labels()
 
 
 def normalize_route_colour_mode(value):
@@ -161,6 +156,8 @@ class Routing(Track):
         colour_by=DEFAULT_ROUTE_COLOUR_MODE,
         isochrone_colour_by=DEFAULT_ISOCHRONE_COLOUR_MODE,
         traces_visible=False,
+        isochrone_fill_visible=False,
+        isochrone_outlines_visible=False,
     ):
         super().__init__(name, points, visible, collection)
         # None means schema-v1 contours have not been hydrated for display yet.
@@ -187,6 +184,13 @@ class Routing(Track):
         # route: the dense trace web makes the map unreadable, so it is only
         # drawn after the user asks for it.
         self._traces_visible = bool(traces_visible)
+        # Independent display flag for the nested isochrone band fill. Off by
+        # default: the fill is an extra reading aid, never the historical look.
+        self._isochrone_fill_visible = bool(isochrone_fill_visible)
+        # Independent display flag for the per-layer hull boundaries. Off by
+        # default and deliberately separate from the fill: a hull can be
+        # outlined without being filled, or filled without a boundary.
+        self._isochrone_outlines_visible = bool(isochrone_outlines_visible)
         # Visual mode for the drawn route line. Changing it bumps ``revision``
         # so overlay caches rebuild without touching the saved result.
         self._colour_by = normalize_route_colour_mode(colour_by)
@@ -250,6 +254,34 @@ class Routing(Track):
         # invalidate them and repaint without re-reading the result artifact.
         self.touch()
 
+    @property
+    def isochrone_fill_visible(self):
+        return self._isochrone_fill_visible
+
+    @isochrone_fill_visible.setter
+    def isochrone_fill_visible(self, value):
+        visible = bool(value)
+        if visible == self._isochrone_fill_visible:
+            return
+        self._isochrone_fill_visible = visible
+        # The fill is canvas geometry, so the revision must move to rebuild the
+        # overlay; nothing is re-read from the result artifact for it.
+        self.touch()
+
+    @property
+    def isochrone_outlines_visible(self):
+        return self._isochrone_outlines_visible
+
+    @isochrone_outlines_visible.setter
+    def isochrone_outlines_visible(self, value):
+        visible = bool(value)
+        if visible == self._isochrone_outlines_visible:
+            return
+        self._isochrone_outlines_visible = visible
+        # Hull outlines are canvas geometry too, so the revision moves and no
+        # result artifact is read.
+        self.touch()
+
     def refresh_leg_tacks(self):
         """Drop cached leg readouts so the next read retries once."""
         self._leg_readouts = None
@@ -309,6 +341,20 @@ class Routing(Track):
         which callers must render as unknown rather than as port/starboard.
         """
         return tuple(readout.get("tack") for readout in self._leg_readout_values())
+
+    def leg_propulsion_modes(self):
+        """Recorded per-leg propulsion modes from the saved result, in leg order.
+
+        Uses the same lazily cached readout as the tack and sail-plan overlays,
+        so colouring by propulsion never adds a per-frame artifact read. Legacy
+        routes and unreadable artifacts yield no entries, which callers must
+        render as unknown rather than as a plausible mode.
+        """
+        modes = []
+        for readout in self._leg_readout_values():
+            value = readout.get("propulsion_mode")
+            modes.append(value if isinstance(value, str) and value.strip() else None)
+        return tuple(modes)
 
     def leg_profile_identities(self):
         """Recorded per-leg sail-plan identities, in leg order.
@@ -479,7 +525,12 @@ class Routing(Track):
             # their shape and absent means off.
             if self._traces_visible:
                 c["traces_visible"] = True
-            # Isochrones are deliberately omitted: the referenced artifact is
+            # Absent means off, like the trace flag, so default routes keep
+            # their existing payload shape.
+            if self._isochrone_fill_visible:
+                c["isochrone_fill_visible"] = True
+            if self._isochrone_outlines_visible:
+                c["isochrone_outlines_visible"] = True
             # authoritative and duplicating them would grow the collection file
             # without adding information.
             return c
@@ -494,6 +545,10 @@ class Routing(Track):
             c["isochrone_colour_by"] = self.isochrone_colour_by
         if self._traces_visible:
             c["traces_visible"] = True
+        if self._isochrone_fill_visible:
+            c["isochrone_fill_visible"] = True
+        if self._isochrone_outlines_visible:
+            c["isochrone_outlines_visible"] = True
         return c
 
     @staticmethod
@@ -504,6 +559,17 @@ class Routing(Track):
             from sailworks.core.marine.routingrecord import SchemaError
 
             raise SchemaError("traces_visible must be a boolean")
+        isochrone_fill_visible = j.get("isochrone_fill_visible", False)
+        if type(isochrone_fill_visible) is not bool:
+            from sailworks.core.marine.routingrecord import SchemaError
+
+            raise SchemaError("isochrone_fill_visible must be a boolean")
+
+        isochrone_outlines_visible = j.get("isochrone_outlines_visible", False)
+        if type(isochrone_outlines_visible) is not bool:
+            from sailworks.core.marine.routingrecord import SchemaError
+
+            raise SchemaError("isochrone_outlines_visible must be a boolean")
         isochrones_visible = j.get("isochrones_visible", True)
         if type(isochrones_visible) is not bool:
             from sailworks.core.marine.routingrecord import SchemaError
@@ -533,6 +599,8 @@ class Routing(Track):
                     j.get("isochrone_colour_by")
                 ),
                 traces_visible=traces_visible,
+                isochrone_fill_visible=isochrone_fill_visible,
+                isochrone_outlines_visible=isochrone_outlines_visible,
             )
         ic = list(map(lambda x: list(map(IsoPoint.from_list, x)), j["isochrones"]))
         return Routing(
@@ -547,4 +615,6 @@ class Routing(Track):
                 j.get("isochrone_colour_by")
             ),
             traces_visible=traces_visible,
+            isochrone_fill_visible=isochrone_fill_visible,
+            isochrone_outlines_visible=isochrone_outlines_visible,
         )

@@ -123,6 +123,24 @@ class RetainedOverlayMixin:
         self._isochrone_colour_by = value
 
     @property
+    def isochrone_fill_visible(self):
+        """Whether the active route paints its sampled isochrone band fill."""
+        return bool(getattr(self, "_isochrone_fill_visible", False))
+
+    @isochrone_fill_visible.setter
+    def isochrone_fill_visible(self, value):
+        self._isochrone_fill_visible = bool(value)
+
+    @property
+    def isochrone_outlines_visible(self):
+        """Whether the active route strokes its per-layer isochrone hulls."""
+        return bool(getattr(self, "_isochrone_outlines_visible", False))
+
+    @isochrone_outlines_visible.setter
+    def isochrone_outlines_visible(self, value):
+        self._isochrone_outlines_visible = bool(value)
+
+    @property
     def marine(self):
         services = getattr(self, "_overlay_services", None)
         if services is not None:

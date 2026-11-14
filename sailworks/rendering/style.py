@@ -139,98 +139,68 @@ class Style:
         FontHL = CairoStyle(color=(1, 0, 0, 0.9), font_size=10)
 
 
-SPEED_BANDS = (
-    (2.0, (0.3, 0.5, 1.0, 0.9)),
-    (4.0, (0.2, 0.7, 0.9, 0.9)),
-    (6.0, (0.2, 0.85, 0.5, 0.9)),
-    (8.0, (0.5, 0.9, 0.2, 0.9)),
-    (10.0, (0.9, 0.85, 0.1, 0.9)),
-    (12.0, (1.0, 0.6, 0.1, 0.9)),
-    (None, (1.0, 0.3, 0.1, 0.9)),
-)
-SPEED_BAND_LABELS = (
-    "0–2 kt",
-    "2–4 kt",
-    "4–6 kt",
-    "6–8 kt",
-    "8–10 kt",
-    "10–12 kt",
-    "12+ kt",
+# The ramps live in ``palettes``; these names are re-exported so existing
+# imports keep working without a second definition.
+from .palettes import (  # noqa: E402, F401 - import block kept beside its re-exports
+    METRICS,
+    ROUTE_DOWNWIND_COLOUR,
+    ROUTE_PORT_COLOUR,
+    ROUTE_STARBOARD_COLOUR,
+    ROUTE_UNKNOWN_COLOUR,
+    ROUTE_UPWIND_COLOUR,
+    colour_for,
+    legend_for,
+    metric_label,
 )
 
-ROUTE_UNKNOWN_COLOUR = (0.55, 0.55, 0.55, 0.9)
-ROUTE_UPWIND_COLOUR = (0.2, 0.55, 0.95, 0.9)
-ROUTE_DOWNWIND_COLOUR = (0.95, 0.55, 0.15, 0.9)
-ROUTE_PORT_COLOUR = (0.9, 0.25, 0.35, 0.9)
-ROUTE_STARBOARD_COLOUR = (0.2, 0.7, 0.35, 0.9)
+_SPEED_METRIC = METRICS["speed"]
+SPEED_BANDS = tuple((limit, colour) for limit, colour, _label in _SPEED_METRIC.bands)
+SPEED_BAND_LABELS = tuple(label for _limit, _colour, label in _SPEED_METRIC.bands)
+
 # Sail-change markers use a warm, high-contrast colour so a square on a leg
 # boundary is distinct from the circular waypoint dots in every colour mode.
 ROUTE_SAIL_CHANGE_COLOUR = (0.98, 0.82, 0.2, 1.0)
 
 
 def route_speed_color(speed):
-    """Map boat speed (kts) to a color gradient: blue (slow) -> green -> yellow -> red (fast)."""
-    for limit, colour in SPEED_BANDS:
-        if limit is None or speed < limit:
-            return colour
-    return SPEED_BANDS[-1][1]
+    """Map boat speed (kts) to the registered speed ramp."""
+    return colour_for("speed", speed)
 
 
 def route_wind_angle_colour(twa):
     """Upwind below 90° TWA, downwind at or above it; None means unknown."""
-    if twa is None:
+    if twa is None or isinstance(twa, bool):
         return ROUTE_UNKNOWN_COLOUR
     try:
         value = abs(float(twa))
     except (TypeError, ValueError):
         return ROUTE_UNKNOWN_COLOUR
-    return ROUTE_UPWIND_COLOUR if value < 90.0 else ROUTE_DOWNWIND_COLOUR
+    return colour_for("wind_angle", value)
 
 
 def route_tack_colour(tack):
     """Colour by the recorded leg tack only; never infer it from signed TWA."""
-    if not isinstance(tack, str):
-        return ROUTE_UNKNOWN_COLOUR
-    value = tack.strip().lower()
-    if value.startswith("port"):
-        return ROUTE_PORT_COLOUR
-    if value.startswith("starboard"):
-        return ROUTE_STARBOARD_COLOUR
-    return ROUTE_UNKNOWN_COLOUR
+    return colour_for("tack", tack)
 
 
-def route_leg_colour(mode, speed=None, twa=None, tack=None):
+def route_leg_colour(
+    mode, speed=None, twa=None, tack=None, sail_plan=None, propulsion=None
+):
     """Colour for one leg in the requested mode, grey when its metric is absent."""
-    if mode == "speed":
-        return route_speed_color(0 if speed is None else speed)
-    if mode == "wind_angle":
-        return route_wind_angle_colour(twa)
-    if mode == "tack":
-        return route_tack_colour(tack)
-    return ROUTE_UNKNOWN_COLOUR
+    value = {
+        "speed": speed,
+        "wind_angle": twa,
+        "tack": tack,
+        "sail_plan": sail_plan,
+        "propulsion": propulsion,
+    }.get(mode)
+    return colour_for(mode, value)
 
 
-def route_legend_entries(mode):
+def route_legend_entries(mode, values=()):
     """Ordered ``(label, rgba)`` legend entries matching the segment palette."""
-    if mode == "wind_angle":
-        return (
-            ("Upwind (<90° TWA)", ROUTE_UPWIND_COLOUR),
-            ("Downwind (≥90° TWA)", ROUTE_DOWNWIND_COLOUR),
-            ("Unknown", ROUTE_UNKNOWN_COLOUR),
-        )
-    if mode == "tack":
-        return (
-            ("Port", ROUTE_PORT_COLOUR),
-            ("Starboard", ROUTE_STARBOARD_COLOUR),
-            ("Unknown", ROUTE_UNKNOWN_COLOUR),
-        )
-    return tuple(
-        (label, colour)
-        for label, (_limit, colour) in zip(SPEED_BAND_LABELS, SPEED_BANDS)
-    )
+    return legend_for(mode, values)
 
 
 def route_legend_title(mode):
-    from sailworks.core.geo.routing import ROUTE_COLOUR_MODE_LABELS
-
-    return ROUTE_COLOUR_MODE_LABELS.get(mode, "Speed")
+    return metric_label(mode)

@@ -18,7 +18,10 @@ from sailworks.core.aismanager import SHIP_TYPE_COLORS
 from sailworks.core.mapviewport import MercatorProjection
 from sailworks.core.geo.routing import DEFAULT_ISOCHRONE_COLOUR_MODE
 from sailworks.rendering.isochrones import IsochroneFrame, isochrone_overlay_data
-from sailworks.rendering.routingoverlay import routing_overlay_data
+from sailworks.rendering.routingoverlay import (
+    isochrone_contours_on_canvas,
+    routing_overlay_data,
+)
 from .mapcoverage import MapCoverageMixin
 from .mapcursor import MapCursorMixin
 from .mapenvironment import MapEnvironmentMixin
@@ -727,6 +730,8 @@ class ViewportMap(
             return False
         camera = self.camera_state
         colour_by = getattr(self, "isochrone_colour_by", DEFAULT_ISOCHRONE_COLOUR_MODE)
+        fill_visible = _isochrone_fill_visible(self, model)
+        outlines_visible = _isochrone_outlines_visible(self, model)
         signature = (
             id(model),
             model.geometry_digest,
@@ -734,6 +739,8 @@ class ViewportMap(
             bool(model.traces_visible),
             bool(model.contours_visible),
             colour_by,
+            fill_visible,
+            outlines_visible,
             tuple(
                 layer.layer_id
                 for layer in model.layers
@@ -741,6 +748,27 @@ class ViewportMap(
             ),
         )
         if getattr(self, "_retained_segments_signature", None) != signature:
+            # A mode with its own palette, the nested fill, or the hull outlines
+            # are painted on the canvas, so the single-colour retained item must
+            # not also draw the contours: that would double-draw them underneath
+            # the fills and outlines. Otherwise it strokes the same boundary the
+            # payload does, so the retained path cannot show a starburst either.
+            draw_contours = not isochrone_contours_on_canvas(
+                colour_by, fill_visible, outlines_visible
+            )
+            geometry = (
+                [
+                    polyline
+                    for polyline in model.boundary_polylines
+                    if model.contour_visible(polyline.layer_id)
+                ]
+                if draw_contours
+                else []
+            )
+            if model.traces_visible:
+                geometry.extend(
+                    polyline for polyline in model.polylines if polyline.kind == "trace"
+                )
             polylines = [
                 {
                     "id": polyline.object_id,
@@ -748,15 +776,7 @@ class ViewportMap(
                         [float(point[0]), float(point[1])] for point in polyline.points
                     ],
                 }
-                for polyline in model.polylines
-                if (polyline.kind != "trace" or model.traces_visible)
-                and (
-                    polyline.kind != "contour"
-                    or model.contour_visible(polyline.layer_id)
-                )
-                # Time colouring is painted on the canvas, so the single-colour
-                # retained item must not also draw the contours.
-                and not (colour_by == "time" and polyline.kind == "contour")
+                for polyline in geometry
             ]
             item.setProperty("polylines", polylines)
             self._retained_segments_signature = signature
@@ -957,6 +977,8 @@ def _viewport_overlay_key(host):
         getattr(host, "isochrone_error", None),
         getattr(getattr(host, "native_routing", None), "geometry_revision", -1),
         getattr(host, "isochrone_colour_by", DEFAULT_ISOCHRONE_COLOUR_MODE),
+        _isochrone_fill_visible(host),
+        _isochrone_outlines_visible(host),
         bool(getattr(host, "_retained_active", False)),
         (
             tuple(
@@ -1307,6 +1329,37 @@ def _track_point_heading(points, index):
     return math.degrees(math.atan2(east, north)) % 360.0
 
 
+def _isochrone_fill_visible(host, model=None):
+    """The nested fill flag, owned by the model and echoed by the host.
+
+    The overlay model is authoritative whenever it carries the flag: a host
+    attribute is only a mirror, so a stale True must not re-enable a fill the
+    model has switched off. The host attribute is a fallback for a host or
+    model that predates the model flag, keeping older callers working.
+    """
+    if model is None:
+        model = getattr(host, "native_routing", None)
+    if model is not None and hasattr(model, "fill_visible"):
+        return bool(model.fill_visible)
+    return bool(getattr(host, "isochrone_fill_visible", False))
+
+
+def _isochrone_outlines_visible(host, model=None):
+    """The hull outline flag, owned by the model and echoed by the host.
+
+    Outlines are independent of the fill: the user may stroke the hull
+    boundaries without filling them, or fill without a boundary. The model is
+    authoritative for the same reason as the fill, so a stale host flag cannot
+    stroke outlines the model has switched off; the host attribute is only a
+    fallback for a model that does not carry the flag.
+    """
+    if model is None:
+        model = getattr(host, "native_routing", None)
+    if model is not None and hasattr(model, "outlines_visible"):
+        return bool(model.outlines_visible)
+    return bool(getattr(host, "isochrone_outlines_visible", False))
+
+
 def _routing_overlay(host):
     """Prefer the validated native routing geometry when one is attached.
 
@@ -1318,17 +1371,27 @@ def _routing_overlay(host):
     model = getattr(host, "native_routing", None)
     if model is not None:
         colour_by = getattr(host, "isochrone_colour_by", DEFAULT_ISOCHRONE_COLOUR_MODE)
-        payload = routing_overlay_data(model, colour_by)
+        fill_visible = _isochrone_fill_visible(host, model)
+        outlines_visible = _isochrone_outlines_visible(host, model)
+        payload = routing_overlay_data(model, colour_by, fill_visible, outlines_visible)
         if getattr(host, "_retained_active", False):
             # The retained item draws this geometry, so the canvas payload only
             # suppresses duplicates. "retained" keeps that case distinct from
             # a result with no drawable geometry. The retained native item has
-            # a single colour, so in time mode it draws only traces and the
-            # canvas paints the time-coloured contours.
+            # a single colour, so a coloured mode draws only traces there and
+            # the canvas paints the layer or point colours. A fill needs the
+            # same canvas path, so keeping the frontiers also keeps the fills
+            # they belong to.
             payload.update(
                 {
                     "retained": True,
-                    "frontiers": [] if colour_by != "time" else payload["frontiers"],
+                    "frontiers": (
+                        payload["frontiers"]
+                        if isochrone_contours_on_canvas(
+                            colour_by, fill_visible, outlines_visible
+                        )
+                        else []
+                    ),
                     "traces": [],
                     "path": [],
                     "exclusions": [],
