@@ -919,7 +919,7 @@ class ScenePanel(QWidget):
             root.setData(NAME_COLUMN, NODE_ROLE, ("root",))
             root.setIcon(NAME_COLUMN, symbol_icon("collection-symbolic"))
             font = QFont(root.font(NAME_COLUMN))
-            font.setBold(True)
+            font.setWeight(QFont.Weight.DemiBold)
             root.setFont(NAME_COLUMN, font)
             root.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self.tree.addTopLevelItem(root)
@@ -977,7 +977,7 @@ class ScenePanel(QWidget):
                 row.setForeground(NAME_COLUMN, QBrush(MUTED))
             else:
                 font = QFont(row.font(NAME_COLUMN))
-                font.setBold(True)
+                font.setWeight(QFont.Weight.DemiBold)
                 row.setFont(NAME_COLUMN, font)
             parent_item.addChild(row)
             self._rows[("group", group.id)] = row

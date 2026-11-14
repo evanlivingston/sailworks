@@ -232,9 +232,9 @@ def paint_labels(labels, width, height):
     painter = QPainter(image)
     try:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        font = QFont()
+        font = painter.font()
         font.setPointSize(10)
-        font.setBold(True)
+        font.setWeight(QFont.Weight.Bold)
         painter.setFont(font)
         for x, y, text in labels:
             path = QPainterPath()

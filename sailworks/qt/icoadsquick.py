@@ -11,7 +11,6 @@ from PySide6.QtCore import QObject, QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
     QCursor,
-    QFont,
     QImage,
     QPainter,
     QPen,
@@ -323,7 +322,7 @@ class IcoadsQuickItem(QObject):
     @classmethod
     def _paint_details(cls, painter, report, offset_x=0, offset_y=0):
         lines = cls._detail_lines(report)
-        font = QFont()
+        font = painter.font()
         font.setPointSize(9)
         painter.setFont(font)
         metrics = painter.fontMetrics()

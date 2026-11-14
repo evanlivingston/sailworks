@@ -1311,7 +1311,7 @@ Item {
             anchors.fill: parent
             anchors.margins: 8
             verticalAlignment: Text.AlignVCenter
-            color: "#eeeeec"
+            color: "#e6e6e6"
             font.pixelSize: 12
             elide: Text.ElideRight
             text: routeOverlayCanvas.captionText

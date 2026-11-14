@@ -155,7 +155,7 @@ class Slider(QSlider):
             return QColor("#242424"), QColor("#3a4656"), QColor("#777774")
         if self.underMouse():
             return QColor("#303030"), QColor("#3584e4"), QColor("#ffffff")
-        return QColor("#2b2b2b"), QColor("#3584e4"), QColor("#eeeeec")
+        return QColor("#2b2b2b"), QColor("#3584e4"), QColor("#e6e6e6")
 
     def paintEvent(self, event):  # noqa: N802 - Qt virtual method name
         painter = QPainter(self)

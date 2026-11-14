@@ -1,6 +1,7 @@
 """Dark application styling for the Qt workspace."""
 
 import logging
+import string
 import sys
 from functools import lru_cache
 
@@ -13,7 +14,7 @@ from .scrollchrome import install_wheel_guard
 BACKGROUND = "#242424"
 PANEL = "#303030"
 SURFACE = "#1e1e1e"
-TEXT = "#eeeeec"
+TEXT = "#e6e6e6"
 MUTED = "#b0b0ad"
 ACCENT = "#3584e4"
 BORDER = "#454545"
@@ -22,6 +23,13 @@ BORDER = "#454545"
 # outliner separates rows with a barely visible band rather than a stripe, so
 # the tint is a small blend toward white of the row base, not a second colour.
 ROW_TINT = 0.04
+
+# Qt chrome type scale. These name the ad-hoc sizes the chrome already used;
+# each role keeps exactly the size and weight it rendered with before.
+TYPE_CAPTION = "10px"  # compact glyph and caption role
+TYPE_DETAIL = "12px"  # small detail and popup role
+TYPE_DISCLOSURE = "16px"  # disclosure and chevron role
+TYPE_WEIGHT_SEMIBOLD = "600"
 
 
 def alternate_row_base(base=SURFACE, amount=ROW_TINT):
@@ -222,7 +230,9 @@ def apply_theme(app: QApplication):
         palette.setColor(QPalette.ColorGroup.Disabled, role, QColor("#777774"))
     app.setPalette(palette)
     install_wheel_guard(app)
-    app.setStyleSheet(TOOLTIP_STYLE + """
+    app.setStyleSheet(
+        TOOLTIP_STYLE
+        + string.Template("""
         QToolBar { spacing: 8px; padding: 5px 8px; border: none;
                    border-bottom: 1px solid #454545; }
         QToolBar QToolButton { padding: 5px 9px; border-radius: 6px; }
@@ -242,7 +252,7 @@ def apply_theme(app: QApplication):
             background: #344966; border: 1px solid #3584e4; }
         QToolButton#drawer-flag-left, QToolButton#drawer-flag-right {
             background: #303030; border: 1px solid #454545;
-            color: #c8c8c5; font-size: 16px; font-weight: 700;
+            color: #c8c8c5; font-size: $disclosure; font-weight: $semibold;
             padding: 0px; }
         QToolButton#drawer-flag-left {
             border-left: none; border-top-right-radius: 6px;
@@ -255,14 +265,14 @@ def apply_theme(app: QApplication):
         QWidget#collapsible-panel, QWidget#panel-stack,
         QWidget#panel-stack-container { background: #242424; border: none; }
         QWidget#panel-header { background: #2b2b2b; border: none; }
-        QLabel#panel-title { color: #eeeeec; font-weight: 600;
+        QLabel#panel-title { color: #e6e6e6; font-weight: $semibold;
                              background: transparent; }
         QToolButton#panel-collapse { background: transparent; border: none;
                                      border-radius: 6px; padding: 1px 3px; }
         QToolButton#panel-collapse:hover { background: #454545; }
         QToolButton#panel-close { background: transparent; border: none;
                                   border-radius: 6px; padding: 1px 4px;
-                                  color: #b0b0ad; font-weight: 700; }
+                                  color: #b0b0ad; font-weight: $semibold; }
         QToolButton#panel-close:hover { background: #454545; color: #ffffff; }
         QWidget#panel-header[dragging="true"] { background: #344966; }
         QFrame#panel-drop-gap { background: rgba(53, 132, 228, 24);
@@ -288,13 +298,20 @@ def apply_theme(app: QApplication):
         QPushButton[primary="true"]:hover { background: #4b93eb; }
         QPushButton[primary="true"]:pressed { background: #2d6fc0; }
         QPushButton[primary="true"]:disabled { background: #3a4656; color: #9b9b98; }
+        QPushButton[quiet="true"] { background: transparent; border-color: #3a3a3a;
+                                    color: #b0b0ad; min-height: 20px; padding: 3px 10px; }
+        QPushButton[quiet="true"]:hover { background: #303030; color: #e6e6e6; }
+        QPushButton[quiet="true"]:pressed { background: #242424;
+                                            border-color: #3584e4; }
+        QPushButton[quiet="true"]:disabled { background: transparent;
+                                             border-color: #303030; color: #666663; }
         QComboBox, QDateTimeEdit, QDoubleSpinBox { min-height: 24px; padding: 3px;
             border: 1px solid #454545; border-radius: 6px; background: #1e1e1e;
             outline: none; }
         QComboBox:hover { background: #262626; }
         QDateTimeEdit:focus, QDoubleSpinBox:focus {
             border-color: #3584e4; outline: none; }
-        QComboBox QAbstractItemView { background: #1e1e1e; color: #eeeeec;
+        QComboBox QAbstractItemView { background: #1e1e1e; color: #e6e6e6;
             border: none; outline: 0; padding: 0;
             selection-background-color: #3584e4; selection-color: #ffffff; }
         QComboBoxPrivateContainer { border: none; background: #1e1e1e; }
@@ -311,15 +328,15 @@ def apply_theme(app: QApplication):
             color: #ffffff; }
         QLineEdit#placeSearchEdit { min-height: 24px; padding: 3px 8px;
             border: 1px solid #454545; border-radius: 6px;
-            background: #1e1e1e; color: #eeeeec; }
+            background: #1e1e1e; color: #e6e6e6; }
         QLineEdit#placeSearchEdit:focus { border-color: #3584e4; }
-        QListView#placeSearchResults { background: #242424; color: #eeeeec;
+        QListView#placeSearchResults { background: #242424; color: #e6e6e6;
             border: 1px solid #454545; border-radius: 6px;
             outline: 0; padding: 2px; }
         QListView#placeSearchResults::item { padding: 4px 6px; }
         QListView#placeSearchResults::item:selected {
             background: #3584e4; color: #ffffff; }
-        QLabel[section="true"] { color: #eeeeec; font-weight: 600; padding-top: 6px; }
+        QLabel[section="true"] { color: #e6e6e6; font-weight: $semibold; padding-top: 6px; }
         QLabel[secondary="true"] { color: #b0b0ad; }
         QProgressBar { border: 1px solid #454545; border-radius: 4px;
                        background: #1e1e1e; min-height: 8px; text-align: center; }
@@ -360,7 +377,13 @@ def apply_theme(app: QApplication):
         QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
             background: none; }
         QStatusBar { border-top: 1px solid #454545; }
-    """)
+    """).substitute(
+            caption=TYPE_CAPTION,
+            detail=TYPE_DETAIL,
+            disclosure=TYPE_DISCLOSURE,
+            semibold=TYPE_WEIGHT_SEMIBOLD,
+        )
+    )
 
 
 def section_label(text):
