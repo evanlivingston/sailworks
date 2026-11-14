@@ -177,6 +177,9 @@ class NavigationPanel(QWidget):
         super().__init__(parent)
         self.controller, self.core, self.canvas = controller, controller.core, canvas
         self.setMinimumWidth(280)
+        cancel_edit = getattr(canvas, "track_edit_cancel_requested", None)
+        if cancel_edit is not None:
+            cancel_edit.connect(self.select_track)
         self.syncing = False
         self.poi = None
         self.route = None
@@ -476,8 +479,17 @@ class NavigationPanel(QWidget):
         track = self.core.trackManager.get_active()
         editing = bool(editing and track is not None)
         self.canvas.navigation.edit_track = track if editing else None
+        self.canvas.navigation.hl_track_hover = None
         self.track_buttons[1].setEnabled(editing)
         self._invalidate_race_geometry()
+        # The retained QML overlay keys its track payload on the editing flag,
+        # so publish while the cache still describes the previous mode.
+        refresh = getattr(self.canvas, "refresh_route_overlay", None)
+        if callable(refresh):
+            refresh()
+        invalidate = getattr(self.canvas, "invalidate_navigation", None)
+        if callable(invalidate):
+            invalidate()
         self.canvas.update()
 
     def _invalidate_race_geometry(self):

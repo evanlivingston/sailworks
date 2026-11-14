@@ -122,6 +122,8 @@ class ViewportMap(
     navigation_request = Signal(str, object)
     cursor_readout = Signal(str)
     drawer_toggle_requested = Signal(str)
+    track_point_move_requested = Signal(object, int)
+    track_edit_cancel_requested = Signal()
 
     def __init__(self, controller, parent=None, time_control=None, show_timeline=False):
         super().__init__(parent)
@@ -545,6 +547,58 @@ class ViewportMap(
         """
         return self.rect()
 
+    def _scene_pan_items(self):
+        """The Quick items that translate retained scene content, if loaded."""
+        presenter = getattr(self, "_weather_presenter", None)
+        widget = getattr(presenter, "widget", None)
+        root = widget.rootObject() if hasattr(widget, "rootObject") else None
+        if root is None:
+            self._scene_pan_cache = None
+            return None
+        cache = getattr(self, "_scene_pan_cache", None)
+        if cache is None or cache[0] is not root:
+            overlay = root.findChild(QObject, "routeOverlay")
+            if overlay is None:
+                self._scene_pan_cache = None
+                return None
+            cache = (root, root.findChild(QObject, "mapContent"), overlay)
+            self._scene_pan_cache = cache
+        return cache[1], cache[2]
+
+    def scene_projection(self):
+        """The camera and pixel translation the Quick scene draws with.
+
+        The scene pans by translating ``mapContent`` and, without a shared
+        parent, the route Canvas itself.  The Canvas republishes its camera
+        only when it rebases, so projecting with the widget camera alone drifts
+        from the drawn marks once the scene has panned.  The Canvas offsets
+        already cancel the parent translation for the published camera, so
+        both are added to that camera and never to the widget camera.
+        """
+        items = self._scene_pan_items()
+        if items is None:
+            return super().scene_projection()
+        content, overlay = items
+        if content is None:
+            # Without the shared ``mapContent`` item there is no retained pan
+            # to correct for, so the widget camera is what the scene draws.
+            return super().scene_projection()
+        zoom = overlay.property("zoom")
+        if not zoom or not overlay.property("tracks"):
+            # Nothing has been published yet, so the Canvas camera is unset.
+            return super().scene_projection()
+        offset_x = float(overlay.property("panX") or 0.0)
+        offset_y = float(overlay.property("panY") or 0.0)
+        offset_x += float(content.property("x") or 0.0)
+        offset_y += float(content.property("y") or 0.0)
+        return (
+            float(overlay.property("centerLatitude")),
+            float(overlay.property("centerLongitude")),
+            float(zoom),
+            offset_x,
+            offset_y,
+        )
+
     def _view_pixel_size(self):
         """Layer placement uses the viewport the scene actually presents."""
         rect = self.viewport_rect()
@@ -576,13 +630,36 @@ class ViewportMap(
         self._viewport_overlay_cache = None
         self.publish_route_overlay(force=True)
 
+    def _move_preview_track_index(self, element):
+        """Visible-track position of a previewed point, cached per drag.
+
+        Rebuilding the overlay cache key copies every visible track's metadata,
+        so doing it on each pointer move is wasted work.  Between moves the
+        selected track's position can only change with visibility or ordering,
+        which the identity walk below detects without touching the key.
+        """
+        manager = self.controller.core.trackManager
+        cache = getattr(self, "_move_preview_index_cache", None)
+        if cache is not None and cache[0] is manager and cache[1] is element:
+            index = cache[2]
+            seen = 0
+            for track in manager:
+                if track is element:
+                    if track.visible and seen == index:
+                        return index
+                    break
+                if track.visible:
+                    seen += 1
+            # The track moved, became hidden or left the list: rebuild.
+        _, visible = _overlay_tracks(self)
+        index = next((i for i, track in enumerate(visible) if track is element), -1)
+        self._move_preview_index_cache = (manager, element, index)
+        return index
+
     def preview_move_point(self, element, index, lat, lon):
         """Show a point under the cursor without rebuilding track geometry."""
         self._move_preview_state = (element, int(index), float(lat), float(lon))
-        visible = _overlay_tracks(self)[1]
-        track_index = next(
-            (i for i, track in enumerate(visible) if track is element), -1
-        )
+        track_index = self._move_preview_track_index(element)
         preview = (
             [track_index, int(index), float(lat), float(lon)]
             if track_index >= 0
@@ -593,6 +670,7 @@ class ViewportMap(
 
     def clear_move_preview(self):
         self._move_preview_state = None
+        self._move_preview_index_cache = None
         self.set_move_preview([])
 
     def set_move_preview(self, preview):
@@ -969,7 +1047,6 @@ def _build_viewport_route_overlay(host):
         track_position = [point.lat, point.lon]
         track_heading = _track_point_heading(state.points, marker_index)
         track_awa = getattr(point, "awa", None)
-    manager = host.controller.core.trackManager
     race_tracks = list(getattr(host, "race_tracks_overlay", ()) or ())
     race_courses = list(getattr(host, "race_courses", ()) or ())
     race_positions = list(getattr(host, "race_boat_markers", ()) or ())
@@ -977,21 +1054,7 @@ def _build_viewport_route_overlay(host):
     tracks_key, visible_tracks = _overlay_tracks(host)
     tracks_cache = getattr(host, "_viewport_tracks_cache", None)
     if tracks_cache is None or tracks_cache[0] != tracks_key:
-        tracks = [
-            {
-                "name": str(track.name),
-                "points": [[float(point[0]), float(point[1])] for point in track],
-                "active": bool(manager.is_active(track)),
-                "highlight": (
-                    int(host.navigation.hl_track_item)
-                    if manager.is_active(track)
-                    and host.navigation.hl_track_item is not None
-                    else -1
-                ),
-                "editing": host.navigation.edit_track is track,
-            }
-            for track in visible_tracks
-        ]
+        tracks = [_track_payload(track, host) for track in visible_tracks]
         tracks_cache = (tracks_key, tracks, object())
         host._viewport_tracks_cache = tracks_cache
     poi_key, visible_pois = _overlay_pois(host)
@@ -1101,10 +1164,39 @@ def _overlay_pois(host):
     ), visible
 
 
+def _track_payload(track, host):
+    """One visible track's retained-overlay payload and edit affordances."""
+    manager = host.controller.core.trackManager
+    editing = host.navigation.edit_track is track
+    hover = getattr(host.navigation, "hl_track_hover", None)
+    rounding_of = getattr(track, "point_rounding", None)
+    roundings = (
+        [rounding_of(index) for index in range(len(track))]
+        if callable(rounding_of)
+        else [None] * len(track)
+    )
+    return {
+        "name": str(track.name),
+        "points": [[float(point[0]), float(point[1])] for point in track],
+        # Parallel to ``points``: the QML mark layer colours port/starboard
+        # handles without re-deriving geometry.
+        "roundings": roundings,
+        "active": bool(manager.is_active(track)),
+        "highlight": (
+            int(host.navigation.hl_track_item)
+            if manager.is_active(track) and host.navigation.hl_track_item is not None
+            else -1
+        ),
+        "editing": editing,
+        "hover": int(hover) if editing and hover is not None else -1,
+    }
+
+
 def _overlay_tracks(host):
     """The track cache key and the visible tracks it identifies."""
     manager = host.controller.core.trackManager
     visible = tuple(track for track in manager if track.visible)
+    hover = getattr(host.navigation, "hl_track_hover", None)
     return (
         id(manager),
         getattr(manager, "revision", 0),
@@ -1120,10 +1212,16 @@ def _overlay_tracks(host):
                 ),
                 bool(manager.is_active(track)),
                 host.navigation.edit_track is track,
+                (
+                    int(hover)
+                    if host.navigation.edit_track is track and hover is not None
+                    else -1
+                ),
             )
             for track in visible
         ),
         host.navigation.hl_track_item,
+        hover,
     ), visible
 
 

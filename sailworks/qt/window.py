@@ -257,6 +257,8 @@ class PreviewWindow(QMainWindow):
         self.navigation_panel.changed.connect(self.scene_panel.refresh)
         self.navigation_panel.route_selected.connect(self._navigation_route_selected)
         self.navigation_panel.move_requested.connect(self._move_navigation_point)
+        self.scene_panel.edit_track_requested.connect(self._scene_edit_track)
+        self.map.track_point_move_requested.connect(self._move_scene_mark)
         self.navigation_panel.ais_updated.connect(self._ais_updated)
         self._ais_updated(tuple(self.navigation_panel.ais_targets))
         self._race_boat_positions = []
@@ -1293,6 +1295,22 @@ class PreviewWindow(QMainWindow):
                 self.map.invalidate_navigation()
                 self.map.update()
 
+    def _scene_edit_track(self, key):
+        """Activate a Scene Collection track and enter its edit mode."""
+        track = next(
+            (item for item in self.controller.core.trackManager if item.uid == key),
+            None,
+        )
+        if track is None:
+            return
+        self.controller.core.trackManager.set_active(track)
+        self.navigation_panel.refresh()
+        self.navigation_panel.edit_track()
+        self.views.setCurrentWidget(self.map)
+        self.map.invalidate_navigation()
+        self.log_map.invalidate_navigation()
+        self.map.update()
+
     def _scene_open(self, kind, key):
         if kind != KIND_LOG:
             return
@@ -1391,7 +1409,22 @@ class PreviewWindow(QMainWindow):
             self.navigation_panel.refresh()
             self.navigation_panel.changed.emit()
 
-    def _move_scene_point(self, element, index):
+    def _move_scene_mark(self, element, index):
+        """Drag a mark that the retained scene already draws and previews.
+
+        The scene publishes the mark under the pointer itself, so the preview
+        and commit have to project with the scene camera.  This is the only
+        path that opts into that projection.
+        """
+        self._move_scene_point(element, index, direct_point=True)
+
+    def _move_scene_point(self, element, index, direct_point=False):
+        """Move one point of a scene element after a click or drag.
+
+        An explicit Move from the scene list and a calculated route relocation
+        both pick a new position with the widget camera and repaint the canvas.
+        Only a direct drag of a retained mark sets ``direct_point``.
+        """
         if not 0 <= index < len(element):
             return
         before = (element.points[index][0], element.points[index][1])
@@ -1419,7 +1452,12 @@ class PreviewWindow(QMainWindow):
                 )
 
         self.views.setCurrentWidget(self.map)
-        self.map.begin_move(move, preview=preview, restore=restore)
+        self.map.begin_move(
+            move,
+            preview=preview,
+            restore=restore,
+            direct_point=bool(direct_point),
+        )
 
     def _refresh_scene_point(self):
         self.scene_panel.refresh()

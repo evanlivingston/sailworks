@@ -183,6 +183,7 @@ class ScenePanel(QWidget):
     fit_requested = Signal(object)
     delete_requested = Signal(object)
     move_point_requested = Signal(object, int)
+    edit_track_requested = Signal(str)
     routing_visibility_changed = Signal()
 
     def __init__(self, controller, parent=None, scene_path=None):
@@ -1165,6 +1166,12 @@ class ScenePanel(QWidget):
             )
         ]
         open_log = node is not None and node[0] == "item" and node[1] == KIND_LOG
+        edit_track = (
+            node is not None
+            and node[0] == "item"
+            and node[1] == KIND_TRACK
+            and not node[2].startswith("race:")
+        )
 
         builder.add("New Collection", self._new_collection, key="N")
         if keys:
@@ -1205,10 +1212,16 @@ class ScenePanel(QWidget):
                 )
                 action.setCheckable(True)
                 action.setChecked(mode == current)
-        if fit_nodes or point_element is not None:
+        if fit_nodes or point_element is not None or edit_track:
             builder.section()
             if fit_nodes:
                 builder.add("Fit", lambda: self.fit_requested.emit(fit_nodes), key="F")
+            if edit_track:
+                builder.add(
+                    "Edit Track",
+                    lambda: self.edit_track_requested.emit(node[2]),
+                    key="E",
+                )
             if point_element is not None:
                 builder.add(
                     "Edit…",
