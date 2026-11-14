@@ -7,8 +7,11 @@ absent field is reported as missing rather than as a reassuring zero.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
+
+from sailworks.core.geo.mapshapes import avoid_zones_digest_from_native
 
 from .routingresult import RoutingResult
 
@@ -56,6 +59,31 @@ class DiagnosticState:
 
     code: str
     state: str
+
+
+@dataclass(frozen=True)
+class AvoidZoneSummary:
+    """One frozen polygon exactly as the calculation recorded it."""
+
+    zone_id: str
+    name: str
+    vertex_count: Optional[int]
+
+
+@dataclass(frozen=True)
+class AvoidZonesEvidence:
+    """Frozen avoid-zone constraints saved with a result, not the live scene.
+
+    ``active`` reports only that the recorded calculation applied the frozen
+    polygon set. It never asserts that a zone changed the route: that causal
+    claim needs a comparison or replay that no result field records.
+    """
+
+    digest: str
+    active: Optional[bool]
+    zones: Tuple[AvoidZoneSummary, ...]
+    consistency: Tuple[str, ...]
+    causality: str
 
 
 @dataclass(frozen=True)
@@ -277,6 +305,204 @@ def _geometry_state(result: RoutingResult) -> DiagnosticState:
     return DiagnosticState("inspection_geometry", "not reported by this result")
 
 
+_ZONE_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_ZONE_CAUSALITY = (
+    "no reroute is claimed: the result records no comparison or replay of the "
+    "same request without these zones"
+)
+
+
+def _zone_summaries(value: Any, problems: list) -> Tuple[AvoidZoneSummary, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        problems.append("recorded zone set is not a list")
+        return ()
+    zones = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            problems.append(f"zone descriptor {index} is not an object")
+            continue
+        zone_id = item.get("id")
+        name = item.get("name", "")
+        count = item.get("vertex_count")
+        if not isinstance(zone_id, str) or not zone_id:
+            problems.append(f"zone descriptor {index} has no id")
+            continue
+        if not isinstance(name, str):
+            problems.append(f"zone descriptor {index} has a non-text name")
+            name = ""
+        if count is not None and (
+            not isinstance(count, int) or isinstance(count, bool) or count < 0
+        ):
+            problems.append(f"zone descriptor {index} has an invalid vertex count")
+            count = None
+        zones.append(AvoidZoneSummary(zone_id, name, count))
+    return tuple(zones)
+
+
+def _fingerprint_problems(
+    diagnostics: Mapping[str, Any],
+    digest: str,
+    zones: Tuple[AvoidZoneSummary, ...],
+) -> list:
+    """Cross-check the recorded descriptors against the request fingerprints."""
+    fingerprints = diagnostics.get("input_fingerprints")
+    if not isinstance(fingerprints, Mapping):
+        return []
+    problems = []
+    recorded_digest = fingerprints.get("avoid_zones_digest")
+    if recorded_digest is not None and digest and recorded_digest != digest:
+        problems.append(
+            "input fingerprint digest does not match the recorded zone digest"
+        )
+    listed = fingerprints.get("avoid_zones")
+    if listed is None:
+        return problems
+    if not isinstance(listed, (list, tuple)):
+        problems.append("input fingerprint zone list is not a list")
+        return problems
+    expected = [(zone.zone_id, zone.name, zone.vertex_count) for zone in zones]
+    actual = []
+    for index, item in enumerate(listed):
+        if not isinstance(item, Mapping):
+            problems.append(f"input fingerprint zone {index} is not an object")
+            return problems
+        actual.append((item.get("id"), item.get("name", ""), item.get("vertex_count")))
+    if actual != expected:
+        problems.append(
+            "input fingerprint zone set differs from the recorded zone descriptors"
+        )
+    _fingerprint_geometry_problems(listed, digest, problems)
+    return problems
+
+
+def _fingerprint_geometry_problems(
+    listed: list,
+    digest: str,
+    problems: list,
+) -> None:
+    """Re-hash the stored fingerprint rings against the saved zone digest.
+
+    Descriptor comparison cannot see a geometry edit that keeps the same zone
+    ids, names and vertex counts, so the stored payload is canonicalised and
+    hashed the way the calculation hashed it. A fingerprint that predates
+    ordered vertex payloads carries no geometry to re-hash; it is left to the
+    descriptor and digest checks rather than reported as altered.
+    """
+    if not digest:
+        return
+    payload = []
+    for index, item in enumerate(listed):
+        if not isinstance(item, Mapping):
+            return
+        if "vertices" not in item:
+            return
+        vertices = item["vertices"]
+        if not isinstance(vertices, (list, tuple)):
+            problems.append(
+                f"input fingerprint zone {index} has a non-list vertex payload"
+            )
+            return
+        payload.append(
+            {
+                "id": item.get("id"),
+                "name": item.get("name", ""),
+                "vertices": vertices,
+            }
+        )
+    if not payload:
+        return
+    try:
+        recomputed = avoid_zones_digest_from_native(payload)
+    except (TypeError, ValueError):
+        problems.append(
+            "input fingerprint zone geometry could not be re-hashed against "
+            "the recorded zone digest"
+        )
+        return
+    if recomputed != digest:
+        problems.append(
+            "input fingerprint zone geometry does not match the recorded zone digest"
+        )
+
+
+def avoid_zone_evidence(result: RoutingResult) -> Optional[AvoidZonesEvidence]:
+    """Frozen zone evidence from a saved result, or None for a no-zone result.
+
+    Only values recorded in the artifact are read. Nothing here consults the
+    current scene, so a zone added or edited after the calculation cannot be
+    mistaken for the set that was applied.
+    """
+    if not isinstance(result, RoutingResult):
+        raise TypeError("result must be a RoutingResult")
+    diagnostics = result.outcome.diagnostics or {}
+    if not isinstance(diagnostics, Mapping):
+        return None
+    keys = ("avoid_zones", "avoid_zones_digest", "avoid_zones_active")
+    if not any(key in diagnostics for key in keys):
+        return None
+    problems = []
+    zones = _zone_summaries(diagnostics.get("avoid_zones"), problems)
+    digest = diagnostics.get("avoid_zones_digest")
+    if digest is None:
+        problems.append("zone digest was not recorded")
+        digest = ""
+    elif not isinstance(digest, str) or not _ZONE_DIGEST.fullmatch(digest):
+        problems.append("zone digest is not 64 lowercase hexadecimal characters")
+        digest = "" if not isinstance(digest, str) else digest
+    active = diagnostics.get("avoid_zones_active")
+    if active is None:
+        problems.append("zone active flag was not recorded")
+        active = None
+    elif not isinstance(active, bool):
+        problems.append("zone active flag is not a boolean")
+        active = None
+    if active and not zones:
+        problems.append("zones are marked active but no descriptor was recorded")
+    if zones and active is False:
+        problems.append("zone descriptors were recorded but are marked inactive")
+    problems.extend(_fingerprint_problems(diagnostics, digest, zones))
+    return AvoidZonesEvidence(digest, active, zones, tuple(problems), _ZONE_CAUSALITY)
+
+
+def _avoid_zone_states(result: RoutingResult) -> Tuple[DiagnosticState, ...]:
+    """Disclose the frozen zone set and refuse any unproven causal claim."""
+    evidence = avoid_zone_evidence(result)
+    if evidence is None:
+        return ()
+    labels = ", ".join(
+        f"{zone.name or zone.zone_id} [{zone.zone_id}]" for zone in evidence.zones
+    )
+    count = len(evidence.zones)
+    if evidence.active is True:
+        detail = f"{count} frozen zone constraint(s) applied: {labels}"
+    elif evidence.active is False:
+        detail = f"{count} frozen zone constraint(s) recorded but not active: {labels}"
+    else:
+        detail = (
+            f"{count} frozen zone constraint(s) recorded; "
+            f"applied state not proven: {labels}"
+        )
+    if evidence.digest:
+        detail += f"; digest {evidence.digest}"
+    states = [DiagnosticState("avoid zones", detail)]
+    states.append(DiagnosticState("avoid zone effect", evidence.causality))
+    if evidence.active and result.status != "complete":
+        states.append(
+            DiagnosticState(
+                "zone constraint",
+                f"no route delivered with {count} active avoid-zone constraint(s); "
+                "zone causation not proven (no comparison or replay evidence recorded)",
+            )
+        )
+    if evidence.consistency:
+        states.append(
+            DiagnosticState("avoid zone evidence", "; ".join(evidence.consistency))
+        )
+    return tuple(states)
+
+
 def diagnostics(result: RoutingResult) -> Tuple[DiagnosticState, ...]:
     """Distinct visible states for search, resources, validation and geometry."""
     if not isinstance(result, RoutingResult):
@@ -313,6 +539,7 @@ def diagnostics(result: RoutingResult) -> Tuple[DiagnosticState, ...]:
         if name in features:
             states.append(DiagnosticState(name, str(features[name])))
     states.extend(_wave_provenance_states(result))
+    states.extend(_avoid_zone_states(result))
     states.append(DiagnosticState("trace times", str(result.capabilities.trace_times)))
     return tuple(states)
 
@@ -352,6 +579,10 @@ class RoutingInspector:
         if not isinstance(result, RoutingResult):
             raise TypeError("result must be a RoutingResult")
         self._result = result
+
+    def avoid_zones(self) -> Optional[AvoidZonesEvidence]:
+        """Frozen zone evidence saved with this result, never the live scene."""
+        return avoid_zone_evidence(self._result)
 
     def layers(self) -> Tuple[LayerSummary, ...]:
         if not self._result.layers:

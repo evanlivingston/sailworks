@@ -2,7 +2,9 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <numbers>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -10,6 +12,7 @@
 #include "sailworks_performance.h"
 #include "supercpn/weather_routing/Rounding.h"
 #include "synthetic.h"
+#include "user_request.h"
 
 namespace {
 
@@ -394,6 +397,202 @@ int main() {
 
   const SyntheticRun invalid = runInvalidDestination();
   require(!invalid.accepted, "invalid destination reported accepted completion");
+
+  // Frozen user no-go zones: native polygon geometry composed with the
+  // shoreline adapter, with no per-leg Python callback.
+  const auto openWater = std::make_shared<wr::OpenWaterProvider>();
+  const std::string zoneDigest(64, 'a');
+  const wr::GeoPoint ringSouthWest{48.00, -123.60};
+  const wr::GeoPoint ringSouthEast{48.00, -123.20};
+  const wr::GeoPoint ringNorthEast{48.30, -123.20};
+  const wr::GeoPoint ringNorthWest{48.30, -123.60};
+  AvoidZone trafficZone;
+  trafficZone.id = "zone-traffic";
+  trafficZone.name = "Traffic separation";
+  trafficZone.vertices = {ringSouthWest, ringSouthEast, ringNorthEast,
+                          ringNorthWest};
+  const std::vector<AvoidZone> zoneSet{trafficZone};
+  validateAvoidZones(zoneSet);
+  validateAvoidZoneDigest(zoneDigest);
+
+  const auto zoneProvider = buildAvoidZoneProvider(zoneSet, zoneDigest);
+  require(zoneProvider->identity() == "user-avoid-zones:" + zoneDigest,
+          "the native zone provider identity does not carry the digest");
+  const auto composed =
+      composeAvoidZones(openWater, zoneProvider, zoneDigest, "provider");
+  require(composed->identity() ==
+              "open-water+avoid-zones:" + zoneDigest,
+          "the composed identity does not name both halves and the digest");
+
+  const wr::GeoPoint insideZone{48.15, -123.40};
+  const wr::GeoPoint alsoInsideZone{48.25, -123.30};
+  const wr::GeoPoint outsideZone{48.15, -123.90};
+  const wr::GeoPoint southOfZone{47.80, -123.40};
+  const wr::GeoPoint northOfZone{48.50, -123.40};
+  require(composed->pointForbidden(insideZone) &&
+              !composed->pointForbidden(outsideZone),
+          "a zone point test does not distinguish inside from outside");
+  require(near(composed->distanceToForbiddenNm(insideZone), 0.0),
+          "a point inside a zone does not report zero clearance");
+  require(composed->segmentForbidden(southOfZone, northOfZone, 0.0) &&
+              composed->segmentFromKnownSafeForbidden(southOfZone,
+                                                      northOfZone, 0.0),
+          "a leg crossing a zone is not forbidden");
+
+  // Zones are exact hard boundaries: the configured land stand-off never
+  // widens them, and a leg that passes close without touching is allowed.
+  const wr::GeoPoint nearSouthWest{47.995, -123.60};
+  const wr::GeoPoint nearSouthEast{47.995, -123.20};
+  require(!composed->segmentForbidden(nearSouthWest, nearSouthEast, 0.0) &&
+              !composed->segmentForbidden(nearSouthWest, nearSouthEast, 2.0),
+          "a leg passing near a zone without touching it was rejected, or "
+          "the land stand-off was applied to a zone");
+
+  // The known-safe departure exemption belongs to the shoreline buffer only.
+  // The raw polygon provider would grant egress from inside a ring; the
+  // composite must not.
+  require(!zoneProvider->segmentFromKnownSafeForbidden(insideZone,
+                                                      alsoInsideZone, 0.0),
+          "raw polygon provider unexpectedly rejected an interior leg");
+  require(composed->segmentFromKnownSafeForbidden(insideZone, alsoInsideZone,
+                                                  0.0) &&
+              composed->validationSegmentFromKnownSafeForbiddenAt(
+                  insideZone, alsoInsideZone, wr::TimePoint{}, 0.0),
+          "the composite extended the known-safe exemption to a zone");
+  require(composed->validationSegmentFromKnownSafeForbiddenAt(
+              southOfZone, northOfZone, wr::TimePoint{}, 0.0),
+          "independent replay did not judge the same zone geometry");
+
+  // The shoreline half still provides its stand-off, clearance and egress.
+  const std::vector<std::vector<wr::GeoPoint>> landPolygons{{{
+      47.00, -124.00}, {47.00, -123.00}, {47.10, -123.00}, {47.10, -124.00}}};
+  const auto shoreline = std::make_shared<wr::PolygonBoundaryProvider>(
+      landPolygons, "test-shoreline");
+  const auto coastal =
+      composeAvoidZones(shoreline, zoneProvider, zoneDigest, "provider");
+  require(coastal->identity() ==
+              "test-shoreline+avoid-zones:" + zoneDigest,
+          "the composite lost the shoreline identity");
+  // About 1 NM offshore of the land edge and far from the zone.
+  const wr::GeoPoint harbour{47.116, -123.50};
+  const wr::GeoPoint offshore{47.60, -123.50};
+  const double harbourClearance = coastal->distanceToForbiddenNm(harbour);
+  require(harbourClearance > 0.5 && harbourClearance < 1.2,
+          "the composite did not report the worse (shoreline) clearance");
+  require(!coastal->segmentFromKnownSafeForbidden(harbour, offshore, 2.0),
+          "a departure from a stand-off buffer was rejected");
+  require(coastal->segmentFromKnownSafeForbidden(
+              harbour, wr::GeoPoint{47.05, -123.50}, 2.0),
+          "the composite lost the shoreline segment rejection");
+  require(near(coastal->distanceToForbiddenNm(insideZone), 0.0),
+          "the zone did not win the worse-of-two clearance");
+
+  // A ring may be sent explicitly closed; the engine closes it implicitly.
+  AvoidZone closedZone = trafficZone;
+  closedZone.vertices.push_back(ringSouthWest);
+  require(buildAvoidZoneProvider({closedZone}, zoneDigest)
+              ->pointForbidden(insideZone),
+          "an explicitly closed ring was not accepted");
+
+  const auto expectInvalid =
+      [](const std::vector<AvoidZone>& bad, const std::string& needle,
+         const std::string& description) {
+        try {
+          validateAvoidZones(bad);
+        } catch (const std::invalid_argument& error) {
+          require(std::string(error.what()).find(needle) != std::string::npos,
+                  description + ": message does not name the zone");
+          return;
+        }
+        require(false, description + ": invalid zone set was accepted");
+      };
+  AvoidZone twoVertices = trafficZone;
+  twoVertices.vertices = {ringSouthWest, ringSouthEast};
+  expectInvalid({twoVertices}, "zone-traffic",
+                "a two-vertex ring must be rejected");
+  AvoidZone repeated = trafficZone;
+  repeated.vertices = {ringSouthWest, ringSouthWest, ringNorthEast};
+  expectInvalid({repeated}, "zone-traffic",
+                "a repeated consecutive vertex must be rejected");
+  AvoidZone bowtie = trafficZone;
+  bowtie.vertices = {{48.00, -123.60}, {48.20, -123.20}, {48.00, -123.20},
+                     {48.20, -123.60}};
+  expectInvalid({bowtie}, "zone-traffic",
+                "a self-intersecting ring must be rejected");
+  AvoidZone spanning = trafficZone;
+  spanning.vertices = {{0.00, -170.00}, {1.00, 20.00}, {2.00, 10.00}};
+  expectInvalid({spanning}, "zone-traffic",
+                "a ring spanning more than 180 degrees must be rejected");
+  AvoidZone nonFinite = trafficZone;
+  nonFinite.vertices = {{48.00, -123.60}, {48.20, -123.20},
+                        {std::nan(""), -123.20}};
+  expectInvalid({nonFinite}, "zone-traffic",
+                "a non-finite vertex must be rejected");
+  expectInvalid({trafficZone, trafficZone}, "duplicate",
+                "duplicate zone ids must be rejected");
+  try {
+    buildAvoidZoneProvider(zoneSet, "not-a-digest");
+    require(false, "a malformed digest was accepted");
+  } catch (const std::invalid_argument&) {
+  }
+  require(containingAvoidZoneId(zoneSet, insideZone) ==
+                  std::optional<std::string>("zone-traffic") &&
+              !containingAvoidZoneId(zoneSet, outsideZone),
+          "the named zone for a contained point is wrong");
+
+  // End-to-end: the engine path really consults the composed provider. Place a
+  // small zone on the midpoint of the unconstrained fixture route (so the
+  // baseline demonstrably crosses it) and require that any accepted
+  // zone-constrained route keeps every leg out of it, including independent
+  // replay.
+  wr::RoutingEnvironment zoneEnvironment = fixtureEnvironment();
+  const auto fixtureLand = zoneEnvironment.landAndBoundaries;
+  double bestMidpointDistance = 0.0;
+  wr::GeoPoint zoneCentre{};
+  bool haveZoneCentre = false;
+  for (const auto& leg : first.result.legs) {
+    const wr::GeoPoint midpoint{(leg.start.latitude + leg.end.latitude) / 2.0,
+                                (leg.start.longitude + leg.end.longitude) / 2.0};
+    const double clearance = std::min(
+        wr::distanceNm(midpoint, fixtureRequest().start),
+        wr::distanceNm(midpoint, fixtureRequest().destination));
+    if (clearance > bestMidpointDistance) {
+      bestMidpointDistance = clearance;
+      zoneCentre = midpoint;
+      haveZoneCentre = true;
+    }
+  }
+  if (haveZoneCentre && bestMidpointDistance > 1.0) {
+    AvoidZone blockingZone;
+    blockingZone.id = "zone-fixture-route";
+    blockingZone.name = "Fixture route exclusion";
+    blockingZone.vertices = {
+        {zoneCentre.latitude - 0.010, zoneCentre.longitude - 0.010},
+        {zoneCentre.latitude - 0.010, zoneCentre.longitude + 0.010},
+        {zoneCentre.latitude + 0.010, zoneCentre.longitude + 0.010},
+        {zoneCentre.latitude + 0.010, zoneCentre.longitude - 0.010}};
+    const auto blockingProvider =
+        buildAvoidZoneProvider({blockingZone}, zoneDigest);
+    const auto blockingLand = composeAvoidZones(
+        fixtureLand, blockingProvider, zoneDigest, "fixture");
+    bool baselineCrosses = false;
+    for (const auto& leg : first.result.legs)
+      baselineCrosses = baselineCrosses ||
+                        blockingLand->segmentForbidden(leg.start, leg.end, 0.0);
+    require(baselineCrosses,
+            "the fixture zone does not block the unconstrained route");
+    zoneEnvironment.landAndBoundaries = blockingLand;
+    const SyntheticRun zoned =
+        runRequest("main", fixtureRequest(), std::move(zoneEnvironment));
+    require(zoned.result.validation.passed ==
+                zoned.independentValidation.passed,
+            "zone search and independent replay disagree");
+    if (zoned.accepted) {
+      for (const auto& leg : zoned.result.legs)
+        require(!blockingLand->segmentForbidden(leg.start, leg.end, 0.0),
+                "an accepted zone-constrained route crosses a frozen zone");
+    }
+  }
 
   if (failures != 0) return EXIT_FAILURE;
   std::cout << "native routing selftest passed\n";

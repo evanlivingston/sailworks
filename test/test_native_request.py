@@ -10,6 +10,7 @@ from uuid import UUID
 
 import pytest
 
+from sailworks.core.geo.mapshapes import MapShape, avoid_zones_digest
 from sailworks.core.marine.nativerequest import Rounding, freeze_native_requests
 from sailworks.core.routingjob import RouteRequest
 from sailworks.core.routingoptions import RouteScenario, scenario_request
@@ -602,3 +603,428 @@ def test_native_execution_turns_wave_coverage_failure_into_an_explicit_error(
 
     with pytest.raises(ValueError, match="wind proxy was not substituted"):
         nativeexecution.run_native_request(job)
+
+
+# A rectangle that the test route crosses with both endpoints in open water.
+AVOID_VERTICES = (
+    (48.25, -123.70),
+    (48.25, -123.55),
+    (48.35, -123.55),
+    (48.35, -123.70),
+)
+CROSSING_INSIDE_LEG = ((48.20, -123.65), (48.40, -123.65))
+OUTSIDE_LEG = ((48.40, -123.65), (48.41, -123.65))
+
+
+def _avoid_shape(identifier="avoid-1", enabled=True):
+    return MapShape(
+        id=identifier,
+        name="Charted reef",
+        kind="avoid",
+        vertices=AVOID_VERTICES,
+        enabled=enabled,
+    )
+
+
+def test_map_shapes_freeze_as_a_validated_immutable_snapshot(polar):
+    avoid = _avoid_shape()
+    note = MapShape(id="note-1", name="Note", kind="note", vertices=((48.3, -123.6),))
+    request = replace(_request(polar), use_currents=False, map_shapes=[avoid, note])
+
+    assert isinstance(request.map_shapes, tuple)
+    assert request.map_shapes == (avoid, note)
+
+    (job,) = freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+
+    assert job.map_shapes == (avoid, note)
+    # The frozen job owns its snapshot: later edits to the source cannot reach it.
+    edited = replace(request, map_shapes=())
+    assert edited.map_shapes == ()
+    assert job.map_shapes == (avoid, note)
+
+
+def test_map_shape_snapshot_rejects_values_that_are_not_validated_shapes(polar):
+    with pytest.raises(ValueError, match="Not a map shape"):
+        replace(_request(polar), map_shapes=("reef",))
+
+
+def test_frozen_native_request_rejects_unvalidated_map_shapes(polar):
+    request = replace(_request(polar), use_currents=False, map_shapes=(_avoid_shape(),))
+    (job,) = freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+
+    with pytest.raises(ValueError, match="validated map shapes"):
+        replace(job, map_shapes=("reef",))
+
+
+def test_map_shapes_cannot_change_between_scenarios(polar):
+    request = replace(_request(polar), use_currents=False, map_shapes=(_avoid_shape(),))
+
+    with pytest.raises(ValueError, match="frozen source selection"):
+        freeze_native_requests(
+            request,
+            (replace(request, map_shapes=()),),
+            _forecast(),
+            (),
+            None,
+            engine="main",
+        )
+
+
+def test_frozen_request_carries_only_active_zones_in_selection_order(polar):
+    other = MapShape(
+        id="avoid-2",
+        name="Second reef",
+        kind="avoid",
+        vertices=tuple((lat + 0.5, lon) for lat, lon in AVOID_VERTICES),
+    )
+    note = MapShape(id="note-1", name="Note", kind="note", vertices=((48.3, -123.6),))
+    request = replace(
+        _request(polar),
+        use_currents=False,
+        map_shapes=(
+            note,
+            _avoid_shape("avoid-a"),
+            _avoid_shape("off", enabled=False),
+            other,
+        ),
+    )
+
+    (job,) = freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+
+    assert [zone.id for zone in job.avoid_zones] == ["avoid-a", "avoid-2"]
+    assert [zone.name for zone in job.avoid_zones] == ["Charted reef", "Second reef"]
+    assert job.avoid_zones_digest == avoid_zones_digest(job.avoid_zones)
+    assert len(job.avoid_zones_digest) == 64
+    int(job.avoid_zones_digest, 16)
+    # Every zone is its own frozen record with a tuple ring.
+    for zone in job.avoid_zones:
+        assert isinstance(zone.vertices, tuple)
+        assert all(isinstance(vertex, tuple) for vertex in zone.vertices)
+
+
+def test_frozen_zone_digest_is_deterministic_and_geometry_canonical(polar):
+    reversed_ring = MapShape(
+        id="avoid-1",
+        name="Charted reef",
+        kind="avoid",
+        vertices=tuple(reversed(AVOID_VERTICES)),
+    )
+    request = replace(_request(polar), use_currents=False, map_shapes=(_avoid_shape(),))
+    rotated = replace(
+        _request(polar),
+        use_currents=False,
+        map_shapes=(
+            MapShape(
+                id="avoid-1",
+                name="Charted reef",
+                kind="avoid",
+                vertices=AVOID_VERTICES[2:] + AVOID_VERTICES[:2],
+            ),
+        ),
+    )
+    flipped = replace(_request(polar), use_currents=False, map_shapes=(reversed_ring,))
+
+    (first,) = freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+    (again,) = freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+    (same_shape,) = freeze_native_requests(
+        rotated, (), _forecast(), (), None, engine="main"
+    )
+    (same_winding,) = freeze_native_requests(
+        flipped, (), _forecast(), (), None, engine="main"
+    )
+
+    # Same request, same snapshot: the digest is reproducible.
+    assert first.avoid_zones_digest == again.avoid_zones_digest
+    # Rotation and winding are not part of the geometry's identity.
+    assert first.avoid_zones == same_shape.avoid_zones
+    assert first.avoid_zones_digest == same_shape.avoid_zones_digest
+    assert first.avoid_zones == same_winding.avoid_zones
+    assert first.avoid_zones_digest == same_winding.avoid_zones_digest
+    # The canonical ring is the payload the bridge receives.
+    assert first.avoid_zones[0].to_native()["vertices"] == [
+        [48.25, -123.70],
+        [48.25, -123.55],
+        [48.35, -123.55],
+        [48.35, -123.70],
+    ]
+
+
+def test_frozen_zone_digest_commits_to_identity_and_order(polar):
+    renamed = MapShape(
+        id="avoid-1",
+        name="Other name",
+        kind="avoid",
+        vertices=AVOID_VERTICES,
+    )
+    request = replace(_request(polar), use_currents=False, map_shapes=(_avoid_shape(),))
+    (base,) = freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+    (name_changed,) = freeze_native_requests(
+        replace(_request(polar), use_currents=False, map_shapes=(renamed,)),
+        (),
+        _forecast(),
+        (),
+        None,
+        engine="main",
+    )
+    assert base.avoid_zones_digest != name_changed.avoid_zones_digest
+
+    first = _avoid_shape("avoid-a")
+    second = _avoid_shape("avoid-b")
+    (ordered,) = freeze_native_requests(
+        replace(_request(polar), use_currents=False, map_shapes=(first, second)),
+        (),
+        _forecast(),
+        (),
+        None,
+        engine="main",
+    )
+    (reordered,) = freeze_native_requests(
+        replace(_request(polar), use_currents=False, map_shapes=(second, first)),
+        (),
+        _forecast(),
+        (),
+        None,
+        engine="main",
+    )
+    assert ordered.avoid_zones_digest != reordered.avoid_zones_digest
+
+
+def test_frozen_zones_cannot_be_replaced_after_the_freeze(polar):
+    request = replace(_request(polar), use_currents=False, map_shapes=(_avoid_shape(),))
+    (job,) = freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+    digest = job.avoid_zones_digest
+    zone = job.avoid_zones[0]
+
+    # A replaced payload is re-derived from the frozen shapes, so it can never
+    # disagree with the digest that was computed for them.
+    spoofed = replace(
+        job,
+        avoid_zones=(MapShape(id="spoof", kind="avoid", vertices=AVOID_VERTICES),),
+        avoid_zones_digest="0" * 64,
+    )
+    assert spoofed.avoid_zones == (zone,)
+    assert spoofed.avoid_zones_digest == digest
+
+    cleared = replace(job, map_shapes=())
+    assert cleared.avoid_zones == ()
+    assert cleared.avoid_zones_digest == ""
+    assert job.avoid_zones == (zone,)
+    assert job.avoid_zones_digest == digest
+
+
+def test_freeze_rejects_invalid_avoid_rings_before_dispatch(polar):
+    bowtie = ((48.20, -123.70), (48.40, -123.60), (48.22, -123.60), (48.40, -123.70))
+    duplicated = (
+        (48.25, -123.70),
+        (48.25, -123.70),
+        (48.25, -123.55),
+        (48.35, -123.55),
+    )
+    dateline = (
+        (48.0, -179.0),
+        (48.0, 10.0),
+        (49.0, 10.0),
+        (49.0, -179.0),
+    )
+
+    for vertices, message in (
+        (bowtie, "may not cross or touch"),
+        (duplicated, "must be distinct"),
+        (dateline, "longitude span exceeds 180 degrees"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            replace(
+                _request(polar),
+                use_currents=False,
+                map_shapes=(MapShape(id="bad", kind="avoid", vertices=vertices),),
+            )
+
+
+def test_native_execution_sends_frozen_zones_without_a_polygon_adapter(
+    polar, monkeypatch
+):
+    from sailworks.core.geo.mapshapes import avoid_zones_digest
+    from sailworks.core.marine import nativeexecution
+
+    request = replace(
+        _request(polar),
+        use_currents=False,
+        coastline_checks=False,
+        map_shapes=(_avoid_shape(),),
+    )
+    (job,) = freeze_native_requests(
+        request, (), _wind_routable_forecast(), (), None, engine="main"
+    )
+    captured = {}
+
+    def route_user_request(
+        wind, current, coverage, polar_rows, settings, land, *args, **kwargs
+    ):
+        captured.update(settings=settings, land=land)
+        return {"status": "complete"}
+
+    bridge = SimpleNamespace(
+        route_user_request=route_user_request,
+        identity=lambda: {"source": {}, "versions": {}},
+    )
+    monkeypatch.setitem(sys.modules, "sailworks_native_routing", bridge)
+    monkeypatch.setattr(nativeexecution, "BoundRoutingWind", _FakeWind)
+
+    run = nativeexecution.run_native_request(job)
+
+    settings = captured["settings"]
+    assert "avoid_polygon_count" not in settings
+    assert settings["coastline_checks"] is False
+    assert settings["land_safety_margin_nm"] == 0.0
+    # The frozen ordered zones and their canonical digest are the only native
+    # polygon input; the worker-local land adapter is the shoreline alone.
+    assert settings["avoid_zones"] == [zone.to_native() for zone in job.avoid_zones]
+    assert settings["avoid_zones_digest"] == job.avoid_zones_digest
+    assert settings["avoid_zones_digest"] == avoid_zones_digest(job.avoid_zones)
+    assert captured["land"] is None
+    assert run["input_fingerprints"]["avoid_zones_digest"] == job.avoid_zones_digest
+    assert [
+        (zone["id"], zone["name"], zone["vertex_count"])
+        for zone in run["input_fingerprints"]["avoid_zones"]
+    ] == [("avoid-1", "Charted reef", len(AVOID_VERTICES))]
+
+
+def test_native_execution_keeps_no_zone_requests_baseline_identical(polar, monkeypatch):
+    from sailworks.core.marine import nativeexecution
+
+    note = MapShape(id="note-1", name="Note", kind="note", vertices=((48.3, -123.6),))
+    disabled = _avoid_shape("avoid-disabled", enabled=False)
+    runs = []
+    for shapes in ((), (note, disabled)):
+        request = replace(
+            _request(polar),
+            use_currents=False,
+            coastline_checks=False,
+            map_shapes=shapes,
+        )
+        (job,) = freeze_native_requests(
+            request, (), _wind_routable_forecast(), (), None, engine="main"
+        )
+        captured = {}
+
+        def route_user_request(*args, **kwargs):
+            captured.update(settings=args[4], land=args[5])
+            return {"status": "complete"}
+
+        bridge = SimpleNamespace(
+            route_user_request=route_user_request,
+            identity=lambda: {"source": {}, "versions": {}},
+        )
+        monkeypatch.setitem(sys.modules, "sailworks_native_routing", bridge)
+        monkeypatch.setattr(nativeexecution, "BoundRoutingWind", _FakeWind)
+
+        run = nativeexecution.run_native_request(job)
+        runs.append((job, captured, run))
+
+    for job, captured, run in runs:
+        settings = captured["settings"]
+        assert "avoid_polygon_count" not in settings
+        assert "avoid_zones" not in settings
+        assert "avoid_zones_digest" not in settings
+        assert "avoid_zones" not in run["input_fingerprints"]
+        assert "avoid_zones_digest" not in run["input_fingerprints"]
+        assert "map_shapes" not in run["input_fingerprints"]
+        assert job.avoid_zones == ()
+        assert job.avoid_zones_digest == ""
+        # The shoreline toggle alone chooses the worker-local adapter.
+        assert captured["land"] is None
+
+    # Note-only and disabled shapes are inert: they cannot alter the request
+    # or the settings and fingerprint the bridge receives.
+    assert runs[0][1]["settings"] == runs[1][1]["settings"]
+    assert runs[0][2]["input_fingerprints"] == runs[1][2]["input_fingerprints"]
+
+
+def test_native_execution_leaves_land_adapter_alone_without_avoid_polygons(
+    polar, monkeypatch
+):
+    from sailworks.core.marine import nativeexecution
+
+    request = replace(_request(polar), use_currents=False, coastline_checks=False)
+    (job,) = freeze_native_requests(
+        request, (), _wind_routable_forecast(), (), None, engine="main"
+    )
+    captured = {}
+
+    def route_user_request(*args, **kwargs):
+        captured.update(settings=args[4], land=args[5])
+        return {"status": "complete"}
+
+    bridge = SimpleNamespace(
+        route_user_request=route_user_request,
+        identity=lambda: {"source": {}, "versions": {}},
+    )
+    monkeypatch.setitem(sys.modules, "sailworks_native_routing", bridge)
+    monkeypatch.setattr(nativeexecution, "BoundRoutingWind", _FakeWind)
+
+    nativeexecution.run_native_request(job)
+
+    assert "avoid_polygon_count" not in captured["settings"]
+    assert captured["land"] is None
+
+
+def test_freeze_rejects_a_start_inside_an_avoid_polygon(polar):
+    request = replace(
+        _request(polar),
+        use_currents=False,
+        coastline_checks=False,
+        start=(48.30, -123.60),
+        map_shapes=(_avoid_shape(),),
+    )
+
+    with pytest.raises(
+        ValueError, match="start is inside the enabled avoid polygon 'Charted reef'"
+    ):
+        freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+
+
+def test_freeze_rejects_a_destination_inside_an_avoid_polygon(polar):
+    request = replace(
+        _request(polar),
+        use_currents=False,
+        coastline_checks=False,
+        destination=(48.30, -123.60),
+        map_shapes=(_avoid_shape(),),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="destination is inside the enabled avoid polygon 'Charted reef'",
+    ):
+        freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+
+
+def test_frozen_request_rejects_avoid_endpoints_regardless_of_coastline_checks(polar):
+    request = replace(_request(polar), use_currents=False, map_shapes=(_avoid_shape(),))
+    (job,) = freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+
+    assert job.coastline_checks is False
+    with pytest.raises(ValueError, match="start is inside the enabled avoid polygon"):
+        replace(job, start=(48.30, -123.60))
+    with pytest.raises(
+        ValueError, match="destination is inside the enabled avoid polygon"
+    ):
+        replace(job, destination=(48.30, -123.60))
+    # The same rule is part of the frozen contract itself, so it does not
+    # depend on the coastline toggle that selected the land adapter.
+    with pytest.raises(ValueError, match="start is inside the enabled avoid polygon"):
+        replace(job, coastline_checks=True, start=(48.30, -123.60))
+
+
+def test_note_and_disabled_avoid_shapes_do_not_reject_an_endpoint(polar):
+    note = MapShape(id="note-1", name="Note", kind="note", vertices=((48.30, -123.60),))
+    request = replace(
+        _request(polar),
+        use_currents=False,
+        start=(48.30, -123.60),
+        map_shapes=(note, _avoid_shape("avoid-disabled", enabled=False)),
+    )
+
+    (job,) = freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+
+    assert job.start == (48.30, -123.60)

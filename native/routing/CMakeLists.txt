@@ -53,6 +53,7 @@ add_custom_command(
   VERBATIM)
 
 add_library(sailworks_native_routing_core STATIC
+  src/boundary_provider.cpp
   src/synthetic.cpp
   src/sailworks_performance.cpp
   src/user_request.cpp

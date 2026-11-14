@@ -10,6 +10,12 @@ from uuid import uuid4
 
 import pytest
 
+from sailworks.core.geo.mapshapes import (
+    AvoidZone,
+    avoid_zones_digest,
+    avoid_zones_digest_from_native,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_PYTHON = Path(
     os.environ.get(
@@ -295,6 +301,214 @@ class NativeUserBridgeTest(unittest.TestCase):
     def test_clearance_without_coastline_checks_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "coastline checks"):
             _run({**SETTINGS, "land_safety_margin_nm": 1.0})
+
+    # Frozen zone contract shared with issue #190: an ordered list of
+    # {id, name, vertices: [[latitude, longitude], ...]} plus the canonical
+    # SHA256 over that same payload. The native boundary derives the point
+    # count from the active zones; there is no separate polygon count field.
+    _AVOID_VERTICES = [
+        [48.50, -123.50],
+        [48.50, -123.40],
+        [48.60, -123.40],
+        [48.60, -123.50],
+    ]
+
+    @classmethod
+    def _avoid_zone(cls, zone_id="avoid-a", name="Charted reef", vertices=None):
+        return AvoidZone(
+            zone_id,
+            name,
+            cls._AVOID_VERTICES if vertices is None else vertices,
+        )
+
+    @staticmethod
+    def _raw_zone_settings(zones, digest="0" * 64):
+        return {**SETTINGS, "avoid_zones": zones, "avoid_zones_digest": digest}
+
+    def test_avoid_zones_install_native_provider_without_python_land(self):
+        """Frozen zones are native polygons, not a Python land adapter.
+
+        ``coastline_checks`` is off and ``land`` is None, so a run that still
+        reports the zone provider active proves the zones crossed the boundary
+        as the frozen payload and did not require a worker-local adapter.
+        """
+
+        class Land:
+            def __init__(self):
+                self.calls = 0
+
+            def point_forbidden(self, *args):
+                self.calls += 1
+                return False
+
+            def segment_forbidden(self, *args):
+                self.calls += 1
+                return False
+
+            def distance_nm(self, *args):
+                self.calls += 1
+                return 5.0
+
+        zone = self._avoid_zone()
+        settings = {
+            **SETTINGS,
+            "avoid_zones": [zone.to_native()],
+            "avoid_zones_digest": avoid_zones_digest((zone,)),
+        }
+        self.assertEqual(len(settings["avoid_zones_digest"]), 64)
+        int(settings["avoid_zones_digest"], 16)
+
+        detached = Land()
+        run = _run(settings, land=detached)
+        self.assertTrue(run["accepted"], run["message"])
+        self.assertTrue(run["avoid_zones_active"])
+        self.assertEqual(run["avoid_zones_digest"], settings["avoid_zones_digest"])
+        self.assertEqual(
+            run["avoid_zones"],
+            [{"id": "avoid-a", "name": "Charted reef", "vertex_count": 4}],
+        )
+        self.assertEqual(
+            detached.calls, 0, "coastline adapter must not be consulted for zones"
+        )
+
+        # The same payload installs the provider with no adapter at all.
+        without_land = _run(settings)
+        self.assertTrue(without_land["accepted"], without_land["message"])
+        self.assertTrue(without_land["avoid_zones_active"])
+        self.assertEqual(
+            without_land["avoid_zones_digest"], settings["avoid_zones_digest"]
+        )
+
+        # No zones keeps the open-water baseline payload untouched.
+        inert = _run(SETTINGS)
+        self.assertTrue(inert["accepted"], inert["message"])
+        self.assertNotIn("avoid_zones", inert)
+        self.assertNotIn("avoid_zones_digest", inert)
+
+    def test_avoid_zone_digest_is_canonical_over_frozen_geometry(self):
+        zone = self._avoid_zone()
+        reversed_ring = self._avoid_zone(vertices=list(reversed(self._AVOID_VERTICES)))
+        rotated_ring = self._avoid_zone(
+            vertices=self._AVOID_VERTICES[2:] + self._AVOID_VERTICES[:2]
+        )
+        self.assertEqual(zone.vertices, reversed_ring.vertices)
+        self.assertEqual(zone.vertices, rotated_ring.vertices)
+
+        digest = avoid_zones_digest((zone,))
+        self.assertEqual(digest, avoid_zones_digest((reversed_ring,)))
+        self.assertEqual(digest, avoid_zones_digest((rotated_ring,)))
+        self.assertEqual(len(digest), 64)
+        int(digest, 16)
+
+        # Name is part of the identity a reviewer replays, id order is part of
+        # the frozen input, so both change the digest.
+        renamed = self._avoid_zone(name="Renamed reef")
+        second = self._avoid_zone("avoid-b", "Second reef")
+        self.assertNotEqual(digest, avoid_zones_digest((renamed,)))
+        self.assertNotEqual(digest, avoid_zones_digest((second, zone)))
+        self.assertNotEqual(digest, avoid_zones_digest((zone, second)))
+
+        run = _run(
+            {
+                **SETTINGS,
+                "avoid_zones": [item.to_native() for item in (zone, second)],
+                "avoid_zones_digest": avoid_zones_digest((zone, second)),
+            }
+        )
+        self.assertTrue(run["accepted"], run["message"])
+        self.assertTrue(run["avoid_zones_active"])
+        self.assertEqual(run["avoid_zones_digest"], avoid_zones_digest((zone, second)))
+        self.assertEqual(
+            [item["id"] for item in run["avoid_zones"]], ["avoid-a", "avoid-b"]
+        )
+
+        # Replay of the same frozen payload is stable at the boundary.
+        replay = _run(
+            {
+                **SETTINGS,
+                "avoid_zones": [item.to_native() for item in (zone, second)],
+                "avoid_zones_digest": avoid_zones_digest((zone, second)),
+            }
+        )
+        self.assertEqual(replay["avoid_zones_digest"], run["avoid_zones_digest"])
+        self.assertEqual(replay["avoid_zones"], run["avoid_zones"])
+
+    def test_avoid_zones_reject_endpoints_and_invalid_geometry(self):
+        harbour = self._avoid_zone(
+            "harbour",
+            "Harbour mouth",
+            [[48.20, -123.70], [48.20, -123.60], [48.30, -123.60], [48.30, -123.70]],
+        )
+        with self.assertRaisesRegex(ValueError, "contains a required route point"):
+            _run(
+                {
+                    **SETTINGS,
+                    "avoid_zones": [harbour.to_native()],
+                    "avoid_zones_digest": avoid_zones_digest((harbour,)),
+                }
+            )
+
+        bowtie = [
+            [48.50, -123.50],
+            [48.60, -123.40],
+            [48.50, -123.40],
+            [48.60, -123.50],
+        ]
+        # The digest is checked before the bridge inspects geometry, so a
+        # malformed ring must carry the digest its raw payload actually
+        # commits to. Only then does the geometry error surface.
+        cross = [{"id": "cross", "name": "", "vertices": bowtie}]
+        with self.assertRaisesRegex(ValueError, "self-intersecting"):
+            _run(
+                self._raw_zone_settings(
+                    cross, digest=avoid_zones_digest_from_native(cross)
+                )
+            )
+
+        thin = [
+            {"id": "thin", "name": "", "vertices": [[48.50, -123.50], [48.60, -123.40]]}
+        ]
+        with self.assertRaisesRegex(ValueError, "at least three distinct vertices"):
+            _run(
+                self._raw_zone_settings(
+                    thin, digest=avoid_zones_digest_from_native(thin)
+                )
+            )
+
+        twice = [
+            {"id": "twice", "name": "", "vertices": self._AVOID_VERTICES},
+            {"id": "twice", "name": "", "vertices": self._AVOID_VERTICES},
+        ]
+        with self.assertRaisesRegex(ValueError, "duplicate avoid zone id"):
+            _run(
+                self._raw_zone_settings(
+                    twice, digest=avoid_zones_digest_from_native(twice)
+                )
+            )
+
+        # The digest is a fixed 64-character lowercase SHA256 spelling.
+        with self.assertRaisesRegex(ValueError, "64 lowercase hex"):
+            _run(
+                self._raw_zone_settings(
+                    [{"id": "short", "name": "", "vertices": self._AVOID_VERTICES}],
+                    digest="0" * 63,
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "64 lowercase hex"):
+            _run(
+                self._raw_zone_settings(
+                    [{"id": "upper", "name": "", "vertices": self._AVOID_VERTICES}],
+                    digest="A" * 64,
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "requires a non-empty avoid_zones"):
+            _run({**SETTINGS, "avoid_zones_digest": "0" * 64})
+        with self.assertRaisesRegex(ValueError, "must be \\(latitude, longitude\\)"):
+            _run(
+                self._raw_zone_settings(
+                    [{"id": "point", "name": "", "vertices": [[48.50]]}]
+                )
+            )
 
     def test_waypoint_chain_uses_selected_points_in_order(self):
         waypoint = (48.255, -123.60)
