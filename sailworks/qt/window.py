@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sailworks import build_label
 from sailworks.core.timecontrol import (
     TimeControl,
     naive_wall_time,
@@ -163,7 +164,8 @@ class PreviewWindow(QMainWindow):
             pass
         self.setAcceptDrops(True)
         self.marine_settings = None
-        self.setWindowTitle("Sailworks")
+        label = build_label()
+        self.setWindowTitle(f"Sailworks — {label}" if label else "Sailworks")
         self.setWindowIcon(QIcon(resource_path("sailworks", "data/icon.png")))
         self.resize(1380, 800)
         if sys.platform == "darwin":
@@ -379,6 +381,10 @@ class PreviewWindow(QMainWindow):
             controller.core.routingManager.get_active()
             or next(iter(controller.core.routingManager), None)
         )
+        # Restoring a saved result presents it through the shared presenter,
+        # which opens the dock. A launch should start with it closed; the
+        # content stays loaded for when the user opens it from the View menu.
+        self.routing_inspector_dock.hide()
         self.statusBar().setContentsMargins(12, 4, 12, 4)
         self.instruments = QLabel()
         self.cursor_status = CursorStatus()

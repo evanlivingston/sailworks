@@ -44,13 +44,16 @@ def main(argv=None):
         from PySide6.QtWidgets import QApplication
     except ImportError:
         parser.error("Qt requires PySide6; reinstall Sailworks with its dependencies")
+    from sailworks import build_label
+
     from .controller import SessionController
     from .window import PreviewWindow
     from .theme import apply_theme
 
     app = cast(QApplication, QApplication.instance()) or QApplication([sys.argv[0]])
+    label = build_label()
     app.setApplicationName("Sailworks")
-    app.setApplicationDisplayName("Sailworks")
+    app.setApplicationDisplayName(f"Sailworks — {label}" if label else "Sailworks")
     apply_theme(app)
     controller = SessionController(
         map_renderer=args.map_renderer,

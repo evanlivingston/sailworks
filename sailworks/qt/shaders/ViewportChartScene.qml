@@ -103,6 +103,10 @@ Item {
                 anchors.fill: parent
                 opacity: 0.9
                 smooth: true
+                // This raster is live-streamed: its texture is replaced up to
+                // once per second, and regenerating a mipmap chain for a
+                // multi-megapixel texture on every replacement stalls the GUI
+                // thread far more than the mild aliasing it avoids.
                 visible: root.satelliteVisible
                 Text {
                     anchors.right: parent.right
