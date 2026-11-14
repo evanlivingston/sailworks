@@ -737,6 +737,12 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(self.window._panel_visible("nmea"))
         self.assertEqual(tuple(self.controller.points), log.points)
 
+    def test_show_panel_ignores_unknown_name(self):
+        self.assertNotIn("navigation", self.window.panels)
+        self.window._show_panel("navigation")
+        self.drain()
+        self.assertFalse(self.window._panel_visible("navigation"))
+
     def test_recording_persists_for_record_toggle_and_shutdown(self):
         paths = []
         for _ in range(2):

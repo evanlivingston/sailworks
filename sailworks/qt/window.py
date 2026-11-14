@@ -390,8 +390,8 @@ class PreviewWindow(QMainWindow):
 
     def _build_panel_stacks(self):
         """Build the left and right Blender-style panel stacks."""
-        left_stack = PanelStack()
-        right_stack = PanelStack()
+        left_stack = PanelStack(self)
+        right_stack = PanelStack(self)
         for stack in (left_stack, right_stack):
             stack.setMinimumWidth(300)
             stack.setMaximumWidth(560)
@@ -1458,7 +1458,7 @@ class PreviewWindow(QMainWindow):
                 ),
                 None,
             )
-        if name is None:
+        if name is None or name not in self.panels:
             return
         side = self._panel_side(name) or self._panel_home.get(name, "right")
         if not self._panel_visible(name):
