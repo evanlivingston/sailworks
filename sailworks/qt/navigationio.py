@@ -75,12 +75,20 @@ def import_path(window, path):
 def _read(path):
     with open(path) as stream:
         gpx = gpxpy.parse(stream)
-    coordinates = [
-        (point.latitude, point.longitude)
-        for track in gpx.tracks
-        for segment in track.segments
-        for point in segment.points
-    ] + [(point.latitude, point.longitude) for point in gpx.waypoints]
+    coordinates = (
+        [
+            (point.latitude, point.longitude)
+            for track in gpx.tracks
+            for segment in track.segments
+            for point in segment.points
+        ]
+        + [
+            (point.latitude, point.longitude)
+            for route in gpx.routes
+            for point in route.points
+        ]
+        + [(point.latitude, point.longitude) for point in gpx.waypoints]
+    )
     if any(
         not math.isfinite(lat)
         or not math.isfinite(lon)
@@ -113,20 +121,27 @@ def _import_finished(window, gpx, error):
         _status(window, "Could not import GPX: " + str(error))
         return
     core = window.controller.core
-    # Same GPX tracks/waypoints semantics as the legacy importer; routes are not imported.
+    # Tracks, routes and waypoints keep the exporter's semantics: each element
+    # is named uniquely before it reaches its collection, so an exported file
+    # imports back under the same names.
     for source in gpx.tracks:
         source.name = core.trackManager.get_unique_name(source.name or "track")
         core.trackManager.import_from_gpx(gpx_document(tracks=[source]))
+    for source in gpx.routes:
+        source.name = core.routingManager.get_unique_name(source.name or "route")
+        core.routingManager.import_from_gpx(gpx_document(routes=[source]))
     for source in gpx.waypoints:
         source.name = core.poiManager.get_unique_name(source.name or "poi")
         core.poiManager.import_from_gpx(gpx_document(waypoints=[source]))
     if gpx.tracks:
         core.trackManager.set_active(core.trackManager[-1])
+    if gpx.routes:
+        core.routingManager.set_active(core.routingManager[-1])
     _refresh(window)
     _status(
         window,
-        f"Imported {len(gpx.tracks)} tracks and {len(gpx.waypoints)} POIs. "
-        "GPX routes are not imported.",
+        f"Imported {len(gpx.tracks)} tracks, {len(gpx.routes)} routes "
+        f"and {len(gpx.waypoints)} POIs.",
     )
 
 

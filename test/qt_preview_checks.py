@@ -2381,6 +2381,8 @@ class QtPreviewChecks(unittest.TestCase):
         source = self.path / "course.gpx"
         source.write_text(
             '<gpx version="1.1"><wpt lat="48.5" lon="-123.5"><name>Finish</name></wpt>'
+            '<rte><name>Course Route</name><rtept lat="48.1" lon="-123.1"/>'
+            '<rtept lat="48.6" lon="-123.6"/></rte>'
             '<trk><name>Course</name><trkseg><trkpt lat="48.1" lon="-123.1"/>'
             '<trkpt lat="48.2" lon="-123.2"/></trkseg></trk></gpx>'
         )
@@ -2394,10 +2396,16 @@ class QtPreviewChecks(unittest.TestCase):
         track = self.controller.core.trackManager.get_active()
         self.assertEqual(track.points, [[48.1, -123.1], [48.2, -123.2]])
         self.assertEqual(self.controller.core.poiManager[0].name, "Finish")
+        imported_route = self.controller.core.routingManager[0]
+        self.assertEqual(imported_route.name, "Course Route")
+        self.assertEqual(imported_route.points, [[48.1, -123.1], [48.6, -123.6]])
+        self.assertIn("1 routes", self.window.statusBar().currentMessage())
         navigationio.import_path(self.window, source)
         self.wait_for_navigation()
         self.assertEqual(len(self.controller.core.trackManager), 2)
         self.assertEqual(len({t.name for t in self.controller.core.trackManager}), 2)
+        self.assertEqual(len(self.controller.core.routingManager), 2)
+        self.assertEqual(len({r.name for r in self.controller.core.routingManager}), 2)
         bad = self.path / "bad.gpx"
         bad.write_text('<gpx><wpt lat="91" lon="-123"/></gpx>')
         previous = self.controller.core.poiManager.to_json()
@@ -2430,7 +2438,7 @@ class QtPreviewChecks(unittest.TestCase):
                 {
                     "track.gpx": (1, 0, 0),
                     "route.gpx": (0, 1, 0),
-                    "all.gpx": (2, 1, 2),
+                    "all.gpx": (2, 3, 2),
                 }[filename],
             )
         self.assertTrue(navigationio.gpx_document().to_xml())
@@ -2490,8 +2498,11 @@ class QtPreviewChecks(unittest.TestCase):
         )
         round_trip_routes = gpxpy.parse((self.path / "named-route.gpx").read_text())
         self.assertEqual(round_trip_routes.routes[0].name, "GPX Round Trip Route")
-        # GPX routes are not imported by the app (see navigationio._import_finished);
-        # routingManager.import_from_gpx reads .segments and is not exercised here.
+        # Routes import back too: a single-point route survives as one routing.
+        self.controller.core.routingManager.import_from_gpx(round_trip_routes)
+        imported_round_trip = self.controller.core.routingManager[-1]
+        self.assertTrue(imported_round_trip.name.startswith("GPX Round Trip Route"))
+        self.assertEqual(imported_round_trip.points, [[48.3, -123.3]])
 
     def wait_for_navigation(self):
         deadline = time.monotonic() + 5
