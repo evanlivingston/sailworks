@@ -1,28 +1,21 @@
 Routing and navigation
 ======================
 
-Tracks, routes and points of interest live in the **Navigation** panel in the left
-sidebar, which has **Tracks**, **Routings**, **POIs** and **AIS** tabs. Routing turns a
-loaded weather forecast and a boat polar into a suggested fastest route.
-
-```{image} ../_static/images/manual/panel-navigation.png
-:alt: Navigation panel, Tracks tab
-:width: 300px
-```
+Tracks, routes and points of interest are drawn on the chart. The **Routing** panel
+turns a loaded weather forecast and a boat polar into a suggested fastest route.
 
 Tracks and points of interest
 -----------------------------
 
-1. In the **Tracks** tab press **New** to create a track.
-2. Press **Add Point** to enter a coordinate, or choose **Edit** from the track's context
-   menu and click the chart to append points.
-3. Right-click a track to fit, export or remove it, and right-click a point to move,
-   reorder, duplicate or remove it.
+1. Right-click the chart and choose **Add track point here**, or press **T**. Adding a
+   point when no track exists creates the track.
+2. Right-click the chart and choose **Add POI here**, or press **P**.
+3. Drag a point to move it. Track edits and point removals can be undone.
 
 Tracks and navigation state are imported and exported with **File → Import GPX…** and
-**File → Export navigation…**. Points of interest are managed from the **POIs** tab and
-appear on the chart like other navigation objects. The **AIS** tab holds received AIS
-targets when an AIS input is connected.
+**File → Export navigation…**. Points of interest appear on the chart like other
+navigation objects. Received AIS targets can be shown with the **AIS targets** action in
+the **View** menu when an AIS input is connected.
 
 Planning a route
 ----------------
@@ -35,17 +28,10 @@ Routing needs a loaded forecast and a polar file.
 
 Sailworks calculates the isochrones and draws the fastest route on the chart. The
 **Routing inspector** lists the resulting legs, and the time controls replay the
-computation so the boat position can be followed over time. Calculated routes appear in
-the **Routings** tab of the Navigation panel, where they can be fitted, exported or
-removed.
+computation so the boat position can be followed over time.
 
 ```{image} ../_static/images/manual/panel-routing.png
 :alt: Routing panel with polar, start mode and departure time controls
-:width: 300px
-```
-
-```{image} ../_static/images/manual/panel-navigation-routings.png
-:alt: Navigation panel, Routings tab listing calculated routes
 :width: 300px
 ```
 
