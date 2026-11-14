@@ -241,6 +241,11 @@ SELECTION_ZOOM_REUSE_STEPS = 0.15
 #: already-rendered imagery instead of the bare chart until the next frame.
 SATELLITE_MARGIN = 256
 
+#: A retained satellite frame is still usable when the camera zoom differs by
+#: less than this, so a slow zoom does not invalidate every frame it touches.
+#: The padded frame is re-rendered once the delta exceeds the band.
+SATELLITE_ZOOM_TOLERANCE = 0.25
+
 
 def satellite_status_text(reason):
     """One-line, bounded satellite failure text for the map status label."""
@@ -1869,6 +1874,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._satellite_provider = None
             self._satellite_worker = None
             self._satellite_timer = None
+            self._satellite_refetch_deferred = False
             self._satellite_generation = 0
             self._satellite_camera = None
             self._satellite_pending_camera = None
@@ -2977,6 +2983,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self.set_layer_visible(layer, visible)
             self.layerVisibilityChanged.emit(layer, bool(visible))
 
+        def _satellite_zooming(self):
+            """Whether a zoom gesture is still animating the camera."""
+            return self._wheel_zoom_target is not None or bool(
+                getattr(self, "_native_gesture_active", False)
+            )
+
         def _satellite_camera_changed(self, camera):
             if not self._satellite_visible or camera is None:
                 return
@@ -3005,6 +3017,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self._place_satellite(camera)
                 return
             self._set_satellite_status("")
+            if self._satellite_zooming():
+                # Requesting mid-gesture would render the frame at an
+                # intermediate scale and swap it in during the animation, so
+                # ask once the gesture has settled instead.
+                self._satellite_refetch_deferred = True
+                return
+            self._satellite_refetch_deferred = False
             if self._satellite_timer is not None:
                 self._satellite_timer.start()
 
@@ -3017,14 +3036,15 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
         def _satellite_covers(self, camera):
             """Whether the retained frame still covers the whole viewport.
 
-            Coverage only excuses a pan. A zoom needs a new frame at the new
-            scale, otherwise the retained image is stretched and permanently
-            soft, even though it technically covers the view.
+            Coverage excuses a pan, and a small zoom delta is tolerated too
+            because the padded frame is simply resampled. Past
+            ``SATELLITE_ZOOM_TOLERANCE`` a new frame is required at the new
+            scale, otherwise the retained image is permanently soft.
             """
             source = getattr(self, "_satellite_source_camera", None)
             if source is None:
                 return False
-            if abs(source.zoom - camera.zoom) > 1e-6:
+            if abs(source.zoom - camera.zoom) > SATELLITE_ZOOM_TOLERANCE:
                 return False
             target = chart_placement(
                 self._satellite_continuous_source(source, camera).view(), camera
@@ -3086,17 +3106,24 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self._satellite_failed(self._satellite_generation, "image load failed")
                 return
             previous = self._satellite_front_slot
+            self._satellite_source_camera = self._satellite_pending_camera
+            self._satellite_visible_generation = generation
+            self._satellite_provider.retain(generation)
+            # Place the frame while it is still hidden: presenting the slot
+            # first would let the render thread composite it with the previous
+            # frame's geometry for a frame.
+            if self._camera is not None:
+                self._place_satellite(self._camera)
             self._satellite_front_slot = slot
             self._satellite.setProperty("frontSlot", slot)
             self._satellite.setProperty(f"slot{previous}Token", "")
             self._satellite.setProperty(f"slot{previous}Source", QUrl(""))
-            self._satellite_source_camera = self._satellite_pending_camera
-            self._satellite_visible_generation = generation
-            self._satellite_provider.retain(generation)
             if self._camera is not None:
-                self._place_satellite(self._camera)
                 if not self._satellite_covers(self._camera):
-                    self._satellite_timer.start()
+                    if self._satellite_zooming():
+                        self._satellite_refetch_deferred = True
+                    else:
+                        self._satellite_timer.start()
             self._set_satellite_status("")
 
         def _satellite_failed(self, generation, reason):
@@ -7099,6 +7126,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
 
         def _end_zoom_gesture(self):
             """Re-sample the retained selection at the settled zoom."""
+            deferred = self._satellite_refetch_deferred
+            self._satellite_refetch_deferred = False
+            if deferred and self._satellite_visible and not self._disposed:
+                # Frames were held back for the whole gesture; ask for one now
+                # that the camera rests at its final scale.
+                if self._satellite_timer is not None:
+                    self._satellite_timer.start()
             if not self._zoom_reuse_served or self._disposed or self._camera is None:
                 return
             self._zoom_reuse_served = False

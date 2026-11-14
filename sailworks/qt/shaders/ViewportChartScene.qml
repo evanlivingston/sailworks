@@ -103,6 +103,9 @@ Item {
                 anchors.fill: parent
                 opacity: 0.9
                 smooth: true
+                // A photographic raster scaled during a zoom needs mipmaps to
+                // avoid aliasing and shimmer; the other layers stay exact.
+                mipmap: true
                 visible: root.satelliteVisible
                 Text {
                     anchors.right: parent.right

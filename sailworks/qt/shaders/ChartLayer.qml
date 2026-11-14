@@ -16,6 +16,10 @@ Item {
     // Chart composition is pixel-exact at native scale; a raster preview
     // (satellite) opts into smooth scaling while it is being resized.
     property bool smooth: false
+    // Photographic rasters (satellite) are scaled during a zoom, so they need
+    // mipmaps to avoid aliasing and shimmer; the vector-ish layers stay
+    // nearest-neighbour deliberately.
+    property bool mipmap: false
     signal slotResult(int slot, string token, bool success)
     property int frontStatus: frontSlot === 0 ? (slot0.item ? slot0.item.status : Image.Null) : (slot1.item ? slot1.item.status : Image.Null)
     property bool ready: frontStatus === Image.Ready
@@ -38,6 +42,7 @@ Item {
             property string attemptToken: ""
             property int attemptSlot: -1
             smooth: root.smooth
+            mipmap: root.mipmap
             cache: false
             onStatusChanged: {
                 if (attemptToken && (status === Image.Ready || status === Image.Error))
