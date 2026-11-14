@@ -1,4 +1,4 @@
-"""Historical-years routing panel: options, results and job orchestration."""
+"""Historical-years routing panel: widgets, spec building and actions wiring."""
 
 from __future__ import annotations
 
@@ -21,10 +21,21 @@ from sailworks.core.historicalcoordinator import HistoricalRoutingCoordinator
 from sailworks.core.historicalrouting import HistoricalRoutingSpec, reference_year
 from sailworks.core.historicalroutingstore import HistoricalRoutingStore
 from sailworks.core.storage import DATA_DIR
+from .historicalroutingactions import HistoricalRoutingActions
 from .historicalroutingoptions import HistoricalRoutingOptions
 from .historicalroutingpresenter import apply as apply_results
 from .historicalroutingresults import HistoricalRoutingResults
 from .historicalroutingseams import HistoricalRoutingSeams
+
+__all__ = [
+    "HistoricalRoutingActions",
+    "HistoricalRoutingPanel",
+    "RECHECK_UNAVAILABLE",
+    "local_timezone_id",
+]
+
+#: Shown on the recheck button until the coordinator grows a recheck seam.
+RECHECK_UNAVAILABLE = "Not available yet"
 
 
 def local_timezone_id() -> str:
@@ -54,6 +65,10 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
     progress_reported = Signal(str, int, int, str)
     job_finished = Signal(str, str)
     outcome_reported = Signal(object)
+    # Emitted after the panel changes a route's item visibility, so the window
+    # can repaint the map overlay and the scene tree exactly as the tree's own
+    # checkbox does. There is no scene/panel reference held on purpose.
+    visibility_changed = Signal()
 
     def __init__(
         self,
@@ -73,6 +88,7 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         self._thread = None
         self._record = None
         self._outcomes = {}
+        self._retrying = False
 
         root = Path(DATA_DIR) / "historical-routing"
         factory = store_factory or HistoricalRoutingStore
@@ -81,6 +97,7 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
             store=self.store,
             scene=scene_provider() if scene_provider is not None else None,
         )
+        self.actions = HistoricalRoutingActions(self)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -117,6 +134,7 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         self.progress_reported.connect(self._progress)
         self.job_finished.connect(self._finished)
         self.outcome_reported.connect(self._outcome)
+        self._sync_recheck()
         self._refresh_jobs()
 
     # -- persistence -----------------------------------------------------
@@ -134,7 +152,12 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         """Region capture belongs to the map; the window may connect to this."""
 
     def set_scene(self, scene):
-        """Let the window attach the live scene collection after construction."""
+        """Attach the live scene collection the window owns.
+
+        The coordinator and its publisher are fixed to the scene at
+        construction time, so both have to be re-pointed here; publishing the
+        job's routes into its scene group otherwise silently does nothing.
+        """
         self.coordinator.scene = scene
         self.coordinator.publisher.scene = scene
 
@@ -198,94 +221,43 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
 
     # -- job lifecycle ---------------------------------------------------
     def start_job(self):
-        if self._thread is not None and self._thread.is_alive():
-            return
-        try:
-            spec = self.spec()
-            base = self._base_request()
-            message = self.options.validation_message()
-            if message:
-                raise ValueError(message)
-            preflight = getattr(self.coordinator, "preflight", None)
-            if callable(preflight):
-                prepared = preflight(spec, base)
-                self.options.set_estimate(
-                    f"{prepared.effective_years} years · "
-                    f"{prepared.estimated_bytes / 1e9:.1f} GB wind data"
-                )
-        except (ValueError, OverflowError) as error:
-            self.options.set_status(str(error))
-            return
-        self._cancel_event.clear()
-        self._outcomes = {}
-        self.options.set_running(True)
-        self.options.set_status("Starting historical routing…")
-        self._thread = threading.Thread(
-            target=self._run_job,
-            args=(spec, base),
-            name="qt-historical-routing",
-            daemon=True,
-        )
-        self._thread.start()
+        self.actions.start_job()
 
     def _run_job(self, spec, base):
-        try:
-            job_id = self.coordinator.start(
-                spec,
-                base,
-                ensure_wind=self.ensure_wind,
-                acquire_currents=self.acquire_currents,
-                current_selection_factory=self.current_selection_factory,
-                run_bound=self.run_bound,
-                on_progress=lambda event: self.progress_reported.emit(
-                    event.stage, event.completed, event.total, event.message
-                ),
-                on_outcome=lambda outcome: self.outcome_reported.emit(outcome),
-            )
-        except Exception as error:  # the UI thread shows the message
-            self.job_finished.emit("", f"{type(error).__name__}: {error}")
-            return
-        self.job_finished.emit(str(job_id), "")
+        self.actions.run_job(spec, base)
 
     def cancel_job(self):
-        self._cancel_event.set()
-        cancel = getattr(self.routing_controller, "cancel", None)
-        if callable(cancel):
-            cancel()
-        self.options.set_status("Cancelling; the job stays resumable.")
+        self.actions.cancel_job()
 
     def retry_failed(self):
-        raise NotImplementedError("Retry failed members is not wired yet.")
+        """Re-run the indeterminate members of the current job."""
+        self.actions.retry_failed()
+
+    def _run_retry(self, job_id, base):
+        self.actions.run_retry(job_id, base)
 
     def recheck_excluded(self):
-        raise NotImplementedError("Rechecking excluded years is not wired yet.")
+        """Deliberately inert: the coordinator has no recheck seam yet.
+
+        The button stays disabled, so this only guards a stray signal and never
+        raises inside the UI thread.
+        """
+
+    def _sync_recheck(self):
+        """Keep recheck honestly unavailable rather than a raising stub."""
+        button = self.results.recheck_button
+        button.setEnabled(False)
+        button.setToolTip(RECHECK_UNAVAILABLE)
 
     # -- UI thread slots -------------------------------------------------
     def _progress(self, stage, completed, total, message):
-        suffix = f" {completed}/{total}" if total else ""
-        self.options.set_status(
-            f"{stage.replace('_', ' ').title()}{suffix} {message}".strip()
-        )
+        self.actions.progress(stage, completed, total, message)
 
     def _outcome(self, outcome):
-        member_id = str(getattr(outcome, "member_id", ""))
-        if member_id:
-            self._outcomes[member_id] = outcome
+        self.actions.outcome(outcome)
 
     def _finished(self, job_id, error):
-        self.options.set_running(False)
-        if error:
-            self.options.set_status(error)
-            return
-        self._cancel_event.clear()
-        try:
-            self._record = self.store.load(job_id)
-        except Exception as error:  # keep the run visible even if loading fails
-            self.options.set_status(f"Could not load job {job_id}: {error}")
-            return
-        self._show_record(self._record)
-        self.options.set_status(f"Historical job {str(job_id)[:8]} complete.")
-        self._refresh_jobs()
+        self.actions.finished(job_id, error)
 
     def _values_changed(self):
         self.options.set_status("")
@@ -320,75 +292,35 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
     # -- results ---------------------------------------------------------
     def _show_record(self, record):
         apply_results(self.results, record, self._outcomes)
+        self._sync_recheck()
+
+    def _publish_routes(self, record):
+        self.actions.publish_routes(record)
 
     # -- route actions ---------------------------------------------------
     def _collection(self):
-        return getattr(
-            getattr(self.routing_controller, "core", None), "routingManager", None
-        )
+        return self.actions.collection()
 
     def _routes_for_record(self, record):
-        collection = self._collection()
-        if collection is None:
-            return []
-        wanted = {
-            str(getattr(member, "route_uid", ""))
-            for member in (getattr(record, "members", {}) or {}).values()
-            if getattr(member, "route_uid", "")
-        }
-        routes = []
-        try:
-            candidates = list(collection)
-        except TypeError:
-            candidates = []
-        for route in candidates:
-            if str(getattr(route, "uid", "")) in wanted:
-                routes.append(route)
-        return routes
+        return self.actions.routes_for_record(record)
 
     def delete_job(self):
-        record = self._record
-        if record is None:
-            return
-        collection = self._collection()
-        routes = self._routes_for_record(record)
-        self.coordinator.delete_job(record.job_id, routes, collection=collection)
-        self._record = None
-        self.results.clear()
-        self.results.set_actions_enabled(False, False, False)
-        self.options.set_status("Job archived and its routes removed.")
-        self._refresh_jobs()
+        self.actions.delete_job()
 
     def _member_selected(self, member_id):
-        record = self._record
-        if record is None:
-            return
-        member = (getattr(record, "members", {}) or {}).get(str(member_id))
-        uid = str(getattr(member, "route_uid", "") or "") if member is not None else ""
-        collection = self._collection()
-        if not uid or collection is None:
-            return
-        try:
-            candidates = list(collection)
-        except TypeError:
-            return
-        for route in candidates:
-            if str(getattr(route, "uid", "")) != uid:
-                continue
-            for name in ("select_route", "select", "activate"):
-                select = getattr(collection, name, None)
-                if callable(select):
-                    try:
-                        select(route)
-                    except TypeError:
-                        continue
-                    return
+        self.actions.member_selected(member_id)
+
+    def _result_uids(self):
+        return self.actions.result_uids()
+
+    def _apply_item_visibility(self, wanted):
+        return self.actions.apply_item_visibility(wanted)
 
     def _representatives(self):
-        return None
+        self.actions.representatives()
 
     def _show_all(self):
-        return None
+        self.actions.show_all()
 
     def _hide_all(self):
-        return None
+        self.actions.hide_all()

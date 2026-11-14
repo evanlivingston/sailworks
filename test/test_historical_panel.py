@@ -341,6 +341,218 @@ def test_delete_calls_the_coordinator_and_the_collection():
     assert panel.results.table.rowCount() == 0
 
 
+# -- scene attachment, retry and visibility wiring -----------------------
+
+
+class _ImmediateThread:
+    """Run a QThread-substitute synchronously so tests stay deterministic."""
+
+    def __init__(self, target=None, args=(), kwargs=None, **options):
+        self._target = target
+        self._args = args
+        self._kwargs = kwargs or {}
+
+    def start(self):
+        self._target(*self._args, **self._kwargs)
+
+    def is_alive(self):
+        return False
+
+    def join(self, timeout=None):
+        return None
+
+
+class FakeScene:
+    def __init__(self):
+        self.items = {}
+        self.saved = 0
+
+    def set_item_visible(self, kind, key, visible):
+        self.items[(kind, key)] = bool(visible)
+        return True
+
+    def save(self):
+        self.saved += 1
+
+
+def _route(uid, visible=True):
+    return SimpleNamespace(uid=uid, visible=visible)
+
+
+def _member_route(member_id, route_uid, year=2020, offset_days=0):
+    return MemberRecord(
+        member_id=member_id,
+        year=year,
+        offset_days=offset_days,
+        state="complete",
+        departure_utc=f"{year}-06-15T12:00:00+00:00",
+        coverage_start_utc=f"{year}-06-15T12:00:00+00:00",
+        coverage_end_utc=f"{year}-06-25T12:00:00+00:00",
+        outcome="finished",
+        route_uid=route_uid,
+    )
+
+
+def _record(*members, job_id="job-1", excluded_years=()):
+    return SimpleNamespace(
+        job_id=job_id,
+        created_at_utc="2026-01-01T00:00:00+00:00",
+        state="complete",
+        spec={"summary": {}},
+        members={member.member_id: member for member in members},
+        excluded_years=tuple(excluded_years),
+    )
+
+
+def test_set_scene_attaches_and_publishes_routes_after_a_retry():
+    application()
+    route = _route("route-a")
+    controller = SimpleNamespace(
+        core=SimpleNamespace(routingManager=[route]), analysis=None
+    )
+    panel = historical_panel(controller=controller)
+    published = []
+    panel.coordinator = SimpleNamespace(
+        scene=None,
+        publisher=SimpleNamespace(scene=None),
+        publish_routes=lambda job_id, routes: published.append((job_id, list(routes))),
+    )
+    scene = FakeScene()
+    panel.set_scene(scene)
+    assert panel.coordinator.scene is scene
+    assert panel.coordinator.publisher.scene is scene
+
+    record = _record(_member_route("2020-000", "route-a"))
+    panel._record = record
+    panel.store = SimpleNamespace(load=lambda job_id: record, list_jobs=lambda: [])
+    panel._retrying = True
+    panel._finished("job-1", "")
+
+    assert published == [("job-1", [route])]
+    assert panel.results.table.rowCount() == 1
+
+
+def test_retry_failed_uses_the_start_job_seams_and_refreshes_rows(monkeypatch):
+    application()
+    route = _route("route-a")
+    controller = SimpleNamespace(
+        core=SimpleNamespace(routingManager=[route]), analysis=None
+    )
+    request = SimpleNamespace(
+        departure=datetime(2021, 6, 15, 12),
+        start=(0.0, 0.0),
+        destination=(1.0, 1.0),
+        waypoints=(),
+    )
+    panel = historical_panel(controller=controller, request=request)
+    record = _record(_member_route("2020-000", "route-a"))
+    panel._record = record
+    panel.store = SimpleNamespace(load=lambda job_id: record, list_jobs=lambda: [])
+
+    calls = {}
+
+    def retry_failed(job_id, base, **kwargs):
+        calls["job_id"] = job_id
+        calls["base"] = base
+        calls.update(kwargs)
+        return []
+
+    panel.coordinator = SimpleNamespace(
+        scene=None,
+        publisher=SimpleNamespace(scene=None),
+        retry_failed=retry_failed,
+        publish_routes=lambda *args, **kwargs: None,
+    )
+
+    monkeypatch.setattr(historicalrouting.threading, "Thread", _ImmediateThread)
+    panel.retry_failed()
+
+    assert calls["job_id"] == "job-1"
+    assert calls["base"] is request
+    assert calls["ensure_wind"] == panel.ensure_wind
+    assert calls["run_bound"] == panel.run_bound
+    assert calls["current_selection_factory"] == panel.current_selection_factory
+    assert panel.results.table.rowCount() == 1
+    assert panel._retrying is False
+
+
+def test_show_all_and_hide_all_set_item_visibility_and_save():
+    application()
+    routes = [_route("route-a", False), _route("route-b", False)]
+    controller = SimpleNamespace(
+        core=SimpleNamespace(routingManager=routes), analysis=None
+    )
+    panel = historical_panel(controller=controller)
+    scene = FakeScene()
+    panel.coordinator = SimpleNamespace(
+        scene=scene, publisher=SimpleNamespace(scene=scene)
+    )
+    panel._record = _record(
+        _member_route("2020-000", "route-a"),
+        _member_route("2021-000", "route-b", year=2021),
+    )
+    emissions = []
+    panel.visibility_changed.connect(lambda: emissions.append(True))
+
+    panel._show_all()
+    assert [route.visible for route in routes] == [True, True]
+    assert scene.items == {("routing", "route-a"): True, ("routing", "route-b"): True}
+    assert scene.saved == 1
+    assert emissions
+
+    panel._hide_all()
+    assert [route.visible for route in routes] == [False, False]
+    assert scene.saved == 2
+
+
+def test_representatives_show_only_the_median_finished_route():
+    application()
+    routes = [_route("route-a"), _route("route-b"), _route("route-c")]
+    controller = SimpleNamespace(
+        core=SimpleNamespace(routingManager=routes), analysis=None
+    )
+    panel = historical_panel(controller=controller)
+    scene = FakeScene()
+    panel.coordinator = SimpleNamespace(
+        scene=scene, publisher=SimpleNamespace(scene=scene)
+    )
+    record = _record(
+        _member_route("2020-000", "route-a", year=2020),
+        _member_route("2021-000", "route-b", year=2021),
+        _member_route("2022-000", "route-c", year=2022),
+    )
+    panel._record = record
+    panel._outcomes = {
+        "2020-000": SimpleNamespace(member_id="2020-000", duration_hours=10.0),
+        "2021-000": SimpleNamespace(member_id="2021-000", duration_hours=20.0),
+        "2022-000": SimpleNamespace(member_id="2022-000", duration_hours=30.0),
+    }
+    panel._show_record(record)
+
+    panel._representatives()
+
+    assert [route.visible for route in routes] == [False, True, False]
+    assert scene.items[("routing", "route-b")] is True
+    assert scene.saved == 1
+
+
+def test_recheck_button_is_disabled_with_the_documented_tooltip():
+    application()
+    panel = historical_panel()
+    assert historicalrouting.RECHECK_UNAVAILABLE == "Not available yet"
+    assert panel.results.recheck_button.isEnabled() is False
+    assert panel.results.recheck_button.toolTip() == "Not available yet"
+
+    record = _record(_member_route("2020-000", "route-a"), excluded_years=(2019,))
+    panel._record = record
+    panel.store = SimpleNamespace(load=lambda job_id: record, list_jobs=lambda: [])
+    panel._finished("job-1", "")
+
+    assert panel.results.recheck_button.isEnabled() is False
+    assert panel.results.recheck_button.toolTip() == "Not available yet"
+    panel.recheck_excluded()  # must not raise in the UI thread
+
+
 def test_existing_compare_calculate_path_is_unchanged(monkeypatch, tmp_path):
     panel = routing_panel(monkeypatch, tmp_path)
     assert panel.compare_mode.currentData() == "parameter"

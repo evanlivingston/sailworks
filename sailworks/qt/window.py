@@ -269,6 +269,14 @@ class PreviewWindow(QMainWindow):
         self.scene_panel.routing_visibility_changed.connect(
             self._routing_visibility_changed
         )
+        # The historical panel is built with the routing panel, before the
+        # scene exists, so hand it the live scene here. Its own item-visibility
+        # actions then persist through the scene and repaint the same way a
+        # scene-tree checkbox does.
+        historical = self.routing_panel.historical
+        historical.set_scene(self.scene_panel.scene)
+        historical.visibility_changed.connect(self.scene_panel.refresh)
+        historical.visibility_changed.connect(self._routing_visibility_changed)
         self.scene_panel.selected.connect(self._scene_selected)
         self.scene_panel.open_requested.connect(self._scene_open)
         self.scene_panel.fit_requested.connect(self._scene_fit)
