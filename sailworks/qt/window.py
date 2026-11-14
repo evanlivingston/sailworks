@@ -149,7 +149,7 @@ class PreviewWindow(QMainWindow):
         self.marine_settings = None
         self.setWindowTitle("Sailworks")
         self.setWindowIcon(QIcon(resource_path("sailworks", "data/icon.png")))
-        self.resize(1200, 800)
+        self.resize(1380, 800)
         if sys.platform == "darwin":
             self.setUnifiedTitleAndToolBarOnMac(True)
         self.map = ViewportMap(controller, self, show_timeline=True)
@@ -448,11 +448,11 @@ class PreviewWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
-        splitter.setSizes([300, 520, 380])
+        splitter.setSizes([480, 520, 380])
         self.setCentralWidget(splitter)
         self._panel_splitter = splitter
         self._panel_stacks = {"left": left_stack, "right": right_stack}
-        self._panel_stack_width = {"left": 300, "right": 380}
+        self._panel_stack_width = {"left": 480, "right": 380}
         self._panel_stack_open = {"left": True, "right": True}
         self._panel_stack_animation = None
         self.panel_stack = right_stack

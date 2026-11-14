@@ -2375,6 +2375,7 @@ class QtPreviewChecks(unittest.TestCase):
     def test_navigation_gpx_native_picker_import_export_and_invalid_input(self):
         import gpxpy
         from sailworks.core.geo.routing import Routing
+        from sailworks.core.geo.track import Track
         from sailworks.qt import navigationio
 
         source = self.path / "course.gpx"
@@ -2433,6 +2434,64 @@ class QtPreviewChecks(unittest.TestCase):
                 }[filename],
             )
         self.assertTrue(navigationio.gpx_document().to_xml())
+
+        # Names survive export: every <trk> and <rte> carries its element name and
+        # the waypoint keeps its POI name.
+        exported = {
+            filename: (self.path / filename).read_text()
+            for filename in ("track.gpx", "route.gpx", "all.gpx")
+        }
+        active_track = self.controller.core.trackManager.get_active()
+        self.assertIn(f"<name>{active_track.name}</name>", exported["track.gpx"])
+        self.assertIn("<name>Route</name>", exported["route.gpx"])
+        self.assertIn("<name>Finish</name>", exported["all.gpx"])
+        parsed_all = gpxpy.parse(exported["all.gpx"])
+        self.assertEqual(
+            {track.name for track in parsed_all.tracks},
+            {track.name for track in self.controller.core.trackManager},
+        )
+        self.assertEqual(
+            {route.name for route in parsed_all.routes},
+            {route.name for route in self.controller.core.routingManager},
+        )
+        self.assertIn("Finish", {waypoint.name for waypoint in parsed_all.waypoints})
+
+        # A named track and route survive an export/import round trip.
+        named_track = Track(
+            "GPX Round Trip Track",
+            [[48.3, -123.3], [48.4, -123.4]],
+            collection=self.controller.core.trackManager,
+        )
+        self.controller.core.trackManager.append(named_track)
+        self.controller.core.trackManager.set_active(named_track)
+        named_route = Routing(
+            "GPX Round Trip Route",
+            [(48.3, -123.3, "2026-10-14T10:00:00", 45, 10, 5, 0)],
+            collection=self.controller.core.routingManager,
+        )
+        self.controller.core.routingManager.append(named_route)
+        self.controller.core.routingManager.set_active(named_route)
+        for method, filename in (
+            (navigationio.export_track, "named-track.gpx"),
+            (navigationio.export_route, "named-route.gpx"),
+        ):
+            destination = self.path / filename
+            with patch(
+                "sailworks.qt.navigationio.QFileDialog.getSaveFileName",
+                return_value=(str(destination), ""),
+            ):
+                method(self.window)
+        round_trip_tracks = gpxpy.parse((self.path / "named-track.gpx").read_text())
+        self.assertEqual(round_trip_tracks.tracks[0].name, "GPX Round Trip Track")
+        self.controller.core.trackManager.import_from_gpx(round_trip_tracks)
+        self.assertEqual(
+            self.controller.core.trackManager.get_active().name,
+            "GPX Round Trip Track",
+        )
+        round_trip_routes = gpxpy.parse((self.path / "named-route.gpx").read_text())
+        self.assertEqual(round_trip_routes.routes[0].name, "GPX Round Trip Route")
+        # GPX routes are not imported by the app (see navigationio._import_finished);
+        # routingManager.import_from_gpx reads .segments and is not exercised here.
 
     def wait_for_navigation(self):
         deadline = time.monotonic() + 5

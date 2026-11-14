@@ -21,6 +21,19 @@ def gpx_document(tracks=(), routes=(), waypoints=()):
     return document
 
 
+def _named(gpx_object, element):
+    """Carry the element name onto its GPX object.
+
+    gpxpy writes a ``<name>`` element only when the object has one, and the
+    track and route conversions do not set it, so exports would re-import as
+    ``track``/``track-1``.
+    """
+    name = getattr(element, "name", "") or ""
+    if name:
+        gpx_object.name = name
+    return gpx_object
+
+
 def distance_nm(lat1, lon1, lat2, lon2):
     # Match the legacy AIS radius and haversine, in nautical miles.
     dlat, dlon = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
@@ -131,9 +144,9 @@ def _refresh(window):
 def export_all(window):
     core = window.controller.core
     document = gpx_document(
-        tracks=[track.to_gpx_object() for track in core.trackManager],
-        routes=[route.to_gpx_object() for route in core.routingManager],
-        waypoints=[poi.to_gpx_object() for poi in core.poiManager],
+        tracks=[_named(track.to_gpx_object(), track) for track in core.trackManager],
+        routes=[_named(route.to_gpx_object(), route) for route in core.routingManager],
+        waypoints=[_named(poi.to_gpx_object(), poi) for poi in core.poiManager],
     )
     return _save(
         window,
@@ -153,7 +166,7 @@ def export_track(window):
         window,
         "Export track",
         track.name + ".gpx",
-        gpx_document(tracks=[track.to_gpx_object()]).to_xml(),
+        gpx_document(tracks=[_named(track.to_gpx_object(), track)]).to_xml(),
         "GPX files (*.gpx)",
         ".gpx",
     )
@@ -167,7 +180,7 @@ def export_route(window):
         window,
         "Export routing",
         route.name + ".gpx",
-        gpx_document(routes=[route.to_gpx_object()]).to_xml(),
+        gpx_document(routes=[_named(route.to_gpx_object(), route)]).to_xml(),
         "GPX files (*.gpx)",
         ".gpx",
     )

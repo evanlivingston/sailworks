@@ -64,6 +64,115 @@ class MovePointCommand(QUndoCommand):
         self._move(self.before)
 
 
+class AddPointCommand(QUndoCommand):
+    """Undoable append of a track point, including implicit track creation.
+
+    Adding a point when no track exists creates the track as a side effect.
+    Undo therefore also removes that track, and redo re-creates it before
+    appending the point again.
+    """
+
+    def __init__(self, refresh, element, coordinates, collection=None, created=False):
+        super().__init__("Add point")
+        self.refresh = refresh
+        self.element = element
+        self.coordinates = (coordinates[0], coordinates[1])
+        self.collection = collection
+        self.created = bool(created)
+        self.index = len(element)
+        self.track_index = None
+        if self.created:
+            elements = self._sequence(self._collection())
+            if elements is not None:
+                self.track_index = (
+                    elements.index(element) if element in elements else len(elements)
+                )
+
+    def _collection(self):
+        if self.collection is not None:
+            return self.collection
+        return getattr(self.element, "collection", None)
+
+    def _sequence(self, collection):
+        if collection is None:
+            return None
+        elements = getattr(collection, "elements", None)
+        if elements is not None:
+            return elements
+        if hasattr(collection, "insert") and hasattr(collection, "__contains__"):
+            return collection
+        return None
+
+    def _persist(self, collection):
+        for name in ("touch", "save"):
+            method = getattr(collection, name, None)
+            if callable(method):
+                method()
+
+    def _insert_track(self):
+        if not self.created:
+            return
+        collection = self._collection()
+        elements = self._sequence(collection)
+        if elements is None or self.element in elements:
+            return
+        index = len(elements) if self.track_index is None else self.track_index
+        elements.insert(min(index, len(elements)), self.element)
+        self._persist(collection)
+        set_active = getattr(collection, "set_active", None)
+        if callable(set_active):
+            set_active(self.element)
+
+    def _remove_track(self):
+        if not self.created:
+            return
+        collection = self._collection()
+        elements = self._sequence(collection)
+        if elements is None or self.element not in elements:
+            return
+        self.track_index = elements.index(self.element)
+        elements.remove(self.element)
+        self._persist(collection)
+        set_active = getattr(collection, "set_active", None)
+        if callable(set_active):
+            set_active(elements[-1] if len(elements) else None)
+
+    def redo(self):
+        self._insert_track()
+        if self.index >= len(self.element):
+            self.element.add(self.coordinates[0], self.coordinates[1])
+        self.refresh()
+
+    def undo(self):
+        if 0 <= self.index < len(self.element):
+            self.element.remove(self.index)
+        self._remove_track()
+        self.refresh()
+
+
+class RenamePointCommand(QUndoCommand):
+    """Undoable rename of one track point."""
+
+    def __init__(self, refresh, element, index, before, after):
+        super().__init__("Rename point")
+        self.refresh = refresh
+        self.element = element
+        self.index = int(index)
+        self.before = before
+        self.after = after
+
+    def _rename(self, name):
+        if 0 <= self.index < len(self.element):
+            self.element.rename_point(self.index, name)
+            self.refresh()
+
+    def redo(self):
+        self._rename(self.after)
+
+    def undo(self):
+        self._rename(self.before)
+
+
 class RemovePointCommand(QUndoCommand):
     """Undoable removal of track points, independent of the navigation panel."""
 

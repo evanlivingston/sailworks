@@ -36,6 +36,9 @@ from sailworks.qt.scenepanel import (
     MUTED,
     MARK_COLUMN_HEADERS,
     MARK_HEADERS_ROLE,
+    MARK_DETAIL_GAP,
+    MARK_DETAIL_ROLE,
+    MARK_MIN_LABEL,
     MARK_ROUNDING_HEADER,
     NAME_COLUMN,
     NODE_ROLE,
@@ -64,6 +67,7 @@ from sailworks.rendering.navigation import (
     routing_detail_fields,
     routing_point_cells,
     routing_point_detail_fields,
+    routing_point_tree_cells,
     routing_summary,
     track_detail_fields,
 )
@@ -707,9 +711,9 @@ def test_point_row_rects_never_overlap_icon_or_each_other(tmp_path):
             assert segment.left() >= label.left()
             assert segment.right() < rounding.left()
         for earlier, later in zip(segments, segments[1:]):
-            assert later[1].left() - earlier[1].right() - 1 == DETAIL_GAP
+            assert later[1].left() - earlier[1].right() - 1 == MARK_DETAIL_GAP
         if segments:
-            assert segments[0][1].left() - label.left() >= POINT_MIN_LABEL
+            assert segments[0][1].left() - label.left() >= MARK_MIN_LABEL
 
 
 def test_narrow_point_row_drops_details_instead_of_overlapping(tmp_path):
@@ -1371,6 +1375,11 @@ def test_routing_mark_rows_carry_the_table_figures(tmp_path):
         assert marks.child(index).data(NAME_COLUMN, DETAIL_ROLE) == list(
             routing_point_cells(point)
         )
+        # The row paints the clock time; the tooltip keeps the full stamp.
+        assert marks.child(index).data(NAME_COLUMN, MARK_DETAIL_ROLE) == list(
+            routing_point_tree_cells(point)
+        )
+        assert routing_point_cells(point)[0] in marks.child(index).toolTip(NAME_COLUMN)
     assert [label for label, _ in routing_point_detail_fields(route.points[0])] == [
         "time",
         "twa",
@@ -1382,6 +1391,9 @@ def test_routing_mark_rows_carry_the_table_figures(tmp_path):
 
 # The delegate allows a 16px decoration plus a 4px gap before the label.
 ROUTING_MARK_ICON_WIDTH = 20
+# The shipped default width of the left panel stack (window.py) that holds the
+# scene tree; a mark row's columns are laid out against the tree's own width.
+DEFAULT_LEFT_STACK_WIDTH = 480
 
 
 def routing_mark_segments(panel, route, width, index=0):
@@ -1398,7 +1410,7 @@ def routing_mark_segments(panel, route, width, index=0):
     _, label_rect, rounding_rect = row_geometry(
         paint_rect, metrics, ROUTING_MARK_ICON_WIDTH
     )
-    values = [value for _, value in routing_point_detail_fields(point)]
+    values = list(routing_point_tree_cells(point))
     segments = mark_columns(
         paint_rect, metrics, values, label_rect.left(), rounding_rect
     )
@@ -1409,7 +1421,10 @@ def test_routing_mark_details_adapt_to_the_panel_width(tmp_path):
     application()
     route = route_with_detail_points()
     panel = panel_for(tmp_path, routes=[route])
-    expected = [value for _, value in routing_point_detail_fields(route.points[0])]
+    expected = list(routing_point_tree_cells(route.points[0]))
+    # The painted time cell is the time of day; the item data keeps the date.
+    assert expected[0] == "00:00"
+    assert list(routing_point_cells(route.points[0]))[0] == "01/01 00:00"
 
     measured = {}
     for width in (960, 700, 480, 360):
@@ -1423,7 +1438,7 @@ def test_routing_mark_details_adapt_to_the_panel_width(tmp_path):
         assert texts == expected[: len(texts)]
 
         label_width = point_label_width(label_rect, rounding_rect)
-        assert label_width >= POINT_MIN_LABEL
+        assert label_width >= MARK_MIN_LABEL
         label = metrics.elidedText("Mark 1", Qt.TextElideMode.ElideRight, label_width)
         assert label and label != "…"
         assert metrics.horizontalAdvance(label) <= label_width
@@ -1433,7 +1448,7 @@ def test_routing_mark_details_adapt_to_the_panel_width(tmp_path):
             # keeps its floor clear of the highest priority field.
             assert rounding_rect.width() > 0
             assert segments[-1][1].right() < rounding_rect.left()
-            assert segments[0][1].left() - label_rect.left() >= POINT_MIN_LABEL
+            assert segments[0][1].left() - label_rect.left() >= MARK_MIN_LABEL
             widths = mark_column_widths(metrics)
             for index, (text, segment) in enumerate(segments):
                 # Each segment is a fixed column sized for its widest expected
@@ -1441,7 +1456,7 @@ def test_routing_mark_details_adapt_to_the_panel_width(tmp_path):
                 assert segment.width() == widths[index]
                 assert segment.width() >= metrics.horizontalAdvance(text)
             for earlier, later in zip(segments, segments[1:]):
-                assert later[1].left() - earlier[1].right() - 1 == DETAIL_GAP
+                assert later[1].left() - earlier[1].right() - 1 == MARK_DETAIL_GAP
 
     # The coordinate slot's removal lets the fields appear far narrower: the
     # whole block at 700 and most of it already at 480.
@@ -1461,7 +1476,74 @@ def test_routing_mark_details_adapt_to_the_panel_width(tmp_path):
     assert point_label_width(narrow_label, narrow_rounding) < POINT_MIN_LABEL
 
 
+def test_default_panel_paints_mark_columns_with_aligned_headers(tmp_path):
+    """The shipped 300 px left stack and the width that carries the full grid."""
+    application()
+    route = route_with_detail_points()
+    route.set_point_rounding(0, ROUNDING_PORT)
+    panel = panel_for(tmp_path, routes=[route])
+    values = list(routing_point_tree_cells(route.points[0]))
+    indent = panel.tree.indentation()
+
+    paint_rect, metrics, label_rect, rounding_rect, segments, painted = (
+        routing_mark_segments(panel, route, DEFAULT_LEFT_STACK_WIDTH)
+    )
+    assert painted == values
+    # At the shipped default width the name, the rounding label and all five
+    # fields paint together; the time is the clock time, not the date.
+    assert [text for text, _ in segments] == values
+    assert values[0] == "00:00"
+    assert point_label_width(label_rect, rounding_rect) >= MARK_MIN_LABEL
+    assert segments[0][1].left() >= label_rect.left() + MARK_MIN_LABEL
+    assert segments[-1][1].right() < rounding_rect.left()
+    assert rounding_rect.width() == rounding_column_width(metrics)
+    # Every painted field keeps its full column width, so the value's right
+    # edge is the same on every row.
+    widths = mark_column_widths(metrics)
+    for index, (text, segment) in enumerate(segments):
+        assert segment.width() == widths[index]
+        assert segment.width() >= metrics.horizontalAdvance(text)
+
+    # Headers on the expanded Marks row sit at the same right edges as the
+    # values beneath them, and drop with a column the row cannot afford.
+    for width in (300, DEFAULT_LEFT_STACK_WIDTH):
+        row_rect, row_metrics, _, row_rounding, row_segments, _ = routing_mark_segments(
+            panel, route, width
+        )
+        headers = mark_header_columns(
+            row_rect.adjusted(-indent, 0, 0, 0),
+            row_metrics,
+            ROUTING_MARK_ICON_WIDTH,
+            indent,
+        )
+        assert [header for header, _ in headers] == list(
+            MARK_COLUMN_HEADERS[: len(row_segments)]
+        ) + [MARK_ROUNDING_HEADER]
+        for (_, header), (_, column) in zip(headers[:-1], row_segments):
+            assert header == column
+        assert headers[-1][1] == row_rounding
+
+    # The tree really places the Marks row one indent left of its mark rows.
+    marks = panel.tree_item(("routing-legs", KIND_ROUTING, route.uid))
+    marks_rect = panel.tree.visualItemRect(marks)
+    assert marks_rect.left() + 4 == paint_rect.left() - indent
+
+    # Narrower than the default the grid drops whole columns from the right,
+    # and the widest stack setting keeps them all. 465 px is the scene panel
+    # left when the stack's vertical scrollbar is showing.
+    layout = {}
+    for width in (300, 465, DEFAULT_LEFT_STACK_WIDTH, 560):
+        _, _, _, _, columns, _ = routing_mark_segments(panel, route, width)
+        layout[width] = [text for text, _ in columns]
+    assert layout[465] == values
+    assert layout[DEFAULT_LEFT_STACK_WIDTH] == values
+    assert layout[560] == values
+    assert layout[300] == values[: len(layout[300])]
+    assert 0 < len(layout[300]) < len(values)
+
+
 def test_routing_mark_row_keeps_name_and_rounding_beside_details(tmp_path):
+
     application()
     route = route_with_detail_points()
     route.set_point_rounding(0, ROUNDING_PORT)
@@ -2064,6 +2146,58 @@ def test_delete_point_action_is_undoable(tmp_path):
     stack.undo()
     assert len(track) == 2
     assert tuple(track.points[0][:2]) == (51.1234567, -1.2345678)
+
+
+def test_add_point_action_is_undoable(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    stack = QUndoStack()
+    panel = panel_for(tmp_path, tracks=[track], undo_stack=stack)
+    panel._coordinates_dialog = lambda title, default, callback: callback((53.5, -3.25))
+
+    panel._add_point(("item", KIND_TRACK, "t1"))
+
+    assert len(track) == 3
+    assert stack.count() == 1
+    stack.undo()
+    assert len(track) == 2
+    stack.redo()
+    assert len(track) == 3
+    assert tuple(track.points[-1][:2]) == (53.5, -3.25)
+
+
+def test_add_point_action_undo_removes_implicit_track(tmp_path):
+    application()
+    stack = QUndoStack()
+    panel = panel_for(tmp_path, undo_stack=stack)
+    panel._coordinates_dialog = lambda title, default, callback: callback((10.0, 20.0))
+
+    panel._add_point(None)
+
+    tracks = panel.core.trackManager
+    assert len(tracks) == 1
+    stack.undo()
+    assert len(tracks) == 0
+    stack.redo()
+    assert len(tracks) == 1
+    assert tuple(tracks[0].points[0][:2]) == (10.0, 20.0)
+
+
+def test_rename_point_action_is_undoable(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    stack = QUndoStack()
+    panel = panel_for(tmp_path, tracks=[track], undo_stack=stack)
+    before = track.point_name(0)
+
+    panel._rename_point(("point", KIND_TRACK, "t1", 0), "Start line")
+
+    assert track.point_name(0) == "Start line"
+    assert stack.count() == 1
+    stack.undo()
+    assert track.point_name(0) == before
+    stack.redo()
+    assert track.point_name(0) == "Start line"
 
 
 def test_map_request_adds_point_from_the_scene_tree(tmp_path):

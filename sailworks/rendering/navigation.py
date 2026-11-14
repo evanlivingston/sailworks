@@ -105,20 +105,44 @@ def routing_point_time_label(value):
         return str(value)
 
 
-def routing_point_cells(point):
+def routing_point_short_time_label(value):
+    """Time of day only, for a scene row whose route repeats the date.
+
+    The table keeps the full ``routing_point_time_label``; a mark row shows the
+    clock time and carries the whole timestamp in its tooltip and item data.
+    """
+    try:
+        stamp = dateutil.parser.parse(str(value))
+        stamp = stamp.astimezone() if stamp.tzinfo is not None else stamp
+        return stamp.strftime("%H:%M")
+    except (ValueError, TypeError):
+        return str(value)
+
+
+def routing_point_cells(point, time_label=routing_point_time_label):
     """The navigation table's display strings for one route point.
 
     ``point`` is a serialized route point, with time, TWA, TWS, speed and
     bearing at indices 2 to 6. A missing figure stays empty rather than showing
-    zero, so the table and the scene tree cannot disagree.
+    zero, so the table and the scene tree cannot disagree. ``time_label`` picks
+    the time cell's format; the table keeps the default.
     """
     return (
-        routing_point_time_label(point[2]),
+        time_label(point[2]),
         f"{point[3]:.0f}°" if point[3] else "",
         f"{point[4]:.1f}" if point[4] else "",
         f"{point[5]:.1f}" if point[5] else "",
         f"{point[6]:.0f}°" if point[6] else "",
     )
+
+
+def routing_point_tree_cells(point):
+    """A routing mark row's painted strings: the clock time, not the full date.
+
+    The full timestamp stays on the item and in its tooltip, because the date
+    repeats on every mark row of the same route.
+    """
+    return routing_point_cells(point, routing_point_short_time_label)
 
 
 def routing_point_detail_fields(point):
@@ -197,6 +221,11 @@ def routing_detail_fields(r):
     return fields
 
 
+def track_mark_count(count):
+    """The mark count noun phrase, shared by the row, its fields and tooltip."""
+    return f"{count} mark" if count == 1 else f"{count} marks"
+
+
 def track_detail_fields(points):
     """Ordered (label, value) detail fields for a track row.
 
@@ -215,7 +244,7 @@ def track_detail_fields(points):
         )
     count = len(points)
     return [
-        ("marks", f"{count} mark" if count == 1 else f"{count} marks"),
+        ("marks", track_mark_count(count)),
         ("distance", "%.1f nm" % distance),
     ]
 
