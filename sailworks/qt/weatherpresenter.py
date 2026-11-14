@@ -16,6 +16,72 @@ from .gribviewport import (
 )
 
 
+def _track_mark_event(host, event, track):
+    """Handle the pointer gesture that starts a selected-track point move.
+
+    Returns True when the event belongs to the track-mark gesture.  An
+    off-mark press is deliberately left to the viewport so it can pan.  A
+    capture whose move request has no receiver is swallowed instead: the press
+    was already consumed, so the viewport never started a pan to fall back to.
+    """
+    canvas = host.canvas
+    if getattr(canvas, "_measure_mode", False):
+        # A measurement click must reach the canvas, never a mark capture.
+        return False
+    kind = event.type()
+    press = getattr(host, "_track_press", None)
+    if kind == QEvent.Type.MouseMove:
+        if press is not None:
+            if (event.position() - press[2]).manhattanLength() <= (
+                QApplication.startDragDistance()
+            ):
+                return True
+            # The press was captured before the viewport could pan.  Once it
+            # is a drag, hand it to the scene-point move flow and let its own
+            # preview/commit handlers take over.
+            host._track_press = None
+            canvas.set_track_mark_hover(None)
+            canvas.track_point_move_requested.emit(press[0], press[1])
+            if canvas.move_callback is None:
+                # No receiver installed a move.  The press was consumed, so the
+                # viewport never began a pan; swallow the drag rather than
+                # leaving a captured gesture with no callback or preview.
+                return True
+            canvas._begin_move_drag(press[2])
+            canvas._move_preview(event.position())
+            return True
+        if event.buttons() or getattr(host.widget, "is_moving", lambda: False)():
+            # The scene translates under the pointer while it pans or coasts,
+            # so the projected mark below it is stale until it settles.
+            canvas.set_track_mark_hover(None)
+            return False
+        canvas.set_track_mark_hover(canvas.edit_track_mark_at(event.position()))
+        return False
+    if (
+        kind == QEvent.Type.MouseButtonPress
+        and event.button() == Qt.MouseButton.LeftButton
+    ):
+        hit = canvas.edit_track_mark_at(event.position())
+        if hit is None:
+            # The press goes to the viewport's panning, but a hover left over
+            # from the previous pointer position is now stale.
+            canvas.set_track_mark_hover(None)
+            return False
+        # Capture on a mark; a stationary release is a no-op and an off-mark
+        # press still reaches the viewport's panning.
+        host._track_press = (track, hit, event.position())
+        canvas.set_track_mark_hover(hit)
+        return True
+    if (
+        kind == QEvent.Type.MouseButtonRelease
+        and event.button() == Qt.MouseButton.LeftButton
+        and press is not None
+    ):
+        host._track_press = None
+        return True
+    return False
+
+
 class WeatherPresenter(QObject):
     failed = Signal(str)
     rendered = Signal()
@@ -639,11 +705,35 @@ class WeatherPresenter(QObject):
                 self.canvas._hover(event.position())
         if watched is self.widget and event.type() == QEvent.Type.Leave:
             self._routing_press_position = None
+            self._track_press = None
+            set_hover = getattr(self.canvas, "set_track_mark_hover", None)
+            if callable(set_hover):
+                set_hover(None)
             self.canvas._cursor_screen_position = None
             cursor_timer = getattr(self.canvas, "_cursor_refresh_timer", None)
             if cursor_timer is not None:
                 cursor_timer.stop()
             self.canvas._cancel_cursor()
+        track = getattr(getattr(self.canvas, "navigation", None), "edit_track", None)
+        if (
+            watched is self.widget
+            and track is not None
+            and self.canvas.move_callback is None
+        ):
+            if (
+                event.type() == QEvent.Type.KeyPress
+                and event.key() == Qt.Key.Key_Escape
+                and getattr(self, "_track_press", None) is not None
+            ):
+                # A captured mark that never became a drag is cancelled first;
+                # a later Escape reaches the canvas and leaves edit mode.
+                self._track_press = None
+                set_hover = getattr(self.canvas, "set_track_mark_hover", None)
+                if callable(set_hover):
+                    set_hover(None)
+                return True
+            if _track_mark_event(self, event, track):
+                return True
         if (
             watched is self.widget
             and event.type() == QEvent.Type.MouseButtonPress
@@ -701,6 +791,16 @@ class WeatherPresenter(QObject):
             and self.canvas.move_callback is not None
         ):
             if self.canvas._finish_move_drag(event.position()):
+                # The mark is still under the pointer after a drop, so restore
+                # its actionable hover instead of leaving the open hand until
+                # the next move.
+                track = getattr(
+                    getattr(self.canvas, "navigation", None), "edit_track", None
+                )
+                set_hover = getattr(self.canvas, "set_track_mark_hover", None)
+                mark_at = getattr(self.canvas, "edit_track_mark_at", None)
+                if track is not None and callable(set_hover) and callable(mark_at):
+                    set_hover(mark_at(event.position()))
                 return True
         if (
             watched is self.widget
@@ -715,6 +815,16 @@ class WeatherPresenter(QObject):
             QEvent.Type.ContextMenu,
             QEvent.Type.KeyPress,
         ):
+            if event.type() == QEvent.Type.KeyPress and (
+                event.key() == Qt.Key.Key_Escape
+            ):
+                self._track_press = None
+                if self.canvas.move_callback is not None:
+                    # Escape still reaches the canvas below and cancels the
+                    # move, but its hover highlight is already stale.
+                    set_hover = getattr(self.canvas, "set_track_mark_hover", None)
+                    if callable(set_hover):
+                        set_hover(None)
             QCoreApplication.sendEvent(self.canvas, event)
             return True
         return super().eventFilter(watched, event)

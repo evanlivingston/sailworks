@@ -173,7 +173,13 @@ def point_columns(rect, metrics, label_left=None):
 
 
 def point_label_width(label_rect, rounding_rect):
-    """Width a point row's name may use before the rounding slot starts."""
+    """Width a point row's name may use before the rounding slot starts.
+
+    A row that drops the rounding slot paints no gap before it, so the name
+    takes the whole label rect; the slot's rect is empty in that case.
+    """
+    if rounding_rect.width() == 0:
+        return label_rect.width()
     return max(0, rounding_rect.left() - label_rect.left() - ROUNDING_GAP)
 
 
@@ -691,6 +697,7 @@ class ScenePanel(QWidget):
     fit_requested = Signal(object)
     delete_requested = Signal(object)
     move_point_requested = Signal(object, int)
+    edit_track_requested = Signal(str)
     # The toggled scene element is carried with the signal: the row names the
     # route whose flag changed, which is not necessarily the route the
     # Navigation panel happens to have selected.
@@ -1933,6 +1940,12 @@ class ScenePanel(QWidget):
             )
         ]
         open_log = node is not None and node[0] == "item" and node[1] == KIND_LOG
+        edit_track = (
+            node is not None
+            and node[0] == "item"
+            and node[1] == KIND_TRACK
+            and not node[2].startswith("race:")
+        )
 
         builder.add("New Collection", self._new_collection, key="N")
         if keys:
@@ -1979,7 +1992,12 @@ class ScenePanel(QWidget):
                 )
                 action.setCheckable(True)
                 action.setChecked(mode == current)
-        if fit_nodes or point_element is not None or track_element is not None:
+        if (
+            fit_nodes
+            or point_element is not None
+            or track_element is not None
+            or edit_track
+        ):
             builder.section()
             if fit_nodes:
                 builder.add("Fit", lambda: self.fit_requested.emit(fit_nodes), key="F")
@@ -1988,6 +2006,12 @@ class ScenePanel(QWidget):
                     "Add Point…",
                     lambda: self._add_point(node),
                     key="P",
+                )
+            if edit_track:
+                builder.add(
+                    "Edit Track",
+                    lambda: self.edit_track_requested.emit(node[2]),
+                    key="E",
                 )
             if point_element is not None:
                 builder.add(

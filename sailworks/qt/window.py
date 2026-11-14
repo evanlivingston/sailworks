@@ -261,6 +261,9 @@ class PreviewWindow(QMainWindow):
         self.scene_panel.delete_requested.connect(self._scene_delete)
         self.scene_panel.move_point_requested.connect(self._move_scene_point)
         controller.log_library_changed.connect(self.scene_panel.refresh)
+        self.scene_panel.edit_track_requested.connect(self._scene_edit_track)
+        self.map.track_point_move_requested.connect(self._move_scene_mark)
+        self.map.track_edit_cancel_requested.connect(self._exit_track_edit)
         self.ais_timer = QTimer(self)
         self.ais_timer.setInterval(3000)
         self.ais_timer.timeout.connect(self._refresh_ais)
@@ -1268,6 +1271,9 @@ class PreviewWindow(QMainWindow):
     def _scene_selected(self, kind, key):
         if kind == KIND_TRACK:
             if key.startswith("race:"):
+                # A race track is not editable here, so selecting one leaves
+                # any retained edit mode on a saved track behind.
+                self._exit_track_edit()
                 _prefix, race_id, boat_id = key.split(":", 2)
                 race_tracks = self.race_panel.loaded_race_tracks().get(race_id, ())
                 self.race_panel.active_race_track = next(
@@ -1282,6 +1288,7 @@ class PreviewWindow(QMainWindow):
             )
             if track is not None:
                 self.controller.core.trackManager.set_active(track)
+                self._exit_track_edit()
                 self.map.invalidate_navigation()
                 self.log_map.invalidate_navigation()
                 self.map.update()
@@ -1295,6 +1302,7 @@ class PreviewWindow(QMainWindow):
                 None,
             )
             if route is not None:
+                self._exit_track_edit()
                 self.controller.core.routingManager.set_active(route)
                 self._select_saved_route(route)
         elif kind == KIND_POI:
@@ -1303,8 +1311,76 @@ class PreviewWindow(QMainWindow):
                 None,
             )
             if poi is not None:
+                self._exit_track_edit()
                 self.map.invalidate_navigation()
                 self.map.update()
+
+    def _set_track_editing(self, track):
+        """Publish the renderer's edit track and repaint the retained overlay."""
+        navigation = self.map.navigation
+        navigation.edit_track = track
+        navigation.hl_track_hover = None
+        invalidate_race = getattr(self.map, "invalidate_race_geometry", None)
+        if callable(invalidate_race):
+            invalidate_race()
+        # The retained QML overlay keys its track payload on the editing flag,
+        # so publish while the cache still describes the previous mode.
+        refresh = getattr(self.map, "refresh_route_overlay", None)
+        if callable(refresh):
+            refresh()
+        self.map.invalidate_navigation()
+        self.map.update()
+
+    def _exit_track_edit(self):
+        """Leave track edit mode while keeping the active track selected."""
+        if self.map.navigation.edit_track is None:
+            return
+        self._set_track_editing(None)
+
+    def _focus_map_surface(self):
+        """Route keyboard input to the map so Escape leaves edit mode.
+
+        Entering edit mode from the Scene Collection tree leaves the tree (or
+        the context menu it opened) holding focus, so the viewport never sees
+        the key.  The desktop map hosts its mouse and key surface in a
+        ``QQuickView``, so focus both it and the containing widget.
+        """
+        target = getattr(self.map, "map_pointer_target", None)
+        surface = target() if callable(target) else None
+        if surface is not None and surface is not self.map:
+            focus = getattr(surface, "setFocus", None)
+            if callable(focus):
+                focus()
+        focus = getattr(self.map, "setFocus", None)
+        if callable(focus):
+            focus()
+
+    def keyPressEvent(self, event):  # noqa: N802 - Qt virtual method name
+        # Unhandled keys from the Scene Collection tree propagate here; Escape
+        # must still leave track edit mode when the map does not own focus.
+        if (
+            event.key() == Qt.Key.Key_Escape
+            and getattr(getattr(self.map, "navigation", None), "edit_track", None)
+            is not None
+        ):
+            self._exit_track_edit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _scene_edit_track(self, key):
+        """Activate a Scene Collection track and enter its edit mode."""
+        track = next(
+            (item for item in self.controller.core.trackManager if item.uid == key),
+            None,
+        )
+        if track is None:
+            return
+        self.controller.core.trackManager.set_active(track)
+        self.scene_panel.refresh()
+        self._set_track_editing(track)
+        self.views.setCurrentWidget(self.map)
+        self._focus_map_surface()
 
     def _scene_open(self, kind, key):
         if kind != KIND_LOG:
@@ -1313,6 +1389,9 @@ class PreviewWindow(QMainWindow):
             path = self.controller.log_library.path(key)
         except (KeyError, ValueError):
             return
+        # Opening a log changes what the map shows, so a retained edit mode on
+        # a saved track would act on marks that are no longer drawn.
+        self._exit_track_edit()
         self.controller.load_paths([path])
 
     def _scene_fit(self, nodes):
@@ -1377,6 +1456,16 @@ class PreviewWindow(QMainWindow):
             ]
             if removed:
                 removals.append((manager, removed, current, kind))
+        edited = getattr(getattr(self.map, "navigation", None), "edit_track", None)
+        if edited is not None and any(
+            element is edited
+            for _manager, removed, _current, _kind in removals
+            for _index, element in removed
+        ):
+            # The track being edited is about to disappear.  Leave edit mode
+            # before the removal refresh runs, otherwise the overlay keeps a
+            # stale track whose marks can still be hit-tested and dragged.
+            self._exit_track_edit()
         if removals:
             self.undo_stack.beginMacro("Delete scene items")
             try:
@@ -1402,7 +1491,22 @@ class PreviewWindow(QMainWindow):
         if changed:
             self._navigation_refresh()
 
-    def _move_scene_point(self, element, index):
+    def _move_scene_mark(self, element, index):
+        """Drag a mark that the retained scene already draws and previews.
+
+        The scene publishes the mark under the pointer itself, so the preview
+        and commit have to project with the scene camera.  This is the only
+        path that opts into that projection.
+        """
+        self._move_scene_point(element, index, direct_point=True)
+
+    def _move_scene_point(self, element, index, direct_point=False):
+        """Move one point of a scene element after a click or drag.
+
+        An explicit Move from the scene list and a calculated route relocation
+        both pick a new position with the widget camera and repaint the canvas.
+        Only a direct drag of a retained mark sets ``direct_point``.
+        """
         if not 0 <= index < len(element):
             return
         before = (element.points[index][0], element.points[index][1])
@@ -1430,7 +1534,12 @@ class PreviewWindow(QMainWindow):
                 )
 
         self.views.setCurrentWidget(self.map)
-        self.map.begin_move(move, preview=preview, restore=restore)
+        self.map.begin_move(
+            move,
+            preview=preview,
+            restore=restore,
+            direct_point=bool(direct_point),
+        )
 
     def _refresh_scene_point(self):
         self.scene_panel.refresh()

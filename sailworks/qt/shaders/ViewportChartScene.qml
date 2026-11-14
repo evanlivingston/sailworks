@@ -315,6 +315,11 @@ Item {
                                     panPadding + viewportHeight / 2 + y - centerY)
                 }
 
+                function editableTrackIndex() {
+                    return editableTrackLayer.trackVisible
+                           ? editableTrackLayer.selectedIndex : -1
+                }
+
                 function rgbColor(color, alpha) {
                     if (!color || color.length < 3)
                         return `rgba(140,140,140,${alpha})`
@@ -819,7 +824,11 @@ Item {
                         }
                     }
                     if (tracks && tracks.length) {
+                        const retainedTrack = editableTrackIndex()
                         for (let t = 0; t < tracks.length; ++t) {
+                            // Drawn once by EditableTrackLayer.
+                            if (t === retainedTrack)
+                                continue
                             const track = tracks[t]
                             const points = track.points
                             if (!points || points.length < 2)
@@ -1209,10 +1218,35 @@ Item {
                 onMeasurePointsChanged: requestPaint()
                 onMeasurePreviewChanged: requestPaint()
                 onMeasureDistanceChanged: requestPaint()
-                onMovePreviewChanged: requestPaint()
+                onMovePreviewChanged: {
+                    // A retained-track preview updates Shape geometry, not the
+                    // remaining Canvas overlays. Clear still repaints once.
+                    if (!movePreview || movePreview.length !== 4
+                            || movePreview[0] !== editableTrackIndex())
+                        requestPaint()
+                }
                 onCenterLatitudeChanged: requestPaint()
                 onCenterLongitudeChanged: requestPaint()
                 onZoomChanged: requestPaint()
+            }
+
+            // Editing affordances intentionally sit above the Canvas overlays;
+            // the selected track itself is omitted from the Canvas paint pass.
+            EditableTrackLayer {
+                id: editableTrackLayer
+                objectName: "editableTrackLayer"
+                x: routeOverlayCanvas.x
+                y: routeOverlayCanvas.y
+                width: routeOverlayCanvas.width
+                height: routeOverlayCanvas.height
+                tracks: routeOverlayCanvas.tracks
+                movePreview: routeOverlayCanvas.movePreview
+                centerLatitude: routeOverlayCanvas.centerLatitude
+                centerLongitude: routeOverlayCanvas.centerLongitude
+                zoom: routeOverlayCanvas.zoom
+                panPadding: routeOverlayCanvas.panPadding
+                viewportWidth: routeOverlayCanvas.viewportWidth
+                viewportHeight: routeOverlayCanvas.viewportHeight
             }
         }
     }
