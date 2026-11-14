@@ -441,6 +441,10 @@ class PythonLandProvider final : public wr::LandAndBoundaryProvider {
         land_.attr("distance_nm")(point.latitude, point.longitude));
   }
 
+  // User avoid zones are native geometry: the polygon provider is composed
+  // with this shoreline adapter by the bridge and never calls back into Python
+  // per leg. See ComposedLandProvider in boundary_provider.h.
+
   [[nodiscard]] std::string identity() const override { return identity_; }
 
  private:
@@ -918,6 +922,48 @@ py::dict waveProvenanceDict(const wr::RoutingResult& result, bool useWaves,
   return provenance;
 }
 
+// Provenance for a zone-constrained calculation. Emitted only when a zone set
+// is frozen in, so a no-zone result payload stays byte-identical to the base
+// revision. "active" means the native polygon provider was applied, whether or
+// not a leg was rerouted; it is never a claim that a zone was avoided.
+void addAvoidZoneProvenance(
+    py::dict& result,
+    const std::vector<sailworks::native_routing::AvoidZone>& zones,
+    const std::string& digest) {
+  if (zones.empty()) return;
+  py::list descriptors;
+  for (const auto& zone : zones) {
+    py::dict entry;
+    entry["id"] = zone.id;
+    entry["name"] = zone.name;
+    entry["vertex_count"] = zone.vertices.size();
+    descriptors.append(entry);
+  }
+  result["avoid_zones"] = descriptors;
+  result["avoid_zones_digest"] = digest;
+  result["avoid_zones_active"] = true;
+}
+
+// The digest in the settings is only the caller's identity claim. Recompute it
+// from the payload the provider will consume, using the canonical Python
+// encoder (the GIL is held here), and reject a digest that does not describe
+// that geometry. A malformed digest is left to buildAvoidZoneProvider, which
+// owns its fixed 64-lowercase-hex error message.
+void verifyAvoidZoneDigest(const py::object& payload,
+                           const std::string& digest) {
+  if (digest.size() != 64) return;
+  for (const char digit : digest)
+    if (!((digit >= '0' && digit <= '9') || (digit >= 'a' && digit <= 'f')))
+      return;
+  const py::object encoded =
+      py::module_::import("sailworks.core.geo.mapshapes")
+          .attr("avoid_zones_digest_from_native")(payload);
+  if (py::cast<std::string>(encoded) != digest)
+    throw py::value_error(
+        "zone digest mismatch: avoid_zones_digest does not describe the "
+        "supplied avoid zone geometry");
+}
+
 py::dict runUserBridge(py::function wind, py::function current,
                            py::object waves, const py::object& waveCoverage,
                            const py::dict& coverage, const py::object& polar,
@@ -933,7 +979,8 @@ py::dict runUserBridge(py::function wind, py::function current,
       "polar_efficiency", "tws_max_kn", "min_sailing_speed_kn",
       "motor_speed_kn", "wave_correct", "coastline_checks",
       "land_safety_margin_nm", "waypoints", "roundings"};
-  const std::set<std::string> optional{"use_waves"};
+  const std::set<std::string> optional{"use_waves", "avoid_zones",
+                                       "avoid_zones_digest"};
   if (py::len(settings) < required.size() ||
       py::len(settings) > required.size() + optional.size())
     throw py::value_error(
@@ -945,9 +992,12 @@ py::dict runUserBridge(py::function wind, py::function current,
     if (!required.count(py::cast<std::string>(item.first)) &&
         !optional.count(py::cast<std::string>(item.first)))
       throw py::value_error("real request has an unknown setting");
-  if (py::cast<bool>(settings["coastline_checks"]) && land.is_none())
+  // User avoid zones are native polygons frozen into the request; they never
+  // travel through the Python land adapter, so only shoreline checks need one.
+  if (land.is_none() && py::cast<bool>(settings["coastline_checks"]))
     throw py::value_error(
-        "real request shoreline checks require a worker-local shoreline adapter");
+        "real request shoreline checks require a worker-local shoreline "
+        "adapter");
   auto point = [](const py::handle value) {
     const auto pair = py::cast<py::sequence>(value);
     if (py::len(pair) != 2)
@@ -958,6 +1008,58 @@ py::dict runUserBridge(py::function wind, py::function current,
     if (value.is_none()) return std::nullopt;
     return py::cast<double>(value);
   };
+  // Frozen user no-go zones: an ordered list of
+  // {id, name, vertices: [[latitude, longitude], ...]}. The rider order is part
+  // of the frozen input. Geometry is validated and turned into native engine
+  // polygons here; no Python object is consulted per route leg.
+  std::vector<sailworks::native_routing::AvoidZone> avoidZones;
+  py::list avoidZonePayload;
+  if (settings.contains("avoid_zones") &&
+      !settings["avoid_zones"].is_none()) {
+    if (!py::isinstance<py::sequence>(settings["avoid_zones"]) ||
+        py::isinstance<py::str>(settings["avoid_zones"]))
+      throw py::value_error("avoid_zones must be a list of zone mappings");
+    const std::set<std::string> zoneFields{"id", "name", "vertices"};
+    for (const auto& value : py::cast<py::sequence>(settings["avoid_zones"])) {
+      if (!py::isinstance<py::dict>(value))
+        throw py::value_error("avoid_zones entries must be mappings");
+      const auto item = py::reinterpret_borrow<py::dict>(value);
+      for (const auto& entry : item)
+        if (!zoneFields.count(py::cast<std::string>(entry.first)))
+          throw py::value_error("avoid zone has an unknown field");
+      for (const auto& field : zoneFields)
+        if (!item.contains(py::str(field)))
+          throw py::value_error("avoid zone missing field: " + field);
+      sailworks::native_routing::AvoidZone zone;
+      zone.id = py::cast<std::string>(item["id"]);
+      zone.name = py::cast<std::string>(item["name"]);
+      if (!py::isinstance<py::sequence>(item["vertices"]) ||
+          py::isinstance<py::str>(item["vertices"]))
+        throw py::value_error("avoid zone vertices must be a list of points");
+      for (const auto& vertex : py::cast<py::sequence>(item["vertices"]))
+        zone.vertices.push_back(point(vertex));
+      // Keep the parsed record so the digest can be re-derived from exactly
+      // what the provider receives.
+      avoidZonePayload.append(item);
+      avoidZones.push_back(std::move(zone));
+    }
+  }
+  std::string avoidZonesDigest;
+  if (settings.contains("avoid_zones_digest") &&
+      !settings["avoid_zones_digest"].is_none())
+    avoidZonesDigest =
+        py::cast<std::string>(settings["avoid_zones_digest"]);
+  if (!avoidZones.empty())
+    verifyAvoidZoneDigest(avoidZonePayload, avoidZonesDigest);
+  std::shared_ptr<const wr::PolygonBoundaryProvider> avoidZoneProvider;
+  if (!avoidZones.empty()) {
+    avoidZoneProvider =
+        sailworks::native_routing::buildAvoidZoneProvider(avoidZones,
+                                                          avoidZonesDigest);
+  } else if (!avoidZonesDigest.empty()) {
+    throw py::value_error(
+        "avoid_zones_digest requires a non-empty avoid_zones list");
+  }
   sailworks::native_routing::UserSettings input;
   input.start = point(settings["start"]);
   input.destination = point(settings["destination"]);
@@ -1025,6 +1127,16 @@ py::dict runUserBridge(py::function wind, py::function current,
   if (chain.size() == 1 || chain.back().latitude != input.destination.latitude ||
       chain.back().longitude != input.destination.longitude)
     chain.push_back(input.destination);
+  // A frozen zone containing a fixed chain mark (departure, waypoint or
+  // destination) makes the request unsatisfiable. Name the zone rather than
+  // returning a generic no-route, and never drop or shrink the zone.
+  for (const auto& mark : chain) {
+    const auto containing =
+        sailworks::native_routing::containingAvoidZoneId(avoidZones, mark);
+    if (containing)
+      throw py::value_error("avoid zone '" + *containing +
+                            "' contains a required route point");
+  }
   if (!input.roundings.empty() &&
       input.roundings.size() != chain.size() - 1)
     throw py::value_error(
@@ -1048,13 +1160,23 @@ py::dict runUserBridge(py::function wind, py::function current,
       std::move(wind), std::move(current), std::move(waves),
       waveFieldsCoverage, windCoverage, providerIdentity,
       wr::EnvironmentalSource::GribForecast);
-  environment.landAndBoundaries =
-      input.coastlineChecks
-          ? std::shared_ptr<wr::LandAndBoundaryProvider>(
-                std::make_shared<PythonLandProvider>(std::move(land),
-                                                     providerIdentity +
-                                                         "-shoreline"))
-          : std::make_shared<wr::OpenWaterProvider>();
+  // A no-zone run keeps the exact shoreline adapter (or open water) of the base
+  // revision: no polygon provider is constructed, no zone predicate runs and
+  // the land identity is unchanged. Zones are composed only when frozen in.
+  std::shared_ptr<const wr::LandAndBoundaryProvider> coastline;
+  if (input.coastlineChecks) {
+    coastline = std::make_shared<PythonLandProvider>(
+        std::move(land), providerIdentity + "-shoreline");
+  }
+  if (avoidZoneProvider) {
+    environment.landAndBoundaries = sailworks::native_routing::composeAvoidZones(
+        std::move(coastline), avoidZoneProvider, avoidZonesDigest,
+        providerIdentity);
+  } else if (coastline) {
+    environment.landAndBoundaries = std::move(coastline);
+  } else {
+    environment.landAndBoundaries = std::make_shared<wr::OpenWaterProvider>();
+  }
   environment.performance = std::make_shared<sailworks::native_routing::SailworksPerformance>(
       std::move(vessel), input.maximumWindKnots, input.minimumSailingKnots,
       input.motorKnots, input.windBasedWaveProxy);
@@ -1065,6 +1187,7 @@ py::dict runUserBridge(py::function wind, py::function current,
     py::dict result = runDict(run);
     result["wave_provenance"] = waveProvenanceDict(
         run.result, input.useWaves, input.windBasedWaveProxy);
+    addAvoidZoneProvenance(result, avoidZones, avoidZonesDigest);
     return result;
   }
   const auto run = sailworks::native_routing::runUserChain(
@@ -1073,6 +1196,7 @@ py::dict runUserBridge(py::function wind, py::function current,
   py::dict result = runDict(run.result, &run.segments);
   result["wave_provenance"] = waveProvenanceDict(
       run.result.result, input.useWaves, input.windBasedWaveProxy);
+  addAvoidZoneProvenance(result, avoidZones, avoidZonesDigest);
   return result;
 }
 

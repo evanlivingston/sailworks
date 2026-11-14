@@ -605,6 +605,7 @@ def test_store_cache_is_lazy_bounded_and_evicts_lru(tmp_path):
 
 
 def test_store_rejects_traversal_and_malformed_artifact_refs(tmp_path):
+
     store = RoutingResultStore(tmp_path)
     with pytest.raises(SchemaError):
         store.load("../escape")
@@ -616,3 +617,120 @@ def test_store_rejects_traversal_and_malformed_artifact_refs(tmp_path):
         ArtifactRef(1, "a" * 64, "b" * 64, 0, "application/json", "artifact://x")
     with pytest.raises(SchemaError):
         ArtifactRef(1, "a" * 64, "a" * 64, 0, "application/json", "artifact://../x")
+
+
+ZONE_DIGEST = "a1" * 32
+
+
+def _zone_identity():
+    return {
+        "source": {
+            "repository": "https://example.invalid/sailworks-native",
+            "commit": "deadbeef",
+            "tree_sha256": TREE,
+        },
+        "versions": {},
+    }
+
+
+def _zone_run(**overrides):
+    run = {
+        "status": "complete",
+        "accepted": True,
+        "validation": {"passed": True},
+        "legs": [],
+        "layers": [],
+        "engine": "synthetic",
+        # ``_capabilities`` reads the frozen request for its sampling cadence,
+        # so every native run payload needs an object here.
+        "request": {"time_step_seconds": 1800},
+        "avoid_zones": [
+            {"id": "avoid-1", "name": "Charted reef", "vertex_count": 4},
+            {"id": "avoid-2", "name": "", "vertex_count": 3},
+        ],
+        "avoid_zones_digest": ZONE_DIGEST,
+        "avoid_zones_active": True,
+        "input_fingerprints": {
+            "avoid_zones": [
+                {
+                    "id": "avoid-1",
+                    "name": "Charted reef",
+                    "vertex_count": 4,
+                    "vertices": [
+                        [48.1, -123.5],
+                        [48.2, -123.4],
+                        [48.2, -123.2],
+                        [48.1, -123.3],
+                    ],
+                },
+                {
+                    "id": "avoid-2",
+                    "name": "",
+                    "vertex_count": 3,
+                    "vertices": [[48.4, -123.1], [48.5, -123.0], [48.4, -122.9]],
+                },
+            ],
+            "avoid_zones_digest": ZONE_DIGEST,
+        },
+    }
+    run.update(overrides)
+    return run
+
+
+def _zone_result(**overrides):
+    from sailworks.core.marine.routingnative import to_routing_result
+
+    return to_routing_result(
+        _zone_run(**overrides),
+        calculation_id=CALC,
+        generation=1,
+        sequence=1,
+        created_epoch_s=EPOCH,
+        identity=_zone_identity(),
+    )
+
+
+def test_saved_result_keeps_the_frozen_zone_set_and_digest():
+    result = _zone_result()
+    diagnostics = result.outcome.diagnostics
+    assert [zone["id"] for zone in diagnostics["avoid_zones"]] == [
+        "avoid-1",
+        "avoid-2",
+    ]
+    assert diagnostics["avoid_zones_digest"] == ZONE_DIGEST
+    assert diagnostics["avoid_zones_active"] is True
+    assert diagnostics["input_fingerprints"]["avoid_zones_digest"] == ZONE_DIGEST
+    assert diagnostics["input_fingerprints"]["avoid_zones"][0]["vertices"][0] == (
+        48.1,
+        -123.5,
+    )
+
+    restored = RoutingResult.from_json(result.to_json())
+    assert restored == result
+    assert restored.outcome.diagnostics["avoid_zones_digest"] == ZONE_DIGEST
+    assert [
+        zone["vertex_count"] for zone in restored.outcome.diagnostics["avoid_zones"]
+    ] == [
+        4,
+        3,
+    ]
+
+
+def test_no_zone_native_run_adds_no_avoid_zone_diagnostics():
+    run = _zone_run()
+    for key in ("avoid_zones", "avoid_zones_digest", "avoid_zones_active"):
+        run.pop(key)
+    run.pop("input_fingerprints")
+    from sailworks.core.marine.routingnative import to_routing_result
+
+    result = to_routing_result(
+        run,
+        calculation_id=CALC,
+        generation=1,
+        sequence=1,
+        created_epoch_s=EPOCH,
+        identity=_zone_identity(),
+    )
+    keys = set(result.outcome.diagnostics)
+    assert not any(key.startswith("avoid_zones") for key in keys)
+    assert "input_fingerprints" not in keys

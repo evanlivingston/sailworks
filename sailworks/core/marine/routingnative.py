@@ -197,6 +197,13 @@ def _diagnostics(run: Mapping[str, Any]) -> dict[str, Any]:
         "legacy_algorithm",
         "wave_provenance",
         "preflight",
+        # The frozen zone set the calculation actually ran with, plus its
+        # canonical digest. These are copied as recorded, never re-read from
+        # the current scene; a no-zone run carries none of these keys, so its
+        # diagnostics stay unchanged.
+        "avoid_zones",
+        "avoid_zones_digest",
+        "avoid_zones_active",
     ):
         if key in run:
             diagnostics[key] = run[key]

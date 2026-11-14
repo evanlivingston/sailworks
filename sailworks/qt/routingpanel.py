@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from sailworks.core.routingjob import RouteRequest
+from sailworks.core.geo.mapshapes import KIND_AVOID
 from sailworks.core.geo.track import Track
 from sailworks.core.marine.routing import CurrentIsoRouter
 from sailworks.core.routingoptions import (
@@ -1004,12 +1005,15 @@ class RoutingPanel(QWidget):
     def _calculate(self):
         backend = self.backend.currentData() or "legacy"
         try:
+            refusal = self._avoidance_refusal(backend, self.avoidance_shapes())
+            if refusal is not None:
+                raise ValueError(refusal)
             if backend != "native" and self._wave_entry_id:
                 raise ValueError(
                     "Real wave data is a Native calculation input. Set Wave "
                     "data to None or switch to Native."
                 )
-            request, scenarios = self._request()
+            request, scenarios = self._request(backend)
             if backend != "native" and any(
                 rounding is not None for rounding in request.roundings
             ):
@@ -1033,7 +1037,40 @@ class RoutingPanel(QWidget):
             return
         self.routing.start(request, scenarios, backend=backend)
 
-    def _request(self):
+    def avoidance_shapes(self):
+        """Immutable snapshot of every enabled avoid shape.
+
+        Scene visibility is deliberately ignored: a hidden avoidance polygon
+        still constrains the route. Only ``enabled`` and the avoid kind count.
+        """
+        collection = getattr(self.controller.core, "shapeManager", ())
+        return tuple(
+            shape.to_map_shape()
+            for shape in collection
+            if getattr(shape, "kind", None) == KIND_AVOID
+            and getattr(shape, "enabled", False)
+        )
+
+    @staticmethod
+    def _avoidance_refusal(backend, shapes):
+        """Why a legacy calculation cannot honour these shapes, if it cannot."""
+        if backend == "native" or not shapes:
+            return None
+        return (
+            "Avoidance shapes require the Native backend. Disable or remove "
+            f"the {len(shapes)} enabled avoid shape(s) in the Scene panel, or "
+            "set Calculation to Native."
+        )
+
+    def _request(self, backend=None):
+        """Build the request for ``backend``.
+
+        Only the Native calculation consumes avoidance shapes; a legacy
+        request carries the empty snapshot so an earlier native selection can
+        never leak shapes into it.
+        """
+        if backend is None:
+            backend = self.backend.currentData() or "legacy"
         target = self.destination.currentData()
         waypoints = (
             tuple(tuple(p) for p in target.to_list())
@@ -1103,6 +1140,7 @@ class RoutingPanel(QWidget):
             wave_correct=self.wave_proxy.isChecked(),
             wave_entry_id=self._wave_entry_id or None,
             coastline_clearance_distance_m=self.coastline_clearance.value() * 1852,
+            map_shapes=(self.avoidance_shapes() if backend == "native" else ()),
         )
         axes = {
             key: values.text()

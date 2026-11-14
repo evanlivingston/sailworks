@@ -386,6 +386,35 @@ class RoutingWind:
             raise RoutingCancelledError()
 
 
+def _frozen_map_shapes(value):
+    """Return an immutable, validated map-shape snapshot.
+
+    A caller may hand over live ``Shape`` objects or already frozen
+    ``MapShape`` values. Both collapse to the immutable snapshot the native
+    worker consumes, so later edits to the collection cannot change a request
+    that has already been frozen.
+    """
+    from sailworks.core.geo.mapshapes import KIND_AVOID, MapShape
+
+    if value is None:
+        return ()
+    shapes = []
+    for item in tuple(value):
+        if isinstance(item, MapShape):
+            shape = item
+        else:
+            to_map_shape = getattr(item, "to_map_shape", None)
+            if not callable(to_map_shape):
+                raise ValueError(f"Not a map shape: {item!r}")
+            shape = to_map_shape()
+        if not isinstance(shape, MapShape):
+            raise ValueError(f"Map shapes must validate as MapShape: {item!r}")
+        if shape.enabled and shape.kind == KIND_AVOID and not shape.is_polygon:
+            raise ValueError("Enabled avoid shapes must be polygons")
+        shapes.append(shape)
+    return tuple(shapes)
+
+
 @dataclass(frozen=True)
 class RouteRequest:
     name: str
@@ -415,6 +444,10 @@ class RouteRequest:
     # A published wave entry selected for real wave sampling. The legacy
     # wind-based proxy above is unaffected; it remains a separate opt-in.
     wave_entry_id: Optional[str] = None
+    # Immutable map-shape snapshot selected for this route. Enabled avoid
+    # polygons constrain native planning independently of coastline checks;
+    # note-only or disabled shapes carry no planning meaning.
+    map_shapes: tuple = ()
 
     def __post_init__(self):
         if (
@@ -430,6 +463,7 @@ class RouteRequest:
             object.__setattr__(self, "land_avoidance", self.coastline_checks)
         else:
             object.__setattr__(self, "coastline_checks", self.land_avoidance)
+        object.__setattr__(self, "map_shapes", _frozen_map_shapes(self.map_shapes))
 
 
 class RoutingPreview(tuple):

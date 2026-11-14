@@ -2,6 +2,8 @@
 
 from PySide6.QtGui import QUndoCommand
 
+from sailworks.core.geo.mapshapes import ShapeValidationError, validate_vertices
+
 
 class RemoveNavigationCommand(QUndoCommand):
     """Undoable removal of one or more tracks or routes."""
@@ -148,6 +150,68 @@ class AddPointCommand(QUndoCommand):
             self.element.remove(self.index)
         self._remove_track()
         self.refresh()
+
+
+class SetShapeVerticesCommand(QUndoCommand):
+    """Undoable replacement of one shape's complete vertex ring.
+
+    A corner move and an edge insertion both end as a new ring, so each
+    records full before/after copies of the vertices. Undo therefore restores
+    the exact vertex order of the earlier state rather than an inferred edit.
+    Each redo/undo state change is persisted once, then the refresh callback
+    republishes the overlay and announces the change.
+    """
+
+    def __init__(self, refresh, manager, element, before, after, label="Edit shape"):
+        super().__init__(label)
+        self.refresh = refresh
+        self.manager = manager
+        self.element = element
+        self.before = tuple(tuple(point) for point in before)
+        self.after = tuple(tuple(point) for point in after)
+        self.error = ""
+        self._applied = False
+
+    def _restore(self, vertices):
+        try:
+            self.element.vertices = vertices
+            return True
+        except ShapeValidationError:
+            return False
+
+    def _apply(self, vertices):
+        """Validate, store, persist and republish one geometry state."""
+        previous = tuple(tuple(point) for point in self.element.vertices)
+        try:
+            # The whole ring is revalidated: a stored state that no longer
+            # fits the shape is refused instead of reaching memory or disk.
+            validate_vertices(self.element.kind, vertices)
+        except ShapeValidationError as error:
+            self.error = str(error)
+            return False
+        self.element.vertices = vertices
+        save = getattr(self.manager, "save", None)
+        if callable(save):
+            try:
+                save()
+            except OSError as error:
+                self._restore(previous)
+                self.error = f"could not save the shape: {error}"
+                return False
+        self.error = ""
+        self._applied = True
+        self.refresh()
+        return True
+
+    def redo(self):
+        self._apply(self.after)
+
+    def undo(self):
+        if not self._applied:
+            # A redo that failed already restored the previous geometry, so
+            # there is nothing to reverse and nothing to write.
+            return
+        self._apply(self.before)
 
 
 class RenamePointCommand(QUndoCommand):

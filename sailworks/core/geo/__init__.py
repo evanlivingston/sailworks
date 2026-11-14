@@ -21,3 +21,9 @@ from .poi import POI  # noqa: F401
 from .trackcollection import TrackCollection  # noqa: F401
 from .routingcollection import RoutingCollection  # noqa: F401
 from .poicollection import POICollection  # noqa: F401
+from .mapshapes import (  # noqa: F401
+    AvoidancePolygonProvider,
+    MapShape,
+    ShapeValidationError,
+)
+from .shapecollection import Shape, ShapeCollection  # noqa: F401

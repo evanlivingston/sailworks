@@ -27,7 +27,15 @@ from sailworks.core.geo.rounding import (
     ROUNDING_STARBOARD,
 )
 from sailworks.core import utils
-from sailworks.core.scene import KIND_LOG, KIND_POI, KIND_ROUTING, KIND_TRACK
+from sailworks.core.geo.mapshapes import KIND_AVOID
+from sailworks.core.geo.shapecollection import Shape
+from sailworks.core.scene import (
+    KIND_LOG,
+    KIND_POI,
+    KIND_ROUTING,
+    KIND_SHAPE,
+    KIND_TRACK,
+)
 from sailworks.qt.scenepanel import (
     COORDINATE_ROLE,
     DETAIL_GAP,
@@ -197,6 +205,34 @@ class FakeCollection(list):
         return getattr(route, "loaded_result", None)
 
 
+class FakeShapeManager(list):
+    """Identity-based stand-in for ShapeCollection; no storage is touched."""
+
+    def __init__(self, shapes=()):
+        super().__init__(shapes)
+        self.saves = 0
+
+    def save(self):
+        self.saves += 1
+
+    def get_unique_name(self, base_name=None):
+        base = base_name or "shape"
+        names = {shape.name for shape in self}
+        if base not in names:
+            return base
+        index = 1
+        while f"{base}.{index:03d}" in names:
+            index += 1
+        return f"{base}.{index:03d}"
+
+    def remove_many(self, elements, save=True):
+        remove_ids = {id(element) for element in elements}
+        before = len(self)
+        self[:] = [element for element in self if id(element) not in remove_ids]
+        if len(self) != before and save:
+            self.save()
+
+
 class FakeLibrary:
     def __init__(self, entries=()):
         self._entries = list(entries)
@@ -214,6 +250,7 @@ class FakeCore:
         self.trackManager = FakeCollection()
         self.routingManager = FakeCollection()
         self.poiManager = FakeCollection()
+        self.shapeManager = FakeShapeManager()
 
 
 class FakeSession:
@@ -256,11 +293,13 @@ def panel_for(
     logs=(),
     loaded_log=None,
     undo_stack=None,
+    shapes=(),
 ):
     core = FakeCore()
     core.trackManager.extend(tracks)
     core.routingManager.extend(routes)
     core.poiManager.extend(pois)
+    core.shapeManager.extend(shapes)
     return ScenePanel(
         FakeController(core, FakeLibrary(logs), FakeSession(loaded_log)),
         scene_path=tmp_path / "scene.json",
@@ -283,7 +322,7 @@ def test_panel_builds_default_tree_and_items(tmp_path):
     root = panel.tree.topLevelItem(0)
     assert root.text(NAME_COLUMN) == "Scene Collection"
     names = [root.child(index).text(NAME_COLUMN) for index in range(root.childCount())]
-    assert names == ["Tracks", "Routings", "POIs", "Logs"]
+    assert names == ["Tracks", "Routings", "POIs", "Logs", "Shapes"]
     assert panel.item_row(KIND_TRACK, "t1") is not None
     assert panel.item_row(KIND_POI, "p1") is not None
     assert panel.item_row(KIND_LOG, "log-1") is not None
@@ -2236,3 +2275,233 @@ def test_window_navigation_request_uses_scene_panel(tmp_path):
 
     assert tuple(track.points[-1][:2]) == (55.0, -5.0)
     assert shown == ["scene"]
+
+
+# ----------------------------------------------------------------------
+# Map shapes
+
+SHAPE_SQUARE = ((0.0, 0.0), (0.0, 2.0), (2.0, 2.0), (2.0, 0.0))
+
+
+def avoid_shape(name="Reef", **kwargs):
+    return Shape(name, SHAPE_SQUARE, kind=KIND_AVOID, **kwargs)
+
+
+def context_menu_actions(panel, row):
+    actions = []
+
+    def capture(menu, *_args):
+        actions.extend(menu.actions())
+        return None
+
+    with (
+        patch.object(panel.tree, "itemAt", lambda position: row),
+        patch.object(ThemedMenu, "exec", capture),
+    ):
+        panel._context_menu(QPoint(0, 0))
+    return [action for action in actions if not action.isSeparator()]
+
+
+def action_named(actions, label):
+    for action in actions:
+        if label in action.text().replace("&", ""):
+            return action
+    raise AssertionError((label, [action.text() for action in actions]))
+
+
+def test_shape_row_lives_in_default_shapes_group_with_detail(tmp_path):
+    application()
+    shape = avoid_shape(note="coral")
+    panel = panel_for(tmp_path, shapes=[shape])
+
+    row = panel.item_row(KIND_SHAPE, shape.uid)
+
+    assert row is not None
+    assert row.parent() is panel.group_row("default-shapes")
+    detail = panel.scene.live_entry(KIND_SHAPE, shape.uid).detail
+    assert "avoidance on" in detail
+    assert "coral" in detail
+
+
+def test_shape_context_menu_toggles_avoidance_and_persists(tmp_path):
+    application()
+    shape = avoid_shape()
+    panel = panel_for(tmp_path, shapes=[shape])
+
+    actions = context_menu_actions(panel, panel.item_row(KIND_SHAPE, shape.uid))
+    avoidance = action_named(actions, "Use for Avoidance")
+
+    assert avoidance.isCheckable()
+    assert avoidance.isChecked()
+
+    avoidance.trigger()
+
+    assert shape.enabled is False
+    assert panel.core.shapeManager.saves == 1
+    detail = panel.scene.live_entry(KIND_SHAPE, shape.uid).detail
+    assert "avoidance off" in detail
+    # Scene visibility is a separate switch and must not follow avoidance.
+    assert shape.visible is True
+
+
+class _AcceptedShapeDialog:
+    """Stand-in for ShapeNoteDialog returning the user's edits."""
+
+    colour = "#112233"
+
+    @staticmethod
+    def note_text():
+        return "coral heads"
+
+    @staticmethod
+    def exec():
+        from PySide6.QtWidgets import QDialog
+
+        return QDialog.DialogCode.Accepted
+
+
+class _CancelledShapeDialog(_AcceptedShapeDialog):
+    @staticmethod
+    def exec():
+        from PySide6.QtWidgets import QDialog
+
+        return QDialog.DialogCode.Rejected
+
+
+def test_shape_edit_needs_three_distinct_vertices():
+    polygon = SimpleNamespace(vertices=[(0, 0), (0, 1), (1, 1), (1, 1)])
+    duplicate = SimpleNamespace(vertices=[(0, 0), (0, 1), (0, 1)])
+    empty = SimpleNamespace(vertices=[])
+
+    assert ScenePanel._shape_edit_available(polygon) is True
+    assert ScenePanel._shape_edit_available(duplicate) is False
+    assert ScenePanel._shape_edit_available(empty) is False
+
+
+def test_shape_context_menu_offers_vertex_edit_for_a_polygon(tmp_path):
+    application()
+    shape = avoid_shape()
+    other = avoid_shape(name="Sand")
+    panel = panel_for(tmp_path, shapes=[shape, other])
+    requested = []
+    panel.shape_edit_requested.connect(requested.append)
+
+    actions = context_menu_actions(panel, panel.item_row(KIND_SHAPE, shape.uid))
+    action_named(actions, "Edit vertices").trigger()
+
+    assert requested == [shape.uid]
+    # Entering vertex edit mode is a viewport concern, so nothing is written.
+    assert panel.core.shapeManager.saves == 0
+    assert other.vertices == avoid_shape(name="Sand").vertices
+
+
+def test_shape_context_menu_edits_note_and_persists(tmp_path):
+    application()
+    shape = avoid_shape()
+    panel = panel_for(tmp_path, shapes=[shape])
+
+    actions = context_menu_actions(panel, panel.item_row(KIND_SHAPE, shape.uid))
+    edit_note = action_named(actions, "Edit Note")
+    assert edit_note is not None
+
+    with patch(
+        "sailworks.qt.scenepanel.ShapeNoteDialog",
+        return_value=_AcceptedShapeDialog(),
+    ):
+        panel._edit_shape_note(shape)
+
+    assert shape.note == "coral heads"
+    assert shape.colour == "#112233"
+    assert panel.core.shapeManager.saves == 1
+    detail = panel.scene.live_entry(KIND_SHAPE, shape.uid).detail
+    assert "coral heads" in detail
+
+
+def test_shape_note_dialog_cancel_changes_nothing(tmp_path):
+    application()
+    shape = avoid_shape(note="before")
+    panel = panel_for(tmp_path, shapes=[shape])
+
+    with patch(
+        "sailworks.qt.scenepanel.ShapeNoteDialog",
+        return_value=_CancelledShapeDialog(),
+    ):
+        panel._edit_shape_note(shape)
+
+    assert shape.note == "before"
+    assert shape.colour == ""
+    assert panel.core.shapeManager.saves == 0
+
+
+def test_shape_note_dialog_keeps_an_unset_colour_and_reads_edits():
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QDialog
+
+    from sailworks.qt.scenepanel import ShapeNoteDialog
+
+    application()
+    dialog = ShapeNoteDialog(note="old", colour="", kind=KIND_AVOID)
+    assert dialog.colour == ""
+    assert "Default" in dialog.colour_button.text()
+
+    dialog.note_edit.setPlainText("new note")
+    assert dialog.note_text() == "new note"
+
+    with patch(
+        "sailworks.qt.scenepanel.QColorDialog.getColor",
+        return_value=QColor("#0a0b0c"),
+    ):
+        dialog._choose_colour()
+    assert dialog.colour == "#0A0B0C"
+
+    dialog.accept()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+
+
+def test_shape_row_icon_shows_geometry_and_custom_colour(tmp_path):
+    from sailworks.qt.scenepanel import shape_icon
+
+    application()
+    note = Shape("Lookout", ((1.0, 2.0),), kind="note")
+    avoid = avoid_shape("Reef", colour="#123456")
+    panel = panel_for(tmp_path, shapes=[note, avoid])
+
+    assert not panel.item_row(KIND_SHAPE, note.uid).icon(NAME_COLUMN).isNull()
+    assert not panel.item_row(KIND_SHAPE, avoid.uid).icon(NAME_COLUMN).isNull()
+
+    note_image = shape_icon(note).pixmap(48, 48).toImage()
+    avoid_image = shape_icon(avoid).pixmap(48, 48).toImage()
+    # Kind is readable from the glyph alone: marker versus filled polygon.
+    assert note_image != avoid_image
+
+    centre = avoid_image.pixelColor(avoid_image.width() // 2, avoid_image.height() // 2)
+    assert centre.alpha() > 0
+    assert (centre.red(), centre.green(), centre.blue()) == (0x12, 0x34, 0x56)
+
+    plain = avoid_shape("Reef")
+    assert shape_icon(plain).pixmap(48, 48).toImage() != avoid_image
+
+
+def test_shape_rename_goes_through_the_manager(tmp_path):
+    application()
+    shape = avoid_shape("Reef")
+    panel = panel_for(tmp_path, shapes=[shape])
+    row = panel.item_row(KIND_SHAPE, shape.uid)
+
+    with QSignalBlocker(panel.tree):
+        row.setText(NAME_COLUMN, "Hazard")
+    panel._item_changed(row, NAME_COLUMN)
+
+    assert shape.name == "Hazard"
+    assert panel.item_row(KIND_SHAPE, shape.uid).text(NAME_COLUMN) == "Hazard"
+    assert panel.core.shapeManager.saves == 1
+
+
+def test_shape_rows_are_fit_and_delete_candidates(tmp_path):
+    application()
+    shape = avoid_shape()
+    panel = panel_for(tmp_path, shapes=[shape])
+    node = ("item", KIND_SHAPE, shape.uid)
+
+    assert panel._nodes_for_fit([node]) == [node]
+    assert panel._nodes_for_delete([node]) == [node]

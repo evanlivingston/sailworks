@@ -50,7 +50,13 @@ from sailworks.core.timecontrol import (
 )
 from sailworks.core.n2kdevices import source_label
 from sailworks.core.places import PlaceIndex, index_chart_files
-from sailworks.core.scene import KIND_LOG, KIND_POI, KIND_ROUTING, KIND_TRACK
+from sailworks.core.scene import (
+    KIND_LOG,
+    KIND_POI,
+    KIND_ROUTING,
+    KIND_SHAPE,
+    KIND_TRACK,
+)
 from sailworks.common import resource_path
 from .theme import MenuBuilder, section_label, symbol_icon, ThemedMenu
 from .dropdown import Dropdown
@@ -252,6 +258,12 @@ class PreviewWindow(QMainWindow):
         controller.polars.changed.connect(self.routing_panel.refresh_polars)
         controller.polars.use_requested.connect(self._use_polar)
         self.undo_stack = QUndoStack(self)
+        # Both maps share one history, so a corner edit keeps one Ctrl-Z
+        # sequence wherever the user made it.
+        for canvas in (self.map, self.log_map):
+            attach = getattr(canvas, "set_undo_stack", None)
+            if callable(attach):
+                attach(self.undo_stack)
         self.scene_panel = ScenePanel(controller, self, undo_stack=self.undo_stack)
         self.scene_panel.changed.connect(self._scene_changed)
         self.scene_panel.routing_visibility_changed.connect(
@@ -264,6 +276,15 @@ class PreviewWindow(QMainWindow):
         self.scene_panel.move_point_requested.connect(self._move_scene_point)
         controller.log_library_changed.connect(self.scene_panel.refresh)
         self.scene_panel.edit_track_requested.connect(self._scene_edit_track)
+        self.scene_panel.shape_edit_requested.connect(self._scene_edit_shape_vertices)
+        # The canvas republishes shapes after a create or a geometry edit, so
+        # both the map and the log map keep their Scene rows in step. The
+        # viewport ships the signal separately; older canvases just don't have
+        # it, which is not an error here.
+        for canvas in (self.map, self.log_map):
+            shapes_changed = getattr(canvas, "shapes_changed", None)
+            if shapes_changed is not None:
+                shapes_changed.connect(self.scene_panel.refresh)
         self.map.track_point_move_requested.connect(self._move_scene_mark)
         self.map.track_edit_cancel_requested.connect(self._exit_track_edit)
         self.ais_timer = QTimer(self)
@@ -1364,6 +1385,24 @@ class PreviewWindow(QMainWindow):
     def keyPressEvent(self, event):  # noqa: N802 - Qt virtual method name
         # Unhandled keys from the Scene Collection tree propagate here; Escape
         # must still leave track edit mode when the map does not own focus.
+        if event.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            # Same fallback for a shape being edited: the tree, not the map,
+            # may own focus, and the visible map is the one being edited.
+            active_map = getattr(self, "_active_map", None)
+            canvas = active_map() if callable(active_map) else None
+            editing = None
+            if canvas is not None:
+                editing = getattr(canvas, "is_shape_editing", None)
+            if editing is not None and editing():
+                if event.key() == Qt.Key.Key_Escape:
+                    canvas.cancel_shape_edit()
+                    event.accept()
+                    return
+                finish = getattr(canvas, "finish_shape_edit", None)
+                if finish is not None:
+                    finish()
+                event.accept()
+                return
         if (
             event.key() == Qt.Key.Key_Escape
             and getattr(getattr(self.map, "navigation", None), "edit_track", None)
@@ -1386,6 +1425,20 @@ class PreviewWindow(QMainWindow):
         self.scene_panel.refresh()
         self._set_track_editing(track)
         self.views.setCurrentWidget(self.map)
+        self._focus_map_surface()
+
+    def _scene_edit_shape_vertices(self, uid):
+        """Route a Scene shape to the visible map's vertex edit mode.
+
+        The log map only receives the edit while it is the visible workspace;
+        otherwise the shape belongs to the chart map the user can see.
+        """
+        if self.views.currentWidget() is self.polar_workspace:
+            self.views.setCurrentWidget(self.map)
+        canvas = self._active_map()
+        begin = getattr(canvas, "begin_shape_edit", None)
+        if begin is None or not begin(uid):
+            return
         self._focus_map_surface()
 
     def _scene_open(self, kind, key):
@@ -1413,6 +1466,10 @@ class PreviewWindow(QMainWindow):
                     coordinates.append(tuple(element.points[index][:2]))
             elif getattr(element, "position", None) is not None:
                 coordinates.append(tuple(element.position[:2]))
+            elif getattr(element, "vertices", None):
+                coordinates.extend(
+                    (vertex[0], vertex[1]) for vertex in element.vertices
+                )
             elif hasattr(element, "to_list"):
                 coordinates.extend(element.to_list())
             else:
@@ -1425,6 +1482,7 @@ class PreviewWindow(QMainWindow):
         item_keys = {(node[1], node[2]) for node in nodes if node[0] == "item"}
         tracks = []
         routes = []
+        shapes = []
         points = {}
         for node in nodes:
             entry = self.scene_panel.scene.live_entry(node[1], node[2])
@@ -1436,6 +1494,8 @@ class PreviewWindow(QMainWindow):
                     routes.append(element)
                 elif node[1] == KIND_TRACK and not node[2].startswith("race:"):
                     tracks.append(element)
+                elif node[1] == KIND_SHAPE:
+                    shapes.append(element)
             elif (node[1], node[2]) not in item_keys:
                 points.setdefault(id(element), (element, set()))[1].add(int(node[3]))
 
@@ -1488,7 +1548,21 @@ class PreviewWindow(QMainWindow):
             finally:
                 self.undo_stack.endMacro()
 
-        changed = False
+        # Shapes are not navigation elements, so they are removed directly from
+        # their collection instead of going through the navigation undo command.
+        removed_shapes = False
+        if shapes:
+            manager = getattr(self.controller.core, "shapeManager", None)
+            if manager is not None:
+                remove_many = getattr(manager, "remove_many", None)
+                if callable(remove_many):
+                    remove_many(shapes)
+                else:
+                    for element in shapes:
+                        manager.remove(element)
+                removed_shapes = True
+
+        changed = removed_shapes
         for element, indices in points.values():
             for index in sorted(indices, reverse=True):
                 if 0 <= index < len(element):

@@ -2,11 +2,33 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QSignalBlocker, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QCursor, QFont, QGuiApplication, QPalette
+from PySide6.QtCore import (
+    QEvent,
+    QPoint,
+    QPointF,
+    QRect,
+    QSignalBlocker,
+    Qt,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QCursor,
+    QFont,
+    QGuiApplication,
+    QIcon,
+    QPainter,
+    QPalette,
+    QPen,
+    QPixmap,
+    QPolygonF,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QColorDialog,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -14,6 +36,8 @@ from PySide6.QtWidgets import (
     QFrame,
     QHeaderView,
     QLabel,
+    QPlainTextEdit,
+    QPushButton,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -38,10 +62,18 @@ from sailworks.core.geo.routing import (
     ISOCHRONE_COLOUR_MODES,
 )
 from sailworks.rendering.palettes import route_metrics
+from sailworks.core.geo.mapshapes import (
+    DEFAULT_COLOURS,
+    KIND_AVOID,
+    KIND_NOTE,
+    colour_rgb,
+    validate_colour,
+)
 from sailworks.core.scene import (
     KIND_LOG,
     KIND_POI,
     KIND_ROUTING,
+    KIND_SHAPE,
     KIND_TRACK,
     SceneCollection,
     SceneEntry,
@@ -123,6 +155,156 @@ TYPE_ICONS = {
     KIND_POI: "poi-symbolic",
     KIND_LOG: "information-symbolic",
 }
+# Map shape rows draw their own preview instead of a symbolic glyph, so the
+# row shows the shape's geometry and its custom colour.
+SHAPE_ICON_SIZE = 24
+
+
+def shape_detail(shape):
+    """Row detail for a map shape, keeping kind, geometry, avoidance and note.
+
+    The eye column is scene visibility while ``enabled`` is the avoidance
+    switch, so the detail spells out the avoidance state instead of relying on
+    the check state.
+    """
+    kind = getattr(shape, "kind", "")
+    label = "Avoidance polygon" if kind == KIND_AVOID else "Note"
+    count = len(getattr(shape, "vertices", ()))
+    points = f"{count} point" if count == 1 else f"{count} points"
+    enabled = "avoidance on" if getattr(shape, "enabled", True) else "avoidance off"
+    note = getattr(shape, "note", "")
+    detail = f"{label} · {points} · {enabled}"
+    return f"{detail} · {note}" if note else detail
+
+
+def shape_colour(shape):
+    """The row/overlay ``QColor`` for a shape, honouring its custom colour."""
+    return QColor.fromRgbF(
+        *colour_rgb(
+            getattr(shape, "colour", ""),
+            getattr(shape, "kind", KIND_NOTE),
+        )
+    )
+
+
+def shape_icon(shape):
+    """Preview icon of a shape's geometry in its own colour.
+
+    An avoid polygon is a filled pentagon outline; a note is an open marker
+    (a dot for a single point, a stroke for a longer note). The kind is
+    therefore readable without a symbolic glyph, and the fill carries the
+    custom colour.
+    """
+    size = SHAPE_ICON_SIZE
+    colour = shape_colour(shape)
+    pixmap = QPixmap(size * 2, size * 2)
+    pixmap.setDevicePixelRatio(2)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    width = size * 2
+    height = size * 2
+    if getattr(shape, "kind", "") == KIND_AVOID:
+        outline = QPen(colour)
+        outline.setWidthF(2.5)
+        painter.setPen(outline)
+        fill = QColor(colour)
+        fill.setAlphaF(0.45)
+        painter.setBrush(fill)
+        painter.drawPolygon(
+            QPolygonF(
+                [
+                    QPointF(width / 2.0, 3.0),
+                    QPointF(width - 3.0, height * 0.38),
+                    QPointF(width * 0.78, height - 3.0),
+                    QPointF(width * 0.22, height - 3.0),
+                    QPointF(3.0, height * 0.38),
+                ]
+            )
+        )
+    else:
+        stroke = QPen(colour)
+        stroke.setWidthF(3.0)
+        painter.setPen(stroke)
+        count = len(getattr(shape, "vertices", ()) or ())
+        if count <= 1:
+            painter.setBrush(colour)
+            painter.drawEllipse(QPointF(width / 2.0, height / 2.0), 5.0, 5.0)
+        else:
+            painter.drawLine(QPointF(5.0, height - 5.0), QPointF(width - 5.0, 5.0))
+    painter.end()
+
+    icon = QIcon(pixmap)
+    icon.addPixmap(pixmap, QIcon.Mode.Selected)
+    return icon
+
+
+class ShapeNoteDialog(QDialog):
+    """Edit a shape's note and colour together.
+
+    Nothing leaves the dialog until it is accepted: the caller reads
+    ``note_text`` and ``colour`` only after an accepted ``exec``. An unset
+    colour stays empty, so the overlay keeps using the kind default.
+    """
+
+    def __init__(self, note="", colour="", kind=KIND_NOTE, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit Shape")
+        self._kind = kind if kind in (KIND_NOTE, KIND_AVOID) else KIND_NOTE
+        self._colour = validate_colour(colour)
+
+        self.note_edit = QPlainTextEdit()
+        self.note_edit.setPlainText(note or "")
+        self.note_edit.setMinimumHeight(90)
+
+        self.colour_button = QPushButton()
+        self.colour_button.setObjectName("shapeColourButton")
+        self.colour_button.clicked.connect(self._choose_colour)
+
+        form = QFormLayout()
+        form.addRow("Note", self.note_edit)
+        form.addRow("Colour", self.colour_button)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+
+        self._refresh_colour_button()
+
+    @property
+    def colour(self):
+        return self._colour
+
+    def note_text(self):
+        return self.note_edit.toPlainText()
+
+    def _current_qcolor(self):
+        if self._colour:
+            return QColor(self._colour)
+        red, green, blue = DEFAULT_COLOURS.get(self._kind, (1.0, 1.0, 1.0))
+        return QColor.fromRgbF(red, green, blue)
+
+    def _choose_colour(self):
+        chosen = QColorDialog.getColor(self._current_qcolor(), self, "Shape Colour")
+        if not chosen.isValid():
+            return
+        self._colour = chosen.name().upper()
+        self._refresh_colour_button()
+
+    def _refresh_colour_button(self):
+        swatch = QPixmap(32, 32)
+        swatch.setDevicePixelRatio(2)
+        swatch.fill(self._current_qcolor())
+        self.colour_button.setIcon(QIcon(swatch))
+        label = self._colour or f"Default ({self._current_qcolor().name().upper()})"
+        self.colour_button.setText(label)
 
 
 def item_tooltip(entry, element, detail):
@@ -698,6 +880,9 @@ class ScenePanel(QWidget):
     delete_requested = Signal(object)
     move_point_requested = Signal(object, int)
     edit_track_requested = Signal(str)
+    # The chosen polygon shape's uid: the window routes it to the live
+    # viewport's vertex edit mode.
+    shape_edit_requested = Signal(str)
     # The toggled scene element is carried with the signal: the row names the
     # route whose flag changed, which is not necessarily the route the
     # Navigation panel happens to have selected.
@@ -805,6 +990,17 @@ class ScenePanel(QWidget):
                     element=poi,
                 )
             )
+        for shape in getattr(self.core, "shapeManager", ()):
+            entries.append(
+                SceneEntry(
+                    kind=KIND_SHAPE,
+                    key=shape.uid,
+                    name=shape.name,
+                    visible=bool(shape.visible),
+                    detail=shape_detail(shape),
+                    element=shape,
+                )
+            )
         race_panel = getattr(self.window(), "race_panel", None)
         if race_panel is not None:
             races = {race.race_id: race for race in getattr(race_panel, "_races", ())}
@@ -906,6 +1102,10 @@ class ScenePanel(QWidget):
             manager = getattr(self.core, "poiManager", None)
             if manager is not None:
                 manager.save()
+        if KIND_SHAPE in kinds:
+            manager = getattr(self.core, "shapeManager", None)
+            if manager is not None:
+                manager.save()
 
     # ------------------------------------------------------------------
     # Tree construction
@@ -997,28 +1197,43 @@ class ScenePanel(QWidget):
             return routing_detail_fields(element)
         if kind == KIND_TRACK:
             return track_detail_fields(getattr(element, "points", ()))
+        if kind == KIND_SHAPE:
+            kind_label = (
+                "Avoid" if getattr(element, "kind", "") == KIND_AVOID else "Note"
+            )
+            return [
+                ("Kind", kind_label),
+                ("Points", str(len(getattr(element, "vertices", ())))),
+                (
+                    "Avoidance",
+                    "On" if getattr(element, "enabled", True) else "Off",
+                ),
+            ]
         return []
 
     def _add_items(self, parent_item, group_id):
         for entry in self.scene.items_in(group_id):
             row = QTreeWidgetItem([entry.name, ""])
             row.setData(NAME_COLUMN, NODE_ROLE, ("item", entry.kind, entry.key))
-            row.setIcon(
-                NAME_COLUMN,
-                symbol_icon(TYPE_ICONS.get(entry.kind, "information-symbolic")),
-            )
+            if entry.kind == KIND_SHAPE:
+                row.setIcon(NAME_COLUMN, shape_icon(entry.element))
+            else:
+                row.setIcon(
+                    NAME_COLUMN,
+                    symbol_icon(TYPE_ICONS.get(entry.kind, "information-symbolic")),
+                )
             flags = (
                 Qt.ItemFlag.ItemIsEnabled
                 | Qt.ItemFlag.ItemIsSelectable
                 | Qt.ItemFlag.ItemIsDragEnabled
             )
-            if entry.kind in (KIND_TRACK, KIND_ROUTING, KIND_POI):
+            if entry.kind in (KIND_TRACK, KIND_ROUTING, KIND_POI, KIND_SHAPE):
                 flags |= Qt.ItemFlag.ItemIsUserCheckable
                 row.setCheckState(
                     VISIBLE_COLUMN,
                     Qt.CheckState.Checked if entry.visible else Qt.CheckState.Unchecked,
                 )
-            if entry.kind in (KIND_TRACK, KIND_ROUTING, KIND_POI, KIND_LOG):
+            if entry.kind in (KIND_TRACK, KIND_ROUTING, KIND_POI, KIND_LOG, KIND_SHAPE):
                 flags |= Qt.ItemFlag.ItemIsEditable
             if entry.kind == KIND_LOG:
                 row.setIcon(
@@ -1512,6 +1727,10 @@ class ScenePanel(QWidget):
                 self._refresh_timer.start(0)
                 if KIND_ROUTING in applied:
                     self.routing_visibility_changed.emit(None)
+                if KIND_SHAPE in applied:
+                    # Shape visibility is scene state, not avoidance enablement;
+                    # repaint the canvas overlay without touching the switch.
+                    self.changed.emit()
 
     def _deferred_change(self):
         self.syncing = True
@@ -1580,6 +1799,7 @@ class ScenePanel(QWidget):
                 KIND_TRACK: self.core.trackManager,
                 KIND_ROUTING: self.core.routingManager,
                 KIND_POI: self.core.poiManager,
+                KIND_SHAPE: getattr(self.core, "shapeManager", None),
             }.get(item.kind)
             if manager is None:
                 self.refresh()
@@ -1597,6 +1817,68 @@ class ScenePanel(QWidget):
         if element is None or not callable(getattr(element, "rename_point", None)):
             return None
         return element
+
+    # ------------------------------------------------------------------
+    # Map shapes
+
+    def _shape_element(self, node):
+        if node is None or node[0] != "item" or node[1] != KIND_SHAPE:
+            return None
+        entry = self.scene.live_entry(node[1], node[2])
+        return entry.element if entry is not None else None
+
+    @staticmethod
+    def _shape_edit_available(element):
+        """Vertex editing needs a polygon: three or more distinct vertices."""
+        vertices = getattr(element, "vertices", None)
+        if not vertices:
+            return False
+        return len({tuple(vertex) for vertex in vertices}) >= 3
+
+    def _shape_manager(self):
+        return getattr(self.core, "shapeManager", None)
+
+    def _save_shapes(self):
+        manager = self._shape_manager()
+        if manager is not None:
+            manager.save()
+
+    def _toggle_shape_avoidance(self, element):
+        """Flip the avoidance switch; scene visibility stays untouched."""
+        manager = self._shape_manager()
+        if element is None or manager is None or element not in manager:
+            return
+        element.enabled = not element.enabled
+        self._save_shapes()
+        self.refresh()
+        self.changed.emit()
+
+    def _edit_shape_note(self, element):
+        """Edit note and colour together; apply both only on accept."""
+        manager = self._shape_manager()
+        if element is None or manager is None or element not in manager:
+            return
+        dialog = ShapeNoteDialog(
+            note=getattr(element, "note", ""),
+            colour=getattr(element, "colour", ""),
+            kind=getattr(element, "kind", KIND_NOTE),
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        changed = False
+        note = dialog.note_text()
+        if note != getattr(element, "note", ""):
+            element.note = note
+            changed = True
+        colour = dialog.colour
+        if colour != getattr(element, "colour", ""):
+            element.colour = colour
+            changed = True
+        if changed:
+            self._save_shapes()
+        self.refresh()
+        self.changed.emit()
 
     def _rename_point(self, node, name):
         element = self._point_element(node)
@@ -1891,7 +2173,12 @@ class ScenePanel(QWidget):
         node = nodes[0]
         if node[0] == "point":
             return nodes
-        if node[0] == "item" and node[1] in (KIND_TRACK, KIND_ROUTING, KIND_POI):
+        if node[0] == "item" and node[1] in (
+            KIND_TRACK,
+            KIND_ROUTING,
+            KIND_POI,
+            KIND_SHAPE,
+        ):
             return nodes
         return ()
 
@@ -1901,7 +2188,11 @@ class ScenePanel(QWidget):
             if node[0] == "point":
                 if not node[2].startswith("race:"):
                     deletable.append(node)
-            elif node[0] == "item" and node[1] in (KIND_TRACK, KIND_ROUTING):
+            elif node[0] == "item" and node[1] in (
+                KIND_TRACK,
+                KIND_ROUTING,
+                KIND_SHAPE,
+            ):
                 if node[1] == KIND_TRACK and node[2].startswith("race:"):
                     continue
                 deletable.append(node)
@@ -1923,14 +2214,17 @@ class ScenePanel(QWidget):
         delete_nodes = self._nodes_for_delete(nodes)
         point_element = self._point_element(node)
         track_element = self._track_element(node)
+        shape_element = self._shape_element(node)
         point_delete = point_element is not None and not node[2].startswith("race:")
         if point_delete:
             delete_nodes = [
                 candidate for candidate in delete_nodes if candidate != node
             ]
         rename = (
-            len(groups) == 1 and node is not None and node[0] == "group"
-        ) or point_element is not None
+            (len(groups) == 1 and node is not None and node[0] == "group")
+            or point_element is not None
+            or shape_element is not None
+        )
         deletable = [
             identifier
             for identifier in groups
@@ -2040,6 +2334,28 @@ class ScenePanel(QWidget):
                     ),
                     key="O",
                 )
+        if shape_element is not None:
+            builder.section()
+            builder.add(
+                "Edit Note…",
+                lambda: self._edit_shape_note(shape_element),
+                key="O",
+            )
+            if self._shape_edit_available(shape_element):
+                # Enter vertex edit mode on the map rather than opening a
+                # dialog: the vertices are dragged in place.
+                builder.add(
+                    "Edit vertices",
+                    lambda uid=shape_element.uid: self.shape_edit_requested.emit(uid),
+                    key="V",
+                )
+            avoidance = builder.add(
+                "Use for Avoidance",
+                lambda: self._toggle_shape_avoidance(shape_element),
+                key="A",
+            )
+            avoidance.setCheckable(True)
+            avoidance.setChecked(bool(getattr(shape_element, "enabled", True)))
         destructive = []
         if point_delete:
             destructive.append(("Delete Point", lambda: self._delete_point(node), "D"))

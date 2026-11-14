@@ -180,3 +180,174 @@ def test_diagnostics_do_not_dress_the_wind_proxy_as_wave_data():
     )
     assert "no wave heights" in states["wave source"]
     assert "wave units" not in states
+
+
+_ZONE_RINGS = {
+    "avoid-1": [
+        [48.0, -123.4],
+        [48.3, -123.4],
+        [48.3, -123.0],
+        [48.0, -123.0],
+    ],
+    "avoid-2": [
+        [47.0, -122.4],
+        [47.2, -122.4],
+        [47.2, -122.0],
+    ],
+}
+
+
+def _zone_descriptors():
+    return [
+        {"id": "avoid-1", "name": "Charted reef", "vertex_count": 4},
+        {"id": "avoid-2", "name": "Second reef", "vertex_count": 3},
+    ]
+
+
+def _zone_fingerprints(digest=None, zones=None):
+    from sailworks.core.geo.mapshapes import avoid_zones_digest_from_native
+
+    zones = _zone_descriptors() if zones is None else zones
+    payload = [
+        dict(
+            zone,
+            vertices=[list(vertex) for vertex in _ZONE_RINGS[zone["id"]]],
+        )
+        for zone in zones
+    ]
+    if digest is None:
+        digest = avoid_zones_digest_from_native(payload)
+    return {
+        "avoid_zones": payload,
+        "avoid_zones_digest": digest,
+    }
+
+
+_ZONE_DIGEST = _zone_fingerprints()["avoid_zones_digest"]
+
+
+def _zone_result(status="complete", **recorded):
+    from dataclasses import replace
+
+    payload = {
+        "avoid_zones": _zone_descriptors(),
+        "avoid_zones_digest": _ZONE_DIGEST,
+        "avoid_zones_active": True,
+        "input_fingerprints": _zone_fingerprints(),
+    }
+    payload.update(recorded)
+    # A no-route result is neither accepted nor delivered; the schema rejects
+    # a delivered outcome that is not also accepted.
+    accepted = status == "complete"
+    return replace(
+        _result(legs=(_leg("leg-0"),)),
+        status=status,
+        outcome=Outcome(
+            accepted,
+            accepted,
+            Validation("passed", True) if accepted else Validation("unknown", False),
+            payload,
+        ),
+    )
+
+
+def test_inspector_reports_frozen_zone_ids_and_digest_without_causal_claim():
+    from sailworks.core.marine.routinginspection import diagnostics
+
+    result = _zone_result()
+    evidence = RoutingInspector(result).avoid_zones()
+    assert evidence is not None
+    assert evidence.active is True
+    assert evidence.digest == _ZONE_DIGEST
+    assert [zone.zone_id for zone in evidence.zones] == ["avoid-1", "avoid-2"]
+    assert [zone.vertex_count for zone in evidence.zones] == [4, 3]
+    assert evidence.consistency == ()
+    assert "no reroute is claimed" in evidence.causality
+    states = {state.code: state.state for state in diagnostics(result)}
+    assert "avoid-1" in states["avoid zones"]
+    assert "avoid-2" in states["avoid zones"]
+    assert _ZONE_DIGEST in states["avoid zones"]
+    assert "no reroute is claimed" in states["avoid zone effect"]
+    assert "zone constraint" not in states
+    assert "rerouted" not in states["avoid zones"].casefold()
+
+
+def test_inspector_flags_fingerprint_digest_mismatch():
+    from sailworks.core.marine.routinginspection import diagnostics
+
+    result = _zone_result(
+        input_fingerprints=_zone_fingerprints(digest="c3" * 32),
+    )
+    evidence = RoutingInspector(result).avoid_zones()
+    assert any("digest does not match" in item for item in evidence.consistency)
+    states = {state.code: state.state for state in diagnostics(result)}
+    assert "avoid zone evidence" in states
+    assert "does not match" in states["avoid zone evidence"]
+
+
+def test_inspector_flags_near_identical_zone_sets():
+    zones = _zone_descriptors()
+    zones[1] = dict(zones[1], vertex_count=4)
+    result = _zone_result(input_fingerprints=_zone_fingerprints(zones=zones))
+    evidence = RoutingInspector(result).avoid_zones()
+    assert any("zone set differs" in item for item in evidence.consistency)
+
+
+def test_inspector_flags_same_count_zone_geometry_mutation():
+    from sailworks.core.marine.routinginspection import diagnostics
+
+    fingerprints = _zone_fingerprints()
+    ring = fingerprints["avoid_zones"][0]["vertices"]
+    ring[2] = [49.0, -122.0]
+    result = _zone_result(input_fingerprints=fingerprints)
+    evidence = RoutingInspector(result).avoid_zones()
+    assert evidence is not None
+    assert evidence.digest == _ZONE_DIGEST
+    assert [zone.vertex_count for zone in evidence.zones] == [4, 3]
+    assert any("geometry does not match" in item for item in evidence.consistency)
+    states = {state.code: state.state for state in diagnostics(result)}
+    assert "avoid zone evidence" in states
+    assert "geometry does not match" in states["avoid zone evidence"]
+
+
+def test_inspector_accepts_unchanged_zone_geometry():
+    result = _zone_result()
+    evidence = RoutingInspector(result).avoid_zones()
+    assert evidence is not None
+    assert evidence.consistency == ()
+
+
+def test_inspector_tolerates_legacy_fingerprint_without_vertices():
+    legacy = {
+        "avoid_zones": _zone_descriptors(),
+        "avoid_zones_digest": _ZONE_DIGEST,
+    }
+    result = _zone_result(input_fingerprints=legacy)
+    evidence = RoutingInspector(result).avoid_zones()
+    assert evidence is not None
+    assert evidence.consistency == ()
+
+
+def test_no_route_with_active_zones_reports_constraint_without_cause():
+    from sailworks.core.marine.routinginspection import diagnostics
+
+    result = _zone_result("no_feasible_route")
+    states = {state.code: state.state for state in diagnostics(result)}
+    assert "no route delivered" in states["zone constraint"]
+    assert "not proven" in states["zone constraint"]
+    assert "caused" not in states["zone constraint"]
+    assert "no reroute is claimed" in states["avoid zone effect"]
+
+
+def test_no_zone_result_reports_no_avoid_zone_states():
+    from sailworks.core.marine.routinginspection import diagnostics
+
+    result = _result(legs=(_leg("leg-0"),))
+    assert RoutingInspector(result).avoid_zones() is None
+    codes = {state.code for state in diagnostics(result)}
+    assert not codes & {
+        "avoid zones",
+        "avoid zone effect",
+        "zone constraint",
+        "avoid zone evidence",
+    }

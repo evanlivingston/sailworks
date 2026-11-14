@@ -92,6 +92,24 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
     """
     if not isinstance(job, NativeRequest) or job.version != 1:
         raise ValueError("Unsupported frozen native request")
+    if job.avoid_zones:
+        # The frozen digest is the identity the result is fingerprinted with.
+        # Re-derive it from the zones this worker actually holds, so a mutated
+        # request cannot hand the bridge geometry that its digest never
+        # described. A zone-free request never imports the encoder.
+        from sailworks.core.geo.mapshapes import avoid_zones_digest
+
+        try:
+            recorded_digest = avoid_zones_digest(job.avoid_zones)
+        except (AttributeError, TypeError, ValueError):
+            raise ValueError(
+                "zone digest mismatch: frozen avoid zones are not a valid payload"
+            ) from None
+        if recorded_digest != job.avoid_zones_digest:
+            raise ValueError(
+                "zone digest mismatch: frozen avoid zones do not match "
+                "avoid_zones_digest"
+            )
     if job.coastline_checks and not job.provider_descriptors:
         raise ValueError("Native coastline checks require a selected shoreline")
     if job.provider_descriptors and not job.coastline_checks:
@@ -142,6 +160,20 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
         # fingerprint below records whether it was applied.
         land_safety_margin_nm=(
             job.coastline_clearance_distance_m / 1852.0 if job.coastline_checks else 0.0
+        ),
+        # The worker-local land adapter is the shoreline alone. User avoid
+        # polygons travel as the frozen, ordered ``avoid_zones`` payload and
+        # its canonical digest, so no Python per-leg polygon callback crosses
+        # the process boundary. There is no separate polygon count: native
+        # infers it from the active zones. A request without active zones adds
+        # neither key and stays byte-identical to the no-zone baseline.
+        **(
+            {
+                "avoid_zones": [zone.to_native() for zone in job.avoid_zones],
+                "avoid_zones_digest": job.avoid_zones_digest,
+            }
+            if job.avoid_zones
+            else {}
         ),
     )
     selection = None
@@ -248,6 +280,26 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
             ),
             coastline_clearance_distance_m=(
                 job.coastline_clearance_distance_m if job.coastline_checks else None
+            ),
+            # Only an active zone set is native plan input. The digest commits
+            # to the exact ordered payload above, and the per-zone record keeps
+            # the identity and geometry a reviewer needs to replay the run. A
+            # request with no active zones carries neither key.
+            **(
+                {
+                    "avoid_zones_digest": job.avoid_zones_digest,
+                    "avoid_zones": [
+                        {
+                            "id": zone.id,
+                            "name": zone.name,
+                            "vertex_count": len(zone.vertices),
+                            "vertices": [list(vertex) for vertex in zone.vertices],
+                        }
+                        for zone in job.avoid_zones
+                    ],
+                }
+                if job.avoid_zones
+                else {}
             ),
             wave=(
                 {

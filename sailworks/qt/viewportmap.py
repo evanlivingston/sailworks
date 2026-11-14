@@ -27,7 +27,7 @@ from .mapcursor import MapCursorMixin
 from .mapenvironment import MapEnvironmentMixin
 from .mapforecast import MapForecastMixin
 from .maphost import MapHostMixin
-from .mapinteraction import MapInteractionMixin
+from .mapinteraction import MapInteractionMixin, MapShapeDrawingMixin
 from .maplifecycle import MapLifecycleMixin
 from .mapoverlays import MapOverlayServices, RetainedOverlayMixin
 from .mapservices import MapWeatherServices, MapWeatherServicesMixin
@@ -102,6 +102,7 @@ class WaveLegend(QWidget):
 
 
 class ViewportMap(
+    MapShapeDrawingMixin,
     MapInteractionMixin,
     MapHostMixin,
     MapLifecycleMixin,
@@ -127,6 +128,7 @@ class ViewportMap(
     drawer_toggle_requested = Signal(str)
     track_point_move_requested = Signal(object, int)
     track_edit_cancel_requested = Signal()
+    shapes_changed = Signal()
 
     def __init__(self, controller, parent=None, time_control=None, show_timeline=False):
         super().__init__(parent)
@@ -156,6 +158,10 @@ class ViewportMap(
         self._gpu_wind_raster = None
         self._gpu_raster_key = None
         self._overlay_pending = False
+        self._shape_draft_kind = None
+        self._shape_draft_points = []
+        self._shape_draft_preview = None
+        self._shape_error = ""
         self._zoom_anchor = None
         self._zoom_target = None
         self._zoom_animating = False
@@ -949,6 +955,51 @@ class ViewportMap(
         return overlay
 
 
+# The map-interaction mixin owns the shape collection. Reduced or legacy hosts
+# that duck-type the viewport overlay do not carry it; they contribute this
+# stable empty key instead of failing the whole overlay build.
+_EMPTY_SHAPES_KEY = (0, (), None)
+
+
+def _host_shapes_key(host):
+    """Shape overlay cache key, tolerating hosts without the interaction mixin."""
+    getter = getattr(host, "map_shapes_key", None)
+    if callable(getter):
+        return getter()
+    return _EMPTY_SHAPES_KEY
+
+
+def _host_supports_shapes(host):
+    """Whether the host can publish the scene-shape overlay at all."""
+    return callable(getattr(host, "map_shapes_overlay_payload", None))
+
+
+def _host_shape_draft_payload(host):
+    """The in-progress shape draft, or None when the host cannot draft one."""
+    getter = getattr(host, "shape_draft_payload", None)
+    if callable(getter):
+        return getter()
+    return None
+
+
+def _host_shapes_overlay_payload(host):
+    """Drawable shapes for the canvas overlay layer.
+
+    A host without the interaction mixin has no collection, so it publishes
+    the empty payload. ``shapes`` stays a list because the QML side iterates
+    it directly.
+    """
+    getter = getattr(host, "map_shapes_overlay_payload", None)
+    if callable(getter):
+        return getter()
+    return {
+        "revision": 0,
+        "shapes": [],
+        "draft": _host_shape_draft_payload(host),
+        "key": _host_shapes_key(host),
+    }
+
+
 def _viewport_overlay_key(host):
     """Identify overlay content without formatting or resampling it."""
     state = host._view_state
@@ -957,6 +1008,9 @@ def _viewport_overlay_key(host):
     return (
         _overlay_pois(host)[0],
         _overlay_tracks(host)[0],
+        # Collection and element revisions, plus the live draft, so a shape
+        # edit republishes without a camera change.
+        _host_shapes_key(host),
         _overlay_routes(host, host.time_control.time.timestamp()),
         tuple(tuple(point) for point in (state.route_plan or ())),
         tuple(tuple(point) for point in (state.route_preview or ())),
@@ -1157,6 +1211,14 @@ def _build_viewport_route_overlay(host):
         ),
         "dashboard_visible": host.dashboard_visible,
     }
+    # Scene shapes are drawn by the canvas overlay in every variant: the
+    # retained routing item owns routing geometry only, so these never
+    # duplicate it. Only a host with the interaction mixin publishes them;
+    # legacy or reduced hosts that duck-type this overlay keep the original
+    # payload so their payload comparison stays exact.
+    if _host_supports_shapes(host):
+        overlay["map_shapes"] = _host_shapes_overlay_payload(host)
+        overlay["shape_draft"] = _host_shape_draft_payload(host)
     if measure[0] or measure[1]:
         overlay["measure_points"] = measure[0]
         overlay["measure_preview"] = measure[1]

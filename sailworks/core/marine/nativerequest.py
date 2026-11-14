@@ -13,6 +13,7 @@ from datetime import timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from sailworks.core.geo.mapshapes import active_avoid_zones, avoid_zones_digest
 from sailworks.core.routingjob import RouteRequest
 from sailworks.core.scenariopool import provider_descriptors
 from sailworks.core.tranchestore import ResolvedForecast
@@ -98,6 +99,45 @@ class NativeRequest:
     # Aligned one-to-one with the chain marks after the start. Empty means no
     # rounding anywhere; None keeps exact-point behaviour for that mark.
     roundings: tuple[Rounding | None, ...] = ()
+    # Immutable, validated map-shape snapshot. Only the derived
+    # ``avoid_zones`` snapshot below reaches the native bridge: enabled avoid
+    # polygons are planning constraints in the worker, note-only shapes are
+    # inert, and no Python polygon callback crosses the process boundary.
+    map_shapes: tuple = ()
+    # Frozen, ordered, canonical avoid-zone payload and its SHA256 digest.
+    # Derived from ``map_shapes`` here so a later edit cannot desynchronise the
+    # snapshot from the digest it was fingerprinted with.
+    avoid_zones: tuple = ()
+    avoid_zones_digest: str = ""
+
+    def __post_init__(self):
+        shapes = _frozen_shapes(self.map_shapes)
+        zones = active_avoid_zones(shapes)
+        object.__setattr__(self, "map_shapes", shapes)
+        object.__setattr__(self, "avoid_zones", zones)
+        object.__setattr__(self, "avoid_zones_digest", avoid_zones_digest(zones))
+        _reject_avoid_endpoints(zones, self.start, self.destination)
+
+
+def _reject_avoid_endpoints(zones, start, destination):
+    """Refuse a frozen route whose endpoint lies in an enabled avoid polygon.
+
+    The engine's preflight would reject such a start or destination as well,
+    but the native search first treats the departure as a shoreline egress
+    under a non-zero stand-off; an endpoint inside user geometry would let that
+    relaxation run before any checker sees it. Rejecting here keeps the rule
+    independent of the coastline toggle and names the offending shape.
+    """
+    for label, point in (("start", start), ("destination", destination)):
+        latitude, longitude = point
+        for zone in zones:
+            if not zone.contains(latitude, longitude):
+                continue
+            label_name = zone.name or zone.id
+            raise ValueError(
+                f"Native route {label} is inside the enabled avoid polygon "
+                f"{label_name!r}; move it outside the shape or disable the shape"
+            )
 
 
 def changed_legacy_parameters(request: RouteRequest) -> tuple[str, dict]:
@@ -127,6 +167,24 @@ def unapplied_legacy_parameter_message(algorithm_name: str, changed: dict) -> st
         f"for {algorithm_name}: {', '.join(sorted(changed))}. "
         "Reset them or calculate with the legacy backend."
     )
+
+
+def _frozen_shapes(shapes):
+    """Validate the map-shape snapshot once, at the process boundary.
+
+    The ordered avoid zones and their digest are derived from this snapshot in
+    ``NativeRequest.__post_init__``; no live shape collection, polygon
+    provider or Qt object crosses the worker boundary.
+    """
+    from sailworks.core.geo.mapshapes import KIND_AVOID, MapShape
+
+    frozen = tuple(shapes or ())
+    for shape in frozen:
+        if not isinstance(shape, MapShape):
+            raise ValueError("Native map shapes must be validated map shapes")
+        if shape.enabled and shape.kind == KIND_AVOID and not shape.is_polygon:
+            raise ValueError("Native avoid shapes must be polygons")
+    return frozen
 
 
 def _point(value, label):
@@ -413,6 +471,7 @@ def freeze_native_requests(
             or item.current_priority != request.current_priority
             or item.coastline_checks != request.coastline_checks
             or getattr(item, "wave_entry_id", None) != request.wave_entry_id
+            or tuple(item.map_shapes) != tuple(request.map_shapes)
         ):
             raise ValueError("Native scenario changed frozen source selection")
         start, waypoints = _start_and_waypoints(item)
@@ -480,6 +539,7 @@ def freeze_native_requests(
                 unchanged_legacy_parameters=unchanged,
                 wave_forecast=wave_forecast,
                 roundings=resolved_roundings,
+                map_shapes=tuple(item.map_shapes),
             )
         )
     return tuple(frozen)
