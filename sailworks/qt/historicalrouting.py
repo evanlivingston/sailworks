@@ -96,8 +96,12 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         layout.setSpacing(6)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setChildrenCollapsible(True)
+        splitter.setMinimumWidth(0)
         self.options = HistoricalRoutingOptions()
         self.results = HistoricalRoutingResults()
+        self.options.setMinimumWidth(0)
+        self.results.setMinimumWidth(0)
         splitter.addWidget(self.options)
         splitter.addWidget(self.results)
         splitter.setStretchFactor(0, 0)

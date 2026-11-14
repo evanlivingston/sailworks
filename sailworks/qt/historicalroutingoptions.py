@@ -97,7 +97,10 @@ class HistoricalRoutingOptions(QWidget):
             value.setWordWrap(True)
             value.setAccessibleName(title)
             self._route_labels[title] = value
-            self.route_form.addRow(FieldRow(title, value))
+            # FieldRow sizes inputs to a fixed fraction of the row, which is
+            # wrong for prose: a wrapped label alone keeps the minimum width
+            # at the longest word.
+            self.route_form.addRow(_caption(title), value)
         layout.addLayout(self.route_form)
 
         self.route_missing = QLabel("Set the route and boat in Plan first.")

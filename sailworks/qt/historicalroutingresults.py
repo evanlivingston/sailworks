@@ -8,10 +8,11 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QHBoxLayout,
+    QGridLayout,
     QHeaderView,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -72,11 +73,17 @@ class _CurveCanvas(QWidget):
         super().__init__(parent)
         self._curve = []
         self._strip = []
-        self.setMinimumHeight(190)
+        self.setMinimumHeight(120)
+        self.setMinimumWidth(0)
         self.setAccessibleName("Completion curve and year strip")
 
+    def minimumSizeHint(self):  # noqa: N802 - Qt virtual method name
+        # The canvas paints at any width; a small hint keeps the enclosing
+        # Compare scroll page from needing a horizontal scrollbar.
+        return QSize(160, 120)
+
     def sizeHint(self):
-        return QSize(520, 240)
+        return QSize(320, 220)
 
     def set_curve(self, points):
         self._curve = sorted((float(x), float(y)) for x, y in (points or []))
@@ -248,44 +255,72 @@ class HistoricalRoutingResults(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setSortingEnabled(True)
+        self.table.setMinimumWidth(0)
+        self.table.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self.table.setWordWrap(False)
+        self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.table.verticalHeader().setVisible(False)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        header.setMinimumWidth(0)
+        header.setMinimumSectionSize(40)
+        header.setStretchLastSection(True)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        # Only the short numeric columns size themselves; the text columns
+        # stretch so the header never dictates the panel's minimum width.
+        for column in (0, 1, 4):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        for column in (2, 3, 5):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
         self.table.setAccessibleName("Historical members")
         self.table.cellClicked.connect(self._row_clicked)
         layout.addWidget(self.table, 1)
 
-        buttons = QHBoxLayout()
+        # A two-column grid keeps the action bar from imposing a minimum width
+        # wider than the Compare scroll page.
+        buttons = QGridLayout()
         buttons.setSpacing(8)
-        self.median_button = self._button(buttons, "Median route", self._median_clicked)
+        self.median_button = self._button(
+            buttons, "Median route", self._median_clicked, 0, 0
+        )
         self.representatives_button = self._button(
-            buttons, "Representatives", self.representatives_requested.emit
+            buttons, "Representatives", self.representatives_requested.emit, 0, 1
         )
         self.show_all_button = self._button(
-            buttons, "Show all", self.show_all_requested.emit
+            buttons, "Show all", self.show_all_requested.emit, 1, 0
         )
         self.hide_all_button = self._button(
-            buttons, "Hide all", self.hide_all_requested.emit
+            buttons, "Hide all", self.hide_all_requested.emit, 1, 1
         )
         self.retry_button = self._button(
-            buttons, "Retry failed", self.retry_failed_requested.emit
+            buttons, "Retry failed", self.retry_failed_requested.emit, 2, 0
         )
         self.recheck_button = self._button(
-            buttons, "Recheck excluded years", self.recheck_requested.emit
+            buttons,
+            "Recheck excluded years",
+            self.recheck_requested.emit,
+            2,
+            1,
         )
         self.delete_button = self._button(
-            buttons, "Delete job and routes", self.delete_requested.emit
+            buttons,
+            "Delete job and routes",
+            self.delete_requested.emit,
+            3,
+            0,
+            1,
+            2,
         )
-        buttons.addStretch(1)
         layout.addLayout(buttons)
 
-    def _button(self, layout, text, slot):
+    def _button(self, layout, text, slot, row, column, row_span=1, column_span=1):
         button = QPushButton(text)
         button.setAccessibleName(text)
+        button.setMinimumWidth(0)
         button.clicked.connect(lambda *_: slot())
-        layout.addWidget(button)
+        layout.addWidget(button, row, column, row_span, column_span)
         return button
 
     # -- run history -----------------------------------------------------

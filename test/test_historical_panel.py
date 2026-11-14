@@ -9,7 +9,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QTreeWidgetItem
+from PySide6.QtWidgets import QScrollArea, QTreeWidgetItem
 
 import sailworks.qt.historicalera5 as historicalera5
 import sailworks.qt.historicalrouting as historicalrouting
@@ -105,6 +105,24 @@ def historical_panel(qtbot, *, controller=None, request=None, service_factory=No
     )
     qtbot.addWidget(panel)
     return panel
+
+
+def test_historical_panel_fits_a_narrow_compare_page(qtbot):
+    controller = SimpleNamespace(core=None, analysis=None)
+    panel = HistoricalRoutingPanel(controller, store_factory=FakeStore)
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setWidget(panel)
+    qtbot.addWidget(scroll)
+    scroll.resize(360, 600)
+    scroll.show()
+    qtbot.wait(10)
+
+    assert panel.minimumSizeHint().width() <= 340
+    assert scroll.horizontalScrollBar().maximum() == 0
+    assert panel.results.table.isVisibleTo(scroll)
+    assert panel.results.canvas.width() > 0
+    assert panel.results.canvas.height() > 0
 
 
 def test_mode_combo_switches_the_stack_and_dispatches(qtbot, monkeypatch, tmp_path):
