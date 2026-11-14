@@ -1,8 +1,8 @@
 """User-authored scene tree over navigation data.
 
-The scene collection only stores grouping and visibility. Tracks, routings, POIs and
-log-library entries remain owned by their existing collections; scene items
-refer to them by ``Element.uid`` (or the log-library identifier).
+The scene collection only stores grouping and visibility. Tracks, routings, POIs,
+map shapes and log-library entries remain owned by their existing collections; scene
+items refer to them by ``Element.uid`` (or the log-library identifier).
 """
 
 from dataclasses import dataclass, field
@@ -17,13 +17,15 @@ KIND_TRACK = "track"
 KIND_ROUTING = "routing"
 KIND_POI = "poi"
 KIND_LOG = "log"
-KINDS = (KIND_TRACK, KIND_ROUTING, KIND_POI, KIND_LOG)
+KIND_SHAPE = "shape"
+KINDS = (KIND_TRACK, KIND_ROUTING, KIND_POI, KIND_LOG, KIND_SHAPE)
 
 TYPE_TITLES = {
     KIND_TRACK: "Track",
     KIND_ROUTING: "Routing",
     KIND_POI: "Point of interest",
     KIND_LOG: "Log",
+    KIND_SHAPE: "Shape",
 }
 
 DEFAULT_GROUPS = (
@@ -31,6 +33,7 @@ DEFAULT_GROUPS = (
     (KIND_ROUTING, "default-routings", "Routings"),
     (KIND_POI, "default-pois", "POIs"),
     (KIND_LOG, "default-logs", "Logs"),
+    (KIND_SHAPE, "default-shapes", "Shapes"),
 )
 
 

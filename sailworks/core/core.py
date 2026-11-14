@@ -30,6 +30,7 @@ from sailworks.core.datasource import AISDataPacket, DataPacket
 from sailworks.core.geo import (
     POICollection,
     RoutingCollection,
+    ShapeCollection,
     Track,
     TrackCollection,
 )
@@ -117,6 +118,7 @@ class Core(EventDispatcher):
         self.trackManager = TrackCollection()
         self.routingManager = RoutingCollection()
         self.poiManager = POICollection()
+        self.shapeManager = ShapeCollection()
         self.grib_manager = GribManager()
         self.marine_manager = MarineManager(
             Path(DATA_DIR) / "marine", credential_store=SystemCredentialStore()

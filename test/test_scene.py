@@ -5,6 +5,7 @@ from sailworks.core.scene import (
     KIND_LOG,
     KIND_POI,
     KIND_ROUTING,
+    KIND_SHAPE,
     KIND_TRACK,
     SceneCollection,
     SceneEntry,
@@ -32,11 +33,12 @@ def entry(kind, element, detail=""):
 def test_default_groups_are_created(tmp_path):
     scene = SceneCollection(tmp_path / "scene.json")
     names = [group.name for group in scene.groups.values()]
-    assert names == ["Tracks", "Routings", "POIs", "Logs"]
+    assert names == ["Tracks", "Routings", "POIs", "Logs", "Shapes"]
     assert scene.default_group(KIND_TRACK) == "default-tracks"
     assert scene.default_group(KIND_ROUTING) == "default-routings"
     assert scene.default_group(KIND_POI) == "default-pois"
     assert scene.default_group(KIND_LOG) == "default-logs"
+    assert scene.default_group(KIND_SHAPE) == "default-shapes"
 
 
 def test_reconcile_assigns_new_items_and_prunes_deleted(tmp_path):
