@@ -448,43 +448,35 @@ def test_bands_appear_when_no_hull_can_be_built(no_hulls):
     assert "fills" not in payload
 
 
-def test_hulls_take_precedence_over_bands_for_the_same_layers():
+def test_hulls_no_longer_take_precedence_over_bands():
     earlier = _layer("layer-0", EARLIER, (_open("a", 0.5),))
     later = _layer("layer-1", LATER, (_open("b", 1.0),))
     payload = routing_overlay_data(_model([earlier, later]), "uniform", True)
 
-    # Three non-collinear points per layer enclose a hull, so the hull fills
-    # the layer and no band or closed contour is painted over it.
-    assert len(payload["fills"]) == 2
-    assert "bands" not in payload
+    # Three non-collinear points per layer do enclose a hull, but a hull
+    # interior is not a proven reachable area: the fill is still the band strip.
+    assert len(payload["bands"]) == 1
+    assert "fills" not in payload
 
 
-def test_bands_do_not_bridge_a_hulled_visible_layer():
-    earlier = _layer("layer-0", EARLIER, (_collinear("lane-a", 48.0),))
-    middle = _layer("layer-1", EARLIER + 3600, (_square("m", 0.3),))
-    later = _layer("layer-2", LATER, (_collinear("lane-b", 48.02),))
-
-    # The two hull-less layers would pair if they were treated as adjacent.
-    assert build_bands(
-        [
-            {
-                "layer_id": "layer-0",
-                "epoch_s": EARLIER,
-                "contours": [_collinear_points(48.0)],
-            },
-            {
-                "layer_id": "layer-2",
-                "epoch_s": LATER,
-                "contours": [_collinear_points(48.02)],
-            },
-        ]
-    )["bands"]
-
-    # The hulled middle layer splits the band run, so no band spans from the
-    # first visible layer to the third.
+def test_bands_bridge_a_hulled_visible_layer():
+    earlier = _layer("layer-0", EARLIER, (_open("a", 0.5),))
+    middle = _layer("layer-1", EARLIER + 3600, (_open("m", 0.6),))
+    later = _layer("layer-2", LATER, (_open("b", 0.7),))
     payload = routing_overlay_data(_model([earlier, middle, later]), "uniform", True)
-    assert "bands" not in payload
-    assert [fill["layer_id"] for fill in payload["fills"]] == ["layer-1"]
+
+    # Every layer is hull-able and none is hidden, so adjacency is the
+    # consecutive visible order. The strip crosses the middle layer instead of
+    # treating a hull as a gap in the run.
+    assert [band["layer_id"] for band in payload["bands"]] == [
+        "layer-1",
+        "layer-2",
+    ]
+    assert [band["prev_layer_id"] for band in payload["bands"]] == [
+        "layer-0",
+        "layer-1",
+    ]
+    assert "fills" not in payload
 
 
 def test_payload_reuses_the_models_hull_cache(monkeypatch):
@@ -513,7 +505,7 @@ def test_payload_reuses_the_models_hull_cache(monkeypatch):
     # A second frame reuses the model's revision-keyed cache; recomputing the
     # hulls per payload would double the count.
     assert len(calls) == computed
-    assert second["fills"] == first["fills"]
+    assert second["bands"] == first["bands"]
 
 
 def test_single_layer_never_produces_bands():

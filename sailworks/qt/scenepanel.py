@@ -1023,9 +1023,9 @@ class ScenePanel(QWidget):
         row.addChild(isochrones)
         self._rows[("routing-isochrones", entry.kind, entry.key)] = isochrones
 
-        # The nested fill is a reading aid over the same contours, so it is its
-        # own checkbox and not a second isochrone visibility flag. It follows
-        # the isochrone eye at paint time. Off by default.
+        # The sampled band fill is a reading aid over the same contours, so it
+        # is its own checkbox and not a second isochrone visibility flag. It
+        # follows the isochrone eye at paint time. Off by default.
         fill = QTreeWidgetItem(["Fill", ""])
         fill.setData(NAME_COLUMN, NODE_ROLE, ("routing-fill", entry.kind, entry.key))
         fill.setFlags(
@@ -1044,8 +1044,10 @@ class ScenePanel(QWidget):
         fill.setIcon(NAME_COLUMN, symbol_icon("isochrone-symbolic"))
         fill.setToolTip(
             NAME_COLUMN,
-            "Fill the interior of closed isochrones. Open or land-truncated "
-            "contours are never filled. Hidden by default.",
+            "Fill between consecutive isochrone layers with sampled bands. A "
+            "visual approximation of the sampled reach: it does not prove "
+            "navigable water. Open contours are never closed or filled "
+            "directly. Hidden by default.",
         )
         row.addChild(fill)
         self._rows[("routing-fill", entry.kind, entry.key)] = fill

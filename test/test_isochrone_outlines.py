@@ -154,13 +154,14 @@ def test_outlines_and_fill_are_independent():
     assert "fills" not in stroked
 
     filled = routing_overlay_data(model, "uniform", True, False)
-    assert filled["fills"]
+    assert filled["bands"]
+    assert "fills" not in filled
     assert "outlines" not in filled
 
     both = routing_overlay_data(model, "uniform", True, True)
-    assert [entry["points"] for entry in both["outlines"]] == [
-        fill["points"] for fill in both["fills"]
-    ]
+    # The two toggles paint different shapes and neither suppresses the other.
+    assert both["outlines"] == stroked["outlines"]
+    assert both["bands"] == filled["bands"]
 
 
 def test_outline_colours_follow_the_active_mode():
@@ -191,11 +192,20 @@ def test_hull_cap_is_disclosed_in_the_note(monkeypatch):
 
     assert len(payload["outlines"]) == 2
     assert payload["outlines_note"] == ("2 of 3 isochrone hulls drawn (largest first)")
-    # The note describes what was dropped, so it follows the fill when the
-    # fill is the thing being drawn.
+    # The cap is an outline disclosure. A fill-only payload never paints a hull
+    # interior, so it has no hull fill or hull cap note to report; its fill is
+    # the sampled band strip between consecutive layers.
     filled = routing_overlay_data(_nested(), "uniform", True, False)
-    assert filled["fills_note"] == "2 of 3 isochrone hulls drawn (largest first)"
     assert "outlines_note" not in filled
+    assert "fills_note" not in filled
+    assert "fills" not in filled
+    assert filled["bands"]
+
+    # The cap does not disturb the closed-contour fallback a single layer uses
+    # when no band can span a pair.
+    single = routing_overlay_data(_model(_layer(0, 1.0)), "uniform", True, False)
+    assert single["fills"][0]["closed"] is True
+    assert "bands" not in single
 
 
 def test_hull_point_cap_keeps_the_largest(monkeypatch):
@@ -245,9 +255,10 @@ def test_starburst_arms_collapse_into_one_envelope():
     assert 3 <= len(ring) <= 8
     recorded = {(point.lat, point.lon) for arm in arms for point in arm.points}
     assert {tuple(point) for point in ring} <= recorded
-    # The fill is the same envelope, not a second shape over the arms.
-    assert len(payload["fills"]) == 1
-    assert payload["fills"][0]["points"] == ring
+    # Every arm is open, so the fill has no closed contour to fall back to and
+    # no pair to band; the hull stays a stroke, not an asserted interior.
+    assert "fills" not in payload
+    assert "bands" not in payload
 
 
 def test_hull_geometry_accepts_record_points_and_tuples():
@@ -262,19 +273,16 @@ def test_hull_geometry_accepts_record_points_and_tuples():
     assert hull_area(points) > 0.0
 
 
-def test_hulled_layers_are_never_banded_or_closed_filled():
+def test_hulled_closed_layers_are_banded_not_hull_filled():
     payload = routing_overlay_data(_nested(), "uniform", True, False)
 
-    assert "bands" not in payload
-    assert [fill["layer_id"] for fill in payload["fills"]] == [
-        "layer-2",
-        "layer-1",
-        "layer-0",
-    ]
-    assert len({len(fill["points"]) for fill in payload["fills"]}) == 1
+    # Nested closed layers are hull-able, but each consecutive pair is banded
+    # and the hull interior is never painted.
+    assert payload["bands"]
+    assert "fills" not in payload
 
 
-def test_bands_are_the_middle_tier_when_no_hull_is_produced(monkeypatch):
+def test_bands_do_not_need_a_hull(monkeypatch):
     import sailworks.rendering.routingoverlay as overlay
 
     monkeypatch.setattr(overlay, "layer_hulls", lambda points, **kwargs: ())
@@ -282,8 +290,8 @@ def test_bands_are_the_middle_tier_when_no_hull_is_produced(monkeypatch):
         _model(_layer(0, 0.5), _layer(1, 1.0)), "uniform", True, False
     )
 
-    # The gated band strip takes over from the hull, and a banded layer is not
-    # also closed-filled: each area is painted once.
+    # The gated band strip is built from the raw contours, so it does not
+    # depend on the hull stage; a banded layer is not also closed-filled.
     assert payload["bands"]
     assert "fills" not in payload
     # Outlines come from the hull stage only, so with no hull there is nothing

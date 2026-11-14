@@ -263,19 +263,21 @@ def test_fill_rejects_non_booleans_and_touches_on_change():
     assert route.revision == revision + 1
 
 
-def test_hull_fill_supersedes_the_closed_and_open_contours():
+def test_open_contour_is_never_force_closed_and_only_the_closed_one_fills():
     layer = _layer(
         contours=(_square("closed", 1.0), _square("open", 2.0, closed=False))
     )
     payload = routing_overlay_data(_model(layer), "uniform", True)
 
-    # The layer's contour points cluster into one envelope, so the fill is that
-    # hull, closed by construction, rather than either contour ring. Precedence
-    # is hull fill, then the gated band strip, then a closed-contour fill.
+    # One layer cannot band, and the hull interior is no longer painted. Only
+    # the contour the engine recorded as closed reaches ``fills``; the open one
+    # is never closed by the painter.
     assert len(payload["fills"]) == 1
     assert payload["fills"][0]["closed"] is True
     assert payload["fills"][0]["layer_id"] == "layer-0"
-    assert len(payload["fills"][0]["points"]) == 4
+    assert {tuple(point) for point in payload["fills"][0]["points"]} == {
+        (point.lat, point.lon) for point in _square("closed", 1.0).points
+    }
     assert "bands" not in payload
     # Both engine chains still belong to the frontier, but the default stroke is
     # the envelope: four hull edges closed back to the first vertex, not the two
@@ -285,20 +287,11 @@ def test_hull_fill_supersedes_the_closed_and_open_contours():
     assert len(payload["layers"][0]["segments"]) == 6
 
 
-def test_precedence_hull_then_bands_then_closed_contours(monkeypatch):
+def test_bands_replace_hull_fill_and_closed_contours_are_the_last_tier(monkeypatch):
     import sailworks.rendering.routingoverlay as overlay
 
-    # 1. A layer whose points form an envelope is filled by that hull.
-    hulled = routing_overlay_data(
-        _model(_layer("layer-0", contours=(_square("hull", 1.0),))), "uniform", True
-    )
-    assert len(hulled["fills"]) == 1
-    assert hulled["fills"][0]["closed"] is True
-    assert "bands" not in hulled
-
-    # 2. A layer the hull stage cannot reduce pairs with its neighbour into the
-    # gated band strip, and a banded layer is not also closed-filled.
-    monkeypatch.setattr(overlay, "layer_hulls", lambda points, **kwargs: ())
+    # 1. Two hull-able layers are banded; the hull interior is not painted and
+    # its closed contours are not filled on top of the strip.
     banded = routing_overlay_data(
         _model(
             _layer("layer-0", contours=(_square("a", 0.5),)),
@@ -310,7 +303,8 @@ def test_precedence_hull_then_bands_then_closed_contours(monkeypatch):
     assert banded["bands"]
     assert "fills" not in banded
 
-    # 3. One layer cannot be banded, so the closed contour itself is last.
+    # 2. One layer cannot be banded, so a truly closed engine contour is the
+    # fallback fill.
     single = routing_overlay_data(
         _model(_layer("layer-0", contours=(_square("only", 1.0),))), "uniform", True
     )
@@ -318,28 +312,40 @@ def test_precedence_hull_then_bands_then_closed_contours(monkeypatch):
     assert len(single["fills"]) == 1
     assert len(single["fills"][0]["points"]) == 4
 
+    # 3. A pair the hull stage cannot reduce is still banded: the fill never
+    # depended on hull availability.
+    monkeypatch.setattr(overlay, "layer_hulls", lambda points, **kwargs: ())
+    hull_less = routing_overlay_data(
+        _model(
+            _layer("layer-0", contours=(_square("c", 0.5),)),
+            _layer("layer-1", contours=(_square("d", 1.0),)),
+        ),
+        "uniform",
+        True,
+    )
+    assert hull_less["bands"]
+    assert "fills" not in hull_less
 
-def test_fill_hulls_are_ordered_by_strictly_descending_area():
+
+def test_hulled_open_layers_produce_bands_and_no_hull_fills():
     payload = routing_overlay_data(
         _model(
-            _layer("layer-0", contours=(_square("small", 0.5),)),
-            _layer("layer-1", contours=(_square("medium", 1.0),)),
-            _layer("layer-2", contours=(_square("large", 2.0),)),
+            _layer("layer-0", contours=(_square("a", 0.5, closed=False),)),
+            _layer("layer-1", contours=(_square("b", 1.0, closed=False),)),
         ),
         "uniform",
         True,
     )
 
-    areas = [_area(fill["points"]) for fill in payload["fills"]]
-    assert len(areas) == 3
-    assert areas[0] > areas[1] > areas[2]
-    # Largest first, so the nested layers leave only the annulus between them.
-    assert [fill["layer_id"] for fill in payload["fills"]] == [
-        "layer-2",
-        "layer-1",
-        "layer-0",
+    # Both layers are hull-able, but an open contour has no proven interior:
+    # the fill is the sampled band strip and no hull area is asserted.
+    assert payload["bands"]
+    assert "fills" not in payload
+    # The hull still drives the default boundary stroke for each layer.
+    assert [frontier["source"] for frontier in payload["frontiers"]] == [
+        "hull",
+        "hull",
     ]
-    assert all(len(fill["points"]) == 4 for fill in payload["fills"])
 
 
 def test_payload_only_emits_fills_for_a_closed_contour_with_geometry():
@@ -347,27 +353,15 @@ def test_payload_only_emits_fills_for_a_closed_contour_with_geometry():
     assert "fills" not in payload
 
 
-def test_fills_are_ordered_by_strictly_descending_area(monkeypatch):
+def test_closed_fallback_fills_are_ordered_by_strictly_descending_area():
     small = _square("small", 0.5)
     medium = _square("medium", 1.0)
     large = _square("large", 2.0)
     contours = (small, medium, large)
 
-    # Hull precedence: one layer collapses to a single envelope, so nesting
-    # contours inside each other paint once at the widest contour rather than
-    # three times over the same area.
-    hulled = routing_overlay_data(_model(_layer(contours=contours)), "uniform", True)
-    assert len(hulled["fills"]) == 1
-    assert hulled["fills"][0]["layer_id"] == "layer-0"
-    assert {tuple(point) for point in hulled["fills"][0]["points"]} == {
-        (point.lat, point.lon) for point in large.points
-    }
-
-    # With the hull stage unable to reduce the layer, the closed contours are
-    # the fill of last resort and keep the descending-area order.
-    import sailworks.rendering.routingoverlay as overlay
-
-    monkeypatch.setattr(overlay, "layer_hulls", lambda points, **kwargs: ())
+    # One layer cannot band, so its closed contours are the fill of last
+    # resort, ordered largest first: each smaller ring covers its parent's
+    # interior and leaves only the annulus between them visible.
     payload = routing_overlay_data(_model(_layer(contours=contours)), "uniform", True)
 
     areas = [_area(fill["points"]) for fill in payload["fills"]]
@@ -415,7 +409,7 @@ def test_fills_absent_when_fill_is_off_or_the_eye_is_off():
     assert hidden["layers"] == []
 
 
-def test_hull_cap_discloses_what_was_left_out(monkeypatch):
+def test_outline_hull_cap_discloses_what_was_left_out(monkeypatch):
     import sailworks.rendering.routingoverlay as overlay
 
     layers = tuple(
@@ -424,17 +418,17 @@ def test_hull_cap_discloses_what_was_left_out(monkeypatch):
     )
     monkeypatch.setattr(overlay, "ISOCHRONE_HULL_MAX_HULLS", 2)
 
-    payload = routing_overlay_data(_model(*layers), "uniform", True)
-    assert len(payload["fills"]) == 2
-    assert payload["fills_note"] == ("2 of 3 isochrone hulls drawn (largest first)")
+    payload = routing_overlay_data(_model(*layers), "uniform", False, True)
+    assert len(payload["outlines"]) == 2
+    assert payload["outlines_note"] == ("2 of 3 isochrone hulls drawn (largest first)")
 
     # Without a cap there is nothing to disclose.
     monkeypatch.setattr(overlay, "ISOCHRONE_HULL_MAX_HULLS", 200)
-    uncapped = routing_overlay_data(_model(*layers), "uniform", True)
-    assert "fills_note" not in uncapped
+    uncapped = routing_overlay_data(_model(*layers), "uniform", False, True)
+    assert "outlines_note" not in uncapped
 
 
-def test_hull_point_cap_keeps_the_largest_and_discloses(monkeypatch):
+def test_outline_hull_point_cap_keeps_the_largest_and_discloses(monkeypatch):
     import sailworks.rendering.routingoverlay as overlay
 
     layers = tuple(
@@ -444,18 +438,17 @@ def test_hull_point_cap_keeps_the_largest_and_discloses(monkeypatch):
     # The largest hull has four points; a second would exceed the budget.
     monkeypatch.setattr(overlay, "ISOCHRONE_HULL_MAX_POINTS", 5)
 
-    payload = routing_overlay_data(_model(*layers), "uniform", True)
-    assert len(payload["fills"]) == 1
-    assert payload["fills"][0]["layer_id"] == "layer-2"
-    assert payload["fills_note"] == ("1 of 3 isochrone hulls drawn (largest first)")
+    payload = routing_overlay_data(_model(*layers), "uniform", False, True)
+    assert len(payload["outlines"]) == 1
+    assert payload["outlines"][0]["layer_id"] == "layer-2"
+    assert payload["outlines_note"] == ("1 of 3 isochrone hulls drawn (largest first)")
 
 
 def test_closed_contour_fill_cap_still_discloses_what_was_left_out(monkeypatch):
     import sailworks.rendering.routingoverlay as overlay
 
-    # A layer the hull stage cannot reduce falls back to its closed contours,
-    # which keep their own cap and their own caption.
-    monkeypatch.setattr(overlay, "layer_hulls", lambda points, **kwargs: ())
+    # A single layer has no pair to band, so its truly closed contours are the
+    # fallback; they keep their own cap and their own caption.
     contours = tuple(_square(f"c{index}", 0.2 * index) for index in range(1, 5))
     monkeypatch.setattr(overlay, "ISOCHRONE_FILL_MAX_CONTOURS", 2)
 
@@ -471,7 +464,6 @@ def test_closed_contour_fill_cap_still_discloses_what_was_left_out(monkeypatch):
 def test_closed_contour_fill_point_cap_keeps_the_largest(monkeypatch):
     import sailworks.rendering.routingoverlay as overlay
 
-    monkeypatch.setattr(overlay, "layer_hulls", lambda points, **kwargs: ())
     contours = tuple(_square(f"c{index}", 0.2 * index) for index in range(1, 5))
     # The largest square has four points; a second would exceed the budget.
     monkeypatch.setattr(overlay, "ISOCHRONE_FILL_MAX_POINTS", 5)
@@ -479,6 +471,20 @@ def test_closed_contour_fill_point_cap_keeps_the_largest(monkeypatch):
     payload = routing_overlay_data(_model(_layer(contours=contours)), "uniform", True)
     assert len(payload["fills"]) == 1
     assert payload["fills_note"] == ("1 of 4 closed contours filled (largest first)")
+
+
+def test_single_open_layer_is_never_forced_closed():
+    payload = routing_overlay_data(
+        _model(_layer(contours=(_square("open", 1.0, closed=False),))),
+        "uniform",
+        True,
+    )
+
+    # There is no second layer to band and the only contour is open, so the
+    # payload must not invent a ring to fill.
+    assert "bands" not in payload
+    assert "fills" not in payload
+    assert payload["frontiers"][0]["source"] == "hull"
 
 
 def test_fill_forces_the_canvas_path_and_restores_retained_contours():

@@ -124,7 +124,7 @@ class RetainedOverlayMixin:
 
     @property
     def isochrone_fill_visible(self):
-        """Whether the active route fills its closed isochrone contours."""
+        """Whether the active route paints its sampled isochrone band fill."""
         return bool(getattr(self, "_isochrone_fill_visible", False))
 
     @isochrone_fill_visible.setter

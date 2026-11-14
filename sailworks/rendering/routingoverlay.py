@@ -496,10 +496,10 @@ def isochrone_contours_on_canvas(
 ) -> bool:
     """Whether contours must be painted by the canvas, not the retained item.
 
-    A coloured mode needs one colour per layer or per point, and the nested
-    fill or the hull outlines need each shape's own polygon. All are canvas-
-    only, and the retained item can draw none of them, so it must suppress its
-    contours rather than drawing a single-colour copy underneath.
+    A coloured mode needs one colour per layer or per point, and the sampled
+    band fill or the hull outlines need each shape's own polygon. All are
+    canvas-only, and the retained item can draw none of them, so it must
+    suppress its contours rather than drawing a single-colour copy underneath.
     """
     return (
         bool(fill_visible) or bool(outlines_visible) or isochrone_canvas_coloured(mode)
@@ -562,7 +562,7 @@ def _mode_colour(layer, points, mode: str, layer_colours) -> list:
 
 
 def _fill_colour(layer, points, mode: str, layer_colours) -> list:
-    """Band colour for one closed ring, as registry RGBA at fill alpha."""
+    """Fallback fill colour for a closed engine contour, at fill alpha."""
     rgb = _mode_colour(layer, points, mode, layer_colours)
     return [] if not rgb else rgb + [ISOCHRONE_FILL_ALPHA]
 
@@ -657,41 +657,40 @@ def routing_overlay_data(
     contour that crosses the terminator shows both, plus a categorical legend.
     The uniform payload is unchanged.
 
-    ``fill_visible=True`` adds ``bands``: one closed ring per paired contour
-    between consecutive visible layers that both lack a hull. A visible layer
-    with a hull is filled by that hull and splits the band run, so the layers
-    on either side of it are never paired across the gap. Already resampled
-    and direction-aligned, so the fill is continuous whether or not a contour
-    is closed.
-    Bands are the primary fill; ``fills`` stays as the fallback for closed
-    contours of a layer with no band coverage, for example a single visible
-    layer. Only engine contours marked closed reach ``fills``, because an open
-    interior would leak across land. Both arrays are omitted entirely when the
-    fill is off, so the default payload keeps its shape. A dense result is
-    capped, and ``bands_note`` discloses how many bands were left out.
+    ``fill_visible=True`` adds ``bands``: sampled strips between every pair of
+    consecutive visible layers, built from those layers' raw engine contours.
+    The hull stage plays no part in the fill, so a layer the hull stage can
+    reduce is still banded against its neighbour. A layer with too little
+    geometry to pair ends the run, so contours are never paired across a layer
+    that cannot take part, and hidden layers never take part at all. Bands are
+    resampled and direction-aligned, so a strip is continuous whether or not the
+    engine marked its contours closed. They are a visual approximation of the
+    sampled reach: they do not prove navigable water and must not be read as a
+    land-safe area.
+    ``fills`` remains only as a fallback for a truly closed engine contour on a
+    layer with no band coverage, for example a single visible layer. Only a
+    contour the engine recorded as closed reaches ``fills``; an open contour is
+    never closed by the painter, because an invented chord would cross land.
+    Both arrays are omitted entirely when the fill is off, so the default
+    payload keeps its shape. Both are capped, and ``bands_note``/``fills_note``
+    disclose what was left out.
 
-    Per-layer hulls supersede the raw chains for layers that can produce one.
-    Every visible layer's contour points are clustered and each cluster is
-    reduced to a convex hull, so the solver's all-heading expansion no longer
-    reads as a starburst; the hull is also the default frontier stroke, which is
-    why it is built even with both toggles off. ``outlines`` carries one closed
-    ring per hull, largest area first, for the painter to stroke, and is emitted
-    only when the outlines toggle asked for it. ``fills`` carries the same rings
-    as closed shapes when the fill is on. An outline strokes exactly the ring
+    Per-layer hulls supersede the raw chains for the boundary stroke. Every
+    visible layer's contour points are clustered and each cluster is reduced to
+    a convex hull, so the solver's all-heading expansion no longer reads as a
+    starburst; the hull is the default frontier stroke, which is why it is built
+    even with both toggles off. The interior of that envelope is not a proven
+    reachable area, so no toggle paints it. ``outlines`` carries one closed ring
+    per hull, largest area first, for the painter to stroke, and is emitted only
+    when the outlines toggle asked for it. An outline strokes exactly the ring
     the frontier boundary already strokes, so turning the toggle on emphasises
     that boundary instead of painting a second shape.
 
-    Precedence, highest first: hull fill/outline for a layer with a hull, then
-    the gated band strip for a layer with no hull, then the closed-contour
-    fallback for a layer with neither. A band never covers a hulled layer, and
-    a contour fill never duplicates one, so no shape paints the same area
-    twice. Bands therefore remain a fallback for the degenerate layers only.
-
-    ``outlines_visible=True`` emits the hull rings even with the fill off, so
-    the two toggles stay independent: Fill paints hull interiors, Outlines
-    strokes hull boundaries. Both are omitted unless the contour eye is on.
-    Hull caps are separate from the closed-contour caps; a capped payload
-    discloses it in ``fills_note`` or ``outlines_note``.
+    The fill and outline toggles are independent: Fill paints the sampled band
+    strips, Outlines strokes hull boundaries, and neither suppresses the other.
+    Both are omitted unless the contour eye is on. Hull caps are separate from
+    the closed-contour caps; a capped payload discloses it in ``outlines_note``
+    or ``fills_note``.
 
     The flag is owned by the model, exactly like contour and trace visibility,
     so the payload follows a model toggle with no geometry rebuild. ``None``
@@ -709,7 +708,6 @@ def routing_overlay_data(
         outlines_visible = model.outlines_visible
     else:
         outlines_visible = bool(outlines_visible)
-    hulls_visible = fill_visible or outlines_visible
     mode = normalize_isochrone_colour_by(isochrone_colour_by)
     visible_layers = [
         layer for layer in model.layers if model.contour_visible(layer.layer_id)
@@ -743,19 +741,19 @@ def routing_overlay_data(
                 band_contours.append(polyline.points)
             if fill_visible and polyline.closed and len(polyline.points) >= 3:
                 fill_shapes.append((layer, polyline.points, polyline.object_id))
-        # Every visible layer is hulled, not only a filled or outlined one: the
-        # envelope is also the default boundary stroke. The hull is a display
-        # approximation of the engine's ordered chains, which the layer payload
-        # keeps unchanged.
+        # Every visible layer still gets a hull ring for its boundary stroke:
+        # the envelope is a display approximation of the engine's ordered
+        # chains, which the layer payload keeps unchanged. Only the outline
+        # toggle consumes the ring as a shape; the fill never paints its
+        # interior, because a hull interior is not a proven reachable area.
         layer_rings = hull_rings.get(layer.layer_id) or ()
-        if hulls_visible and layer_rings:
+        if outlines_visible and layer_rings:
             hull_shapes.extend((layer, ring) for ring in layer_rings)
-        # A hulled layer is filled by its hull, so it must not also be banded:
-        # bands stay the fallback for layers the hull stage could not reduce.
-        # A hulled layer also ends a run: the layers on either side are not
-        # consecutive visible layers, so their contours must not be paired
-        # across the layer the fill skipped.
-        if fill_visible and not layer_rings:
+        # Bands pair every consecutive visible layer from its raw engine
+        # contours, whether or not the hull stage could reduce it. A layer with
+        # too little geometry to pair ends the run rather than letting the
+        # strip jump the gap.
+        if fill_visible and band_contours:
             band_inputs.append(
                 {
                     "layer_id": layer.layer_id,
@@ -841,7 +839,6 @@ def routing_overlay_data(
                 f"{len(bands)} {band_word} ({skipped_total} {pair_word} skipped)"
             )
     outlines = []
-    hull_fills = []
     hull_note = None
     if hull_shapes:
         # Largest first so each smaller hull covers its parent's interior and
@@ -871,39 +868,25 @@ def routing_overlay_data(
             if not colour:
                 continue
             points = [list(point) for point in ring]
-            # Outlines are stroked only for the toggle that asked for them; the
+            # The hull is stroked only for the toggle that asked for it; the
             # fill is a separate toggle and must not smuggle the stroke in.
-            if outlines_visible:
-                outlines.append(
-                    {
-                        "layer_id": layer.layer_id,
-                        "epoch_s": layer.epoch_s,
-                        "points": points,
-                        "colour": list(colour),
-                        "area": hull_area(ring),
-                    }
-                )
-            if fill_visible:
-                hull_fills.append(
-                    {
-                        "layer_id": layer.layer_id,
-                        "points": points,
-                        "colour": list(colour) + [ISOCHRONE_FILL_ALPHA],
-                        "closed": True,
-                    }
-                )
-    hulled_layers = {layer.layer_id for layer, _ring in hull_shapes}
+            outlines.append(
+                {
+                    "layer_id": layer.layer_id,
+                    "epoch_s": layer.epoch_s,
+                    "points": points,
+                    "colour": list(colour),
+                    "area": hull_area(ring),
+                }
+            )
     fills = []
     legacy_fills = []
     if fill_visible:
-        # A layer covered by its hull or by bands is already filled, so its
-        # closed contours would paint the same area twice. Closed-contour fills
-        # are the last fallback, for a layer neither stage could cover.
+        # A layer covered by sampled bands is already filled, so its closed
+        # contours would paint the same area twice. The closed-contour fill is
+        # the last fallback, for a layer no band could cover.
         fill_shapes = [
-            shape
-            for shape in fill_shapes
-            if shape[0].layer_id not in banded_layers
-            and shape[0].layer_id not in hulled_layers
+            shape for shape in fill_shapes if shape[0].layer_id not in banded_layers
         ]
         # Largest first so each smaller contour covers its parent's interior,
         # leaving only the annular band between consecutive frontiers visible.
@@ -929,7 +912,7 @@ def routing_overlay_data(
                 }
             )
             fill_points += len(points)
-    fills = hull_fills + legacy_fills
+    fills = legacy_fills
     traces = []
     if model.trace_ids and model.traces_visible:
         for polyline in model.polylines:
@@ -965,9 +948,7 @@ def routing_overlay_data(
     if fills:
         payload["fills"] = fills
         total_closed = len(fill_shapes)
-        if hull_note:
-            payload["fills_note"] = hull_note
-        elif total_closed > len(legacy_fills):
+        if total_closed > len(legacy_fills):
             # A dense result is capped so the frame stays responsive; the
             # caption states what was left out instead of silently drawing a
             # partial picture that looks complete.
@@ -977,7 +958,7 @@ def routing_overlay_data(
             )
     if outlines:
         payload["outlines"] = outlines
-        if hull_note and not fill_visible:
+        if hull_note:
             payload["outlines_note"] = hull_note
     if bands:
         payload["bands"] = bands

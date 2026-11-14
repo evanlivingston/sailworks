@@ -132,19 +132,17 @@ def test_contour_eye_off_still_emits_no_frontier():
     assert payload["layers"] == []
 
 
-def test_fill_paints_the_hull_once_and_never_the_raw_arms():
+def test_fill_never_paints_the_hull_interior():
     payload = routing_overlay_data(_model(_starburst_layer()), "uniform", True)
 
-    # The hull is the only area: no band strip is paired from raw chains.
+    # The starburst arms are open engine chains, so there is no closed contour
+    # to fall back to and no second layer to band. A hull interior is not a
+    # proven reachable area, so the fill paints nothing while the default
+    # boundary still strokes the envelope.
     assert "bands" not in payload
-    assert len(payload["fills"]) == 1
-    fill = payload["fills"][0]
-    assert fill["closed"] is True
-    assert len(fill["points"]) == 4
-    # The fill is the same ring the boundary strokes, so the layer is painted
-    # once rather than twice.
-    boundary_ring = [segment[0] for segment in payload["frontiers"][0]["segments"]]
-    assert fill["points"] == boundary_ring
+    assert "fills" not in payload
+    assert payload["frontiers"][0]["source"] == "hull"
+    assert len(payload["frontiers"][0]["segments"]) == 4
 
 
 def test_optional_outlines_stroke_the_boundary_without_a_second_shape():
@@ -160,9 +158,9 @@ def test_optional_outlines_stroke_the_boundary_without_a_second_shape():
     )
 
     both = routing_overlay_data(model, "uniform", True, True)
-    assert len(both["fills"]) == 1
-    assert len(both["outlines"]) == 1
+    assert "fills" not in both
     assert "bands" not in both
+    assert len(both["outlines"]) == 1
 
 
 def test_retained_path_strokes_the_same_boundary_as_the_canvas():
