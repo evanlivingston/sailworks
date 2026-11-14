@@ -30,12 +30,8 @@ from .historicalroutingseams import HistoricalRoutingSeams
 __all__ = [
     "HistoricalRoutingActions",
     "HistoricalRoutingPanel",
-    "RECHECK_UNAVAILABLE",
     "local_timezone_id",
 ]
-
-#: Shown on the recheck button until the coordinator grows a recheck seam.
-RECHECK_UNAVAILABLE = "Not available yet"
 
 
 def local_timezone_id() -> str:
@@ -134,7 +130,6 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         self.progress_reported.connect(self._progress)
         self.job_finished.connect(self._finished)
         self.outcome_reported.connect(self._outcome)
-        self._sync_recheck()
         self._refresh_jobs()
 
     # -- persistence -----------------------------------------------------
@@ -237,17 +232,11 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         self.actions.run_retry(job_id, base)
 
     def recheck_excluded(self):
-        """Deliberately inert: the coordinator has no recheck seam yet.
+        """Re-examine the years the job's acquisition excluded."""
+        self.actions.recheck_excluded()
 
-        The button stays disabled, so this only guards a stray signal and never
-        raises inside the UI thread.
-        """
-
-    def _sync_recheck(self):
-        """Keep recheck honestly unavailable rather than a raising stub."""
-        button = self.results.recheck_button
-        button.setEnabled(False)
-        button.setToolTip(RECHECK_UNAVAILABLE)
+    def _run_recheck(self, job_id, base):
+        self.actions.run_recheck(job_id, base)
 
     # -- UI thread slots -------------------------------------------------
     def _progress(self, stage, completed, total, message):
@@ -292,7 +281,6 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
     # -- results ---------------------------------------------------------
     def _show_record(self, record):
         apply_results(self.results, record, self._outcomes)
-        self._sync_recheck()
 
     def _publish_routes(self, record):
         self.actions.publish_routes(record)

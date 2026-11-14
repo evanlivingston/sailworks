@@ -130,6 +130,60 @@ class HistoricalRoutingActions:
             return
         owner.job_finished.emit(str(job_id), "")
 
+    def recheck_excluded(self):
+        """Re-examine the years the job's acquisition excluded."""
+        owner = self.owner
+        if owner._thread is not None and owner._thread.is_alive():
+            return
+        record = owner._record
+        if record is None:
+            owner.options.set_status("Select a historical job before rechecking.")
+            return
+        if not getattr(record, "excluded_years", ()):
+            owner.options.set_status("No excluded years to recheck.")
+            return
+        try:
+            base = owner._base_request()
+        except (ValueError, OverflowError) as error:
+            owner.options.set_status(str(error))
+            return
+        owner._cancel_event.clear()
+        owner._outcomes = {}
+        # A successful recheck may create routes, so reuse the retry
+        # completion path that publishes them into the job's scene group.
+        owner._retrying = True
+        owner.options.set_running(True)
+        owner.options.set_status("Rechecking excluded years…")
+        owner.results.set_actions_enabled(False, False, False)
+        owner._thread = threading.Thread(
+            target=owner._run_recheck,
+            args=(record.job_id, base),
+            name="qt-historical-routing-recheck",
+            daemon=True,
+        )
+        owner._thread.start()
+
+    def run_recheck(self, job_id, base):
+        """Run the coordinator's excluded-year recheck off the UI thread."""
+        owner = self.owner
+        try:
+            owner.coordinator.recheck_excluded(
+                job_id,
+                base,
+                ensure_wind=owner.ensure_wind,
+                run_bound=owner.run_bound,
+                current_selection_factory=owner.current_selection_factory,
+                concurrency=None,
+                on_progress=lambda event: owner.progress_reported.emit(
+                    event.stage, event.completed, event.total, event.message
+                ),
+                on_outcome=lambda outcome: owner.outcome_reported.emit(outcome),
+            )
+        except Exception as error:  # the UI thread shows the message
+            owner.job_finished.emit(str(job_id), f"{type(error).__name__}: {error}")
+            return
+        owner.job_finished.emit(str(job_id), "")
+
     # -- UI thread slots -------------------------------------------------
     def progress(self, stage, completed, total, message):
         owner = self.owner

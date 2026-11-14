@@ -97,7 +97,9 @@ class _CurveCanvas(QWidget):
             return
         strip_height = min(90.0, area.height() * 0.34) if self._strip else 0.0
         curve_height = area.height() - (strip_height + (14.0 if strip_height else 0.0))
-        curve_rect = QRectF(area.left(), area.top(), area.width(), max(20.0, curve_height))
+        curve_rect = QRectF(
+            area.left(), area.top(), area.width(), max(20.0, curve_height)
+        )
         self._paint_curve(painter, curve_rect)
         if strip_height:
             strip_rect = QRectF(
@@ -254,9 +256,15 @@ class HistoricalRoutingResults(QWidget):
         self.representatives_button = self._button(
             buttons, "Representatives", self.representatives_requested.emit
         )
-        self.show_all_button = self._button(buttons, "Show all", self.show_all_requested.emit)
-        self.hide_all_button = self._button(buttons, "Hide all", self.hide_all_requested.emit)
-        self.retry_button = self._button(buttons, "Retry failed", self.retry_failed_requested.emit)
+        self.show_all_button = self._button(
+            buttons, "Show all", self.show_all_requested.emit
+        )
+        self.hide_all_button = self._button(
+            buttons, "Hide all", self.hide_all_requested.emit
+        )
+        self.retry_button = self._button(
+            buttons, "Retry failed", self.retry_failed_requested.emit
+        )
         self.recheck_button = self._button(
             buttons, "Recheck excluded years", self.recheck_requested.emit
         )
@@ -326,7 +334,7 @@ class HistoricalRoutingResults(QWidget):
 
     def set_actions_enabled(self, has_failures, has_excluded, has_job):
         self.retry_button.setEnabled(bool(has_failures))
-        self.recheck_button.setEnabled(bool(has_excluded))
+        self.recheck_button.setEnabled(bool(has_excluded) and bool(has_job))
         for button in (
             self.delete_button,
             self.median_button,
@@ -335,7 +343,9 @@ class HistoricalRoutingResults(QWidget):
             self.hide_all_button,
         ):
             button.setEnabled(bool(has_job))
-        self.median_button.setEnabled(bool(has_job) and self._median_member_id is not None)
+        self.median_button.setEnabled(
+            bool(has_job) and self._median_member_id is not None
+        )
 
     def clear(self):
         self.summary.setText("")

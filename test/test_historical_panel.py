@@ -536,21 +536,109 @@ def test_representatives_show_only_the_median_finished_route():
     assert scene.saved == 1
 
 
-def test_recheck_button_is_disabled_with_the_documented_tooltip():
+def test_recheck_button_enabled_only_when_a_job_has_excluded_years():
     application()
     panel = historical_panel()
-    assert historicalrouting.RECHECK_UNAVAILABLE == "Not available yet"
-    assert panel.results.recheck_button.isEnabled() is False
-    assert panel.results.recheck_button.toolTip() == "Not available yet"
 
+    panel._show_record(_record(_member_route("2020-000", "route-a")))
+    assert panel.results.recheck_button.isEnabled() is False
+
+    panel._show_record(
+        _record(_member_route("2020-000", "route-a"), excluded_years=(2019,))
+    )
+    assert panel.results.recheck_button.isEnabled() is True
+
+    # No job means no recheck even when exclusions are remembered.
+    panel.results.set_actions_enabled(False, True, False)
+    assert panel.results.recheck_button.isEnabled() is False
+
+
+def test_recheck_excluded_uses_the_same_seams_and_publishes_new_routes(monkeypatch):
+    application()
+    routes = [_route("route-a"), _route("route-b")]
+    controller = SimpleNamespace(
+        core=SimpleNamespace(routingManager=routes), analysis=None
+    )
+    request = SimpleNamespace(
+        departure=datetime(2021, 6, 15, 12),
+        start=(0.0, 0.0),
+        destination=(1.0, 1.0),
+        waypoints=(),
+    )
+    panel = historical_panel(controller=controller, request=request)
+    record = _record(_member_route("2020-000", "route-a"), excluded_years=(2019,))
+    updated = _record(
+        _member_route("2020-000", "route-a"),
+        _member_route("2021-000", "route-b", year=2021),
+    )
+    panel._record = record
+    panel.store = SimpleNamespace(load=lambda job_id: updated, list_jobs=lambda: [])
+
+    calls = {}
+    published = []
+
+    def recheck_excluded(job_id, base, **kwargs):
+        calls["job_id"] = job_id
+        calls["base"] = base
+        calls.update(kwargs)
+        return []
+
+    panel.coordinator = SimpleNamespace(
+        scene=None,
+        publisher=SimpleNamespace(scene=None),
+        recheck_excluded=recheck_excluded,
+        publish_routes=lambda job_id, wanted: published.append((job_id, list(wanted))),
+    )
+
+    monkeypatch.setattr(historicalrouting.threading, "Thread", _ImmediateThread)
+    panel.recheck_excluded()
+
+    assert calls["job_id"] == "job-1"
+    assert calls["base"] is request
+    assert calls["ensure_wind"] == panel.ensure_wind
+    assert calls["run_bound"] == panel.run_bound
+    assert calls["current_selection_factory"] == panel.current_selection_factory
+    assert calls["concurrency"] is None
+    assert panel.results.table.rowCount() == 2
+    assert published == [("job-1", routes)]
+    assert panel._retrying is False
+
+
+def test_cancelling_a_recheck_leaves_the_panel_usable(monkeypatch):
+    application()
+    route = _route("route-a")
+    controller = SimpleNamespace(
+        core=SimpleNamespace(routingManager=[route]), analysis=None
+    )
+    request = SimpleNamespace(
+        departure=datetime(2021, 6, 15, 12),
+        start=(0.0, 0.0),
+        destination=(1.0, 1.0),
+        waypoints=(),
+    )
+    panel = historical_panel(controller=controller, request=request)
     record = _record(_member_route("2020-000", "route-a"), excluded_years=(2019,))
     panel._record = record
     panel.store = SimpleNamespace(load=lambda job_id: record, list_jobs=lambda: [])
-    panel._finished("job-1", "")
 
-    assert panel.results.recheck_button.isEnabled() is False
-    assert panel.results.recheck_button.toolTip() == "Not available yet"
-    panel.recheck_excluded()  # must not raise in the UI thread
+    def recheck_excluded(job_id, base, **kwargs):
+        raise RuntimeError("cancelled")
+
+    panel.coordinator = SimpleNamespace(
+        scene=None,
+        publisher=SimpleNamespace(scene=None),
+        recheck_excluded=recheck_excluded,
+        publish_routes=lambda *args, **kwargs: None,
+    )
+
+    monkeypatch.setattr(historicalrouting.threading, "Thread", _ImmediateThread)
+    panel.recheck_excluded()
+
+    assert panel._retrying is False
+    assert panel._thread.is_alive() is False
+    assert panel.results.recheck_button.isEnabled() is True
+    assert panel.results.delete_button.isEnabled() is True
+    assert panel.results.table.rowCount() == 1
 
 
 def test_existing_compare_calculate_path_is_unchanged(monkeypatch, tmp_path):
