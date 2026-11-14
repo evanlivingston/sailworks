@@ -22,7 +22,7 @@ through the helpers below, so adding a dimension is a data entry rather than a
 new code path and no renderer owns a ramp of its own.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # Shared fallback. Unknown and missing values always resolve here; they are
 # never mapped onto a plausible band, so a gap cannot read as a data point.

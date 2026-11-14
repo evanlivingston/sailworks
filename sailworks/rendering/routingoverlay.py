@@ -455,7 +455,7 @@ class RoutingOverlayModel:
 
 # The time ramp lives in the shared metric registry so the payload, legend and
 # tests share one definition; it is re-exported here for existing callers.
-from .palettes import (  # noqa: E402 - re-export beside the gradient helpers
+from .palettes import (  # noqa: E402, F401 - re-export beside the gradient helpers
     ISOCHRONE_FILL_ALPHA,
     ISOCHRONE_FILL_MAX_CONTOURS,
     ISOCHRONE_FILL_MAX_POINTS,

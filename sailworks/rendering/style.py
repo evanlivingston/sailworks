@@ -141,7 +141,7 @@ class Style:
 
 # The ramps live in ``palettes``; these names are re-exported so existing
 # imports keep working without a second definition.
-from .palettes import (  # noqa: E402 - import block kept beside its re-exports
+from .palettes import (  # noqa: E402, F401 - import block kept beside its re-exports
     METRICS,
     ROUTE_DOWNWIND_COLOUR,
     ROUTE_PORT_COLOUR,
