@@ -33,6 +33,13 @@ DEFAULT_TILE_URL = (
 DEFAULT_ATTRIBUTION = "Esri, Maxar, Earthstar Geographics"
 PACK_SUFFIXES = (".mbtiles", ".pmtiles")
 
+#: Per-frame budget for a streamed motion frame. A frame that takes longer is
+#: already superseded by the camera the viewport has moved to since.
+FRAME_TIMEOUT_SECONDS = 3.0
+#: Consecutive timeouts before the native map/session is treated as poisoned
+#: and rebuilt. One late frame is normal; a run of them is not.
+FRAME_TIMEOUTS_BEFORE_RESET = 2
+
 
 class SatelliteError(RuntimeError):
     """The satellite layer cannot render this request."""
@@ -291,6 +298,8 @@ class SatelliteRenderer:
         self._session = None
         self._size = None
         self._style = None
+        self._frame_token = 0
+        self._frame_timeouts = 0
 
     @property
     def source(self) -> SatelliteSource:
@@ -304,7 +313,7 @@ class SatelliteRenderer:
         width: int,
         height: int,
         scale: float = 1.0,
-        timeout: float = 12.0,
+        timeout: float = FRAME_TIMEOUT_SECONDS,
     ) -> QImage:
         if width < 1 or height < 1:
             raise SatelliteError("satellite frame has no size")
@@ -331,13 +340,45 @@ class SatelliteRenderer:
                         ),
                     )
                 ).result(timeout=remaining())
-                self._map.request_still_image().result(timeout=remaining())
+                # A continuous map rejects request_still_image(); drive one
+                # explicit frame demand and wait for its terminal result.
+                self._frame_token += 1
+                token = self._frame_token
+                self._session.request_frame(
+                    module.FrameDemand(
+                        flags=module.FrameDemandFlag.FORCE
+                        | module.FrameDemandFlag.PRESENT,
+                        token=token,
+                    )
+                )
+                rendered = False
+                delay = 0.0005
+                while remaining() > 0:
+                    for result in self._session.drain_frame_results():
+                        if getattr(result, "token", None) != token:
+                            continue
+                        rendered = result.disposition == module.RenderResult.RENDERED
+                        if rendered:
+                            break
+                    if rendered:
+                        break
+                    # Back off between polls: a slow frame is usually followed
+                    # by more waiting, and a fixed 1 ms poll burns a core.
+                    time.sleep(delay)
+                    delay = min(delay * 2.0, 0.004)
+                if not rendered:
+                    raise SatelliteError("satellite frame did not render")
                 readback = self._session.read_texture().result(timeout=remaining())
                 data = bytes(readback.data)
             except TimeoutError as exc:
-                # A timed-out native render may still be running; rebuild the
-                # map/session rather than reusing undefined state.
-                self._release_graphics()
+                # A single late frame is dropped: its result would be stale by
+                # now, and rebuilding costs more than waiting for the next one.
+                # Repeated timeouts imply the native state itself is stuck, so
+                # only then rebuild the map/session.
+                self._frame_timeouts += 1
+                if self._frame_timeouts >= FRAME_TIMEOUTS_BEFORE_RESET:
+                    self._release_graphics()
+                    self._frame_timeouts = 0
                 raise SatelliteError("satellite tiles timed out") from exc
             except Exception as exc:  # noqa: BLE001 - FFI failures are display state
                 raise SatelliteError(str(exc)) from exc
@@ -350,6 +391,7 @@ class SatelliteRenderer:
                 info.stride,
                 QImage.Format.Format_RGBA8888,
             )
+            self._frame_timeouts = 0
             # QImage does not own the FFI buffer; copy before it is released.
             return image.copy()
 
@@ -385,7 +427,7 @@ class SatelliteRenderer:
             self._release_graphics()
             extent = module.LogicalExtent(width, height, scale)
             created = self._runtime.create_map(
-                module.MapOptions(extent, module.MapMode.STATIC)
+                module.MapOptions(extent, module.MapMode.CONTINUOUS)
             )
             created.ready.result(timeout=remaining())
             self._map = created.map
@@ -395,6 +437,7 @@ class SatelliteRenderer:
                 module.GraphicsDeviceTextureDescriptor(extent),
                 module.RenderSessionAttachOptions(module.RenderDriverKind.CORE_WORKER),
             )
+            attached.ready.result(timeout=remaining())
             self._session = attached.session
             self._size = (width, height, scale)
             self._style = None

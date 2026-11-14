@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import numpy as np
+import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt
 from types import SimpleNamespace
 
@@ -77,8 +78,27 @@ def test_default_viewport_still_hides_weather_scene_on_miss():
 
 
 def test_desktop_native_pinch_zooms_the_viewport_at_the_gesture_anchor():
-    method = _viewport_widget_class()._native_gesture_event
-    widget = SimpleNamespace(_native_gesture_active=False, zoom_at=Mock())
+    from datetime import datetime
+
+    from sailworks.qt.gribviewport import ViewportCamera
+
+    widget_class = _viewport_widget_class()
+    camera = ViewportCamera(48.45, -124.29, 9.0, 710, 743, datetime(2026, 10, 22))
+    zoom_tick = Mock()
+    zoom_tick.isActive.return_value = False
+    widget = SimpleNamespace(
+        _camera=camera,
+        _native_gesture_active=False,
+        _wheel_zoom_tick=zoom_tick,
+        _wheel_zoom_settle=Mock(),
+        _wheel_zoom_target=None,
+        _wheel_zoom_anchor=None,
+        _wheel_zoom_last_tick=None,
+    )
+    widget._set_zoom_around = lambda zoom, x, y, anchor=None: (
+        widget_class._set_zoom_around(widget, zoom, x, y, anchor)
+    )
+    widget.set_camera = lambda new_camera: setattr(widget, "_camera", new_camera)
 
     class Gesture:
         def gestureType(self):
@@ -94,15 +114,57 @@ def test_desktop_native_pinch_zooms_the_viewport_at_the_gesture_anchor():
             self.accepted = True
 
     event = Gesture()
-    assert method(widget, event)
+    assert widget_class._native_gesture_event(widget, event)
     assert widget._native_gesture_active
-    widget.zoom_at.assert_called_once_with(math.log2(1.3), 123, 234)
     assert event.accepted
+    # The pinch accumulates into the wheel tween instead of committing the
+    # camera from the gesture event.
+    steps = math.log2(1.3)
+    assert widget._wheel_zoom_target == pytest.approx(camera.zoom + steps)
+    zoom_tick.start.assert_called_once()
+    widget._wheel_zoom_settle.start.assert_called_once_with(250)
+
+    # The gesture anchor is geographic and is captured once for the gesture.
+    assert widget._wheel_zoom_anchor[:2] == (123, 234)
+    view = camera.view()
+    anchor_lat = view._y_to_lat(
+        view._lat_to_y(camera.center_lat) + 234 - camera.height / 2
+    )
+    anchor_lon = view._x_to_lon(
+        view._lon_to_x(camera.center_lon) + 123 - camera.width / 2
+    )
+    assert widget._wheel_zoom_anchor[2] == pytest.approx(anchor_lat)
+    assert widget._wheel_zoom_anchor[3] == pytest.approx(anchor_lon)
+
+    # Driving the tween zooms the viewport about that anchor.
+    for _ in range(500):
+        widget_class._advance_wheel_zoom(widget)
+    settled = widget._camera
+    assert settled.zoom == pytest.approx(camera.zoom + steps, abs=1e-6)
+    settled_view = settled.view()
+    assert settled_view._y_to_lat(
+        settled_view._lat_to_y(settled.center_lat) + 234 - settled.height / 2
+    ) == pytest.approx(anchor_lat, abs=1e-9)
+    assert settled_view._x_to_lon(
+        settled_view._lon_to_x(settled.center_lon) + 123 - settled.width / 2
+    ) == pytest.approx(anchor_lon, abs=1e-9)
 
 
 def test_desktop_native_gesture_end_clears_viewport_gesture_state():
-    method = _viewport_widget_class()._native_gesture_event
-    widget = SimpleNamespace(_native_gesture_active=True, _end_zoom_gesture=Mock())
+    widget_class = _viewport_widget_class()
+    method = widget_class._native_gesture_event
+    zoom_tick = Mock()
+    zoom_tick.isActive.return_value = True
+    widget = SimpleNamespace(
+        _native_gesture_active=True,
+        _wheel_zoom_tick=zoom_tick,
+        _wheel_zoom_settle=Mock(),
+        _wheel_zoom_target=9.4,
+        _wheel_zoom_anchor=(1.0, 2.0, 3.0, 4.0),
+        _wheel_zoom_last_tick=5.0,
+        _end_zoom_gesture=Mock(),
+    )
+    widget._finish_wheel_zoom = lambda: widget_class._finish_wheel_zoom(widget)
 
     class Gesture:
         def gestureType(self):
@@ -115,6 +177,19 @@ def test_desktop_native_gesture_end_clears_viewport_gesture_state():
     assert method(widget, event)
     assert not widget._native_gesture_active
     assert event.accepted
+    # The tween is still animating, so state is kept and the settle is deferred.
+    assert widget._wheel_zoom_target == 9.4
+    widget._wheel_zoom_settle.start.assert_called_once_with(250)
+    widget._end_zoom_gesture.assert_not_called()
+
+    # Once the tick has settled, the gesture state is cleared.
+    zoom_tick.isActive.return_value = False
+    assert method(widget, Gesture())
+    assert not widget._native_gesture_active
+    assert widget._wheel_zoom_target is None
+    assert widget._wheel_zoom_anchor is None
+    assert widget._wheel_zoom_last_tick is None
+    widget._end_zoom_gesture.assert_called_once()
 
 
 def test_desktop_native_pinch_rejects_degenerate_scales():

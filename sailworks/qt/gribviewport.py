@@ -246,6 +246,31 @@ SATELLITE_MARGIN = 256
 #: The padded frame is re-rendered once the delta exceeds the band.
 SATELLITE_ZOOM_TOLERANCE = 0.25
 
+#: Interval between streamed motion frames, and the resting interval that
+#: coalesces pans into a single frame.
+SATELLITE_MOTION_INTERVAL_MS = 16
+SATELLITE_REST_INTERVAL_MS = 220
+
+#: Consecutive failed frames tolerated before the layer backs off. A single
+#: timeout is a stutter; a run of them means the source is genuinely unusable.
+SATELLITE_FAILURES_BEFORE_BACKOFF = 3
+
+#: Capture density ceiling for satellite frames: the device-pixel ratio hint
+#: the renderer is asked to draw at. It does not change the delivered frame
+#: size; the pixel reduction comes from SATELLITE_CAPTURE_DIVISOR.
+#: The renderer is keyed on (width, height, scale), so this must stay constant
+#: for a session: varying it tears down and rebuilds the whole MapLibre map.
+#: Every frame is a padded view read back to the CPU, so the density sets the
+#: achievable cadence directly.
+SATELLITE_CAPTURE_SCALE = 1.0
+
+#: The renderer's frame size is the camera size in device pixels; halving it
+#: targets one raster pixel per logical pixel on a 2x display, which is all a
+#: scaled photographic basemap needs and quarters the per-frame readback and
+#: texture cost. Must stay constant for a session: the renderer is keyed on
+#: (width, height, scale) and varying it rebuilds the MapLibre map.
+SATELLITE_CAPTURE_DIVISOR = 2
+
 
 def satellite_status_text(reason):
     """One-line, bounded satellite failure text for the map status label."""
@@ -1874,10 +1899,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._satellite_provider = None
             self._satellite_worker = None
             self._satellite_timer = None
-            self._satellite_refetch_deferred = False
+            self._satellite_motion = False
             self._satellite_generation = 0
             self._satellite_camera = None
-            self._satellite_pending_camera = None
+            #: Padded camera each submitted generation was rendered with, so a
+            #: late completion is placed at the geometry it actually captured.
+            self._satellite_job_cameras = {}
             self._satellite_source_camera = None
             self._satellite_placement = None
             self._satellite_source = None
@@ -1886,9 +1913,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._satellite_error = ""
             self._satellite_fatal = False
             self._satellite_retry_at = 0.0
+            self._satellite_failures = 0
             self._satellite_network = None
             self._satellite_front_slot = 0
-            self._satellite_pending_token = None
+            self._satellite_pending_tokens = {}
             self._satellite_token = 0
             self._satellite_status_text = ""
             self._satellite_visible_generation = None
@@ -2143,7 +2171,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 )
                 self._satellite_timer = QTimer(self)
                 self._satellite_timer.setSingleShot(True)
-                self._satellite_timer.setInterval(220)
+                self._satellite_timer.setInterval(SATELLITE_REST_INTERVAL_MS)
                 self._satellite_timer.timeout.connect(self._request_satellite)
                 self._satellite_retry_timer = QTimer(self)
                 self._satellite_retry_timer.setSingleShot(True)
@@ -2872,6 +2900,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._satellite_worker = worker
             self._satellite_base_source = source
             self._satellite_source = source
+            # Nothing is in flight for a freshly created worker.
+            self._satellite_job_cameras.clear()
+            self._satellite_pending_tokens.clear()
             self._set_satellite_attribution(source.attribution)
             logger.info("Satellite basemap source: %s", source.tiles[0][:80])
             return True
@@ -2920,6 +2951,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._satellite_source = desired
             if self._satellite_worker is not None:
                 self._satellite_worker.set_source(desired)
+            # Frames still rendering belong to the previous source.
+            self._satellite_job_cameras.clear()
+            self._satellite_pending_tokens.clear()
             self._set_satellite_attribution(desired.attribution)
 
         def _satellite_reachability_changed(self, _reachability):
@@ -2989,6 +3023,17 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 getattr(self, "_native_gesture_active", False)
             )
 
+        def _satellite_set_motion(self, active):
+            """Switch the frame cadence between gesture motion and rest."""
+            self._satellite_motion = bool(active)
+            timer = self._satellite_timer
+            if timer is not None:
+                timer.setInterval(
+                    SATELLITE_MOTION_INTERVAL_MS
+                    if active
+                    else SATELLITE_REST_INTERVAL_MS
+                )
+
         def _satellite_camera_changed(self, camera):
             if not self._satellite_visible or camera is None:
                 return
@@ -3012,18 +3057,23 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             ):
                 self._set_satellite_status("Satellite offline — no connection")
                 return
-            if self._satellite_covers(camera):
-                self._set_satellite_status("")
-                self._place_satellite(camera)
-                return
             self._set_satellite_status("")
             if self._satellite_zooming():
-                # Requesting mid-gesture would render the frame at an
-                # intermediate scale and swap it in during the animation, so
-                # ask once the gesture has settled instead.
-                self._satellite_refetch_deferred = True
+                # A gesture is animating the camera. Check this before coverage:
+                # the zoom tolerance would otherwise declare the retained frame
+                # good enough until the camera has moved a whole fraction of a
+                # zoom level, which is exactly one wheel notch and reads as a
+                # lurch. Stream motion frames for the whole gesture instead.
+                self._satellite_set_motion(True)
+                self._place_satellite(camera)
+                timer = self._satellite_timer
+                if timer is not None and not timer.isActive():
+                    timer.start()
                 return
-            self._satellite_refetch_deferred = False
+            self._satellite_set_motion(False)
+            if self._satellite_covers(camera):
+                self._place_satellite(camera)
+                return
             if self._satellite_timer is not None:
                 self._satellite_timer.start()
 
@@ -3068,19 +3118,49 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 width=camera.width + 2 * SATELLITE_MARGIN,
                 height=camera.height + 2 * SATELLITE_MARGIN,
             )
+            # Render at a fraction of the padded camera's pixel size. The job
+            # camera stored for placement stays at full size: chart_placement
+            # derives the image's logical extent from camera.width/height, so
+            # halving it there would shrink the drawn image and leave the
+            # viewport edges uncovered. A frame of half the extent covers half
+            # the geography at the same zoom, so the render camera drops one
+            # zoom level to keep the rendered bounds identical to the padded
+            # camera; the texture is the same view at half the pixel density.
+            rendered = replace(
+                padded,
+                width=max(1, padded.width // SATELLITE_CAPTURE_DIVISOR),
+                height=max(1, padded.height // SATELLITE_CAPTURE_DIVISOR),
+                zoom=padded.zoom - 1.0,
+            )
             self._satellite_generation += 1
-            self._satellite_pending_camera = padded
-            # Raster context is worth a full-density frame only up to 2x, the
-            # point where most panels stop gaining visible detail.
+            generation = self._satellite_generation
+            jobs = self._satellite_job_cameras
+            visible = self._satellite_visible_generation
+            # Only the few jobs still in flight can be displayed; anything at or
+            # behind the frame on screen is already superseded.
+            for stale in [
+                key for key in jobs if visible is not None and key <= visible
+            ]:
+                del jobs[stale]
+            while len(jobs) > 4:
+                del jobs[min(jobs)]
+            jobs[generation] = padded
+            # One density for the whole session: the renderer is keyed on
+            # (width, height, scale) and changes tear the map down. Every frame
+            # is a padded view read back to the CPU, so density sets cadence.
             # QQuickWindow exposes devicePixelRatio(), not the QWidget
             # devicePixelRatioF(); the native host must use the portable one.
-            scale = min(self.devicePixelRatio(), 2.0)
-            self._satellite_worker.submit(self._satellite_generation, padded, scale)
+            scale = min(self.devicePixelRatio(), SATELLITE_CAPTURE_SCALE)
+            self._satellite_worker.submit(generation, rendered, scale)
 
         def _satellite_rendered(self, generation, image):
             if self._disposed or not self._satellite_visible:
                 return
-            if generation != self._satellite_generation:
+            visible = self._satellite_visible_generation
+            if visible is not None and generation <= visible:
+                # Already on screen, or older than what is on screen: showing it
+                # would move the imagery backwards. Anything newer is useful
+                # even when later requests are already in flight.
                 return
             if self._satellite is None or self._satellite_provider is None:
                 return
@@ -3090,24 +3170,34 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             url = self._satellite_provider.publish_retained(
                 generation, image, self._satellite_visible_generation
             )
-            self._satellite_pending_token = (slot, token, generation)
+            self._satellite_pending_tokens[slot] = (token, generation)
             self._satellite.setProperty(f"slot{slot}Token", token)
             self._satellite.setProperty(f"slot{slot}Source", QUrl(url))
+            # Pin the raster's natural size on the scene item so the QML Image
+            # never re-requests the provider when the placement geometry
+            # changes. This runs on a new frame only, not on a camera change.
+            self._satellite.setProperty("imagePixelWidth", image.width())
+            self._satellite.setProperty("imagePixelHeight", image.height())
 
         def _satellite_slot_result(self, slot, token, success):
-            pending = self._satellite_pending_token
-            if pending is None or (slot, token) != pending[:2]:
+            pending = self._satellite_pending_tokens.get(slot)
+            if pending is None or pending[0] != token:
                 return
-            generation = pending[2]
-            self._satellite_pending_token = None
+            generation = pending[1]
+            del self._satellite_pending_tokens[slot]
             if not success:
                 self._satellite.setProperty(f"slot{slot}Token", "")
                 self._satellite.setProperty(f"slot{slot}Source", QUrl(""))
                 self._satellite_failed(self._satellite_generation, "image load failed")
                 return
             previous = self._satellite_front_slot
-            self._satellite_source_camera = self._satellite_pending_camera
+            camera = self._satellite_job_cameras.get(generation)
+            if camera is not None:
+                # Place with the camera this frame was rendered at, not whatever
+                # was requested most recently.
+                self._satellite_source_camera = camera
             self._satellite_visible_generation = generation
+            self._satellite_failures = 0
             self._satellite_provider.retain(generation)
             # Place the frame while it is still hidden: presenting the slot
             # first would let the render thread composite it with the previous
@@ -3120,10 +3210,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._satellite.setProperty(f"slot{previous}Source", QUrl(""))
             if self._camera is not None:
                 if not self._satellite_covers(self._camera):
+                    timer = getattr(self, "_satellite_timer", None)
                     if self._satellite_zooming():
-                        self._satellite_refetch_deferred = True
-                    else:
-                        self._satellite_timer.start()
+                        # Keep streaming while the gesture animates; starting
+                        # an already running timer would reset its countdown.
+                        if timer is not None and not timer.isActive():
+                            timer.start()
+                    elif timer is not None:
+                        timer.start()
             self._set_satellite_status("")
 
         def _satellite_failed(self, generation, reason):
@@ -3132,11 +3226,21 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             if not self._satellite_error:
                 logger.warning("Satellite basemap frame unavailable: %s", reason)
             self._satellite_error = reason
-            self._satellite_retry_at = time.monotonic() + 15.0
+            failures = self._satellite_failures + 1
+            self._satellite_failures = failures
             self._set_satellite_status(satellite_status_text(reason))
             retry = getattr(self, "_satellite_retry_timer", None)
+            if failures >= SATELLITE_FAILURES_BEFORE_BACKOFF:
+                # The source looks genuinely unusable; stop asking for frames
+                # for a while instead of streaming failures at frame rate.
+                self._satellite_retry_at = time.monotonic() + 15.0
+                if retry is not None:
+                    retry.start(15000)
+                return
+            # A single drop is a stutter, not an outage: resume streaming at the
+            # resting cadence so the next frame lands immediately.
             if retry is not None:
-                retry.start(15000)
+                retry.start(SATELLITE_REST_INTERVAL_MS)
 
         def _place_satellite(self, camera):
             source = getattr(self, "_satellite_source_camera", None)
@@ -5447,6 +5551,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 worker.stop()
                 worker.join(2.0)
                 self._satellite_worker = None
+            self._satellite_job_cameras.clear()
+            self._satellite_pending_tokens.clear()
             provider = getattr(self, "_satellite_provider", None)
             if provider is not None:
                 provider.clear()
@@ -7126,13 +7232,20 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
 
         def _end_zoom_gesture(self):
             """Re-sample the retained selection at the settled zoom."""
-            deferred = self._satellite_refetch_deferred
-            self._satellite_refetch_deferred = False
-            if deferred and self._satellite_visible and not self._disposed:
-                # Frames were held back for the whole gesture; ask for one now
-                # that the camera rests at its final scale.
-                if self._satellite_timer is not None:
-                    self._satellite_timer.start()
+            if self._satellite_motion:
+                # Streamed motion frames are deliberately soft and the coverage
+                # band may accept the last one, so request one sharp frame
+                # explicitly instead of trusting the settle check.
+                self._satellite_set_motion(False)
+                timer = self._satellite_timer
+                if timer is not None:
+                    timer.stop()
+                if (
+                    self._satellite_visible
+                    and not self._disposed
+                    and self._satellite_worker is not None
+                ):
+                    self._request_satellite()
             if not self._zoom_reuse_served or self._disposed or self._camera is None:
                 return
             self._zoom_reuse_served = False
@@ -7265,19 +7378,59 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             return result
 
         def _native_gesture_event(self, event):
-            """Own desktop trackpad pinch and update the viewport camera directly."""
+            """Own desktop trackpad pinch and drive it through the wheel zoom tween."""
             kind = event.gestureType()
             if kind == Qt.NativeGestureType.BeginNativeGesture:
                 self._native_gesture_active = True
+                # A new pinch starts a fresh tween, but an in-flight wheel
+                # tween is left alone so its anchor is not clobbered.
+                if not self._wheel_zoom_tick.isActive():
+                    self._wheel_zoom_target = None
+                    self._wheel_zoom_anchor = None
             elif kind == Qt.NativeGestureType.EndNativeGesture:
                 self._native_gesture_active = False
-                self._end_zoom_gesture()
+                # Let the tween settle; _finish_wheel_zoom defers through the
+                # settle timer while the tick is still running.
+                self._finish_wheel_zoom()
             elif kind == Qt.NativeGestureType.ZoomNativeGesture:
                 scale = 1.0 + event.value()
-                if math.isfinite(scale) and scale > 0:
+                steps = math.log2(scale) if scale > 0 else 0.0
+                if math.isfinite(steps) and steps:
                     self._native_gesture_active = True
-                    position = event.position()
-                    self.zoom_at(math.log2(scale), position.x(), position.y())
+                    camera = self._camera
+                    if camera is None:
+                        event.accept()
+                        return True
+                    if self._wheel_zoom_target is None:
+                        # Anchor the pinch once, exactly as an anchorless
+                        # _set_zoom_around would, and reuse it for the gesture.
+                        position = event.position()
+                        x, y = position.x(), position.y()
+                        view = camera.view()
+                        anchor = (
+                            view._y_to_lat(
+                                view._lat_to_y(camera.center_lat)
+                                + y
+                                - camera.height / 2
+                            ),
+                            view._x_to_lon(
+                                view._lon_to_x(camera.center_lon) + x - camera.width / 2
+                            ),
+                        )
+                        self._wheel_zoom_anchor = (x, y, *anchor)
+                        self._wheel_zoom_target = camera.zoom
+                    # Accumulate into the wheel tween instead of committing the
+                    # camera here: committing from the native-gesture event
+                    # context did not repaint until the gesture ended, while
+                    # the 16 ms timer path does.
+                    self._wheel_zoom_target = max(
+                        1.0, min(20.0, self._wheel_zoom_target + steps)
+                    )
+                    self._wheel_zoom_last_tick = (
+                        self._wheel_zoom_last_tick or time.perf_counter()
+                    )
+                    self._wheel_zoom_tick.start()
+                    self._wheel_zoom_settle.start(250)
             else:
                 # Keep the map north-up; rotation has no viewport behavior.
                 return bool(getattr(self, "_native_gesture_active", False))

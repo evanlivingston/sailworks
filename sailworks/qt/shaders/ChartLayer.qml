@@ -34,6 +34,11 @@ Item {
     property real imageY: 0
     property real imageWidth: 0
     property real imageHeight: 0
+    // Natural pixel size of the published raster. Pinning sourceSize to it stops
+    // Qt re-requesting the image provider whenever the placement geometry changes
+    // (which happens on every camera change during a zoom).
+    property int imagePixelWidth: 0
+    property int imagePixelHeight: 0
     onSlot0SourceChanged: { slot0.active = false; slot0.active = slot0Source.toString() !== "" }
     onSlot1SourceChanged: { slot1.active = false; slot1.active = slot1Source.toString() !== "" }
     Component {
@@ -44,6 +49,9 @@ Item {
             smooth: root.smooth
             mipmap: root.mipmap
             cache: false
+            sourceSize: root.imagePixelWidth > 0 && root.imagePixelHeight > 0
+                        ? Qt.size(root.imagePixelWidth, root.imagePixelHeight)
+                        : Qt.size(0, 0)
             onStatusChanged: {
                 if (attemptToken && (status === Image.Ready || status === Image.Error))
                     root.slotResult(attemptSlot, attemptToken, status === Image.Ready)
