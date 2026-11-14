@@ -301,6 +301,43 @@ def satellite_status_text(reason):
     return f"Satellite unavailable — {detail}" if detail else "Satellite unavailable"
 
 
+CHART_SWAP_FADE_MS = 500
+
+
+def chart_swap_fade_ms(previously_ready, fade_on_adopt):
+    """The fade for the composition the next ready frame presents.
+
+    A ready-to-ready swap fades because both frames are current.  A layer
+    toggle withdraws the previous composition first (leaving nothing stale
+    on screen), so it is not a ready-to-ready swap, but the new composition
+    still replaces the base and must not appear as a cut: the toggle arms
+    one fade for it.  Only an adopted, ready frame is ever faded in.
+    """
+    if previously_ready or fade_on_adopt:
+        return CHART_SWAP_FADE_MS
+    return 0
+
+
+def exclusive_background(layer, visible, satellite_visible, basemap_visible):
+    """The background pair after a switch, with exactly one active.
+
+    ``layer`` is ``"satellite"`` or ``"basemap"``.  Showing one hides the
+    other.  Hiding one keeps the other as it was, and re-enables it when it
+    was off: the pair never resolves to two off, because an empty background
+    is a blank map.  The pair is returned in ``(satellite, basemap)`` order,
+    so the caller writes both states from one decision and never leaves two
+    backgrounds on.
+    """
+    satellite = bool(satellite_visible)
+    basemap = bool(basemap_visible)
+    if layer == "satellite":
+        # Hiding imagery leaves (or restores) the basemap, never an empty pair.
+        return (True, False) if visible else (False, True)
+    if layer == "basemap":
+        return (False, True) if visible else (True, False)
+    return satellite, basemap
+
+
 def _selection_translation(first, second):
     """Logical-pixel translation from ``first`` to ``second`` at one zoom."""
     dx = first._lon_to_x(first._center_lon) - first._lon_to_x(
@@ -1914,6 +1951,18 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             # Satellite imagery is an optional raster layer below the chart.
             # The worker exists only while the layer is on.
             self._satellite_visible = bool(satellite_visible)
+            # One background is active at a time: satellite imagery or the
+            # vector basemap.  A stored pair with both on resolves to the
+            # satellite, which the user had to pick explicitly, so the scene
+            # never draws two backgrounds.  An empty pair resolves to the
+            # basemap, because a background is always visible.
+            self._layer_basemap_visible = bool(basemap_visible) and not (
+                self._satellite_visible
+            )
+            if not self._satellite_visible and not self._layer_basemap_visible:
+                self._layer_basemap_visible = True
+            # The ENC cells are an independent overlay over the background.
+            self._layer_enc_visible = bool(enc_visible)
             self._satellite_pack = satellite_pack or ""
             self._satellite = None
             self._satellite_provider = None
@@ -1921,6 +1970,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._satellite_timer = None
             self._satellite_motion = False
             self._satellite_generation = 0
+            #: Every request at or below this generation belongs to a
+            #: withdrawn session or source and must never be presented.
+            self._satellite_superseded_generation = 0
             self._satellite_camera = None
             #: Padded camera each submitted generation was rendered with, so a
             #: late completion is placed at the geometry it actually captured.
@@ -2003,6 +2055,26 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._chart_redelivery_generation = None
             self._chart_budget_refusal = None
             self._chart_visible_generation = None
+            # A layer toggle withdraws the previous composition, so the next
+            # ready frame is not a ready-to-ready swap.  Arm one fade for it.
+            self._chart_swap_fade_armed = False
+            # The background identity the displayed chart was composed for
+            # (True = transparent over imagery, False = opaque basemap).
+            self._chart_background_identity = None
+            # A background switch waits for ready content instead of flipping
+            # the visible layer on the click: the retained sharp frame stays
+            # until the replacement is adopted (and, for imagery, the raster
+            # is ready).  `_background_presented` is what the scene shows.
+            self._background_pending = None
+            self._background_pending_camera = None
+            # What the scene actually presents: imagery only once its layer
+            # holds a ready frame, the vector base otherwise.
+            self._background_presented = (
+                "satellite"
+                if bool(satellite_visible)
+                and self._satellite_visible_generation is not None
+                else "basemap"
+            )
             self._chart_front_slot = 0
             self._chart_loading_shown = False
             self._chart_status_item = None
@@ -2158,7 +2230,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     current_camera=lambda: self._camera,
                     on_publish=self.chartPublished.emit,
                     on_state=self.chartStateChanged.emit,
-                    enc_enabled=False,
+                    enc_enabled=self._layer_enc_visible and self._enc_chart_layer,
+                    satellite_background=self._satellite_visible,
                     dpr=self.devicePixelRatio(),
                     enc_only=enc_only,
                     session=getattr(model, "session", None),
@@ -2210,25 +2283,29 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     self._satellite_network = None
                 self._weather.setProperty("satelliteVisible", self._satellite_visible)
                 # The vector world underlay is the basemap; the composed chart
-                # layer carries the ENC portrayal. They are distinct items.
-                self._base_layer_item = self._weather.findChild(QObject, "worldLayer")
-                self._layer_basemap_visible = bool(basemap_visible)
-                self._layer_enc_visible = bool(enc_visible)
+                # layer carries the ENC overlay. They are distinct items.  The
+                # scene binds the world's visibility to the background
+                # properties, so it is never written imperatively here: that
+                # would replace the binding and leave the base up over
+                # imagery, or blank while imagery loads.
                 self._weather.setProperty("basemapVisible", self._layer_basemap_visible)
                 self._weather.setProperty("encVisible", self._layer_enc_visible)
-                if self._base_layer_item is not None:
-                    self._base_layer_item.setProperty(
-                        "visible", self._layer_basemap_visible
-                    )
                 if self._chart is not None:
-                    self._chart.setProperty("visible", self._layer_enc_visible)
+                    # ENC is an overlay inside the composition, not the whole
+                    # layer: hiding it must not hide the base chart content
+                    # that remains above the active background.
+                    self._chart.setProperty("visible", True)
                 getattr(self._weather, "layerToggled").connect(self._layer_toggled)
                 getattr(self._weather, "drawerToggled").connect(
                     self.drawerToggleRequested.emit
                 )
                 if self._satellite_visible:
                     self._satellite_camera = self._camera
-                    self._start_satellite()
+                    if not self._start_satellite():
+                        # Imagery that cannot start would leave an empty
+                        # background under the chart overlay; the vector
+                        # basemap stays the visible one instead.
+                        self._show_basemap()
                 world_factor = max(1, round(self.devicePixelRatio()))
 
                 def render_world():
@@ -2533,6 +2610,19 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             if not self._chart_payload_valid(generation, metadata):
                 self._chart_redelivery_generation = generation
                 return
+            if (
+                getattr(self, "_background_pending", None) is not None
+                and self._chart_visible_generation is not None
+                and metadata.get("preview", False)
+            ):
+                # A switch that retains a sharp frame waits for a native-scale
+                # composition of its own identity; adopting a half-resolution
+                # preview now would replace that sharp frame with a blurry one
+                # before the composition the switch requested exists.  With
+                # nothing retained this is the first valid preview and is
+                # adopted normally.  The published generation stays available
+                # to the full-resolution request the switch makes.
+                return
             if self._chart_pending is not None and self._chart_pending[0] == generation:
                 return
             if self._chart_visible_generation == generation:
@@ -2550,7 +2640,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             if image.isNull():
                 self._chart_state_changed("unavailable")
                 return
-            self._reject_chart_pending()
+            # This publication supersedes the previous pending one; it may be
+            # the composition a background switch is waiting for, so the
+            # switch must survive the supersede.  Only an actual failure
+            # withdraws it.
+            self._reject_chart_pending(preserve_background_switch=True)
             identity = LayerIdentity(
                 role=LayerRole.CHART,
                 generation=generation,
@@ -2641,7 +2735,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     and model._reusable(self._camera, metadata.get("preview", False))
                 )
 
-        def _reject_chart_pending(self):
+        def _reject_chart_pending(self, *, preserve_background_switch=False):
             pending = self._chart_pending
             if pending is None:
                 return
@@ -2650,17 +2744,34 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._publication_manager.reject_pending(LayerRole.CHART, token)
             self._chart.setProperty(f"slot{slot}Token", "")
             self._chart.setProperty(f"slot{slot}Source", QUrl(""))
+            # A rejected or withdrawn composition is never a ready-to-ready
+            # swap: a later adoption must not inherit the previous fade.
+            self._chart.setProperty("fadeMs", 0)
+            # A superseded pending composition is replaced by a newer one that
+            # may still settle the deferred switch; any other rejection leaves
+            # no composition for the switch to wait for, so withdraw it and
+            # present the explicit target.
+            if not preserve_background_switch:
+                self._cancel_background_switch()
             self._chart_provider.retain(self._chart_visible_generation)
 
         def _clear_chart(self):
             self._reject_chart_pending()
             self._chart.setProperty(f"slot{self._chart_front_slot}Token", "")
             self._chart.setProperty(f"slot{self._chart_front_slot}Source", QUrl(""))
+            # A withdrawn chart is not a ready-to-ready swap: no fade may
+            # remain armed for whatever is promoted next.
+            self._chart.setProperty("fadeMs", 0)
             self._publication_manager.withdraw_visible(LayerRole.CHART)
             self._chart_visible_generation = None
             self._chart_viewport = None
             self._chart_composition_camera = None
             self._chart_composition_dpr = None
+            self._chart_background_identity = None
+            # A withdrawn composition cannot settle a background switch: the
+            # scene gets the explicit fallback instead of holding the old
+            # frame's identity.
+            self._cancel_background_switch()
             self._chart_provider.retain()
 
         def _chart_slot_result(self, slot, token, success):
@@ -2684,12 +2795,36 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self._reject_chart_pending()
                 return
             old_slot = self._chart_front_slot
+            # A test double or a chart item without the composed QML property
+            # has no retained image: only a genuinely ready front image makes
+            # the swap a fade.
+            read_property = getattr(self._chart, "property", None)
+            previously_ready = (
+                bool(read_property("ready")) if callable(read_property) else False
+            )
+            # A toggle-armed fade is consumed by the composition it asked for.
+            # A superseded or rejected composition never reaches here, so the
+            # arm survives until a ready frame is actually adopted.
+            fade_armed = getattr(self, "_chart_swap_fade_armed", False)
+            fade_ms = chart_swap_fade_ms(previously_ready, fade_armed)
+            self._chart_swap_fade_armed = False
             self._chart_pending = None
             self._chart_viewport = metadata["viewport"]
             self._chart_composition_camera = metadata.get("camera")
             self._chart_composition_dpr = metadata.get("factor")
+            # The identity these pixels were composed for: a switch presents
+            # only a composition that matches the target background.
+            self._chart_background_identity = bool(
+                metadata.get("satellite_background", False)
+            )
             if metadata.get("preview") and self._chart_composition_dpr is not None:
                 self._chart_composition_dpr *= 2
+            # The duration is set before the placement and the slot promotion:
+            # the new image never appears under a previous transition's
+            # duration.  A ready-to-ready swap and the composition a layer
+            # toggle requested fade; any other promotion is immediate, so a
+            # loading state is never disguised as chart data.
+            self._chart.setProperty("fadeMs", fade_ms)
             self._place_chart()
             self._chart_front_slot = slot
             self._chart.setProperty("frontSlot", slot)
@@ -2712,6 +2847,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._update_enc_status()
             if self._chart_ready_at is None:
                 self._chart_ready_at = time.perf_counter()
+            # A composition carrying the awaited background identity settles a
+            # deferred switch now that its pixels are current.
+            self._settle_background_presentation()
 
         def _update_enc_status(self):
             """The ENC source's own state, in the scene's own status.
@@ -2971,9 +3109,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._satellite_source = desired
             if self._satellite_worker is not None:
                 self._satellite_worker.set_source(desired)
-            # Frames still rendering belong to the previous source.
-            self._satellite_job_cameras.clear()
-            self._satellite_pending_tokens.clear()
+            # Frames still rendering belong to the previous source, and so do
+            # the coverage identity and any pending slot loads.  Withdraw them
+            # all; the new identity has not produced a frame yet.
+            self._withdraw_satellite_frame()
             self._set_satellite_attribution(desired.attribution)
 
         def _satellite_reachability_changed(self, _reachability):
@@ -2982,23 +3121,249 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self._satellite_sync_source()
                 self._satellite_camera_changed(self._camera)
 
+        def _sync_satellite_background(self):
+            """Keep the chart composition's background identity current.
+
+            Over imagery the composition must stay transparent, or its
+            opaque base chart hides the raster background.  A background
+            swap keeps the current sharp frame (it still describes this
+            camera and the same chart content) and asks for a new
+            composition under the new identity.  The scene is presented only
+            when that composition is ready - and, for imagery, when a raster
+            frame is ready too - so the switch is a ready-to-ready handoff
+            rather than a half-resolution preview fading over a withdrawn
+            frame.
+            """
+            model = getattr(self, "_chart_model", None)
+            setter = getattr(model, "set_satellite_background", None)
+            if not callable(setter):
+                return False
+            changed = bool(setter(self._satellite_visible))
+            target = "satellite" if self._satellite_visible else "basemap"
+            # At startup the chart timer does not exist yet; the first
+            # request composes the already-correct identity.
+            if getattr(self, "_chart_timer", None) is None:
+                self._present_background(target)
+                return True
+            if not changed and getattr(self, "_background_pending", None) is None:
+                # The composition already carries this identity, so there is
+                # nothing to recompose.  Presentation can still be behind (a
+                # fallback shown while imagery loaded): correct it from the
+                # content that exists instead of requesting the same frame.
+                self._settle_background_presentation()
+                return True
+            # A retained front image is current for this camera and this
+            # source; only the composition's own background identity changed.
+            # Keep the sharp frame on screen until the replacement is ready,
+            # so the switch is ready-to-ready instead of a half-resolution
+            # preview fading in over a withdrawn one.
+            if self._chart_visible_generation is not None:
+                self._background_pending = target
+                self._background_pending_camera = self._camera
+            else:
+                # Nothing sharp to retain: withdraw nothing, present the
+                # target at once and let its first ready frame fade in.
+                self._background_pending = None
+                self._background_pending_camera = None
+                self._chart_swap_fade_armed = True
+                self._present_background(target)
+            self._chart_force_replace = True
+            self._restart_chart_settle()
+            return True
+
+        def _present_background(self, target):
+            """Present a background whose content is ready (or explicitly not).
+
+            The scene presents imagery only through `satelliteVisible`.  A
+            transition waits here until the replacement content exists, so a
+            click never reveals a half-resolution composition or an empty
+            band.  The vector base stays beneath both backgrounds.
+            """
+            satellite = target == "satellite"
+            # QML presents the raster only once its layer holds a ready frame.
+            # Record what the scene can actually show, so the Python side and
+            # `satellitePresented` never disagree about the presented
+            # background.
+            self._background_presented = (
+                "satellite"
+                if satellite and self._satellite_visible_generation is not None
+                else "basemap"
+            )
+            if self._weather is not None:
+                self._weather.setProperty("satelliteVisible", satellite)
+                self._weather.setProperty("basemapVisible", not satellite)
+
+        def _settle_background_presentation(self):
+            """Present a pending background switch once its content is ready.
+
+            Readiness is content, not the click: the chart composition must
+            carry the new identity, and imagery must additionally hold a
+            current raster.  A camera or source change withdraws the pending
+            switch instead (`_cancel_background_switch`), so a stale frame is
+            never held on screen indefinitely.
+
+            With no switch deferred, presentation is still corrected here:
+            a switch withdrawn because its raster was missing leaves the
+            vector base up, and the desired imagery is presented as soon as a
+            frame makes it presentable.
+            """
+            pending = self._background_pending
+            if pending is None:
+                target = "satellite" if self._satellite_visible else "basemap"
+                if self._background_presented == target:
+                    return False
+                if target == "basemap":
+                    self._present_background("basemap")
+                    return True
+                if (
+                    self._chart_background_identity is True
+                    and self._satellite_visible_generation is not None
+                ):
+                    self._present_background("satellite")
+                    return True
+                return False
+            if self._background_pending_camera != self._camera:
+                # The camera moved: the retained frame no longer describes
+                # the switch's context.  Withdraw rather than hold it.
+                self._cancel_background_switch()
+                return False
+            if self._chart_visible_generation is None:
+                return False
+            target_satellite = pending == "satellite"
+            if self._chart_background_identity != target_satellite:
+                # The new composition has not been adopted yet.
+                return False
+            if target_satellite and self._satellite_visible_generation is None:
+                # The composition is ready but the raster is not: presenting
+                # now would show the vector base as if it were imagery.
+                return False
+            self._background_pending = None
+            self._background_pending_camera = None
+            self._present_background(pending)
+            return True
+
+        def _cancel_background_switch(self):
+            """Withdraw a pending switch and fall back to the desired target.
+
+            Called on a camera or source change and on composition failure.
+            The retained frame is no longer current, so it is not held; the
+            scene gets an explicit state instead of an indefinite wait.
+            """
+            if self._background_pending is None:
+                return False
+            target = "satellite" if self._satellite_visible else "basemap"
+            self._background_pending = None
+            self._background_pending_camera = None
+            self._chart_swap_fade_armed = False
+            if target == "satellite" and self._satellite_visible_generation is None:
+                # Imagery is still desired, but this switch has no raster to
+                # present.  The vector base stands in until a frame is
+                # adopted, when `_settle_background_presentation` presents
+                # the imagery; presenting the empty satellite band now, or
+                # forgetting the desired target, would both be wrong.
+                self._present_background("basemap")
+            else:
+                self._present_background(target)
+            return True
+
+        def _show_basemap(self):
+            """Make the vector basemap the visible background.
+
+            Used when imagery is requested but cannot start: an absent layer
+            must not leave the background empty.
+            """
+            self._satellite_visible = False
+            self._layer_basemap_visible = True
+            self._sync_satellite_background()
+            # An explicit fallback presents the basemap now: it is the one
+            # state that must never wait for content that may never arrive.
+            self._background_pending = None
+            self._background_pending_camera = None
+            self._present_background("basemap")
+
+        def _withdraw_satellite_frame(self):
+            """Drop the displayed raster and retire everything that described it.
+
+            A retained frame belongs to the camera and source it was captured
+            at, and a request in flight belongs to the session that submitted
+            it.  Presenting either again after the layer was off or its source
+            changed could show coverage the camera has since left, or let old
+            imagery masquerade as current.  Withdraw therefore retires the
+            whole lifecycle - both slot tokens, pending loads, job cameras,
+            the coverage identity and the visible generation - so a late
+            callback cannot be adopted.  The vector base stays the visible
+            fallback until a frame for the current camera is ready.
+            """
+            slot = self._satellite_front_slot
+            self._satellite_pending_tokens.pop(slot, None)
+            # Requests already submitted belong to the withdrawn session;
+            # bumping the generation makes their results superseded even if
+            # the worker reports them after the layer is shown again.
+            self._satellite_generation += 1
+            self._satellite_superseded_generation = self._satellite_generation
+            self._satellite_job_cameras.clear()
+            self._satellite_pending_tokens.clear()
+            self._satellite_source_camera = None
+            self._satellite_visible_generation = None
+            self._satellite_failures = 0
+            # The raster that made imagery presentable is gone: what the
+            # scene can show is the vector base until a frame is adopted.
+            self._background_presented = "basemap"
+            provider = self._satellite_provider
+            if provider is not None:
+                # No retained image is current after the withdrawal.
+                provider.retain(None)
+            if self._satellite is None:
+                return
+            self._satellite.setProperty(f"slot{slot}Token", "")
+            self._satellite.setProperty(f"slot{slot}Source", QUrl(""))
+            back = 1 - slot
+            self._satellite.setProperty(f"slot{back}Token", "")
+            self._satellite.setProperty(f"slot{back}Source", QUrl(""))
+
         def set_satellite_visible(self, visible):
-            """Show or hide the satellite layer, starting its worker on demand."""
+            """Show or hide the satellite layer, starting its worker on demand.
+
+            Returns whether imagery is the visible background.  A request that
+            cannot start a worker falls back to the vector basemap instead of
+            presenting an empty one.
+            """
             visible = bool(visible)
             if visible == self._satellite_visible:
-                return
-            self._satellite_visible = visible
-            if self._weather is not None:
-                self._weather.setProperty("satelliteVisible", visible)
+                return self._satellite_visible
             if visible:
                 self._satellite_camera = self._camera
-                if self._start_satellite():
-                    self._satellite_camera_changed(self._camera)
-            else:
-                if self._satellite_timer is not None:
-                    self._satellite_timer.stop()
-                if self._satellite_retry_timer is not None:
-                    self._satellite_retry_timer.stop()
+                if not self._start_satellite():
+                    self._show_basemap()
+                    return False
+                # A frame retained from the previous session belongs to the
+                # camera it was captured at.  Withdraw it before the layer is
+                # presented again; the base stays visible until a current
+                # frame fades in.
+                self._withdraw_satellite_frame()
+                self._satellite_visible = True
+                # The scene is presented only through `_sync_satellite_background`:
+                # the retained sharp chart stays until both the imagery
+                # composition and a raster frame are ready.
+                if not self._sync_satellite_background():
+                    self._present_background("satellite")
+                self._satellite_camera_changed(self._camera)
+                return True
+            self._satellite_visible = False
+            if self._satellite_timer is not None:
+                self._satellite_timer.stop()
+            if self._satellite_retry_timer is not None:
+                self._satellite_retry_timer.stop()
+            # Nothing requested in this session may be adopted after the layer
+            # comes back on: the retained frame, pending loads and coverage
+            # identity are all withdrawn with it.
+            self._withdraw_satellite_frame()
+            # Leaving imagery keeps it visible until the opaque chart that
+            # replaces it is ready; the scene flips on that ready frame, not
+            # on the click.
+            if not self._sync_satellite_background():
+                self._present_background("basemap")
+            return False
 
         def set_drawer_tabs_visible(self, visible):
             """Show or hide the scene's built-in drawer tabs."""
@@ -3016,26 +3381,96 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self._weather.setProperty("rightDrawerClosed", closed[1])
 
         def set_layer_visible(self, layer, visible):
-            """Apply a layer switch from the scene or the settings panels."""
+            """Apply a layer switch from the scene or the settings panels.
+
+            The two backgrounds are exclusive: turning one on turns the other
+            off, so the scene never presents two backgrounds at once.  ENC is
+            an independent overlay and never changes the active background.
+            Every layer this call changed is reported, so the stored settings
+            cannot keep a second background on.
+            """
             visible = bool(visible)
-            if layer == "satellite":
-                self.set_satellite_visible(visible)
-            elif layer == "basemap":
-                self._layer_basemap_visible = visible
-                if self._weather is not None:
-                    self._weather.setProperty("basemapVisible", visible)
-                if self._base_layer_item is not None:
-                    self._base_layer_item.setProperty("visible", visible)
+            if layer in ("satellite", "basemap"):
+                was_satellite = self._satellite_visible
+                was_basemap = self._layer_basemap_visible
+                satellite, _ = exclusive_background(
+                    layer,
+                    visible,
+                    was_satellite,
+                    was_basemap,
+                )
+                if satellite:
+                    # A background that cannot start falls back to the
+                    # basemap rather than an empty scene.
+                    if not self.set_satellite_visible(True):
+                        self._show_basemap()
+                else:
+                    self.set_satellite_visible(False)
+                # One background is always visible: imagery owns the
+                # background, and the basemap covers whenever it does not.
+                basemap = not self._satellite_visible
+                if basemap != self._layer_basemap_visible:
+                    self._layer_basemap_visible = basemap
+                    # The scene derives the world layer's visibility (and its
+                    # fallback under imagery) from this property.
+                    if self._weather is not None:
+                        self._weather.setProperty("basemapVisible", basemap)
+                # The composition is painted for one background: over imagery
+                # it must be transparent, over the basemap it carries the
+                # vector chart.  Swap the identity with the background.
+                self._sync_satellite_background()
+                if basemap != was_basemap:
+                    self.layerVisibilityChanged.emit("basemap", basemap)
+                # A refused imagery request is reported even though the
+                # visible state did not change, so the controls can reset.
+                # A request that succeeded changes nothing, so it is not
+                # reported again: the caller already asked for that state,
+                # and re-reporting it would make the stored setting write
+                # back a value it already holds, which notifies again.
+                if self._satellite_visible != was_satellite or (
+                    visible and layer == "satellite" and not self._satellite_visible
+                ):
+                    self.layerVisibilityChanged.emit(
+                        "satellite", self._satellite_visible
+                    )
             elif layer == "enc":
-                self._layer_enc_visible = visible
-                if self._weather is not None:
-                    self._weather.setProperty("encVisible", visible)
-                if self._chart is not None:
-                    self._chart.setProperty("visible", visible)
+                self._set_enc_visible(visible)
+
+        def _set_enc_visible(self, visible):
+            """Show or hide the ENC overlay and recompose when it changes.
+
+            The composition's identity includes whether the cells are in it:
+            the retained pixels are withdrawn and the layer is asked again for
+            either identity, so neither the old cells nor the old base chart
+            are presented as current.  The chart layer itself stays visible:
+            outside the cells it is transparent, so the active background
+            shows through instead of a blank rectangle.
+            """
+            if visible == self._layer_enc_visible:
+                return False
+            self._layer_enc_visible = visible
+            if self._weather is not None:
+                self._weather.setProperty("encVisible", visible)
+            model = getattr(self, "_chart_model", None)
+            if (
+                getattr(self, "_enc_chart_layer", False)
+                and model is not None
+                and model.set_enc_enabled(visible)
+            ):
+                self._clear_chart()
+                self._chart_force_replace = True
+                # Both identities need a composition: removing the cells is
+                # not the same as leaving the previous pixels on screen.  The
+                # old composition is withdrawn first, so the fade belongs to
+                # the new ready frame only.
+                self._chart_swap_fade_armed = True
+                self._restart_chart_settle()
+                self._update_enc_status()
+            self.layerVisibilityChanged.emit("enc", visible)
+            return True
 
         def _layer_toggled(self, layer, visible):
             self.set_layer_visible(layer, visible)
-            self.layerVisibilityChanged.emit(layer, bool(visible))
 
         def _satellite_zooming(self):
             """Whether a zoom gesture is still animating the camera."""
@@ -3169,6 +3604,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
         def _satellite_rendered(self, generation, image):
             if self._disposed or not self._satellite_visible:
                 return
+            if generation <= self._satellite_superseded_generation:
+                # Submitted by a session or source that was withdrawn; its
+                # imagery cannot be adopted even though the layer is visible
+                # again.
+                return
             visible = self._satellite_visible_generation
             if visible is not None and generation <= visible:
                 # Already on screen, or older than what is on screen: showing it
@@ -3198,10 +3638,25 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 return
             generation = pending[1]
             del self._satellite_pending_tokens[slot]
+            if generation <= self._satellite_superseded_generation:
+                # The request belongs to a withdrawn session or source; its
+                # slot must not be adopted after the layer comes back.
+                self._satellite.setProperty(f"slot{slot}Token", "")
+                self._satellite.setProperty(f"slot{slot}Source", QUrl(""))
+                return
+            visible = self._satellite_visible_generation
+            if visible is not None and generation <= visible:
+                # A newer frame is already on screen; adopting this one would
+                # move the imagery backwards.
+                self._satellite.setProperty(f"slot{slot}Token", "")
+                self._satellite.setProperty(f"slot{slot}Source", QUrl(""))
+                return
             if not success:
                 self._satellite.setProperty(f"slot{slot}Token", "")
                 self._satellite.setProperty(f"slot{slot}Source", QUrl(""))
-                self._satellite_failed(self._satellite_generation, "image load failed")
+                # Attribute the failure to the generation that actually failed;
+                # _satellite_failed ignores it once a newer one supersedes it.
+                self._satellite_failed(generation, "image load failed")
                 return
             previous = self._satellite_front_slot
             camera = self._satellite_job_cameras.get(generation)
@@ -3212,6 +3667,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._satellite_visible_generation = generation
             self._satellite_failures = 0
             self._satellite_provider.retain(generation)
+            # A deferred switch to imagery needs both the new composition and
+            # this raster: the frame is current now, so settle it.
+            self._settle_background_presentation()
             # Place the frame while it is still hidden: presenting the slot
             # first would let the render thread composite it with the previous
             # frame's geometry for a frame.
@@ -3219,6 +3677,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self._place_satellite(self._camera)
             self._satellite_front_slot = slot
             self._satellite.setProperty("frontSlot", slot)
+            self._satellite_pending_tokens.pop(previous, None)
             self._satellite.setProperty(f"slot{previous}Token", "")
             self._satellite.setProperty(f"slot{previous}Source", QUrl(""))
             if self._camera is not None:
@@ -3672,6 +4131,16 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             weather pipeline unconditional priority.
             """
             if self._chart_model is None or self._camera is None:
+                return
+            if (
+                getattr(self, "_background_pending", None) is not None
+                and self._chart_visible_generation is not None
+            ):
+                # A background switch with a sharp frame retained is waiting
+                # for a full-resolution composition; a half-resolution
+                # preview would replace that frame as the new style before
+                # its sharp frame exists.  With nothing retained the preview
+                # is the first valid chart and is requested normally.
                 return
             if (
                 self._weather_ready_at is None
@@ -5751,6 +6220,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         self._chart_camera_changed = time.perf_counter()
                         self._restart_chart_settle()
                         self._request_interactive_chart()
+                        # A switch at the old camera cannot hold its retained
+                        # frame across the move; withdraw it and present the
+                        # desired target explicitly.
+                        self._cancel_background_switch()
                     # Show retained image as a scaled preview during zoom when ENC is off.
                     # (Desktop viewport sets enc_chart_layer=True as a capability;
                     # the preview should activate whenever ENC isn't actually enabled.)

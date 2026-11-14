@@ -29,6 +29,18 @@ Item {
     property bool satelliteVisible: false
     property bool basemapVisible: true
     property bool encVisible: true
+    // Duration of a background transition.  The two backgrounds live in the
+    // same band, so switching between them is a crossfade of the raster
+    // layer's opacity.  It is fixed because only a user switch and the first
+    // ready frame change it; streamed tiles replace each other inside the
+    // layer and never touch this.
+    property int backgroundFadeMs: 500
+    // A background is presented only once its layer holds a ready frame.
+    // Until then the vector base stays visible, so a load never shows an
+    // empty band.  `ready` follows the promoted front slot, so it does not
+    // flicker while a streamed frame is replaced.
+    readonly property bool satellitePresented: root.satelliteVisible
+                                                && satelliteLayer.ready
     property string satelliteAttribution: ""
     property string satelliteStatus: ""
     // The window's sidebar drawers.  Their tabs live in the scene because a
@@ -65,6 +77,14 @@ Item {
                     id: world
                     objectName: "worldLayer"
                     anchors.fill: parent
+                    // The vector base sits under both backgrounds: it is the
+                    // basemap when that background is selected, and the
+                    // coastline underlay the satellite's opacity shows through
+                    // when imagery is.  It also stays visible while imagery
+                    // has no ready frame, so loading never leaves the band
+                    // empty.  The scene owns this: no imperative `visible`
+                    // write may replace the binding.
+                    visible: root.basemapVisible || root.satelliteVisible
                     property real imageX: 0
                     property real imageY: 0
                     property real imageWidth: 0
@@ -90,24 +110,35 @@ Item {
                     anchors.fill: parent
                 }
             }
+            // The active background sits below the overlay: the ENC layer is
+            // composed transparent outside its cells, so imagery and
+            // coastlines show through where no ENC cell covers the view.
+            // The satellite raster is streamed: it fades in only once it has
+            // a ready frame and fades out only when the user leaves it.  The
+            // visible flag covers both ends, so a fade-out is not cut short,
+            // and the vector base beneath keeps the band opaque throughout.
+            // The opacity keeps coastlines and soundings legible under
+            // imagery.
             ChartLayer {
-                id: chart
-                objectName: "chartLayer"
-                anchors.fill: parent
-            }
-            // Satellite sits above the chart: the composed chart paints an
-            // opaque sea/land background, so a layer beneath it is invisible.
-            // The opacity keeps coastlines and soundings legible under imagery.
-            ChartLayer {
+                id: satelliteLayer
                 objectName: "satelliteLayer"
                 anchors.fill: parent
-                opacity: 0.9
                 smooth: true
                 // This raster is live-streamed: its texture is replaced up to
                 // once per second, and regenerating a mipmap chain for a
                 // multi-megapixel texture on every replacement stalls the GUI
                 // thread far more than the mild aliasing it avoids.
-                visible: root.satelliteVisible
+                //
+                // `fadeMs` stays 0 here: a streamed tile replaces the one on
+                // screen, it is not a background switch, so it must not fade.
+                opacity: root.satellitePresented ? 0.9 : 0
+                Behavior on opacity {
+                    NumberAnimation {
+                        duration: root.backgroundFadeMs
+                        easing.type: Easing.InOutQuad
+                    }
+                }
+                visible: root.satelliteVisible || opacity > 0
                 Text {
                     anchors.right: parent.right
                     anchors.bottom: parent.bottom
@@ -119,6 +150,14 @@ Item {
                     styleColor: "#000000"
                     visible: text !== ""
                 }
+            }
+            // The ENC overlay is the only chart content above the background;
+            // uncovered areas stay transparent rather than painting the
+            // background opaque.
+            ChartLayer {
+                id: chart
+                objectName: "chartLayer"
+                anchors.fill: parent
             }
             // Images and numerical fill are reference-local.
             Item {
@@ -1322,14 +1361,18 @@ Item {
                     { key: "enc", label: "ENC" }
                 ]
                 delegate: Rectangle {
+                    // Satellite and basemap are one radio group: exactly one
+                    // background is active. ENC is an independent overlay.
+                    property bool background: modelData.key !== "enc"
                     property bool active: modelData.key === "satellite"
                                            ? root.satelliteVisible
                                            : modelData.key === "basemap"
                                              ? root.basemapVisible
                                              : root.encVisible
+                    objectName: "layerToggle-" + modelData.key
                     width: layerLabel.implicitWidth + 16
                     height: 26
-                    radius: 6
+                    radius: background ? 13 : 6
                     color: active ? "#e8e8e8" : "#14ffffff"
                     Text {
                         id: layerLabel
@@ -1340,7 +1383,9 @@ Item {
                     }
                     MouseArea {
                         anchors.fill: parent
-                        onClicked: root.layerToggled(modelData.key, !parent.active)
+                        onClicked: root.layerToggled(
+                                       modelData.key,
+                                       background ? true : !parent.active)
                     }
                 }
             }
