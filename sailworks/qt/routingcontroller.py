@@ -204,19 +204,27 @@ class RoutingController(QObject):
         self.worker_thread.start()
         return True
 
-    def start_bound_runs(self, executions, *, on_member_outcome=None, on_finished=None):
+    def start_bound_runs(
+        self, executions, *, on_member_outcome=None, on_finished=None, concurrency=None
+    ):
         """Run historical members natively without touching the active analysis.
 
         Members are bound executions prepared by the historical coordinator;
-        this seam only owns the worker, the generation token and the GUI
+        this seam only owns the workers, the generation token and the GUI
         hand-off. Each member's failure stays a member outcome, while a cancel
-        or window close stops the batch.
+        or window close stops the batch. ``concurrency`` defaults to one fewer
+        than the available CPUs, capped at 4; each slot runs its own native
+        worker.
         """
         if self.busy or self.closed:
             return self.fail("Wait for the current calculation to finish.")
         executions = list(executions)
         if not executions:
             return self.fail("No historical members were selected to run.")
+        if concurrency is None:
+            concurrency = min(4, max(1, (os.cpu_count() or 2) - 1))
+        if not isinstance(concurrency, int) or isinstance(concurrency, bool) or concurrency < 1:
+            return self.fail("Historical concurrency must be at least 1.")
         self.clear_native_result()
         self._native_diagnostic_token = None
         self.backend = "native"
@@ -244,7 +252,7 @@ class RoutingController(QObject):
         self.isochrones_changed.emit(())
 
         def worker():
-            self._run_bound_members(token, executions, providers, marine_directory)
+            self._run_bound_members(token, executions, providers, marine_directory, concurrency)
 
         self.worker_thread = Thread(target=worker, name="qt-routing-bound", daemon=True)
         self.worker_thread.start()
@@ -402,12 +410,12 @@ class RoutingController(QObject):
         if not self.closed:
             self._finished.emit(token, None, error)
 
-    def _run_bound_members(self, token, executions, providers, marine_directory):
-        """Drive the bound-run engine on one native worker, end to end.
+    def _run_bound_members(self, token, executions, providers, marine_directory, concurrency=1):
+        """Drive the bound-run engine on one native worker per slot, end to end.
 
         The engine converts and saves members one at a time; a member failure
         returns as an outcome, so only a cancel (or a worker-level fault) ends
-        the batch early. The worker is always shut down here.
+        the batch early. Every worker is shut down here, in ``finally``.
         """
         from sailworks.core.historicalexecution import (
             BoundRunCancelled,
@@ -416,10 +424,16 @@ class RoutingController(QObject):
         from sailworks.core.marine.nativeworker import NativeRoutingWorker
 
         outcomes, error = [], None
-        worker = None
+        workers = []
+        self.native_workers = ()
         try:
-            worker = NativeRoutingWorker()
-            self.native_worker = worker
+
+            def factory():
+                worker = NativeRoutingWorker()
+                workers.append(worker)
+                self.native_workers = tuple(workers)
+                self.native_worker = workers[0]
+                return worker
 
             def save(execution, result):
                 # ``_save_result`` runs on the GUI thread; its route carries the
@@ -431,7 +445,8 @@ class RoutingController(QObject):
 
             outcomes = run_bound_members(
                 executions,
-                worker=worker,
+                worker_factory=factory,
+                concurrency=concurrency,
                 save=save,
                 marine_directory=marine_directory,
                 providers=providers,
@@ -440,17 +455,22 @@ class RoutingController(QObject):
             )
         except BoundRunCancelled as exc:
             outcomes, error = list(exc.outcomes), RoutingCancelledError()
-            _request_cooperative_cancel(worker)
+            for worker in workers:
+                _request_cooperative_cancel(worker)
         except RoutingCancelledError as exc:
             error = exc
-            _request_cooperative_cancel(worker)
+            for worker in workers:
+                _request_cooperative_cancel(worker)
         except Exception as exc:
             error = exc
         finally:
-            if worker is not None:
-                if self.native_worker is worker:
-                    self.native_worker = None
-                worker.shutdown()
+            self.native_workers = ()
+            self.native_worker = None
+            for worker in workers:
+                try:
+                    worker.shutdown()
+                except Exception:  # noqa: BLE001 - one failed stop must not strand the rest
+                    pass
             if not self.closed:
                 self._bound_finished.emit(token, outcomes, error)
 

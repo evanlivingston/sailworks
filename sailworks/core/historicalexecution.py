@@ -10,6 +10,8 @@ aggregate without knowing which engine ran the member.
 from __future__ import annotations
 
 import dataclasses
+import queue
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -228,10 +230,83 @@ def _default_convert(payload, job, *, sequence: int):
     return result
 
 
+def _run_one_member(
+    worker,
+    cancel,
+    progress,
+    *,
+    index: int,
+    execution,
+    save,
+    marine_directory,
+    providers,
+    convert,
+) -> MemberOutcome:
+    """Run one member through ``worker`` and return its outcome.
+
+    ``cancel`` and ``progress`` are already-bound callables so the caller can
+    supply thread-aware wrappers without changing per-member behaviour. A
+    cancelled native job raises :class:`BoundRunCancelled`; everything else
+    that goes wrong stays local to this member.
+    """
+    cancel()
+    try:
+        job = build_native_request(
+            execution, marine_directory=marine_directory, providers=providers
+        )
+    except Exception as exc:
+        return MemberOutcome(execution.member_id, "failed", None, error=str(exc))
+    cancel()
+    worker.submit(job)
+    status = None
+    while status is None:
+        cancel()
+        status = worker.poll(0.1)
+        update = worker.take_progress()
+        if update is not None:
+            progress(update)
+    update = worker.take_progress()
+    if update is not None:
+        progress(update)
+    try:
+        kind = classify_status(getattr(status, "state", None))
+    except ValueError as exc:
+        return MemberOutcome(execution.member_id, "failed", None, error=str(exc))
+    if kind == "cancelled":
+        raise BoundRunCancelled()
+    if kind == "failed":
+        return MemberOutcome(
+            execution.member_id,
+            "failed",
+            None,
+            error=getattr(status, "message", "") or "native worker did not publish a result",
+        )
+    try:
+        result = (
+            _default_convert(status.payload, job, sequence=index)
+            if convert is None
+            else convert(status.payload, job)
+        )
+    except Exception as exc:
+        return MemberOutcome(execution.member_id, "failed", None, error=str(exc))
+    try:
+        route_uid, duration_hours = save(execution, result)
+    except (ValueError, OSError) as exc:
+        return MemberOutcome(execution.member_id, "failed", None, error=str(exc))
+    return MemberOutcome(
+        execution.member_id,
+        "finished",
+        duration_hours,
+        route_uid=route_uid or "",
+    )
+
+
 def run_bound_members(
     executions,
     *,
-    worker,
+    worker=None,
+    worker_factory=None,
+    concurrency=1,
     save,
     marine_directory,
     providers=(),
@@ -245,76 +320,113 @@ def run_bound_members(
     validation, or a save that raises ``ValueError``/``OSError`` becomes that
     member's ``failed`` outcome and the next member still runs. Only a
     cancelled job or a raising ``check_cancel`` ends the batch. The caller owns
-    ``worker.shutdown()``; this function never shuts the worker down.
+    the worker lifecycle; this function never shuts a worker down and never
+    calls ``worker.cancel()``.
 
-    ``worker`` is duck-typed (``submit``/``poll``/``take_progress``) so the
-    coordinator can drive a fake in tests without the native bridge.
+    Exactly one worker source must be supplied. ``worker`` keeps the historical
+    serial behaviour and requires ``concurrency == 1``. ``worker_factory`` is
+    called once per slot; each slot runs its own worker on its own thread, so
+    no worker instance is ever shared across threads. Outcomes are written back
+    at the member's original index, so the returned order is the input order
+    regardless of completion order.
+
+    ``on_progress`` may be called concurrently from several slots and is
+    serialized here with a lock. ``save`` may also be called concurrently:
+    callers must make it thread-safe (the Qt controller's ``_ui_call`` already
+    marshals to the GUI thread). ``check_cancel`` must be safe to call from
+    several threads and should raise to stop the batch.
     """
+    if (worker is None) == (worker_factory is None):
+        raise ValueError("Provide exactly one of worker or worker_factory.")
+    if not isinstance(concurrency, int) or isinstance(concurrency, bool) or concurrency < 1:
+        raise ValueError("concurrency must be an integer of at least 1.")
+    if worker is not None and concurrency != 1:
+        raise ValueError("A single worker instance cannot run with concurrency > 1.")
     cancel = check_cancel or _no_cancel
     progress = on_progress or _no_progress
-    outcomes: list[MemberOutcome] = []
-    for index, execution in enumerate(executions):
-        cancel()
-        try:
-            job = build_native_request(
-                execution, marine_directory=marine_directory, providers=providers
-            )
-        except Exception as exc:
-            outcomes.append(MemberOutcome(execution.member_id, "failed", None, error=str(exc)))
-            continue
-        cancel()
-        worker.submit(job)
-        status = None
-        while status is None:
-            cancel()
-            status = worker.poll(0.1)
-            update = worker.take_progress()
-            if update is not None:
-                progress(update)
-        update = worker.take_progress()
-        if update is not None:
-            progress(update)
-        try:
-            kind = classify_status(getattr(status, "state", None))
-        except ValueError as exc:
-            outcomes.append(MemberOutcome(execution.member_id, "failed", None, error=str(exc)))
-            continue
-        if kind == "cancelled":
-            raise BoundRunCancelled(outcomes=outcomes)
-        if kind == "failed":
-            outcomes.append(
-                MemberOutcome(
-                    execution.member_id,
-                    "failed",
-                    None,
-                    error=getattr(status, "message", "")
-                    or "native worker did not publish a result",
+
+    if worker is not None:
+        outcomes: list[MemberOutcome] = []
+        for index, execution in enumerate(executions):
+            try:
+                outcomes.append(
+                    _run_one_member(
+                        worker,
+                        cancel,
+                        progress,
+                        index=index,
+                        execution=execution,
+                        save=save,
+                        marine_directory=marine_directory,
+                        providers=providers,
+                        convert=convert,
+                    )
                 )
-            )
-            continue
+            except BoundRunCancelled:
+                raise BoundRunCancelled(outcomes=outcomes) from None
+        return outcomes
+
+    slots = [worker_factory() for _ in range(concurrency)]
+    work: queue.SimpleQueue = queue.SimpleQueue()
+    for index, execution in enumerate(executions):
+        work.put((index, execution))
+    results: list[MemberOutcome | None] = [None] * len(executions)
+    stop = threading.Event()
+    progress_lock = threading.Lock()
+    report_lock = threading.Lock()
+    errors: list[BaseException] = []
+    cancelled: list[BoundRunCancelled] = []
+
+    def cancel_checked() -> None:
+        if stop.is_set():
+            raise BoundRunCancelled()
+        cancel()
+
+    def report_progress(update) -> None:
+        with progress_lock:
+            progress(update)
+
+    def run_slot(slot_worker) -> None:
         try:
-            result = (
-                _default_convert(status.payload, job, sequence=index)
-                if convert is None
-                else convert(status.payload, job)
-            )
-        except Exception as exc:
-            outcomes.append(MemberOutcome(execution.member_id, "failed", None, error=str(exc)))
-            continue
-        try:
-            route_uid, duration_hours = save(execution, result)
-        except (ValueError, OSError) as exc:
-            outcomes.append(MemberOutcome(execution.member_id, "failed", None, error=str(exc)))
-            continue
-        outcomes.append(
-            MemberOutcome(
-                execution.member_id,
-                "finished",
-                duration_hours,
-                route_uid=route_uid or "",
-            )
-        )
-    return outcomes
+            while not stop.is_set():
+                try:
+                    index, execution = work.get_nowait()
+                except queue.Empty:
+                    return
+                results[index] = _run_one_member(
+                    slot_worker,
+                    cancel_checked,
+                    report_progress,
+                    index=index,
+                    execution=execution,
+                    save=save,
+                    marine_directory=marine_directory,
+                    providers=providers,
+                    convert=convert,
+                )
+        except BoundRunCancelled as exc:
+            stop.set()
+            with report_lock:
+                cancelled.append(exc)
+        except BaseException as exc:  # noqa: BLE001 - re-raised after every slot joins
+            stop.set()
+            with report_lock:
+                errors.append(exc)
+
+    threads = [
+        threading.Thread(target=run_slot, args=(slot,), name=f"bound-member-{number}", daemon=True)
+        for number, slot in enumerate(slots)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    if errors:
+        raise errors[0]
+    if cancelled:
+        raise BoundRunCancelled(outcomes=tuple(item for item in results if item is not None))
+    return [item for item in results if item is not None]
 
 
 def _iso_z(value: datetime) -> str:
