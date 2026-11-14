@@ -89,6 +89,7 @@ class RoutingController(QObject):
     _native_progress = Signal(int, object)
     _message = Signal(int, str)
     _finished = Signal(int, object, object)
+    _bound_finished = Signal(int, object, object)
 
     def __init__(self, session_controller):
         super().__init__(session_controller)
@@ -119,10 +120,13 @@ class RoutingController(QObject):
         self.scenario_index, self.scenario_count, self.saved_count = 0, 1, 0
         self._parallel_mode = False
         self._parallel_progress = {}
+        self._bound_member_callback = None
+        self._bound_finish_callback = None
         self._progress.connect(self._apply_progress)
         self._native_progress.connect(self._apply_native_progress)
         self._message.connect(self._apply_message)
         self._finished.connect(self._finish)
+        self._bound_finished.connect(self._finish_bound)
         self.confirm = lambda report: False
 
     def start(self, request, scenarios=(), backend="legacy"):
@@ -204,6 +208,56 @@ class RoutingController(QObject):
                 )
 
         self.worker_thread = Thread(target=worker, name="qt-routing", daemon=True)
+        self.worker_thread.start()
+        return True
+
+    def start_bound_runs(self, executions, *, on_member_outcome=None, on_finished=None):
+        """Run historical members natively without touching the active analysis.
+
+        Members are bound executions prepared by the historical coordinator;
+        this seam only owns the worker, the generation token and the GUI
+        hand-off. Each member's failure stays a member outcome, while a cancel
+        or window close stops the batch.
+        """
+        if self.busy or self.closed:
+            return self.fail("Wait for the current calculation to finish.")
+        executions = list(executions)
+        if not executions:
+            return self.fail("No historical members were selected to run.")
+        self.clear_native_result()
+        self._native_diagnostic_token = None
+        self.backend = "native"
+        self.generation += 1
+        token = self.generation
+        self.cancel_event = Event()
+        self.request = None
+        self.scenario_index, self.scenario_count, self.saved_count = (
+            0,
+            len(executions),
+            0,
+        )
+        self.busy, self.error, self.percent = True, "", 0.0
+        self.progress_indeterminate = True
+        self.native_started_at = time.monotonic()
+        self.native_counters = {}
+        self.message = "Historical bound run queued…"
+        self._bound_member_callback = on_member_outcome
+        self._bound_finish_callback = on_finished
+        providers = tuple(
+            self.session_controller.charts.get_line_point_validity_providers()
+        )
+        marine_manager = getattr(self.core, "marine_manager", None)
+        marine_directory = (
+            str(marine_manager.directory) if marine_manager is not None else None
+        )
+        self.changed.emit()
+        self.preview_changed.emit(())
+        self.isochrones_changed.emit(())
+
+        def worker():
+            self._run_bound_members(token, executions, providers, marine_directory)
+
+        self.worker_thread = Thread(target=worker, name="qt-routing-bound", daemon=True)
         self.worker_thread.start()
         return True
 
@@ -368,6 +422,60 @@ class RoutingController(QObject):
                 worker.shutdown()
         if not self.closed:
             self._finished.emit(token, None, error)
+
+    def _run_bound_members(self, token, executions, providers, marine_directory):
+        """Drive the bound-run engine on one native worker, end to end.
+
+        The engine converts and saves members one at a time; a member failure
+        returns as an outcome, so only a cancel (or a worker-level fault) ends
+        the batch early. The worker is always shut down here.
+        """
+        from sailworks.core.historicalexecution import (
+            BoundRunCancelled,
+            run_bound_members,
+        )
+        from sailworks.core.marine.nativeworker import NativeRoutingWorker
+
+        outcomes, error = [], None
+        worker = None
+        try:
+            worker = NativeRoutingWorker()
+            self.native_worker = worker
+
+            def save(execution, result):
+                # ``_save_result`` runs on the GUI thread; its route carries the
+                # stored identity the coordinator links the member to. The
+                # engine reports no arrival time, so duration stays None and the
+                # coordinator derives it from the saved route.
+                route = self._ui_call(
+                    token, self._save_result, execution.request, result
+                )
+                return getattr(route, "uid", None), None
+
+            outcomes = run_bound_members(
+                executions,
+                worker=worker,
+                save=save,
+                marine_directory=marine_directory,
+                providers=providers,
+                on_progress=lambda update: self._native_progress.emit(token, update),
+                check_cancel=lambda: self._check(token),
+            )
+        except BoundRunCancelled as exc:
+            outcomes, error = list(exc.outcomes), RoutingCancelledError()
+            _request_cooperative_cancel(worker)
+        except RoutingCancelledError as exc:
+            error = exc
+            _request_cooperative_cancel(worker)
+        except Exception as exc:
+            error = exc
+        finally:
+            if worker is not None:
+                if self.native_worker is worker:
+                    self.native_worker = None
+                worker.shutdown()
+            if not self.closed:
+                self._bound_finished.emit(token, outcomes, error)
 
     def _begin_native_scenario(self, index, count):
         self.scenario_index = index
@@ -699,6 +807,7 @@ class RoutingController(QObject):
             raise ValueError(self.error) from exc
         self.saved_count += 1
         self.completed.emit(route)
+        return route
 
     def selection_for(self, result):
         """Independent selection for one calculation, reused when revisited."""
@@ -906,6 +1015,42 @@ class RoutingController(QObject):
                 f" · {self.saved_count}/{self.scenario_count} scenarios saved"
             )
         self.changed.emit()
+
+    @Slot(int, object, object)
+    def _finish_bound(self, token, outcomes, error):
+        """Reset the bound-run state and hand its outcomes back on the GUI thread."""
+        if self.closed or token != self.generation:
+            return
+        self.busy = False
+        self.progress_indeterminate = False
+        self.native_started_at = None
+        self.native_counters = {}
+        member_callback, finish_callback = (
+            self._bound_member_callback,
+            self._bound_finish_callback,
+        )
+        self._bound_member_callback = self._bound_finish_callback = None
+        outcomes = list(outcomes or ())
+        for outcome in outcomes:
+            if member_callback is not None:
+                member_callback(outcome)
+        self.preview_changed.emit(())
+        self.isochrones_changed.emit(())
+        if self.cancel_event.is_set() or isinstance(error, RoutingCancelledError):
+            self.message = "Native routing cancelled"
+        elif error is not None:
+            self.error = str(error) or type(error).__name__
+            self.message = "Historical bound run failed: " + self.error
+        else:
+            finished = sum(1 for item in outcomes if item.outcome == "finished")
+            self.percent = 100.0
+            self.message = (
+                f"{finished}/{self.scenario_count} historical members complete"
+                f" · {self.saved_count} saved"
+            )
+        self.changed.emit()
+        if finish_callback is not None:
+            finish_callback(outcomes, error)
 
     def close(self):
         self.isochrones_changed.emit(())
