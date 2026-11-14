@@ -9,7 +9,6 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QApplication
 
 import sailworks.qt.historicalera5 as historicalera5
 import sailworks.qt.historicalrouting as historicalrouting
@@ -18,10 +17,6 @@ from sailworks.qt.historicalrouting import HistoricalRoutingPanel
 from sailworks.qt.routingpanel import RoutingPanel
 
 REGION = (-30.0, -10.0, 30.0, 40.0)
-
-
-def application():
-    return QApplication.instance() or QApplication([])
 
 
 class FakeStore:
@@ -88,27 +83,29 @@ class FakeController(QObject):
         self.analysis = None
 
 
-def routing_panel(monkeypatch, tmp_path):
-    application()
+def routing_panel(qtbot, monkeypatch, tmp_path):
     monkeypatch.setattr(historicalrouting, "DATA_DIR", str(tmp_path))
     controller = FakeController()
     panel = RoutingPanel(controller)
+    qtbot.addWidget(panel)
     panel._fake_controller = controller
     return panel
 
 
-def historical_panel(*, controller=None, request=None, service_factory=None):
+def historical_panel(qtbot, *, controller=None, request=None, service_factory=None):
     controller = controller or SimpleNamespace(core=None, analysis=None)
-    return HistoricalRoutingPanel(
+    panel = HistoricalRoutingPanel(
         controller,
         store_factory=FakeStore,
         request_provider=(lambda: request) if request is not None else None,
         service_factory=service_factory,
     )
+    qtbot.addWidget(panel)
+    return panel
 
 
-def test_mode_combo_switches_the_stack_and_dispatches(monkeypatch, tmp_path):
-    panel = routing_panel(monkeypatch, tmp_path)
+def test_mode_combo_switches_the_stack_and_dispatches(qtbot, monkeypatch, tmp_path):
+    panel = routing_panel(qtbot, monkeypatch, tmp_path)
     assert panel.compare_mode.currentData() == "parameter"
     assert panel.compare_stack.currentIndex() == 0
 
@@ -123,9 +120,9 @@ def test_mode_combo_switches_the_stack_and_dispatches(monkeypatch, tmp_path):
 
 
 def test_saved_and_restored_options_include_mode_and_historical_values(
-    monkeypatch, tmp_path
+    qtbot, monkeypatch, tmp_path
 ):
-    panel = routing_panel(monkeypatch, tmp_path)
+    panel = routing_panel(qtbot, monkeypatch, tmp_path)
     saved = panel.saved_options()
     assert saved["compare_mode"] == "parameter"
     assert saved["historical"] == panel.historical.values()
@@ -155,14 +152,14 @@ def test_saved_and_restored_options_include_mode_and_historical_values(
     assert panel.compare_mode.currentData() == "parameter"
 
 
-def test_spec_uses_the_departure_year_and_options_region():
+def test_spec_uses_the_departure_year_and_options_region(qtbot):
     request = SimpleNamespace(
         departure=datetime(2021, 6, 15, 12),
         start=(0.0, 0.0),
         destination=(1.0, 1.0),
         waypoints=(),
     )
-    panel = historical_panel(request=request)
+    panel = historical_panel(qtbot, request=request)
     panel.set_values(
         {
             "years": 5,
@@ -217,24 +214,20 @@ def _unit():
     )
 
 
-def test_ensure_wind_skips_covered_units(monkeypatch, tmp_path):
+def test_ensure_wind_skips_covered_units(qtbot, monkeypatch, tmp_path):
     monkeypatch.setattr(historicalera5, "read_era5_catalog", lambda root: [{"x": 1}])
     monkeypatch.setattr(historicalera5, "select_window_entries", lambda *a, **k: ["ok"])
     service = _Service()
     controller = SimpleNamespace(
         core=None,
-        analysis=SimpleNamespace(
-            state=SimpleNamespace(store=SimpleNamespace(root=tmp_path))
-        ),
+        analysis=SimpleNamespace(state=SimpleNamespace(store=SimpleNamespace(root=tmp_path))),
     )
-    panel = historical_panel(
-        controller=controller, service_factory=lambda store: service
-    )
+    panel = historical_panel(qtbot, controller=controller, service_factory=lambda store: service)
     panel.ensure_wind([_unit()])
     assert service.submitted == []
 
 
-def test_ensure_wind_raises_on_a_reported_error(monkeypatch, tmp_path):
+def test_ensure_wind_raises_on_a_reported_error(qtbot, monkeypatch, tmp_path):
     monkeypatch.setattr(historicalera5, "read_era5_catalog", lambda root: [])
     monkeypatch.setattr(
         historicalera5,
@@ -245,13 +238,9 @@ def test_ensure_wind_raises_on_a_reported_error(monkeypatch, tmp_path):
     service = _Service(error="boom")
     controller = SimpleNamespace(
         core=None,
-        analysis=SimpleNamespace(
-            state=SimpleNamespace(store=SimpleNamespace(root=tmp_path))
-        ),
+        analysis=SimpleNamespace(state=SimpleNamespace(store=SimpleNamespace(root=tmp_path))),
     )
-    panel = historical_panel(
-        controller=controller, service_factory=lambda store: service
-    )
+    panel = historical_panel(qtbot, controller=controller, service_factory=lambda store: service)
     try:
         panel.ensure_wind([_unit()])
     except RuntimeError as error:
@@ -262,9 +251,9 @@ def test_ensure_wind_raises_on_a_reported_error(monkeypatch, tmp_path):
     assert service.cleared == ["key"]
 
 
-def test_run_bound_blocks_until_finished_and_returns_outcomes():
+def test_run_bound_blocks_until_finished_and_returns_outcomes(qtbot):
     outcomes = [SimpleNamespace(member_id="2020-000")]
-    panel = historical_panel()
+    panel = historical_panel(qtbot)
     controller = SimpleNamespace(core=None, analysis=None, error="")
 
     def start_bound_runs(executions, *, on_finished=None, concurrency=None):
@@ -293,8 +282,8 @@ def _member():
     )
 
 
-def test_results_populate_from_a_fake_summary_and_records():
-    panel = historical_panel()
+def test_results_populate_from_a_fake_summary_and_records(qtbot):
+    panel = historical_panel(qtbot)
     record = SimpleNamespace(
         job_id="job-1",
         created_at_utc="2026-01-01T00:00:00+00:00",
@@ -316,18 +305,14 @@ def test_results_populate_from_a_fake_summary_and_records():
     assert panel.results.table.rowCount() == 1
     assert panel.results.table.item(0, 0).text() == "2020"
     assert panel.results.canvas._curve == [(0.0, 0.0), (10.0, 1.0)]
-    assert panel.results.canvas._strip == [
-        {"year": 2020, "offset_days": 0, "outcome": "finished"}
-    ]
+    assert panel.results.canvas._strip == [{"year": 2020, "offset_days": 0, "outcome": "finished"}]
 
 
-def test_delete_calls_the_coordinator_and_the_collection():
+def test_delete_calls_the_coordinator_and_the_collection(qtbot):
     route = SimpleNamespace(uid="route-a")
     collection = [route]
-    controller = SimpleNamespace(
-        core=SimpleNamespace(routingManager=collection), analysis=None
-    )
-    panel = historical_panel(controller=controller)
+    controller = SimpleNamespace(core=SimpleNamespace(routingManager=collection), analysis=None)
+    panel = historical_panel(qtbot, controller=controller)
     panel._record = SimpleNamespace(job_id="job-1", members={"2020-000": _member()})
     calls = []
     panel.coordinator = SimpleNamespace(
@@ -404,13 +389,10 @@ def _record(*members, job_id="job-1", excluded_years=()):
     )
 
 
-def test_set_scene_attaches_and_publishes_routes_after_a_retry():
-    application()
+def test_set_scene_attaches_and_publishes_routes_after_a_retry(qtbot):
     route = _route("route-a")
-    controller = SimpleNamespace(
-        core=SimpleNamespace(routingManager=[route]), analysis=None
-    )
-    panel = historical_panel(controller=controller)
+    controller = SimpleNamespace(core=SimpleNamespace(routingManager=[route]), analysis=None)
+    panel = historical_panel(qtbot, controller=controller)
     published = []
     panel.coordinator = SimpleNamespace(
         scene=None,
@@ -432,19 +414,16 @@ def test_set_scene_attaches_and_publishes_routes_after_a_retry():
     assert panel.results.table.rowCount() == 1
 
 
-def test_retry_failed_uses_the_start_job_seams_and_refreshes_rows(monkeypatch):
-    application()
+def test_retry_failed_uses_the_start_job_seams_and_refreshes_rows(qtbot, monkeypatch):
     route = _route("route-a")
-    controller = SimpleNamespace(
-        core=SimpleNamespace(routingManager=[route]), analysis=None
-    )
+    controller = SimpleNamespace(core=SimpleNamespace(routingManager=[route]), analysis=None)
     request = SimpleNamespace(
         departure=datetime(2021, 6, 15, 12),
         start=(0.0, 0.0),
         destination=(1.0, 1.0),
         waypoints=(),
     )
-    panel = historical_panel(controller=controller, request=request)
+    panel = historical_panel(qtbot, controller=controller, request=request)
     record = _record(_member_route("2020-000", "route-a"))
     panel._record = record
     panel.store = SimpleNamespace(load=lambda job_id: record, list_jobs=lambda: [])
@@ -476,17 +455,12 @@ def test_retry_failed_uses_the_start_job_seams_and_refreshes_rows(monkeypatch):
     assert panel._retrying is False
 
 
-def test_show_all_and_hide_all_set_item_visibility_and_save():
-    application()
+def test_show_all_and_hide_all_set_item_visibility_and_save(qtbot):
     routes = [_route("route-a", False), _route("route-b", False)]
-    controller = SimpleNamespace(
-        core=SimpleNamespace(routingManager=routes), analysis=None
-    )
-    panel = historical_panel(controller=controller)
+    controller = SimpleNamespace(core=SimpleNamespace(routingManager=routes), analysis=None)
+    panel = historical_panel(qtbot, controller=controller)
     scene = FakeScene()
-    panel.coordinator = SimpleNamespace(
-        scene=scene, publisher=SimpleNamespace(scene=scene)
-    )
+    panel.coordinator = SimpleNamespace(scene=scene, publisher=SimpleNamespace(scene=scene))
     panel._record = _record(
         _member_route("2020-000", "route-a"),
         _member_route("2021-000", "route-b", year=2021),
@@ -505,17 +479,12 @@ def test_show_all_and_hide_all_set_item_visibility_and_save():
     assert scene.saved == 2
 
 
-def test_representatives_show_only_the_median_finished_route():
-    application()
+def test_representatives_show_only_the_median_finished_route(qtbot):
     routes = [_route("route-a"), _route("route-b"), _route("route-c")]
-    controller = SimpleNamespace(
-        core=SimpleNamespace(routingManager=routes), analysis=None
-    )
-    panel = historical_panel(controller=controller)
+    controller = SimpleNamespace(core=SimpleNamespace(routingManager=routes), analysis=None)
+    panel = historical_panel(qtbot, controller=controller)
     scene = FakeScene()
-    panel.coordinator = SimpleNamespace(
-        scene=scene, publisher=SimpleNamespace(scene=scene)
-    )
+    panel.coordinator = SimpleNamespace(scene=scene, publisher=SimpleNamespace(scene=scene))
     record = _record(
         _member_route("2020-000", "route-a", year=2020),
         _member_route("2021-000", "route-b", year=2021),
@@ -536,16 +505,13 @@ def test_representatives_show_only_the_median_finished_route():
     assert scene.saved == 1
 
 
-def test_recheck_button_enabled_only_when_a_job_has_excluded_years():
-    application()
-    panel = historical_panel()
+def test_recheck_button_enabled_only_when_a_job_has_excluded_years(qtbot):
+    panel = historical_panel(qtbot)
 
     panel._show_record(_record(_member_route("2020-000", "route-a")))
     assert panel.results.recheck_button.isEnabled() is False
 
-    panel._show_record(
-        _record(_member_route("2020-000", "route-a"), excluded_years=(2019,))
-    )
+    panel._show_record(_record(_member_route("2020-000", "route-a"), excluded_years=(2019,)))
     assert panel.results.recheck_button.isEnabled() is True
 
     # No job means no recheck even when exclusions are remembered.
@@ -553,19 +519,16 @@ def test_recheck_button_enabled_only_when_a_job_has_excluded_years():
     assert panel.results.recheck_button.isEnabled() is False
 
 
-def test_recheck_excluded_uses_the_same_seams_and_publishes_new_routes(monkeypatch):
-    application()
+def test_recheck_excluded_uses_the_same_seams_and_publishes_new_routes(qtbot, monkeypatch):
     routes = [_route("route-a"), _route("route-b")]
-    controller = SimpleNamespace(
-        core=SimpleNamespace(routingManager=routes), analysis=None
-    )
+    controller = SimpleNamespace(core=SimpleNamespace(routingManager=routes), analysis=None)
     request = SimpleNamespace(
         departure=datetime(2021, 6, 15, 12),
         start=(0.0, 0.0),
         destination=(1.0, 1.0),
         waypoints=(),
     )
-    panel = historical_panel(controller=controller, request=request)
+    panel = historical_panel(qtbot, controller=controller, request=request)
     record = _record(_member_route("2020-000", "route-a"), excluded_years=(2019,))
     updated = _record(
         _member_route("2020-000", "route-a"),
@@ -604,19 +567,16 @@ def test_recheck_excluded_uses_the_same_seams_and_publishes_new_routes(monkeypat
     assert panel._retrying is False
 
 
-def test_cancelling_a_recheck_leaves_the_panel_usable(monkeypatch):
-    application()
+def test_cancelling_a_recheck_leaves_the_panel_usable(qtbot, monkeypatch):
     route = _route("route-a")
-    controller = SimpleNamespace(
-        core=SimpleNamespace(routingManager=[route]), analysis=None
-    )
+    controller = SimpleNamespace(core=SimpleNamespace(routingManager=[route]), analysis=None)
     request = SimpleNamespace(
         departure=datetime(2021, 6, 15, 12),
         start=(0.0, 0.0),
         destination=(1.0, 1.0),
         waypoints=(),
     )
-    panel = historical_panel(controller=controller, request=request)
+    panel = historical_panel(qtbot, controller=controller, request=request)
     record = _record(_member_route("2020-000", "route-a"), excluded_years=(2019,))
     panel._record = record
     panel.store = SimpleNamespace(load=lambda job_id: record, list_jobs=lambda: [])
@@ -641,8 +601,8 @@ def test_cancelling_a_recheck_leaves_the_panel_usable(monkeypatch):
     assert panel.results.table.rowCount() == 1
 
 
-def test_existing_compare_calculate_path_is_unchanged(monkeypatch, tmp_path):
-    panel = routing_panel(monkeypatch, tmp_path)
+def test_existing_compare_calculate_path_is_unchanged(qtbot, monkeypatch, tmp_path):
+    panel = routing_panel(qtbot, monkeypatch, tmp_path)
     assert panel.compare_mode.currentData() == "parameter"
 
     def refuse(backend=None):

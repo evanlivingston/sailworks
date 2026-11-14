@@ -6,7 +6,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QApplication
 
 from sailworks.qt.historicalroutingoptions import HistoricalRoutingOptions
 from sailworks.qt.historicalroutingresults import HistoricalRoutingResults, _CurveCanvas
@@ -44,19 +43,16 @@ ROWS = [
 ]
 
 
-def application():
-    return QApplication.instance() or QApplication([])
-
-
-def options():
+def options(qtbot):
     widget = HistoricalRoutingOptions()
+    qtbot.addWidget(widget)
     widget.set_region(REGION)
     return widget
 
 
-def test_defaults_match_the_spec():
-    application()
+def test_defaults_match_the_spec(qtbot):
     widget = HistoricalRoutingOptions()
+    qtbot.addWidget(widget)
     values = widget.values()
     assert values == {
         "years": 10,
@@ -77,9 +73,8 @@ def test_defaults_match_the_spec():
         assert control.accessibleName()
 
 
-def test_member_cap_is_reported_and_clears():
-    application()
-    widget = options()
+def test_member_cap_is_reported_and_clears(qtbot):
+    widget = options(qtbot)
     assert widget.validation_message() == ""
     widget.years.setValue(30)
     widget.offset_days.setValue(5)
@@ -90,9 +85,8 @@ def test_member_cap_is_reported_and_clears():
     assert widget.validation_message() == ""
 
 
-def test_ranges_clamp_and_horizon_snaps_to_six_hours():
-    application()
-    widget = options()
+def test_ranges_clamp_and_horizon_snaps_to_six_hours(qtbot):
+    widget = options(qtbot)
     widget.years.setValue(0)
     assert widget.years.value() == 1
     widget.years.setValue(31)
@@ -110,9 +104,9 @@ def test_ranges_clamp_and_horizon_snaps_to_six_hours():
     assert widget.validation_message() == ""
 
 
-def test_set_region_and_set_values_round_trip():
-    application()
+def test_set_region_and_set_values_round_trip(qtbot):
     widget = HistoricalRoutingOptions()
+    qtbot.addWidget(widget)
     widget.set_region(REGION)
     assert widget.values()["region"] == REGION
     assert "No region" not in widget.region_label.text()
@@ -139,9 +133,8 @@ def test_set_region_and_set_values_round_trip():
     assert widget.values()["region"] is None
 
 
-def test_running_state_switches_buttons():
-    application()
-    widget = options()
+def test_running_state_switches_buttons(qtbot):
+    widget = options(qtbot)
     widget.set_running(True)
     assert not widget.run_button.isEnabled()
     assert widget.cancel_button.isEnabled()
@@ -153,18 +146,16 @@ def test_running_state_switches_buttons():
     assert widget.run_button.toolTip() == "Native backend capability missing: bound runs"
 
 
-def test_run_button_emits_the_current_values():
-    application()
-    widget = options()
+def test_run_button_emits_the_current_values(qtbot):
+    widget = options(qtbot)
     captured = []
     widget.run_requested.connect(captured.append)
     widget.run_button.click()
     assert captured == [widget.values()]
 
 
-def test_preflight_panel_hides_when_empty():
-    application()
-    widget = options()
+def test_preflight_panel_hides_when_empty(qtbot):
+    widget = options(qtbot)
     widget.set_preflight([])
     assert widget.preflight.isHidden()
     widget.set_preflight(["Feb 29 -> Feb 28 in 2023", "DST gap advanced 1 h"])
@@ -177,9 +168,9 @@ def test_preflight_panel_hides_when_empty():
     assert widget.preflight.isHidden()
 
 
-def test_rows_populate_table_with_outcome_prefixes_and_clicks():
-    application()
+def test_rows_populate_table_with_outcome_prefixes_and_clicks(qtbot):
     results = HistoricalRoutingResults()
+    qtbot.addWidget(results)
     selected = []
     results.member_selected.connect(selected.append)
     results.set_rows(ROWS)
@@ -201,9 +192,9 @@ def test_rows_populate_table_with_outcome_prefixes_and_clicks():
     assert results._median_member_id == "2023-000"
 
 
-def test_actions_follow_job_state():
-    application()
+def test_actions_follow_job_state(qtbot):
     results = HistoricalRoutingResults()
+    qtbot.addWidget(results)
     results.set_actions_enabled(True, True, True)
     for button in (results.retry_button, results.recheck_button, results.delete_button):
         assert button.isEnabled()
@@ -224,9 +215,9 @@ def test_actions_follow_job_state():
     assert results.table.rowCount() == 0
 
 
-def test_curve_canvas_paints_empty_and_populated_data():
-    application()
+def test_curve_canvas_paints_empty_and_populated_data(qtbot):
     canvas = _CurveCanvas()
+    qtbot.addWidget(canvas)
     canvas.resize(QSize(320, 200))
     pixmap = QPixmap(canvas.size())
     canvas.render(pixmap)
@@ -249,6 +240,7 @@ def test_curve_canvas_paints_empty_and_populated_data():
     assert not painted.isNull()
 
     results = HistoricalRoutingResults()
+    qtbot.addWidget(results)
     results.resize(QSize(640, 520))
     results.set_summary("Requested 10 years · Effective 9 · Excluded 1 · 63 routes")
     results.set_rows(ROWS)
