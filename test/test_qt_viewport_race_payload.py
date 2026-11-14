@@ -117,9 +117,11 @@ def test_race_payload_comes_from_the_overlay_and_is_reused():
         {
             "name": "ordinary",
             "points": [[1.0, 2.0], [3.0, 4.0]],
+            "roundings": [None, None],
             "active": False,
             "highlight": -1,
             "editing": False,
+            "hover": -1,
         }
     ]
     publish(widget, first)
