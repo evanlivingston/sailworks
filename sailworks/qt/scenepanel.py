@@ -174,7 +174,13 @@ def point_columns(rect, metrics, label_left=None):
 
 
 def point_label_width(label_rect, rounding_rect):
-    """Width a point row's name may use before the rounding slot starts."""
+    """Width a point row's name may use before the rounding slot starts.
+
+    A row that drops the rounding slot paints no gap before it, so the name
+    takes the whole label rect; the slot's rect is empty in that case.
+    """
+    if rounding_rect.width() == 0:
+        return label_rect.width()
     return max(0, rounding_rect.left() - label_rect.left() - ROUNDING_GAP)
 
 

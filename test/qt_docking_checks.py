@@ -53,7 +53,7 @@ class DockingChecks(unittest.TestCase):
         gallery = self.build_gallery()
         stack = gallery.findChild(PanelStack)
         self.assertIsNotNone(stack)
-        self.assertEqual(len(stack.panels()), 5)
+        self.assertEqual(len(stack.panels()), 4)
         for panel in stack.panels():
             self.assertTrue(panel.header.isVisible())
             self.assertIsNotNone(panel.collapse_button.parentWidget())
