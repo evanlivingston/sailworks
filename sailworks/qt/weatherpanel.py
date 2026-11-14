@@ -229,6 +229,13 @@ class WeatherPanel(QWidget):
         self.wave.setChecked(active_map().wave_visible)
         self.wave.toggled.connect(self._toggle_wave)
         waves.addWidget(self.wave)
+        # Everything below the visibility checkbox configures the wave layer,
+        # so it lives in one group that is disabled while waves are hidden.
+        # The heading and checkbox stay active so they can turn waves back on.
+        self.wave_options = QWidget()
+        wave_options = QVBoxLayout(self.wave_options)
+        wave_options.setContentsMargins(0, 0, 0, 0)
+        waves.addWidget(self.wave_options)
         # The wave display source belongs with the wave layers it switches,
         # not with the routing model selector: it never affects routing.
         self.wave_forecast = Dropdown("Wave forecast")
@@ -238,7 +245,7 @@ class WeatherPanel(QWidget):
             "its own wave-data selection and reports the source it sampled."
         )
         self.wave_forecast.currentIndexChanged.connect(self._select_wave)
-        waves.addWidget(self.wave_forecast)
+        wave_options.addWidget(self.wave_forecast)
         display = getattr(self.controller, "display_forecast", None)
         wave = getattr(display, "wave", None)
         if wave is not None:
@@ -277,7 +284,8 @@ class WeatherPanel(QWidget):
             "gribWaveLevels", "Gradient levels", 2, 9
         )
         wave_form.addRow(self.wave_levels)
-        waves.addLayout(wave_form)
+        wave_options.addLayout(wave_form)
+        self._sync_wave_options()
         controls.addWidget(self.waves_section)
         controls.addWidget(self._section_divider())
         controls.addWidget(section_label("Ship weather observations"))
@@ -475,6 +483,13 @@ class WeatherPanel(QWidget):
         """Switch the wave layer and remember it across restarts."""
         self.active_map().set_wave_visible(enabled)
         self.set_preference("gribWaveVisible", bool(enabled))
+        self._sync_wave_options()
+
+    def _sync_wave_options(self):
+        """Enable wave settings only while the wave layer is shown."""
+        options = getattr(self, "wave_options", None)
+        if options is not None:
+            options.setEnabled(self.wave.isChecked())
 
     def set_preference(self, key, value):
         settings = self.controller.settings
@@ -600,3 +615,4 @@ class WeatherPanel(QWidget):
             and not self.controller.settings.gribWindGradientSmooth
         )
         self.isobar_options.setEnabled(self.isobars.isChecked())
+        self._sync_wave_options()

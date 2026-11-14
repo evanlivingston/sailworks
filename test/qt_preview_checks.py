@@ -2354,7 +2354,10 @@ class QtPreviewChecks(unittest.TestCase):
         controls = workspace.performance
         controls.refresh()
         self.assertEqual(workspace.chart.samples, tuple(samples[:3]))
-        self.assertEqual(controls.count.text(), "3 / 4 STW samples in range")
+        self.assertEqual(
+            controls.count.text(),
+            "Showing 3 of 4 speed through water samples.",
+        )
         controls.wind.setCurrentIndex(controls.wind.findData(10))
         self.assertEqual(workspace.chart.samples, tuple(samples[:2]))
         self.assertEqual(
@@ -2369,6 +2372,8 @@ class QtPreviewChecks(unittest.TestCase):
         source_log = self.controller.session.log
         controls.clear.click()
         self.assertEqual(self.controller.session.active_history.snapshot()[1], ())
+        self.assertEqual(controls.count.text(), "No speed samples recorded yet.")
+        self.assertFalse(controls.clear.isEnabled())
         self.assertIs(self.controller.session.log, source_log)
         self.assertEqual(tuple(self.controller.points), points)
 

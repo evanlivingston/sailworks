@@ -225,6 +225,7 @@ PANEL_SETTINGS = {
     "gribIsobarOpacity": 0.85,
     "gribIsobarLabels": True,
     "gribWaveSource": "",
+    "gribWaveVisible": False,
 }
 
 
@@ -265,6 +266,9 @@ class MapDouble:
 
     def queue_draw(self):
         pass
+
+    def set_wave_visible(self, visible):
+        self.wave_visible = bool(visible)
 
 
 def make_panel(controller, selection, stored="", settings=None):
@@ -354,14 +358,56 @@ def test_wave_selector_sits_in_the_waves_section_with_a_short_label(
 
     assert panel.waves_section.isAncestorOf(panel.wave_forecast)
     assert not panel.waves_section.isAncestorOf(panel.forecast_model)
-    assert panel.wave_forecast.parent() is panel.waves_section
+    assert panel.wave_forecast.parent() is panel.wave_options
     layout = panel.waves_section.layout()
-    assert layout.indexOf(panel.wave) < layout.indexOf(panel.wave_forecast)
+    assert layout.indexOf(panel.wave) < layout.indexOf(panel.wave_options)
 
     expected = f"{display_model_name('GFSWAVE')} · 1 Jan 00:00 UTC"
     assert panel.wave_forecast.itemText(1) == expected
     assert "member deterministic" not in panel.wave_forecast.itemText(1)
     assert "run " not in panel.wave_forecast.itemText(1)
+    panel.dispose()
+    selection.close()
+    controller.close()
+
+
+def test_wave_options_are_disabled_while_wave_height_is_hidden(tmp_path, monkeypatch):
+    application, controller, selection = start(
+        tmp_path, monkeypatch, snapshot_with(tmp_path, wave_entry())
+    )
+    panel, settings = make_panel(controller, selection)
+
+    wave_options = (
+        panel.wave_forecast,
+        panel.wave_density,
+        panel.wave_opacity,
+        panel.wave_style,
+        panel.wave_levels,
+    )
+    for widget in wave_options:
+        assert panel.wave_options.isAncestorOf(widget)
+
+    # Hidden waves disable the settings that only configure the wave layer.
+    assert not panel.wave.isChecked()
+    assert not panel.wave_options.isEnabled()
+    for widget in wave_options:
+        assert not widget.isEnabled()
+    # The heading and checkbox stay active so waves can be shown again.
+    assert panel.wave.isEnabled()
+
+    panel.wave.setChecked(True)
+    assert settings["gribWaveVisible"] is True
+    assert panel.wave_options.isEnabled()
+    for widget in wave_options:
+        assert widget.isEnabled()
+
+    # Showing then hiding waves must not disturb the stored wave settings.
+    panel.wave.setChecked(False)
+    assert settings["gribWaveVisible"] is False
+    assert not panel.wave_options.isEnabled()
+    assert settings["gribWaveOpacity"] == 0.85
+    assert settings["gribWaveLevels"] == 9
+    assert panel.wave_density.currentData() == "standard"
     panel.dispose()
     selection.close()
     controller.close()

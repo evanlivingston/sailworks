@@ -39,7 +39,7 @@ from sailworks.core.routingoptions import (
 from .scrollchrome import style_scrollarea
 from .dropdown import Dropdown, FieldRow
 from .slider import Slider
-from .theme import section_label
+from .theme import TYPE_CAPTION, TYPE_DETAIL, section_label
 from .text import qt_text
 
 
@@ -63,7 +63,7 @@ class InfoButton(QToolButton):
         self.setStyleSheet(
             "QToolButton { border: 1px solid palette(mid); border-radius: 9px;"
             " background: palette(base); color: palette(text);"
-            " font-size: 10px; padding: 0; }"
+            f" font-size: {TYPE_CAPTION}; padding: 0; }}"
             "QToolButton:hover { border-color: palette(highlight); }"
         )
 
@@ -104,7 +104,7 @@ class InfoButton(QToolButton):
         popup.setStyleSheet(
             "QLabel { background-color: palette(base); color: palette(text);"
             " border: 1px solid palette(mid); border-radius: 6px;"
-            " padding: 8px 10px; font-size: 12px; }"
+            f" padding: 8px 10px; font-size: {TYPE_DETAIL}; }}"
         )
         popup.adjustSize()
         anchor = self.mapToGlobal(QPoint(0, self.height() + 6))
