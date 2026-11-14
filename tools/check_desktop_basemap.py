@@ -168,7 +168,7 @@ def application(report, data, output, deadline):
         window.weather_dock.show()
         window.routing_panel.set_location("start", (48.45, -124.34))
         window.routing_panel.set_location("destination", (48.45, -124.24))
-        window.navigation_panel.add_poi((48.48, -124.29))
+        window.scene_panel.add_poi((48.48, -124.29))
         report["checks"]["full_window_without_forecast"] = stage("no-weather")
         aligned = route_aligned()
         canvas._weather_presenter.widget.pan_pixels(40, 20)

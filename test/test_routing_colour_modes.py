@@ -278,8 +278,12 @@ def test_scene_isochrone_mode_repaints_both_canvases(tmp_path, monkeypatch):
     window = SimpleNamespace(
         map=Canvas(),
         log_map=Canvas(),
-        navigation_panel=SimpleNamespace(route=route, refresh=lambda: None),
-        controller=SimpleNamespace(routing=SimpleNamespace(native_overlay=native)),
+        controller=SimpleNamespace(
+            routing=SimpleNamespace(native_overlay=native),
+            core=SimpleNamespace(
+                routingManager=SimpleNamespace(get_active=lambda: route)
+            ),
+        ),
         _routing_active_route=route,
     )
     window._native_owns_route = lambda r, n: PreviewWindow._native_owns_route(
@@ -329,8 +333,12 @@ def test_independent_native_result_keeps_presented_isochrone_mode(
     window = SimpleNamespace(
         map=Canvas(),
         log_map=Canvas(),
-        navigation_panel=SimpleNamespace(route=None),
-        controller=SimpleNamespace(routing=SimpleNamespace(native_overlay=native)),
+        controller=SimpleNamespace(
+            routing=SimpleNamespace(native_overlay=native),
+            core=SimpleNamespace(
+                routingManager=SimpleNamespace(get_active=lambda: None)
+            ),
+        ),
         _routing_active_route=None,
     )
     window._native_owns_route = lambda r, n: PreviewWindow._native_owns_route(

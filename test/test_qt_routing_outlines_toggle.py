@@ -168,15 +168,29 @@ def scene_panel(route, emitted):
     )
 
 
+class FakeRoutingManager:
+    """The routing collection as far as the isochrone sync reads it.
+
+    The Navigation panel is gone; the active route now comes from the
+    collection itself, so a double only has to answer ``get_active``.
+    """
+
+    def __init__(self, active=None):
+        self.active = active
+
+    def get_active(self):
+        return self.active
+
+
 def fake_window(route, native, *, active_route=None):
     window = SimpleNamespace(
-        navigation_panel=SimpleNamespace(route=route, refresh=lambda: None),
         controller=SimpleNamespace(
+            core=SimpleNamespace(routingManager=FakeRoutingManager(route)),
             routing=SimpleNamespace(
                 busy=False,
                 native_overlay=native,
                 native_selection=None,
-            )
+            ),
         ),
         map=FakeMap(),
         log_map=FakeMap(),
@@ -203,9 +217,9 @@ def test_scene_outlines_toggle_reaches_the_payload_and_repaints():
     model = closed_overlay_model()
     route = saved_route()
     window = fake_window(route, model, active_route=route)
-    # A saved route restored from the scene has no Navigation panel selection;
+    # A saved route restored from the scene has no active route selection;
     # the row is the only place the toggle names its route.
-    window.navigation_panel.route = None
+    window.controller.core.routingManager.active = None
     emitted = []
     panel = scene_panel(route, emitted)
 

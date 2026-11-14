@@ -67,23 +67,6 @@ def _row(label, widget):
     return row
 
 
-def _navigation_panel():
-    page, layout = _page()
-    pages = QTabWidget()
-    pages.setDocumentMode(True)
-    tracks = QListWidget()
-    tracks.addItems(["Track 1 · 138 nm", "Track 2 · 42 nm"])
-    routings = QListWidget()
-    routings.addItems(["Routing · J120 hugo · t+2h"])
-    pois = QListWidget()
-    pois.addItems(["Start line", "Windward mark"])
-    pages.addTab(tracks, "Tracks")
-    pages.addTab(routings, "Routings")
-    pages.addTab(pois, "POIs")
-    layout.addWidget(pages, 1)
-    return page
-
-
 def _races_panel():
     page, layout = _page()
     actions = QHBoxLayout()
@@ -167,7 +150,6 @@ def build_gallery():
     stack = PanelStack()
     stack.setFixedWidth(380)
     for title, content in (
-        ("Navigation", _navigation_panel()),
         ("Races", _races_panel()),
         ("NMEA", _nmea_panel()),
         ("Routing", _routing_panel()),

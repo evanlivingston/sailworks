@@ -363,6 +363,7 @@ class Core(EventDispatcher):
             self.trackManager.import_from_gpx(gpx)
 
             # Routes
+            self.routingManager.import_from_gpx(gpx)
 
             # POI
             self.poiManager.import_from_gpx(gpx)

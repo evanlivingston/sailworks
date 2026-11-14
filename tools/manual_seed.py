@@ -56,7 +56,7 @@ def seed(window: WIDGET) -> None:
         )
     )
 
-    window.navigation_panel.refresh()
+    window.scene_panel.refresh()
 
 
 def center_chart(window: WIDGET) -> None:
