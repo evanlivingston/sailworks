@@ -34,7 +34,12 @@ from sailworks.core.historicalpublication import (
     CoordinatorError,
     HistoricalPublisher,
 )
-from sailworks.core.historicalrouting import JobState, YearState, resolve_local_departure
+from sailworks.core.historicalretry import HistoricalRetrier
+from sailworks.core.historicalrouting import (
+    JobState,
+    YearState,
+    resolve_local_departure,
+)
 from sailworks.core.historicalroutingrecords import YearRecord
 
 __all__ = [
@@ -43,6 +48,7 @@ __all__ = [
     "PUBLISHED_ROUTE_PREFIX",
     "CoordinatorError",
     "HistoricalPublisher",
+    "HistoricalRetrier",
     "HistoricalRoutingCoordinator",
 ]
 
@@ -72,7 +78,11 @@ def _jsonable(value):
 
 def _progress_event(update) -> JobProgress:
     """Normalise a downloader progress update into a :class:`JobProgress`."""
-    get = update.get if isinstance(update, dict) else lambda name: getattr(update, name, None)
+    get = (
+        update.get
+        if isinstance(update, dict)
+        else lambda name: getattr(update, name, None)
+    )
     return JobProgress(
         stage=str(get("stage") or "acquiring"),
         completed=int(get("completed") or 0),
@@ -114,6 +124,7 @@ class HistoricalRoutingCoordinator:
             fixed = now
             self._clock = lambda: fixed
         self.publisher = HistoricalPublisher(store=store, scene=scene, now=self._clock)
+        self.retrier = HistoricalRetrier(self)
 
     def preflight(self, spec, base_request):
         """Plan members, exclusions and the acquisition, without side effects."""
@@ -198,6 +209,38 @@ class HistoricalRoutingCoordinator:
         )
         return record.job_id
 
+    def retry_failed(
+        self,
+        job_id,
+        base_request,
+        *,
+        ensure_wind,
+        run_bound,
+        concurrency=None,
+        on_progress=None,
+        on_outcome=None,
+        tranche_factory=None,
+        current_selection_factory=None,
+    ) -> list:
+        """See :meth:`historicalretry.HistoricalRetrier.retry_failed`."""
+        return self.retrier.retry_failed(
+            job_id,
+            base_request,
+            ensure_wind=ensure_wind,
+            run_bound=run_bound,
+            concurrency=concurrency,
+            on_progress=on_progress,
+            on_outcome=on_outcome,
+            tranche_factory=tranche_factory,
+            current_selection_factory=current_selection_factory,
+        )
+
+    def rerun_failed_units(self, job_id, *, ensure_wind, on_progress=None) -> int:
+        """See :meth:`historicalretry.HistoricalRetrier.rerun_failed_units`."""
+        return self.retrier.rerun_failed_units(
+            job_id, ensure_wind=ensure_wind, on_progress=on_progress
+        )
+
     def publish_routes(self, job_id, routes, *, entries=None):
         """See :meth:`historicalpublication.HistoricalPublisher.publish_routes`."""
         return self.publisher.publish_routes(job_id, routes, entries=entries)
@@ -255,7 +298,9 @@ class HistoricalRoutingCoordinator:
 
     def _acquire_currents(self, record, prepared, acquire_currents):
         if acquire_currents is None:
-            error = CoordinatorError("currents are enabled but no current acquisition was supplied")
+            error = CoordinatorError(
+                "currents are enabled but no current acquisition was supplied"
+            )
             self._fail(record, "currents", error)
             raise error
         try:
@@ -271,8 +316,12 @@ class HistoricalRoutingCoordinator:
         record.current_binding = {
             "enabled": bool(getattr(binding, "enabled", False)),
             "priority": str(getattr(binding, "priority", "")),
-            "target_departure_utc": _jsonable(getattr(binding, "target_departure_utc", None)),
-            "coverage_end_utc": _jsonable(getattr(acquisition, "coverage_end_utc", None)),
+            "target_departure_utc": _jsonable(
+                getattr(binding, "target_departure_utc", None)
+            ),
+            "coverage_end_utc": _jsonable(
+                getattr(acquisition, "coverage_end_utc", None)
+            ),
             "hold_seconds": float(getattr(acquisition, "hold_seconds", 0.0) or 0.0),
             "provider": str(getattr(acquisition, "provider", "")),
             "field_ids": [str(value) for value in acquisition.field_ids],
@@ -332,17 +381,28 @@ class HistoricalRoutingCoordinator:
         self.store.save(record)
         return executions
 
-    def _run_members(self, record, executions, *, run_bound, concurrency, on_outcome):
+    def _run_members(
+        self,
+        record,
+        executions,
+        *,
+        run_bound,
+        concurrency,
+        on_outcome,
+        increment_attempts=True,
+    ):
         if run_bound is None:
             raise CoordinatorError("running a job requires a run_bound callable")
         if concurrency is not None and (
-            not isinstance(concurrency, int) or isinstance(concurrency, bool) or concurrency < 1
+            not isinstance(concurrency, int)
+            or isinstance(concurrency, bool)
+            or concurrency < 1
         ):
             raise CoordinatorError("concurrency must be an integer of at least 1")
         collected: list = []
 
         def handle(outcome) -> None:
-            self._apply_outcome(record, outcome)
+            self._apply_outcome(record, outcome, increment_attempts=increment_attempts)
             collected.append(outcome)
             if on_outcome is not None:
                 on_outcome(outcome)
@@ -360,7 +420,7 @@ class HistoricalRoutingCoordinator:
                 handle(outcome)
         return collected
 
-    def _apply_outcome(self, record, outcome) -> None:
+    def _apply_outcome(self, record, outcome, *, increment_attempts=True) -> None:
         member_id = str(getattr(outcome, "member_id", ""))
         member = record.members.get(member_id)
         if member is None:
@@ -375,7 +435,7 @@ class HistoricalRoutingCoordinator:
             outcome=kind,
             route_uid=str(getattr(outcome, "route_uid", "") or "") or None,
             error=str(getattr(outcome, "error", "") or "") or None,
-            attempts=int(member.attempts) + 1,
+            attempts=int(member.attempts) + (1 if increment_attempts else 0),
         )
         record.attempt_history = tuple(record.attempt_history) + (
             {

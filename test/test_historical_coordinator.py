@@ -6,6 +6,7 @@ Qt, native build or network.
 """
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,7 +16,10 @@ from sailworks.core.historicalcoordinator import (
     HistoricalRoutingCoordinator,
 )
 from sailworks.core.historicalexecution import MemberOutcome
+from sailworks.core.historicaljob import CurrentBinding
+from sailworks.core.historicalretry import HistoricalRetrier, _is_retryable
 from sailworks.core.historicalrouting import HistoricalRoutingSpec, plan_members
+from sailworks.core.historicalroutingrecords import AcquisitionRecord
 from sailworks.core.historicalroutingstore import HistoricalRoutingStore
 from sailworks.core.routingjob import RouteRequest
 
@@ -141,13 +145,19 @@ def _outcomes(spec, kind="finished"):
     ]
 
 
-def _start(monkeypatch, store, spec, *, availability=None, scene=None, outcomes=None, **kwargs):
+def _start(
+    monkeypatch, store, spec, *, availability=None, scene=None, outcomes=None, **kwargs
+):
     _patch_prepare(monkeypatch, availability)
     coordinator = HistoricalRoutingCoordinator(store=store, scene=scene, now=CURRENT)
     wind = kwargs.pop("ensure_wind", FakeWind())
-    runner = kwargs.pop("run_bound", FakeRunner(outcomes if outcomes is not None else ()))
+    runner = kwargs.pop(
+        "run_bound", FakeRunner(outcomes if outcomes is not None else ())
+    )
     kwargs.setdefault("tranche_factory", lambda member: object())
-    job_id = coordinator.start(spec, _request(), ensure_wind=wind, run_bound=runner, **kwargs)
+    job_id = coordinator.start(
+        spec, _request(), ensure_wind=wind, run_bound=runner, **kwargs
+    )
     return coordinator, job_id, wind, runner
 
 
@@ -182,7 +192,9 @@ def test_happy_path_checkpoints_every_stage(monkeypatch, tmp_path):
 def test_one_unavailable_year_is_excluded_whole(monkeypatch, tmp_path):
     store = HistoricalRoutingStore(tmp_path / "store")
     spec = _spec()
-    availability = lambda window: ("no coverage" if window.start_utc.year < 2019 else None)
+    availability = lambda window: (
+        "no coverage" if window.start_utc.year < 2019 else None
+    )
     coordinator, job_id, wind, runner = _start(
         monkeypatch,
         store,
@@ -258,7 +270,9 @@ def test_member_failures_are_isolated_and_indeterminate(monkeypatch, tmp_path):
         MemberOutcome(plans[1].member_id, "finished", 12.0, route_uid="uid-ok"),
         *[MemberOutcome(plan.member_id, "finished", 30.0) for plan in plans[2:]],
     ]
-    coordinator, job_id, wind, runner = _start(monkeypatch, store, spec, outcomes=outcomes)
+    coordinator, job_id, wind, runner = _start(
+        monkeypatch, store, spec, outcomes=outcomes
+    )
 
     record = store.load(job_id)
     # A failure is indeterminate for the ensemble, so the job is not "complete".
@@ -283,9 +297,9 @@ def test_publish_routes_is_grouped_and_idempotent(monkeypatch, tmp_path):
     store = HistoricalRoutingStore(tmp_path / "store")
     scene = FakeScene()
     spec = _spec()
-    coordinator, job_id = _start(monkeypatch, store, spec, scene=scene, outcomes=_outcomes(spec))[
-        :2
-    ]
+    coordinator, job_id = _start(
+        monkeypatch, store, spec, scene=scene, outcomes=_outcomes(spec)
+    )[:2]
     routes = [FakeRoute("uid-a"), FakeRoute("uid-b")]
 
     assert scene.count("ensure_group") == 1
@@ -330,7 +344,9 @@ def test_delete_job_removes_routes_releases_pins_and_archives(monkeypatch, tmp_p
 def test_recover_returns_store_dispositions(monkeypatch, tmp_path):
     store = HistoricalRoutingStore(tmp_path / "store")
     spec = _spec()
-    coordinator, complete_id = _start(monkeypatch, store, spec, outcomes=_outcomes(spec))[:2]
+    coordinator, complete_id = _start(
+        monkeypatch, store, spec, outcomes=_outcomes(spec)
+    )[:2]
     record = store.load(complete_id)
     record.state = "running"
     store.save(record)
@@ -338,7 +354,315 @@ def test_recover_returns_store_dispositions(monkeypatch, tmp_path):
     store.set_job_state(second, "planned")
 
     dispositions = coordinator.recover()
-    by_id = {item[0].job_id: item[1] for item in dispositions if hasattr(item[0], "job_id")}
+    by_id = {
+        item[0].job_id: item[1] for item in dispositions if hasattr(item[0], "job_id")
+    }
 
     assert by_id[complete_id] == "resume"
     assert by_id[second.job_id] == "attention"
+
+
+def _mixed_start(monkeypatch, store):
+    """A started job with one failed, one no_finish and finished members."""
+    spec = _spec()
+    plans = plan_members(spec)
+    outcomes = [
+        MemberOutcome(plans[0].member_id, "failed", None, error="boom"),
+        MemberOutcome(plans[1].member_id, "finished", 12.0, route_uid="uid-ok"),
+        MemberOutcome(plans[2].member_id, "no_finish", None),
+        *[
+            MemberOutcome(
+                plan.member_id, "finished", 30.0, route_uid=f"uid-{plan.member_id}"
+            )
+            for plan in plans[3:]
+        ],
+    ]
+    coordinator, job_id, _wind, _runner = _start(
+        monkeypatch, store, spec, outcomes=outcomes
+    )
+    return spec, plans, coordinator, job_id
+
+
+def _retry(coordinator, job_id, outcomes, **kwargs):
+    wind = kwargs.pop("ensure_wind", FakeWind())
+    runner = kwargs.pop("run_bound", FakeRunner(outcomes))
+    kwargs.setdefault("tranche_factory", lambda member: object())
+    retried = coordinator.retry_failed(
+        job_id, _request(), ensure_wind=wind, run_bound=runner, **kwargs
+    )
+    return retried, wind, runner
+
+
+def test_retry_failed_reruns_only_indeterminate_members(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    spec, plans, coordinator, job_id = _mixed_start(monkeypatch, store)
+
+    retried, _wind, _runner = _retry(
+        coordinator,
+        job_id,
+        [MemberOutcome(plans[0].member_id, "finished", 20.0, route_uid="uid-retry")],
+    )
+
+    assert [outcome.member_id for outcome in retried] == [plans[0].member_id]
+    record = store.load(job_id)
+    assert len(record.members) == len(plans)
+    failed = record.members[plans[0].member_id]
+    assert failed.state == "finished"
+    assert failed.route_uid == "uid-retry"
+    assert failed.attempts == 2
+    finished = record.members[plans[1].member_id]
+    assert finished.route_uid == "uid-ok"
+    assert finished.attempts == 1
+    determinate = record.members[plans[2].member_id]
+    assert determinate.state == "no_finish_within_horizon"
+    assert determinate.outcome == "no_finish"
+    assert determinate.attempts == 1
+    assert determinate.route_uid == ""
+    assert (
+        coordinator.retry_failed(
+            job_id, _request(), ensure_wind=FakeWind(), run_bound=FakeRunner()
+        )
+        == []
+    )
+
+
+def test_retry_success_completes_job_without_duplicating_members(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    spec, plans, coordinator, job_id = _mixed_start(monkeypatch, store)
+    assert store.load(job_id).state == "needs_attention"
+
+    retried, _wind, runner = _retry(
+        coordinator,
+        job_id,
+        [MemberOutcome(plans[0].member_id, "finished", 20.0, route_uid="uid-retry")],
+    )
+
+    record = store.load(job_id)
+    assert record.state == "complete"
+    assert len(record.members) == len(plans)
+    assert len(record.effective_years) == 2
+    assert len(runner.calls[0][0]) == 1
+    summary = record.spec["summary"]
+    assert summary["finished"] == len(plans) - 1
+    assert summary["no_finish"] == 1
+    assert summary["failed"] == 0
+    assert summary["effective_years"] == 2
+    assert [outcome.route_uid for outcome in retried] == ["uid-retry"]
+
+
+def test_retry_failure_parks_job_and_records_the_attempt(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    spec, plans, coordinator, job_id = _mixed_start(monkeypatch, store)
+
+    retried, _wind, _runner = _retry(
+        coordinator,
+        job_id,
+        [MemberOutcome(plans[0].member_id, "failed", None, error="still broken")],
+    )
+
+    assert len(retried) == 1
+    record = store.load(job_id)
+    assert record.state == "needs_attention"
+    failed = record.members[plans[0].member_id]
+    assert failed.state == "failed"
+    assert failed.error == "still broken"
+    assert failed.attempts == 2
+    retries = [
+        entry for entry in record.attempt_history if entry.get("event") == "retry"
+    ]
+    assert len(retries) == 1
+    assert retries[0]["member_id"] == plans[0].member_id
+    assert retries[0]["attempt"] == 2
+
+
+def test_retry_acquires_only_the_retryable_members_units(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    spec, plans, coordinator, job_id = _mixed_start(monkeypatch, store)
+
+    _retried, wind, _runner = _retry(
+        coordinator, job_id, [MemberOutcome(plans[0].member_id, "finished", 20.0)]
+    )
+
+    units = tuple(wind.calls[0])
+    ids = [unit.unit_id for unit in units]
+    assert ids == sorted(set(ids)), "units must be deduplicated and sorted"
+    assert set(ids) == {
+        unit.unit_id for unit in historicaljob._plan_units((plans[0],), spec)
+    }
+    assert len(ids) < len(
+        {unit.unit_id for unit in historicaljob._plan_units(tuple(plans), spec)}
+    )
+
+
+def test_retrying_currents_job_without_a_binding_refuses(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    spec = _spec(required_fields=("wind", "currents"))
+    plans = plan_members(spec)
+    binding = CurrentBinding(
+        enabled=True,
+        priority="prefer_currents",
+        target_departure_utc=datetime(2019, 6, 1, 12, 0, tzinfo=UTC),
+        coverage_end_utc=datetime(2019, 6, 8, 12, 0, tzinfo=UTC),
+    )
+    acquisition = SimpleNamespace(
+        binding=binding,
+        coverage_end_utc=binding.coverage_end_utc,
+        hold_seconds=0.0,
+        provider="fixture",
+        field_ids=(),
+        field_hashes=(),
+    )
+    outcomes = [
+        MemberOutcome(plans[0].member_id, "failed", None, error="boom"),
+        *[MemberOutcome(plan.member_id, "finished", 10.0) for plan in plans[1:]],
+    ]
+    coordinator, job_id, _wind, _runner = _start(
+        monkeypatch,
+        store,
+        spec,
+        outcomes=outcomes,
+        acquire_currents=lambda prepared: acquisition,
+        current_selection_factory=lambda currents: object(),
+    )
+    record = store.load(job_id)
+    record.current_binding = {}
+    store.save(record)
+
+    with pytest.raises(CoordinatorError, match="current"):
+        coordinator.retry_failed(
+            job_id,
+            _request(),
+            ensure_wind=FakeWind(),
+            run_bound=FakeRunner(),
+            tranche_factory=lambda member: object(),
+            current_selection_factory=lambda currents: object(),
+        )
+
+    assert store.load(job_id).current_binding == {}
+    assert store.load(job_id).state == "needs_attention"
+
+
+def test_retrying_an_archived_job_refuses(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    _spec_value, _plans, coordinator, job_id = _mixed_start(monkeypatch, store)
+    record = store.load(job_id)
+    record.state = "archived"
+    store.save(record)
+
+    with pytest.raises(CoordinatorError, match="archived"):
+        coordinator.retry_failed(
+            job_id,
+            _request(),
+            ensure_wind=FakeWind(),
+            run_bound=FakeRunner(),
+            tranche_factory=lambda member: object(),
+        )
+
+
+def test_rerun_failed_units_reacquires_only_failed_units(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    spec, plans, coordinator, job_id = _mixed_start(monkeypatch, store)
+    units = historicaljob._plan_units(tuple(plans), spec)
+    assert len(units) > 1
+    record = store.load(job_id)
+    failed_unit, healthy_unit = units[0], units[1]
+    record.acquisitions[failed_unit.unit_id] = AcquisitionRecord(
+        unit_id=failed_unit.unit_id,
+        state="interrupted",
+        start_utc="",
+        end_utc="",
+        error="lost",
+        attempts=1,
+    )
+    record.acquisitions[healthy_unit.unit_id] = AcquisitionRecord(
+        unit_id=healthy_unit.unit_id,
+        state="complete",
+        start_utc="",
+        end_utc="",
+    )
+    store.save(record)
+
+    wind = FakeWind()
+    runner = FakeRunner()
+    calls_before = len(runner.calls)
+    count = coordinator.rerun_failed_units(job_id, ensure_wind=wind)
+
+    assert count == 1
+    assert len(wind.calls) == 1
+    assert [unit.unit_id for unit in wind.calls[0]] == [failed_unit.unit_id]
+    record = store.load(job_id)
+    assert record.acquisitions[failed_unit.unit_id].state == "complete"
+    assert record.acquisitions[failed_unit.unit_id].attempts == 2
+    assert record.acquisitions[healthy_unit.unit_id].state == "complete"
+    assert record.acquisitions[healthy_unit.unit_id].attempts == 0
+    assert len(runner.calls) == calls_before, "unit retry must never run routing"
+
+
+def test_coordinator_delegates_retries_to_the_retrier(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    _spec_value, _plans, coordinator, job_id = _mixed_start(monkeypatch, store)
+    assert isinstance(coordinator.retrier, HistoricalRetrier)
+    assert coordinator.retrier.store is store
+
+    calls = []
+    sentinel = [object()]
+
+    def fake_retry(retried_job_id, base_request, **kwargs):
+        calls.append((retried_job_id, base_request, kwargs))
+        return sentinel
+
+    def fake_units(retried_job_id, **kwargs):
+        calls.append((retried_job_id, kwargs))
+        return 7
+
+    monkeypatch.setattr(coordinator.retrier, "retry_failed", fake_retry)
+    monkeypatch.setattr(coordinator.retrier, "rerun_failed_units", fake_units)
+    request = _request()
+    wind, runner = FakeWind(), FakeRunner()
+
+    assert (
+        coordinator.retry_failed(job_id, request, ensure_wind=wind, run_bound=runner)
+        is sentinel
+    )
+    assert calls[0][0] == job_id
+    assert calls[0][1] is request
+    assert calls[0][2]["ensure_wind"] is wind
+    assert calls[0][2]["run_bound"] is runner
+    assert calls[0][2]["concurrency"] is None
+    assert calls[0][2]["tranche_factory"] is None
+    assert calls[0][2]["current_selection_factory"] is None
+
+    assert coordinator.rerun_failed_units(job_id, ensure_wind=wind) == 7
+    assert calls[1] == (job_id, {"ensure_wind": wind, "on_progress": None})
+
+
+def test_determinate_no_finish_member_is_never_retried(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    spec = _spec()
+    plans = plan_members(spec)
+    outcomes = [
+        MemberOutcome(plans[0].member_id, "no_finish", None),
+        *[MemberOutcome(plan.member_id, "finished", 20.0) for plan in plans[1:]],
+    ]
+    coordinator, job_id, _wind, _runner = _start(
+        monkeypatch, store, spec, outcomes=outcomes
+    )
+    runner = FakeRunner()
+    wind = FakeWind()
+
+    retried = coordinator.retry_failed(
+        job_id,
+        _request(),
+        ensure_wind=wind,
+        run_bound=runner,
+        tranche_factory=lambda member: object(),
+    )
+
+    assert retried == []
+    assert wind.calls == []
+    assert runner.calls == []
+    record = store.load(job_id)
+    assert record.state == "complete"
+    assert record.members[plans[0].member_id].attempts == 1
+    assert record.members[plans[0].member_id].outcome == "no_finish"
+    assert _is_retryable(record.members[plans[0].member_id]) is False
