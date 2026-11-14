@@ -7,7 +7,6 @@ from PySide6.QtCore import (
     QPoint,
     QPointF,
     QRect,
-    QRectF,
     QSignalBlocker,
     Qt,
     QTimer,
