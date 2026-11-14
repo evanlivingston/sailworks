@@ -9,7 +9,11 @@ from sailworks.core.forecastboundrouting import BoundRoutingWind, BoundRoutingWa
 from sailworks.core.marine.fields import FieldSelection, FieldStore
 
 from .nativerequest import NativeRequest
-from .routingnative import current_callable_from_selection
+from .routingnative import (
+    clamped_current_callable,
+    current_callable_from_selection,
+    shifted_current_fields,
+)
 
 
 def _attach_rounding_names(run, job):
@@ -190,7 +194,10 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
         if missing:
             raise ValueError("Selected local current fields changed or are missing")
         selection = FieldSelection(
-            tuple(store.fields[identifier] for identifier in job.current_field_ids),
+            shifted_current_fields(
+                tuple(store.fields[identifier] for identifier in job.current_field_ids),
+                job.current_time_shift_s,
+            ),
             priority=job.current_priority,
         )
 
@@ -224,7 +231,10 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
             return sample if sample is not None else (0.0, 0.0, 0.0, False)
 
         current = (
-            current_callable_from_selection(selection, include_provenance=True)
+            clamped_current_callable(
+                current_callable_from_selection(selection, include_provenance=True),
+                job.current_hold_epoch_s,
+            )
             if selection is not None
             else lambda latitude, longitude, epoch_s: (0.0, 0.0, False)
         )
@@ -269,6 +279,17 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
             destination=job.destination,
             current_field_ids=list(job.current_field_ids),
             current_priority=job.current_priority if job.use_currents else None,
+            # Historical members retime currents onto the target departure
+            # timeline. Only an active current selection carries a shift or a
+            # hold, so a wind-only fingerprint keeps its exact previous bytes.
+            **(
+                {
+                    "current_time_shift_s": job.current_time_shift_s,
+                    "current_hold_epoch_s": job.current_hold_epoch_s,
+                }
+                if job.use_currents
+                else {}
+            ),
             auto_download=job.auto_download,
             shoreline=(
                 [

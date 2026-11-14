@@ -109,6 +109,14 @@ class NativeRequest:
     # snapshot from the digest it was fingerprinted with.
     avoid_zones: tuple = ()
     avoid_zones_digest: str = ""
+    # Historical-ensemble members route on the target departure timeline. The
+    # current time axis is shifted by ``member_departure - target_departure``
+    # (seconds) and the current callback holds the last valid instant at the
+    # shifted member coverage end. Both defaults reproduce today's behaviour:
+    # no shift and no hold. The historical coordinator sets them per member;
+    # ``freeze_native_requests`` has no target departure and leaves them be.
+    current_time_shift_s: float = 0.0
+    current_hold_epoch_s: float | None = None
 
     def __post_init__(self):
         shapes = _frozen_shapes(self.map_shapes)

@@ -47,6 +47,7 @@ class CurrentBinding:
     coverage_end_utc: datetime | None
     priority: str = "finest"
     field_ids: tuple = ()
+    # For currents these are content-addressed CurrentField ids, not ERA5 GRIB digests.
     artifact_hashes: tuple = ()
     provider: str = ""
     hold_policy: str = "final_spatial_field"

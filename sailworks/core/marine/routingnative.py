@@ -8,10 +8,11 @@ are passed through exactly as the engine emitted them.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from datetime import datetime, timezone
 from collections.abc import Mapping, Sequence
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from .routingrecord import (
     Capabilities,
@@ -28,6 +29,9 @@ from .routingrecord import (
     Validation,
 )
 from .routingresult import RoutingResult, canonical_utc
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, keeps the module pure
+    from .fields import CurrentField
 
 # Statuses that cannot carry a reliable validation verdict. Their outcome stays
 # unknown rather than being reported as a failure of the searched route.
@@ -61,6 +65,74 @@ def polar_rows_from_polar(polar: Any) -> list[dict]:
         ]
         rows.append({"true_wind_speed_knots": float(tws_ms) * factor, "points": points})
     return rows
+
+
+def _checked_shift(shift_seconds: float) -> float:
+    """Return a finite float shift, refusing values that cannot be a time axis."""
+
+    shift = float(shift_seconds)
+    if not math.isfinite(shift):
+        raise ValueError("Current time shift must be a finite number of seconds")
+    return shift
+
+
+def shifted_current_fields(
+    fields: Sequence["CurrentField"], shift_seconds: float
+) -> tuple["CurrentField", ...]:
+    """Move a current field set onto the target departure timeline.
+
+    Convention: ``shift = member_departure - target_departure``. The shifted
+    field's time axis *is* the target timeline, so a lookup at member time ``t``
+    samples the current valid at ``target + (t - member_departure)``. A zero
+    shift returns the input fields unchanged (same objects). Only the time axis
+    moves: the field is still the same selected dataset, so its order and its
+    content id are preserved, keeping sample provenance (``dataset_id``) aligned
+    with the frozen ``current_field_ids`` entry.
+
+    The result is a read-only retimed *view*: never add it to a ``FieldStore``,
+    because ``content_key`` is recomputed over the retimed arrays while ``id``
+    is preserved, and ``manifest()`` reports the original dataset id with the
+    retimed validity window.
+    """
+
+    shift = _checked_shift(shift_seconds)
+    fields = tuple(fields)
+    if shift == 0.0:
+        return fields
+    shifted = []
+    for field in fields:
+        moved = dataclasses.replace(field, times=field.times + shift)
+        # ``CurrentField.id`` is a content hash that includes the time axis.
+        # Retiming is a view change, not a new dataset, so carry the cached id
+        # of the source field instead of advertising an id nothing else knows.
+        object.__setattr__(moved, "id", field.id)
+        shifted.append(moved)
+    return tuple(shifted)
+
+
+def clamped_current_callable(sample: Any, hold_epoch_s: float | None):
+    """Cap the instant passed to a current sampler at a hold epoch.
+
+    Applied after the member-to-target time shift: every lookup at or past
+    ``hold_epoch_s`` reuses the last valid instant instead of running off the
+    end of the member's current coverage. ``None`` returns ``sample`` itself, so
+    a request without a hold keeps today's callback. The sampler's return value
+    — including the optional provenance element — is passed through untouched.
+    """
+
+    if hold_epoch_s is None:
+        return sample
+    hold = float(hold_epoch_s)
+    if not math.isfinite(hold):
+        raise ValueError("Current hold epoch must be a finite number of seconds")
+    hold_s = int(hold)
+
+    def clamped(latitude: float, longitude: float, epoch_s: int):
+        # Integer seconds: the engine may hand us a fractional epoch, and the
+        # hold must be an exact instant, not a rounded-up one.
+        return sample(latitude, longitude, min(int(epoch_s), hold_s))
+
+    return clamped
 
 
 def current_callable_from_selection(selection: Any, *, include_provenance=False):
