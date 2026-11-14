@@ -320,6 +320,7 @@ class NavigationRenderer:
         self.hl_routing = None
         self.hl_poi = None
         self.hl_track_item = None
+        self.hl_track_hover = None
         self.edit_track = None
         self._route_geometry = {}
         # Per-route colour arrays cached by (revision, mode) so frames do not
@@ -630,7 +631,10 @@ class NavigationRenderer:
                         MapPoint.new_degrees(p[0], p[1])
                     )
 
-                    item_hl = active and self.hl_track_item == (i - 1)
+                    item_hl = active and (
+                        self.hl_track_item == (i - 1)
+                        or (self.edit_track is tr and self.hl_track_hover == (i - 1))
+                    )
 
                     if prevx is None:
                         if active:
