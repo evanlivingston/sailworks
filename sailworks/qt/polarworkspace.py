@@ -10,6 +10,7 @@ from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
+    QHBoxLayout,
     QLabel,
     QCheckBox,
     QPushButton,
@@ -81,6 +82,7 @@ class PerformanceControls(QWidget):
         self.controller, self.canvas = controller, canvas
         self.pending_wind = None
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(30, 8, 12, 8)
         self.show_points = QCheckBox("Show actual performance")
         self.show_points.setChecked(True)
         layout.addWidget(self.show_points)
@@ -95,13 +97,19 @@ class PerformanceControls(QWidget):
         )
         layout.addWidget(self.wind)
         self.clear = QPushButton("Clear samples")
+        self.clear.setProperty("quiet", True)
         self.clear.setToolTip(
             "Clear performance observations only; retain NMEA data and plots."
         )
         self.clear.clicked.connect(self.clear_samples)
-        layout.addWidget(self.clear)
+        clear_row = QHBoxLayout()
+        clear_row.addWidget(self.clear)
+        clear_row.addStretch()
+        layout.addLayout(clear_row)
         self.count = QLabel()
         self.count.setWordWrap(True)
+        self.count.setProperty("secondary", True)
+        self.count.setAccessibleName("Performance sample count")
         layout.addWidget(self.count)
         layout.addStretch()
         self.show_points.toggled.connect(self.control_changed)
@@ -130,6 +138,7 @@ class PerformanceControls(QWidget):
         selected = self.wind.currentIndex() - 1
         wind_filter = selected if selected >= 0 else None
         samples = tuple(p for p in samples if p.basis == basis)
+        basis_label = "speed through water" if basis == "stw" else "speed over ground"
         winds = self.canvas.polar.tws if self.canvas.polar else []
         visible = tuple(
             p
@@ -137,9 +146,17 @@ class PerformanceControls(QWidget):
             if wind_band(p.tws, winds) is not None
             and (wind_filter is None or wind_band(p.tws, winds) == wind_filter)
         )
-        self.count.setText(
-            f"{len(visible):,} / {len(samples):,} {basis.upper()} samples in range"
-        )
+        if not samples:
+            text = "No speed samples recorded yet."
+        elif visible:
+            text = (
+                f"Showing {len(visible):,} of {len(samples):,}"
+                f" {basis_label} samples."
+            )
+        else:
+            text = f"No {basis_label} samples in the selected wind range."
+        self.count.setText(text)
+        self.clear.setEnabled(bool(samples))
         self.canvas.set_performance(
             visible if self.show_points.isChecked() else (), wind_filter
         )
