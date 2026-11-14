@@ -1388,8 +1388,11 @@ class PreviewWindow(QMainWindow):
         if event.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Return, Qt.Key.Key_Enter):
             # Same fallback for a shape being edited: the tree, not the map,
             # may own focus, and the visible map is the one being edited.
-            canvas = self._active_map()
-            editing = getattr(canvas, "is_shape_editing", None)
+            active_map = getattr(self, "_active_map", None)
+            canvas = active_map() if callable(active_map) else None
+            editing = None
+            if canvas is not None:
+                editing = getattr(canvas, "is_shape_editing", None)
             if editing is not None and editing():
                 if event.key() == Qt.Key.Key_Escape:
                     canvas.cancel_shape_edit()
