@@ -10,6 +10,7 @@ import weatherrouting
 from PySide6.QtCore import QDateTime, QPoint, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDateTimeEdit,
     QLineEdit,
     QMessageBox,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
+    QStackedWidget,
     QTabWidget,
     QScrollArea,
     QFrame,
@@ -36,6 +38,7 @@ from sailworks.core.routingoptions import (
     scenario_request,
     parameter_values,
 )
+from .historicalrouting import HistoricalRoutingPanel
 from .scrollchrome import style_scrollarea
 from .dropdown import Dropdown, FieldRow
 from .slider import Slider
@@ -615,6 +618,15 @@ class RoutingPanel(QWidget):
     def _build_option_pages(self):
         compare_page = QWidget()
         compare = QVBoxLayout(compare_page)
+        self.compare_mode = QComboBox()
+        self.compare_mode.setAccessibleName("Compare mode")
+        self.compare_mode.addItem("Parameter variations", "parameter")
+        self.compare_mode.addItem("Historical years", "historical")
+        self.compare_mode.currentIndexChanged.connect(self._compare_mode_changed)
+        compare.addWidget(self.compare_mode)
+        self.compare_stack = QStackedWidget()
+        axes_page = QWidget()
+        axes = QVBoxLayout(axes_page)
         self.comparison_axes = {}
         for key, label, text, _ in AXES:
             enabled, values = QCheckBox(label), QLineEdit(text)
@@ -622,10 +634,17 @@ class RoutingPanel(QWidget):
             enabled.toggled.connect(values.setEnabled)
             enabled.toggled.connect(lambda *_: self.options_changed.emit())
             values.textChanged.connect(lambda *_: self.options_changed.emit())
-            compare.addWidget(enabled)
-            compare.addWidget(FieldRow("Values", values))
+            axes.addWidget(enabled)
+            axes.addWidget(FieldRow("Values", values))
             self.comparison_axes[key] = (enabled, values)
-        compare.addStretch()
+        axes.addStretch()
+        self.compare_stack.addWidget(axes_page)
+        self.historical = HistoricalRoutingPanel(
+            self.routing,
+            request_provider=lambda: self._request("native")[0],
+        )
+        self.compare_stack.addWidget(self.historical)
+        compare.addWidget(self.compare_stack, 1)
         self.pages.addTab(self._scroll_page(compare_page), "Compare")
         currents_page = QWidget()
         currents = QVBoxLayout(currents_page)
@@ -637,6 +656,11 @@ class RoutingPanel(QWidget):
         self.pages.addTab(self._scroll_page(currents_page), "Currents")
         self.wind_algorithm_name = self.algorithm.currentText()
         self.preflight_dialog = None
+
+    def _compare_mode_changed(self, _index):
+        historical = self.compare_mode.currentData() == "historical"
+        self.compare_stack.setCurrentIndex(1 if historical else 0)
+        self.options_changed.emit()
 
     def _build_current_priority(self):
         self.parameters_box.layout().addWidget(section_label("Currents"))
@@ -816,6 +840,8 @@ class RoutingPanel(QWidget):
                 key: dict(enabled=enabled.isChecked(), values=values.text())
                 for key, (enabled, values) in self.comparison_axes.items()
             },
+            compare_mode=self.compare_mode.currentData(),
+            historical=self.historical.values(),
         )
 
     def restore_options(self, saved):
@@ -912,6 +938,10 @@ class RoutingPanel(QWidget):
             if isinstance(text, str) and len(text) <= 4096:
                 values.setText(text)
             enabled.setChecked(axis.get("enabled") is True)
+        mode = saved.get("compare_mode")
+        index = self.compare_mode.findData(mode) if isinstance(mode, str) else -1
+        self.compare_mode.setCurrentIndex(index if index >= 0 else 0)
+        self.historical.set_values(saved.get("historical"))
 
     def refresh_polars(self):
         names = list(self.controller.core.polar_manager.polars)
@@ -1003,6 +1033,9 @@ class RoutingPanel(QWidget):
             self.refresh()
 
     def _calculate(self):
+        if self.compare_mode.currentData() == "historical":
+            self.historical.start_job()
+            return
         backend = self.backend.currentData() or "legacy"
         try:
             refusal = self._avoidance_refusal(backend, self.avoidance_shapes())
