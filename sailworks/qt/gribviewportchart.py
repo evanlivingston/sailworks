@@ -454,6 +454,7 @@ class ViewportChartLayer:
         on_publish=None,
         on_state=None,
         enc_enabled=False,
+        satellite_background=False,
         dpr=1,
         enc_only=False,
         session=None,
@@ -505,6 +506,11 @@ class ViewportChartLayer:
         # The ENC source is off by default and composed by this layer's own
         # worker, with the worker's own handles.
         self._enc_enabled = bool(enc_enabled)
+        # The chart composition is transparent over imagery: the raster
+        # background is the picture, and an opaque base chart painted above
+        # it would hide the satellite layer entirely.  With the basemap
+        # selected the composition carries the vector chart as before.
+        self._satellite_background = bool(satellite_background)
         self._enc_only = bool(enc_only)
         self._enc_source = None
         self._enc_state = "disabled" if not self._enc_enabled else "idle"
@@ -828,6 +834,50 @@ class ViewportChartLayer:
             if request is not None:
                 request[2].set()
 
+    def set_enc_enabled(self, enabled):
+        """Add or remove the ENC cells from the composition (GUI thread).
+
+        The retention belongs to the layer identity: a surface composed with
+        the cells out may not serve a request with them in, and the reverse.
+        The published composition is withdrawn and the worker drops its
+        retained pixels before it composes again, so the other identity is
+        never reused or presented as the current one.
+        """
+        enabled = bool(enabled)
+        with self._condition:
+            if enabled == self._enc_enabled:
+                return False
+            self._enc_enabled = enabled
+            self._enc_state = "loading" if enabled else "disabled"
+            self._enc_metadata = {}
+            self._enc_stale = False
+            self._published = None
+            self._payload_bytes = 0
+            self._invalidate_sources_locked()
+        self._notify_state("loading" if enabled else "disabled")
+        return True
+
+    def set_satellite_background(self, enabled):
+        """Whether imagery owns the background (GUI thread).
+
+        The composition's identity includes the background it was painted
+        for: over imagery the base chart must stay transparent so the raster
+        background shows through, while over the basemap the composition
+        carries the vector chart.  A change withdraws the published pixels
+        and drops the worker's retained frames before it composes again, so
+        neither identity is reused or presented as the current one.
+        """
+        enabled = bool(enabled)
+        with self._condition:
+            if enabled == self._satellite_background:
+                return False
+            self._satellite_background = enabled
+            self._published = None
+            self._payload_bytes = 0
+            self._enc_stale = False
+            self._invalidate_sources_locked()
+        return True
+
     def enc_status(self):
         """The ENC source's own status text, for the scene."""
         with self._condition:
@@ -1144,6 +1194,10 @@ class ViewportChartLayer:
             "time": camera.stamp(),
             "factor": factor,
             "preview": preview,
+            # The background identity these pixels were painted for.  The
+            # viewport presents a deferred switch only on a composition that
+            # matches it.
+            "satellite_background": bool(self._satellite_background),
             "enc": enc if enc is not None else disabled_enc_metadata(),
             "static": reuse,
             "timings": timings,
@@ -1379,6 +1433,15 @@ class ViewportChartLayer:
 
     def _base_sources(self):
         if self._enc_only:
+            return ()
+        if self._enc_enabled or self._satellite_background:
+            # The ENC cells are an overlay, not a background: the composition
+            # is transparent outside their coverage, so the active background
+            # (satellite imagery or the vector basemap) shows through.  The
+            # same is true of the whole composition while imagery owns the
+            # background.  The world coastline is already the viewport's own
+            # basemap layer and must not be painted opaque over that
+            # background here.
             return ()
         if not self._sources:
             self._sources = base_sources(self._data_dir)

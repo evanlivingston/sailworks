@@ -35,8 +35,29 @@ def _wait_for(predicate, timeout=5):
 
 
 class _WidgetHarness:
+    """A widget stand-in with the background lifecycle's real methods."""
+
     def __init__(self, **attributes):
         self.__dict__.update(attributes)
+        for name, value in (
+            ("_background_pending", None),
+            ("_background_pending_camera", None),
+            ("_background_presented", "basemap"),
+            ("_chart_background_identity", None),
+            ("_chart_swap_fade_armed", False),
+            ("_satellite_visible", False),
+            ("_satellite_visible_generation", None),
+            ("_weather", None),
+            ("_camera", None),
+        ):
+            self.__dict__.setdefault(name, value)
+        cls = _viewport_widget_class()
+        for name in (
+            "_present_background",
+            "_settle_background_presentation",
+            "_cancel_background_switch",
+        ):
+            self.__dict__.setdefault(name, MethodType(getattr(cls, name), self))
 
 
 def test_chart_capacity_withdrawal_loads_replacement_in_real_qml(app):

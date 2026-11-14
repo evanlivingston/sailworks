@@ -830,13 +830,43 @@ class WeatherPresenter(QObject):
         return super().eventFilter(watched, event)
 
     def _layer_visibility_changed(self, layer, visible):
+        """Persist a layer switch the scene made, once per real change.
+
+        The stored setting feeds back into ``set_layer_visible`` through the
+        change handlers registered for the widget, and every assignment
+        notifies again even when the value is unchanged.  Writing a value the
+        setting already holds would therefore re-enter ``set_layer_visible``,
+        which may report the same layer again, and the pair would recurse
+        until the stack overflows.  A switch that changes nothing is already
+        stored, so it is not written; a switch that changes something is
+        written once, and its own re-entry finds the stored value equal.
+        """
         key = {
             "satellite": "chartSatelliteVisible",
             "basemap": "chartWorldVisible",
             "enc": "chartENCVisible",
         }.get(layer)
-        if key is not None:
-            self.canvas.controller.settings[key] = bool(visible)
+        if key is None:
+            return
+        settings = self.canvas.controller.settings
+        stored = (
+            settings.get(key)
+            if hasattr(settings, "get")
+            else getattr(settings, key, None)
+        )
+        value = bool(visible)
+        if stored is not None and bool(stored) == value:
+            return
+        applying = getattr(self, "_layer_visibility_applying", None)
+        if applying is None:
+            applying = self._layer_visibility_applying = set()
+        if key in applying:
+            return
+        applying.add(key)
+        try:
+            settings[key] = value
+        finally:
+            applying.discard(key)
 
     def _camera_changed(self, camera):
         """Mirror the viewport-owned camera for existing overlays and app APIs."""

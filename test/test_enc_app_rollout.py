@@ -17,6 +17,42 @@ from sailworks.qt.gribviewportchart import ViewportChartLayer
 from sailworks.rendering.chartcollection import ChartCollection
 
 
+def _with_background_lifecycle(widget):
+    """Give a widget stand-in the real background-presentation lifecycle.
+
+    Chart publication settles or withdraws a deferred background switch, so a
+    stand-in must provide that lifecycle instead of the production code
+    tolerating its absence.
+    """
+    from types import MethodType
+
+    from sailworks.qt.gribviewport import _viewport_widget_class
+
+    defaults = (
+        ("_background_pending", None),
+        ("_background_pending_camera", None),
+        ("_background_presented", "basemap"),
+        ("_chart_background_identity", None),
+        ("_chart_swap_fade_armed", False),
+        ("_satellite_visible", False),
+        ("_satellite_visible_generation", None),
+        ("_weather", None),
+        ("_camera", None),
+    )
+    for name, value in defaults:
+        if not hasattr(widget, name):
+            setattr(widget, name, value)
+    cls = _viewport_widget_class()
+    for name in (
+        "_present_background",
+        "_settle_background_presentation",
+        "_cancel_background_switch",
+    ):
+        if not hasattr(widget, name):
+            setattr(widget, name, MethodType(getattr(cls, name), widget))
+    return widget
+
+
 @pytest.fixture
 def presenter(monkeypatch):
     app = QApplication.instance() or QApplication([])
@@ -299,6 +335,7 @@ def test_chart_staging_ignores_stale_callbacks_and_adopts_metadata(presenter):
         _chart_timer=Mock(),
         counters={"chart_publications": 0},
     )
+    _with_background_lifecycle(widget)
     for name in (
         "_publish_chart",
         "_reject_chart_pending",
@@ -388,6 +425,7 @@ def test_chart_reuse_redelivers_rejected_cold_start_without_stale_adoption(
         _chart_ready_at=None,
         counters={"chart_requests": 0, "chart_publications": 0},
     )
+    _with_background_lifecycle(widget)
     cls = _viewport_widget_class()
     for name in (
         "_publish_chart",
@@ -455,6 +493,7 @@ def test_clearing_chart_withdraws_visible_manager_state(presenter):
     )
     for name in ("_reject_chart_pending", "_clear_chart"):
         setattr(widget, name, MethodType(getattr(cls, name), widget))
+    _with_background_lifecycle(widget)
     widget._clear_chart()
     manager.withdraw_visible.assert_called_once()
     assert widget._chart_visible_generation is None
@@ -514,6 +553,7 @@ def _budget_chart_widget(image):
         _chart_timer=Mock(),
         counters={"chart_publications": 0},
     )
+    _with_background_lifecycle(widget)
     for name in (
         "_reject_chart_pending",
         "_clear_chart",
