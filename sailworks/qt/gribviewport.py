@@ -264,12 +264,32 @@ SATELLITE_FAILURES_BEFORE_BACKOFF = 3
 #: achievable cadence directly.
 SATELLITE_CAPTURE_SCALE = 1.0
 
-#: The renderer's frame size is the camera size in device pixels; halving it
-#: targets one raster pixel per logical pixel on a 2x display, which is all a
-#: scaled photographic basemap needs and quarters the per-frame readback and
-#: texture cost. Must stay constant for a session: the renderer is keyed on
-#: (width, height, scale) and varying it rebuilds the MapLibre map.
-SATELLITE_CAPTURE_DIVISOR = 2
+#: Divisor applied to the padded camera's pixel width and height when a
+#: satellite frame is rendered. ``1`` means full device resolution and is the
+#: current default; halving it targets one raster pixel per logical pixel on a
+#: 2x display, which is all a scaled photographic basemap needs and quarters
+#: the per-frame readback and texture cost. A smaller frame covers less
+#: geography at the same zoom, so the render zoom must drop by ``log2`` of the
+#: divisor to preserve the covered extent; without that drop the imagery slides
+#: in x/y as frames land. Must stay constant for a session: the renderer is
+#: keyed on (width, height, scale) and varying it rebuilds the MapLibre map.
+SATELLITE_CAPTURE_DIVISOR = 1
+
+
+def satellite_render_camera(padded, divisor=SATELLITE_CAPTURE_DIVISOR):
+    """The camera a satellite frame of ``padded`` is rendered with.
+
+    The placement rectangle still describes the padded camera, so the rendered
+    frame must cover the same bounds: (W / d) * 2^(z - log2(d)) == W * 2^z.
+    """
+    return replace(
+        padded,
+        width=max(1, padded.width // divisor),
+        height=max(1, padded.height // divisor),
+        # Halving the pixel extent halves the rendered geography, so the zoom
+        # drops to keep the frame covering the bounds the placement describes.
+        zoom=padded.zoom - math.log2(divisor),
+    )
 
 
 def satellite_status_text(reason):
@@ -3122,16 +3142,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             # camera stored for placement stays at full size: chart_placement
             # derives the image's logical extent from camera.width/height, so
             # halving it there would shrink the drawn image and leave the
-            # viewport edges uncovered. A frame of half the extent covers half
-            # the geography at the same zoom, so the render camera drops one
-            # zoom level to keep the rendered bounds identical to the padded
-            # camera; the texture is the same view at half the pixel density.
-            rendered = replace(
-                padded,
-                width=max(1, padded.width // SATELLITE_CAPTURE_DIVISOR),
-                height=max(1, padded.height // SATELLITE_CAPTURE_DIVISOR),
-                zoom=padded.zoom - 1.0,
-            )
+            # viewport edges uncovered. satellite_render_camera drops the zoom
+            # to match, so the frame still covers the padded camera's bounds.
+            rendered = satellite_render_camera(padded)
             self._satellite_generation += 1
             generation = self._satellite_generation
             jobs = self._satellite_job_cameras

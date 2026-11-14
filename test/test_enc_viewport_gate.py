@@ -734,3 +734,48 @@ def test_close_withdraws_retained_image_and_worker_releases_base_handles(tmp_pat
     layer._release()
     assert released == [True]
     assert layer._composer_instance is None
+
+
+@pytest.mark.parametrize("divisor", (1, 2, 4))
+def test_satellite_render_camera_keeps_the_padded_extent(divisor):
+    """A rendered frame must cover the geography its placement describes."""
+    from dataclasses import replace
+    from datetime import datetime
+
+    from sailworks.qt.gribviewport import (
+        SATELLITE_MARGIN,
+        ViewportCamera,
+        satellite_render_camera,
+    )
+
+    camera = ViewportCamera(48.45, -124.29, 9.0, 728, 744, datetime(2026, 10, 22))
+    padded = replace(
+        camera,
+        width=camera.width + 2 * SATELLITE_MARGIN,
+        height=camera.height + 2 * SATELLITE_MARGIN,
+    )
+    rendered = satellite_render_camera(padded, divisor)
+    assert (rendered.width, rendered.height) == (
+        padded.width // divisor,
+        padded.height // divisor,
+    )
+
+    top_lat, left_lon = padded.view().get_bbox()[0].get_degrees()
+    bottom_lat, right_lon = padded.view().get_bbox()[1].get_degrees()
+    rendered_top, rendered_left = rendered.view().get_bbox()[0].get_degrees()
+    rendered_bottom, rendered_right = rendered.view().get_bbox()[1].get_degrees()
+    # Same geography: the frame is placed into the padded rectangle, so any
+    # difference shows up as the imagery sliding in x/y as frames land.
+    assert (rendered_top, rendered_left) == pytest.approx((top_lat, left_lon), abs=1e-9)
+    assert (rendered_bottom, rendered_right) == pytest.approx(
+        (bottom_lat, right_lon), abs=1e-9
+    )
+
+    # The bug: at full resolution a hardcoded one-level drop covered twice the
+    # ground area, so the frame no longer matched its placement.
+    if divisor == 1:
+        shifted = replace(rendered, zoom=rendered.zoom - 1.0)
+        covered = shifted.view().get_scale() * shifted.height
+        assert covered == pytest.approx(
+            padded.view().get_scale() * padded.height * 2.0, rel=1e-9
+        )
