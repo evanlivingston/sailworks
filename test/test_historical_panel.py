@@ -9,12 +9,15 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtWidgets import QTreeWidgetItem
 
 import sailworks.qt.historicalera5 as historicalera5
 import sailworks.qt.historicalrouting as historicalrouting
 from sailworks.core.historicalroutingrecords import MemberRecord
 from sailworks.qt.historicalrouting import HistoricalRoutingPanel
 from sailworks.qt.routingpanel import RoutingPanel
+from sailworks.qt.scenepanel import NAME_COLUMN, NODE_ROLE
+from test.test_qt_scenepanel import application, panel_for
 
 REGION = (-30.0, -10.0, 30.0, 40.0)
 
@@ -119,6 +122,138 @@ def test_mode_combo_switches_the_stack_and_dispatches(qtbot, monkeypatch, tmp_pa
     assert panel.routing.started == []
 
 
+def test_edit_in_plan_switches_to_the_plan_tab(qtbot, monkeypatch, tmp_path):
+    panel = routing_panel(qtbot, monkeypatch, tmp_path)
+    for index in range(panel.pages.count()):
+        if panel.pages.tabText(index) == "Compare":
+            panel.pages.setCurrentIndex(index)
+    assert panel.pages.currentIndex() != 0
+    panel.historical.options.edit_plan.click()
+    assert panel.pages.currentIndex() == 0
+    assert panel.pages.tabText(0) == "Plan"
+
+
+def test_show_historical_job_selects_compare_and_dispatches(
+    qtbot, monkeypatch, tmp_path
+):
+    panel = routing_panel(qtbot, monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(panel.historical, "show_job", calls.append)
+
+    panel.show_historical_job("job-9")
+
+    compare = next(
+        index
+        for index in range(panel.pages.count())
+        if panel.pages.tabText(index) == "Compare"
+    )
+    assert panel.pages.currentIndex() == compare
+    assert panel.compare_mode.currentData() == "historical"
+    assert panel.compare_stack.currentIndex() == 1
+    assert calls == ["job-9"]
+
+
+def test_scene_group_selection_emits_the_group_and_items_still_select(qtbot, tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+    qtbot.addWidget(panel)
+    groups = []
+    selected = []
+    panel.group_selected.connect(groups.append)
+    panel.selected.connect(lambda kind, key: selected.append((kind, key)))
+
+    group_row = QTreeWidgetItem(["historical-routing:job-1", ""])
+    group_row.setData(NAME_COLUMN, NODE_ROLE, ("group", "historical-routing:job-1"))
+    panel.tree.addTopLevelItem(group_row)
+    panel.tree.clearSelection()
+    group_row.setSelected(True)
+    assert groups == ["historical-routing:job-1"]
+    assert selected == []
+
+    item_row = QTreeWidgetItem(["Route", ""])
+    item_row.setData(NAME_COLUMN, NODE_ROLE, ("item", "routing", "r1"))
+    panel.tree.addTopLevelItem(item_row)
+    panel.tree.clearSelection()
+    item_row.setSelected(True)
+    assert selected == [("routing", "r1")]
+    assert groups == ["historical-routing:job-1"]
+
+
+def test_historical_summary_reflects_the_plan_request(qtbot):
+    request = SimpleNamespace(
+        departure=datetime(2021, 6, 15, 12),
+        start=(1.0, 2.0),
+        destination=(3.0, 4.0),
+        waypoints=((5.0, 6.0),),
+        polar_file="/tmp/Elan 410.pol",
+        algorithm=type("LinearBestIsoRouter", (), {}),
+        tws_max_kn=30.0,
+        min_sailing_speed_kn=4.0,
+        motor_speed_kn=6.0,
+        use_currents=True,
+    )
+    panel = historical_panel(qtbot, request=request)
+    text = panel.options.summary_text()
+    assert "2021-06-15 12:00" in text
+    assert "1.000, 2.000 → 3.000, 4.000" in text
+    assert "Waypoints: 1" in text
+    assert "Elan 410" in text
+    assert "Isochrone" in text
+    assert "max wind 30 kn" in text
+    assert "min sailing 4.0 kn" in text
+    assert "Currents: on" in text
+    assert panel.options.route_missing.isHidden()
+
+
+def test_historical_summary_without_a_request_shows_guidance(qtbot):
+    panel = historical_panel(qtbot, request=None)
+    assert not panel.options.route_missing.isHidden()
+    assert panel.options.edit_plan.isEnabled()
+
+
+def test_show_job_loads_a_published_run(qtbot):
+    record = SimpleNamespace(
+        job_id="job-1",
+        created_at_utc="2026-06-15T12:00:00+00:00",
+        state="complete",
+        spec={
+            "summary": {
+                "complete_years": 1,
+                "finished": 1,
+                "no_finish": 0,
+                "failed": 0,
+                "completion_curve": [[0.0, 0.0], [10.0, 1.0]],
+            }
+        },
+        members={"2020-000": _member()},
+        excluded_years=(),
+    )
+    store = FakeStore()
+    store.load = lambda job_id: record
+    panel = HistoricalRoutingPanel(
+        SimpleNamespace(core=None, analysis=None),
+        store_factory=lambda root: store,
+        request_provider=None,
+    )
+    qtbot.addWidget(panel)
+    assert panel.job_selector is None
+    assert not panel.results.empty_label.isHidden()
+
+    panel.show_job("job-1")
+    assert panel._record is record
+    assert panel.results.empty_label.isHidden()
+    assert panel.results.table.rowCount() == 1
+    assert "1 complete years" in panel.results.summary.text()
+
+
+def test_show_job_reports_a_missing_run_without_raising(qtbot):
+    panel = historical_panel(qtbot)
+    assert panel.job_selector is None
+    panel.show_job("missing")
+    assert "Could not load that run" in panel.options.status.text()
+    assert not panel.results.empty_label.isHidden()
+
+
 def test_saved_and_restored_options_include_mode_and_historical_values(
     qtbot, monkeypatch, tmp_path
 ):
@@ -220,9 +355,13 @@ def test_ensure_wind_skips_covered_units(qtbot, monkeypatch, tmp_path):
     service = _Service()
     controller = SimpleNamespace(
         core=None,
-        analysis=SimpleNamespace(state=SimpleNamespace(store=SimpleNamespace(root=tmp_path))),
+        analysis=SimpleNamespace(
+            state=SimpleNamespace(store=SimpleNamespace(root=tmp_path))
+        ),
     )
-    panel = historical_panel(qtbot, controller=controller, service_factory=lambda store: service)
+    panel = historical_panel(
+        qtbot, controller=controller, service_factory=lambda store: service
+    )
     panel.ensure_wind([_unit()])
     assert service.submitted == []
 
@@ -238,9 +377,13 @@ def test_ensure_wind_raises_on_a_reported_error(qtbot, monkeypatch, tmp_path):
     service = _Service(error="boom")
     controller = SimpleNamespace(
         core=None,
-        analysis=SimpleNamespace(state=SimpleNamespace(store=SimpleNamespace(root=tmp_path))),
+        analysis=SimpleNamespace(
+            state=SimpleNamespace(store=SimpleNamespace(root=tmp_path))
+        ),
     )
-    panel = historical_panel(qtbot, controller=controller, service_factory=lambda store: service)
+    panel = historical_panel(
+        qtbot, controller=controller, service_factory=lambda store: service
+    )
     try:
         panel.ensure_wind([_unit()])
     except RuntimeError as error:
@@ -305,13 +448,17 @@ def test_results_populate_from_a_fake_summary_and_records(qtbot):
     assert panel.results.table.rowCount() == 1
     assert panel.results.table.item(0, 0).text() == "2020"
     assert panel.results.canvas._curve == [(0.0, 0.0), (10.0, 1.0)]
-    assert panel.results.canvas._strip == [{"year": 2020, "offset_days": 0, "outcome": "finished"}]
+    assert panel.results.canvas._strip == [
+        {"year": 2020, "offset_days": 0, "outcome": "finished"}
+    ]
 
 
 def test_delete_calls_the_coordinator_and_the_collection(qtbot):
     route = SimpleNamespace(uid="route-a")
     collection = [route]
-    controller = SimpleNamespace(core=SimpleNamespace(routingManager=collection), analysis=None)
+    controller = SimpleNamespace(
+        core=SimpleNamespace(routingManager=collection), analysis=None
+    )
     panel = historical_panel(qtbot, controller=controller)
     panel._record = SimpleNamespace(job_id="job-1", members={"2020-000": _member()})
     calls = []
@@ -391,7 +538,9 @@ def _record(*members, job_id="job-1", excluded_years=()):
 
 def test_set_scene_attaches_and_publishes_routes_after_a_retry(qtbot):
     route = _route("route-a")
-    controller = SimpleNamespace(core=SimpleNamespace(routingManager=[route]), analysis=None)
+    controller = SimpleNamespace(
+        core=SimpleNamespace(routingManager=[route]), analysis=None
+    )
     panel = historical_panel(qtbot, controller=controller)
     published = []
     panel.coordinator = SimpleNamespace(
@@ -416,7 +565,9 @@ def test_set_scene_attaches_and_publishes_routes_after_a_retry(qtbot):
 
 def test_retry_failed_uses_the_start_job_seams_and_refreshes_rows(qtbot, monkeypatch):
     route = _route("route-a")
-    controller = SimpleNamespace(core=SimpleNamespace(routingManager=[route]), analysis=None)
+    controller = SimpleNamespace(
+        core=SimpleNamespace(routingManager=[route]), analysis=None
+    )
     request = SimpleNamespace(
         departure=datetime(2021, 6, 15, 12),
         start=(0.0, 0.0),
@@ -457,10 +608,14 @@ def test_retry_failed_uses_the_start_job_seams_and_refreshes_rows(qtbot, monkeyp
 
 def test_show_all_and_hide_all_set_item_visibility_and_save(qtbot):
     routes = [_route("route-a", False), _route("route-b", False)]
-    controller = SimpleNamespace(core=SimpleNamespace(routingManager=routes), analysis=None)
+    controller = SimpleNamespace(
+        core=SimpleNamespace(routingManager=routes), analysis=None
+    )
     panel = historical_panel(qtbot, controller=controller)
     scene = FakeScene()
-    panel.coordinator = SimpleNamespace(scene=scene, publisher=SimpleNamespace(scene=scene))
+    panel.coordinator = SimpleNamespace(
+        scene=scene, publisher=SimpleNamespace(scene=scene)
+    )
     panel._record = _record(
         _member_route("2020-000", "route-a"),
         _member_route("2021-000", "route-b", year=2021),
@@ -481,10 +636,14 @@ def test_show_all_and_hide_all_set_item_visibility_and_save(qtbot):
 
 def test_representatives_show_only_the_median_finished_route(qtbot):
     routes = [_route("route-a"), _route("route-b"), _route("route-c")]
-    controller = SimpleNamespace(core=SimpleNamespace(routingManager=routes), analysis=None)
+    controller = SimpleNamespace(
+        core=SimpleNamespace(routingManager=routes), analysis=None
+    )
     panel = historical_panel(qtbot, controller=controller)
     scene = FakeScene()
-    panel.coordinator = SimpleNamespace(scene=scene, publisher=SimpleNamespace(scene=scene))
+    panel.coordinator = SimpleNamespace(
+        scene=scene, publisher=SimpleNamespace(scene=scene)
+    )
     record = _record(
         _member_route("2020-000", "route-a", year=2020),
         _member_route("2021-000", "route-b", year=2021),
@@ -511,7 +670,9 @@ def test_recheck_button_enabled_only_when_a_job_has_excluded_years(qtbot):
     panel._show_record(_record(_member_route("2020-000", "route-a")))
     assert panel.results.recheck_button.isEnabled() is False
 
-    panel._show_record(_record(_member_route("2020-000", "route-a"), excluded_years=(2019,)))
+    panel._show_record(
+        _record(_member_route("2020-000", "route-a"), excluded_years=(2019,))
+    )
     assert panel.results.recheck_button.isEnabled() is True
 
     # No job means no recheck even when exclusions are remembered.
@@ -519,9 +680,13 @@ def test_recheck_button_enabled_only_when_a_job_has_excluded_years(qtbot):
     assert panel.results.recheck_button.isEnabled() is False
 
 
-def test_recheck_excluded_uses_the_same_seams_and_publishes_new_routes(qtbot, monkeypatch):
+def test_recheck_excluded_uses_the_same_seams_and_publishes_new_routes(
+    qtbot, monkeypatch
+):
     routes = [_route("route-a"), _route("route-b")]
-    controller = SimpleNamespace(core=SimpleNamespace(routingManager=routes), analysis=None)
+    controller = SimpleNamespace(
+        core=SimpleNamespace(routingManager=routes), analysis=None
+    )
     request = SimpleNamespace(
         departure=datetime(2021, 6, 15, 12),
         start=(0.0, 0.0),
@@ -569,7 +734,9 @@ def test_recheck_excluded_uses_the_same_seams_and_publishes_new_routes(qtbot, mo
 
 def test_cancelling_a_recheck_leaves_the_panel_usable(qtbot, monkeypatch):
     route = _route("route-a")
-    controller = SimpleNamespace(core=SimpleNamespace(routingManager=[route]), analysis=None)
+    controller = SimpleNamespace(
+        core=SimpleNamespace(routingManager=[route]), analysis=None
+    )
     request = SimpleNamespace(
         departure=datetime(2021, 6, 15, 12),
         start=(0.0, 0.0),

@@ -8,14 +8,7 @@ import threading
 from zoneinfo import ZoneInfo
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (
-    QComboBox,
-    QHBoxLayout,
-    QLabel,
-    QSplitter,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QSplitter, QVBoxLayout, QWidget
 
 from sailworks.core.historicalcoordinator import HistoricalRoutingCoordinator
 from sailworks.core.historicalrouting import HistoricalRoutingSpec, reference_year
@@ -61,6 +54,9 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
     progress_reported = Signal(str, int, int, str)
     job_finished = Signal(str, str)
     outcome_reported = Signal(object)
+    # Emitted when the user asks to change the inherited route settings; the
+    # owning panel switches to the Plan tab.
+    edit_plan_requested = Signal()
     # Emitted after the panel changes a route's item visibility, so the window
     # can repaint the map overlay and the scene tree exactly as the tree's own
     # checkbox does. There is no scene/panel reference held on purpose.
@@ -98,13 +94,6 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-        selector = QHBoxLayout()
-        selector.addWidget(QLabel("Job"))
-        self.job_selector = QComboBox()
-        self.job_selector.setAccessibleName("Historical job")
-        self.job_selector.currentIndexChanged.connect(self._job_selected)
-        selector.addWidget(self.job_selector, 1)
-        layout.addLayout(selector)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         self.options = HistoricalRoutingOptions()
@@ -115,9 +104,14 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         splitter.setStretchFactor(1, 1)
         layout.addWidget(splitter, 1)
 
+        # Run history is the scene tree: selecting a published run's group
+        # opens its results. There is no separate job selector here.
+        self.job_selector = None
+
         self.options.run_requested.connect(lambda *_: self.start_job())
         self.options.cancel_requested.connect(self.cancel_job)
         self.options.edit_region_requested.connect(self.edit_region)
+        self.options.edit_plan_requested.connect(self.edit_plan_requested.emit)
         self.options.values_changed.connect(self._values_changed)
         self.results.member_selected.connect(self._member_selected)
         self.results.delete_requested.connect(self.delete_job)
@@ -130,7 +124,7 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         self.progress_reported.connect(self._progress)
         self.job_finished.connect(self._finished)
         self.outcome_reported.connect(self._outcome)
-        self._refresh_jobs()
+        self.refresh_route_summary()
 
     # -- persistence -----------------------------------------------------
     def values(self):
@@ -172,6 +166,49 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         if departure.tzinfo is None:
             return departure
         return departure.astimezone(zone).replace(tzinfo=None)
+
+    # -- inherited route setup -------------------------------------------
+    def refresh_route_summary(self):
+        """Show the Plan tab's current route configuration, read-only."""
+        try:
+            summary = self._route_summary()
+        except Exception:
+            summary = {}
+        self.options.set_route_summary(summary)
+
+    def _route_summary(self):
+        request = self._base_request()
+        departure = self._departure_local(request.departure)
+        safety = []
+        if request.tws_max_kn is not None:
+            safety.append(f"max wind {float(request.tws_max_kn):.0f} kn")
+        if request.min_sailing_speed_kn is not None:
+            safety.append(f"min sailing {float(request.min_sailing_speed_kn):.1f} kn")
+            safety.append(f"motor {float(request.motor_speed_kn):.1f} kn")
+        algorithm = getattr(request.algorithm, "__name__", None)
+        if not algorithm:
+            algorithm = getattr(request.algorithm, "name", None) or str(
+                request.algorithm
+            )
+        if algorithm == "LinearBestIsoRouter":
+            algorithm = "Isochrone"
+        polar_file = request.polar_file or ""
+        return {
+            "departure": departure.strftime("%Y-%m-%d %H:%M"),
+            "start": self._format_point(request.start),
+            "destination": self._format_point(request.destination),
+            "waypoints": len(request.waypoints),
+            "polar": Path(polar_file).stem if polar_file else None,
+            "algorithm": algorithm,
+            "safety": " · ".join(safety),
+            "currents": bool(request.use_currents),
+        }
+
+    @staticmethod
+    def _format_point(point):
+        if point is None:
+            return None
+        return f"{float(point[0]):.3f}, {float(point[1]):.3f}"
 
     @staticmethod
     def _region_from_request(request):
@@ -250,36 +287,26 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
 
     def _values_changed(self):
         self.options.set_status("")
+        self.refresh_route_summary()
 
-    def _job_selected(self, _index):
-        job_id = self.job_selector.currentData()
-        if not job_id:
-            return
+    def show_job(self, job_id):
+        """Load and display a published run chosen from the scene tree."""
         try:
-            self._record = self.store.load(str(job_id))
+            record = self.store.load(str(job_id))
         except Exception as error:
-            self.options.set_status(f"Could not load job: {error}")
+            self.options.set_status(f"Could not load that run: {error}")
             return
-        self._show_record(self._record)
+        self._record = record
+        self.refresh_route_summary()
+        self._show_record(record)
 
     def _refresh_jobs(self):
-        list_jobs = getattr(self.store, "list_jobs", None)
-        records = []
-        if callable(list_jobs):
-            try:
-                records = list(list_jobs())
-            except Exception:
-                records = []
-        self.job_selector.blockSignals(True)
-        self.job_selector.clear()
-        self.job_selector.addItem("Select a job…", "")
-        for record in records[-20:][::-1]:
-            label = f"{str(record.created_at_utc)[:10]} · {record.state}"
-            self.job_selector.addItem(label, record.job_id)
-        self.job_selector.blockSignals(False)
+        """Run history is the scene tree; there is no list to populate."""
+        return
 
     # -- results ---------------------------------------------------------
     def _show_record(self, record):
+        self.results.set_has_run(True)
         apply_results(self.results, record, self._outcomes)
 
     def _publish_routes(self, record):

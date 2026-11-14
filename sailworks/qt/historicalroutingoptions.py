@@ -10,11 +10,11 @@ specification the engine would reject anyway.
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
     QPushButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -34,6 +34,8 @@ from sailworks.core.historicalrouting import (
 )
 
 from .dropdown import Dropdown, FieldRow
+from .slider import Slider
+from .theme import section_label
 
 # The routing panel already exposes these two policies for overlapping
 # current models; historical mode reuses the same values verbatim.
@@ -57,6 +59,7 @@ class HistoricalRoutingOptions(QWidget):
     run_requested = Signal(dict)
     cancel_requested = Signal()
     edit_region_requested = Signal()
+    edit_plan_requested = Signal()
     values_changed = Signal()
 
     def __init__(self, parent=None):
@@ -64,6 +67,7 @@ class HistoricalRoutingOptions(QWidget):
         self._region = None
         self._available = True
         self._running = False
+        self._summary = {}
         self._build()
         self._sync_buttons()
         self._update_region_label()
@@ -72,20 +76,65 @@ class HistoricalRoutingOptions(QWidget):
     def _build(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setSpacing(8)
+
+        # Route configuration is owned by the Plan tab; this read-only summary
+        # shows exactly what historical mode will reuse.
+        layout.addWidget(section_label("Route setup"))
+        self.route_form = QFormLayout()
+        self.route_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        self._route_labels = {}
+        for title in (
+            "Departure (local)",
+            "From → To",
+            "Waypoints",
+            "Boat / polar",
+            "Algorithm",
+            "Safety",
+            "Currents",
+        ):
+            value = QLabel("not set")
+            value.setWordWrap(True)
+            value.setAccessibleName(title)
+            self._route_labels[title] = value
+            self.route_form.addRow(FieldRow(title, value))
+        layout.addLayout(self.route_form)
+
+        self.route_missing = QLabel("Set the route and boat in Plan first.")
+        self.route_missing.setWordWrap(True)
+        self.route_missing.setVisible(False)
+        layout.addWidget(self.route_missing)
+
+        edit_row = QHBoxLayout()
+        edit_row.setSpacing(8)
+        self.edit_plan = QPushButton("Edit in Plan")
+        self.edit_plan.setAccessibleName("Edit in Plan")
+        self.edit_plan.setToolTip(
+            "Change the route, boat and safety settings in the Plan tab."
+        )
+        self.edit_plan.clicked.connect(lambda *_: self.edit_plan_requested.emit())
+        edit_row.addWidget(self.edit_plan)
+        edit_row.addStretch(1)
+        layout.addLayout(edit_row)
 
         layout.addWidget(_caption("Requested years"))
 
-        self.years = QSpinBox()
+        self.years = Slider()
+        self.years.setDecimals(0)
         self.years.setRange(MIN_YEARS, MAX_YEARS)
+        self.years.setSingleStep(1)
         self.years.setValue(DEFAULT_YEARS)
         self.years.setAccessibleName("Years")
-        self.years.setToolTip("Number of calendar years replayed, ending at the departure year.")
+        self.years.setToolTip(
+            "Number of calendar years replayed, ending at the departure year."
+        )
         self.years.valueChanged.connect(lambda *_: self.values_changed.emit())
         layout.addWidget(FieldRow("Years", self.years))
 
-        self.offset_days = QSpinBox()
+        self.offset_days = Slider()
+        self.offset_days.setDecimals(0)
         self.offset_days.setRange(MIN_OFFSET_DAYS, MAX_OFFSET_DAYS)
+        self.offset_days.setSingleStep(1)
         self.offset_days.setValue(DEFAULT_OFFSET_DAYS)
         self.offset_days.setAccessibleName("Day offset radius")
         self.offset_days.setToolTip(
@@ -94,7 +143,8 @@ class HistoricalRoutingOptions(QWidget):
         self.offset_days.valueChanged.connect(lambda *_: self.values_changed.emit())
         layout.addWidget(FieldRow("± days", self.offset_days))
 
-        self.max_duration = QSpinBox()
+        self.max_duration = Slider()
+        self.max_duration.setDecimals(0)
         self.max_duration.setRange(MIN_HORIZON_HOURS, MAX_HORIZON_HOURS)
         self.max_duration.setSingleStep(HORIZON_STEP_HOURS)
         self.max_duration.setSuffix(" h")
@@ -128,8 +178,12 @@ class HistoricalRoutingOptions(QWidget):
         self.current_priority = Dropdown("Overlapping models")
         for text, value in CURRENT_PRIORITIES:
             self.current_priority.addItem(text, value)
-        self.current_priority.setToolTip("Which current model serves overlapping coverage.")
-        self.current_priority.currentIndexChanged.connect(lambda *_: self.values_changed.emit())
+        self.current_priority.setToolTip(
+            "Which current model serves overlapping coverage."
+        )
+        self.current_priority.currentIndexChanged.connect(
+            lambda *_: self.values_changed.emit()
+        )
         layout.addWidget(FieldRow("Current priority", self.current_priority))
 
         source = QLabel("ERA5 hourly wind")
@@ -176,13 +230,54 @@ class HistoricalRoutingOptions(QWidget):
         layout.addLayout(buttons)
         layout.addStretch(1)
 
+    # -- route summary ---------------------------------------------------
+    def set_route_summary(self, summary):
+        """Render the read-only copy of the Plan tab's route configuration.
+
+        ``summary`` is a mapping with the keys ``departure``, ``start``,
+        ``destination``, ``waypoints``, ``polar``, ``algorithm``, ``safety``
+        and ``currents``. Missing or ``None`` values fall back to "not set".
+        """
+        self._summary = dict(summary or {})
+        self.route_missing.setVisible(not self._summary)
+        values = {
+            "Departure (local)": self._summary.get("departure"),
+            "From → To": self._route_span(),
+            "Waypoints": self._summary.get("waypoints"),
+            "Boat / polar": self._summary.get("polar"),
+            "Algorithm": self._summary.get("algorithm"),
+            "Safety": self._summary.get("safety"),
+            "Currents": self._summary.get("currents"),
+        }
+        for title, value in values.items():
+            self._route_labels[title].setText(self._display(value))
+
+    @staticmethod
+    def _display(value):
+        if value is None or value == "":
+            return "not set"
+        if isinstance(value, bool):
+            return "on" if value else "off"
+        return str(value)
+
+    def _route_span(self):
+        start = self._summary.get("start") or "not set"
+        destination = self._summary.get("destination") or "not set"
+        return f"{start} → {destination}"
+
+    def summary_text(self):
+        """Flat text of the rendered summary, for tests and tooltips."""
+        return "\n".join(
+            f"{title}: {label.text()}" for title, label in self._route_labels.items()
+        )
+
     # -- values ----------------------------------------------------------
     def values(self):
         """Current inputs, or ``None`` region when no region has been chosen."""
         return {
-            "years": self.years.value(),
-            "offset_days": self.offset_days.value(),
-            "max_duration_hours": self.max_duration.value(),
+            "years": int(self.years.value()),
+            "offset_days": int(self.offset_days.value()),
+            "max_duration_hours": int(self.max_duration.value()),
             "region": self._region,
             "use_currents": self.use_currents.isChecked(),
             "current_priority": self.current_priority.currentData(),
@@ -215,7 +310,9 @@ class HistoricalRoutingOptions(QWidget):
             self.values_changed.emit()
 
     def set_region(self, region):
-        self._region = None if region is None else tuple(float(value) for value in region)
+        self._region = (
+            None if region is None else tuple(float(value) for value in region)
+        )
         self._update_region_label()
         self.values_changed.emit()
 

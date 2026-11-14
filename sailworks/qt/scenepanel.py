@@ -875,6 +875,7 @@ class ScenePanel(QWidget):
 
     changed = Signal()
     selected = Signal(str, str)
+    group_selected = Signal(str)
     open_requested = Signal(str, str)
     fit_requested = Signal(object)
     delete_requested = Signal(object)
@@ -2098,8 +2099,12 @@ class ScenePanel(QWidget):
         if self.syncing:
             return
         nodes = self._selected_nodes()
-        if len(nodes) == 1 and nodes[0][0] == "item":
+        if len(nodes) != 1:
+            return
+        if nodes[0][0] == "item":
             self.selected.emit(nodes[0][1], nodes[0][2])
+        elif nodes[0][0] == "group":
+            self.group_selected.emit(nodes[0][1])
 
     def _double_clicked(self, row, _column):
         if _column != NAME_COLUMN:

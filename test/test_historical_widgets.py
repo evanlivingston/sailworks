@@ -9,6 +9,7 @@ from PySide6.QtGui import QPixmap
 
 from sailworks.qt.historicalroutingoptions import HistoricalRoutingOptions
 from sailworks.qt.historicalroutingresults import HistoricalRoutingResults, _CurveCanvas
+from sailworks.qt.slider import Slider
 
 REGION = (-30.0, 30.0, -10.0, 40.0)
 
@@ -133,6 +134,55 @@ def test_set_region_and_set_values_round_trip(qtbot):
     assert widget.values()["region"] is None
 
 
+def test_numeric_inputs_use_the_standard_slider(qtbot):
+    widget = options(qtbot)
+    for control in (widget.years, widget.offset_days, widget.max_duration):
+        assert isinstance(control, Slider)
+        assert control.accessibleName()
+
+
+def test_route_summary_renders_the_inherited_setup(qtbot):
+    widget = options(qtbot)
+    widget.set_route_summary({})
+    assert not widget.route_missing.isHidden()
+    assert widget.route_missing.text() == "Set the route and boat in Plan first."
+    assert widget.edit_plan.isEnabled()
+
+    widget.set_route_summary(
+        {
+            "departure": "2026-06-15 12:00",
+            "start": "51.500, -0.120",
+            "destination": "48.400, -5.100",
+            "waypoints": 3,
+            "polar": "Elan 410",
+            "algorithm": "Isochrone",
+            "safety": "max wind 30 kn · min sailing 4.0 kn · motor 6.0 kn",
+            "currents": True,
+        }
+    )
+    text = widget.summary_text()
+    assert "2026-06-15 12:00" in text
+    assert "51.500, -0.120 → 48.400, -5.100" in text
+    assert "Waypoints: 3" in text
+    assert "Elan 410" in text
+    assert "Isochrone" in text
+    assert "max wind 30 kn" in text
+    assert "Currents: on" in text
+    assert widget.route_missing.isHidden()
+
+    widget.set_route_summary({"departure": None, "waypoints": 0, "currents": False})
+    assert "Departure (local): not set" in widget.summary_text()
+    assert "Currents: off" in widget.summary_text()
+
+
+def test_edit_in_plan_button_emits_the_signal(qtbot):
+    widget = options(qtbot)
+    captured = []
+    widget.edit_plan_requested.connect(lambda: captured.append(True))
+    widget.edit_plan.click()
+    assert captured == [True]
+
+
 def test_running_state_switches_buttons(qtbot):
     widget = options(qtbot)
     widget.set_running(True)
@@ -143,7 +193,9 @@ def test_running_state_switches_buttons(qtbot):
     assert not widget.cancel_button.isEnabled()
     widget.set_available(False, "Native backend capability missing: bound runs")
     assert not widget.run_button.isEnabled()
-    assert widget.run_button.toolTip() == "Native backend capability missing: bound runs"
+    assert (
+        widget.run_button.toolTip() == "Native backend capability missing: bound runs"
+    )
 
 
 def test_run_button_emits_the_current_values(qtbot):
@@ -176,7 +228,9 @@ def test_rows_populate_table_with_outcome_prefixes_and_clicks(qtbot):
     results.set_rows(ROWS)
     assert results.table.rowCount() == 3
 
-    outcomes = [results.table.item(row, 3).text() for row in range(results.table.rowCount())]
+    outcomes = [
+        results.table.item(row, 3).text() for row in range(results.table.rowCount())
+    ]
     prefixes = {text.split(" ")[0] for text in outcomes}
     assert prefixes == {"✓", "—", "✕"}
     assert any("Finished" in text for text in outcomes)
@@ -190,6 +244,20 @@ def test_rows_populate_table_with_outcome_prefixes_and_clicks(qtbot):
     results.table.cellClicked.emit(row, 3)
     assert selected == ["2023-000"]
     assert results._median_member_id == "2023-000"
+
+
+def test_empty_state_follows_whether_a_run_is_displayed(qtbot):
+    results = HistoricalRoutingResults()
+    qtbot.addWidget(results)
+    assert not hasattr(results, "history_selector")
+    assert not hasattr(results, "run_selected")
+    assert not results.empty_label.isHidden()
+    assert "No historical run yet" in results.empty_label.text()
+
+    results.set_has_run(True)
+    assert results.empty_label.isHidden()
+    results.set_has_run(False)
+    assert not results.empty_label.isHidden()
 
 
 def test_actions_follow_job_state(qtbot):
@@ -230,9 +298,24 @@ def test_curve_canvas_paints_empty_and_populated_data(qtbot):
     canvas.set_curve([(0.0, 0.0), (60.0, 0.35), (120.0, 0.8), (180.0, 1.0)])
     canvas.set_strip(
         [
-            {"year": 2022, "offset_days": 0, "duration_hours": 120.0, "outcome": "finished"},
-            {"year": 2023, "offset_days": 0, "duration_hours": 140.0, "outcome": "finished"},
-            {"year": 2023, "offset_days": 1, "duration_hours": 240.0, "outcome": "no_finish"},
+            {
+                "year": 2022,
+                "offset_days": 0,
+                "duration_hours": 120.0,
+                "outcome": "finished",
+            },
+            {
+                "year": 2023,
+                "offset_days": 0,
+                "duration_hours": 140.0,
+                "outcome": "finished",
+            },
+            {
+                "year": 2023,
+                "offset_days": 1,
+                "duration_hours": 240.0,
+                "outcome": "no_finish",
+            },
         ]
     )
     painted = QPixmap(canvas.size())

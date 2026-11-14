@@ -644,6 +644,7 @@ class RoutingPanel(QWidget):
             request_provider=lambda: self._request("native")[0],
         )
         self.compare_stack.addWidget(self.historical)
+        self.historical.edit_plan_requested.connect(self._edit_plan)
         compare.addWidget(self.compare_stack, 1)
         self.pages.addTab(self._scroll_page(compare_page), "Compare")
         currents_page = QWidget()
@@ -657,9 +658,36 @@ class RoutingPanel(QWidget):
         self.wind_algorithm_name = self.algorithm.currentText()
         self.preflight_dialog = None
 
+    def show_historical_job(self, job_id):
+        """Open a published historical run's results from the scene tree."""
+        compare_index = next(
+            (
+                index
+                for index in range(self.pages.count())
+                if self.pages.tabText(index) == "Compare"
+            ),
+            1,
+        )
+        self.pages.setCurrentIndex(compare_index)
+        historical_index = self.compare_mode.findData("historical")
+        if historical_index >= 0:
+            self.compare_mode.setCurrentIndex(historical_index)
+        self._compare_mode_changed(self.compare_mode.currentIndex())
+        self.historical.show_job(job_id)
+
+    def _edit_plan(self):
+        """Reveal the Plan tab, the single source of route configuration."""
+        for index in range(self.pages.count()):
+            if self.pages.tabText(index) == "Plan":
+                self.pages.setCurrentIndex(index)
+                return
+        self.pages.setCurrentIndex(0)
+
     def _compare_mode_changed(self, _index):
         historical = self.compare_mode.currentData() == "historical"
         self.compare_stack.setCurrentIndex(1 if historical else 0)
+        if historical:
+            self.historical.refresh_route_summary()
         self.options_changed.emit()
 
     def _build_current_priority(self):

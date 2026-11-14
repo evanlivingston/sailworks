@@ -227,6 +227,13 @@ class HistoricalRoutingResults(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
+        self.empty_label = QLabel(
+            "No historical run yet — configure the years above and press Download & run."
+        )
+        self.empty_label.setWordWrap(True)
+        self.empty_label.setAccessibleName("No historical run")
+        layout.addWidget(self.empty_label)
+
         self.summary = QLabel()
         self.summary.setWordWrap(True)
         self.summary.setAccessibleName("Historical results summary")
@@ -280,6 +287,10 @@ class HistoricalRoutingResults(QWidget):
         button.clicked.connect(lambda *_: slot())
         layout.addWidget(button)
         return button
+
+    # -- run history -----------------------------------------------------
+    def set_has_run(self, has_run):
+        self.empty_label.setVisible(not has_run)
 
     # -- data ------------------------------------------------------------
     def set_summary(self, text):
@@ -355,6 +366,7 @@ class HistoricalRoutingResults(QWidget):
         self._rows = []
         self._median_member_id = None
         self.set_actions_enabled(False, False, False)
+        self.empty_label.setVisible(True)
 
     # -- internals -------------------------------------------------------
     def _find_median(self):

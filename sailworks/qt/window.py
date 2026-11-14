@@ -278,6 +278,7 @@ class PreviewWindow(QMainWindow):
         historical.visibility_changed.connect(self.scene_panel.refresh)
         historical.visibility_changed.connect(self._routing_visibility_changed)
         self.scene_panel.selected.connect(self._scene_selected)
+        self.scene_panel.group_selected.connect(self._scene_group_selected)
         self.scene_panel.open_requested.connect(self._scene_open)
         self.scene_panel.fit_requested.connect(self._scene_fit)
         self.scene_panel.delete_requested.connect(self._scene_delete)
@@ -1302,6 +1303,22 @@ class PreviewWindow(QMainWindow):
         self._race_time_changed(self.controller.time_control.time)
         if hasattr(self, "workspace"):
             self.workspace.changed()
+
+    def _scene_group_selected(self, group_id):
+        """Show a historical job's results when its scene group is selected.
+
+        The scene tree is the run-history surface: a published historical run
+        is a group there, so no separate job selector is needed.
+        """
+        from sailworks.core.historicalpublication import GROUP_PREFIX
+
+        if not str(group_id).startswith(GROUP_PREFIX):
+            return
+        job_id = str(group_id)[len(GROUP_PREFIX) :]
+        if not job_id:
+            return
+        self.routing_panel.show_historical_job(job_id)
+        self._show_panel("routing")
 
     def _scene_selected(self, kind, key):
         if kind == KIND_TRACK:
