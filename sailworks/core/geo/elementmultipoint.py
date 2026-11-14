@@ -47,15 +47,11 @@ class NamedPoint(tuple):
         name="",
         rounding=None,
         radius_nm=None,
-        exit_bearing_min_deg=None,
-        exit_bearing_max_deg=None,
     ):
         point = super().__new__(cls, values)
         point.name = name or ""
         point.rounding = rounding
         point.rounding_radius_nm = radius_nm
-        point.rounding_exit_bearing_min_deg = exit_bearing_min_deg
-        point.rounding_exit_bearing_max_deg = exit_bearing_max_deg
         return point
 
 
@@ -73,16 +69,6 @@ def _point_rounding_radius(point):
     return None if value is None else float(value)
 
 
-def _point_rounding_exit_min(point):
-    value = getattr(point, "rounding_exit_bearing_min_deg", None)
-    return None if value is None else float(value)
-
-
-def _point_rounding_exit_max(point):
-    value = getattr(point, "rounding_exit_bearing_max_deg", None)
-    return None if value is None else float(value)
-
-
 def _point_rounding_spec(point):
     side = _point_rounding(point)
     if side == ROUNDING_PORT:
@@ -95,8 +81,6 @@ def _point_rounding_spec(point):
         {
             "side": side_name,
             "radius_nm": _point_rounding_radius(point),
-            "exit_bearing_min_deg": _point_rounding_exit_min(point),
-            "exit_bearing_max_deg": _point_rounding_exit_max(point),
         }
     )
 
@@ -183,28 +167,15 @@ class ElementMultiPoint(Element):
             ]
         specs = [_point_rounding_spec(point) for point in self.points]
         if any(
-            spec is not None
-            and (
-                spec["radius_nm"] != DEFAULT_ROUNDING_RADIUS_NM
-                or spec["exit_bearing_min_deg"] is not None
-            )
+            spec is not None and spec["radius_nm"] != DEFAULT_ROUNDING_RADIUS_NM
             for spec in specs
         ):
+            # Write the radius the point actually carries: a legacy point with
+            # no stored radius must stay absent instead of gaining the default.
             c["point_rounding_radius_nm"] = [
-                None if spec is None else spec["radius_nm"] for spec in specs
+                None if spec is None else _point_rounding_radius(point)
+                for spec, point in zip(specs, self.points)
             ]
-            if any(
-                spec is not None and spec["exit_bearing_min_deg"] is not None
-                for spec in specs
-            ):
-                c["point_rounding_exit_min_deg"] = [
-                    None if spec is None else spec["exit_bearing_min_deg"]
-                    for spec in specs
-                ]
-                c["point_rounding_exit_max_deg"] = [
-                    None if spec is None else spec["exit_bearing_max_deg"]
-                    for spec in specs
-                ]
         return c
 
     @staticmethod
@@ -214,30 +185,18 @@ class ElementMultiPoint(Element):
         names = j.get("point_names") or []
         roundings = j.get("point_roundings") or []
         radii = j.get("point_rounding_radius_nm") or []
-        exit_min = j.get("point_rounding_exit_min_deg") or []
-        exit_max = j.get("point_rounding_exit_max_deg") or []
         for index in range(len(points)):
             name = names[index] if index < len(names) else ""
             rounding = roundings[index] if index < len(roundings) else None
             radius = radii[index] if index < len(radii) else None
-            minimum = exit_min[index] if index < len(exit_min) else None
-            maximum = exit_max[index] if index < len(exit_max) else None
             if rounding not in (ROUNDING_PORT, ROUNDING_STARBOARD):
-                radius = minimum = maximum = None
-            if (
-                name
-                or rounding is not None
-                or radius is not None
-                or minimum is not None
-                or maximum is not None
-            ):
+                radius = None
+            if name or rounding is not None or radius is not None:
                 points[index] = NamedPoint(
                     tuple(points[index]),
                     name or "",
                     rounding,
                     radius,
-                    minimum,
-                    maximum,
                 )
         return ElementMultiPoint(d.name, points, d.visible)
 
@@ -276,8 +235,6 @@ class ElementMultiPoint(Element):
             name,
             _point_rounding(point),
             _point_rounding_radius(point),
-            _point_rounding_exit_min(point),
-            _point_rounding_exit_max(point),
         )
         self.touch()
         if self.collection is not None:
@@ -285,7 +242,7 @@ class ElementMultiPoint(Element):
         return True
 
     def set_point_rounding(self, index, rounding):
-        """Set a mark's rounding side, keeping any radius and exit range."""
+        """Set a mark's rounding side, keeping any radius."""
         if not 0 <= index < len(self.points):
             return False
         try:
@@ -296,24 +253,15 @@ class ElementMultiPoint(Element):
             return False
         point = self.points[index]
         radius = _point_rounding_radius(point)
-        minimum = _point_rounding_exit_min(point)
-        maximum = _point_rounding_exit_max(point)
         if value not in (ROUNDING_PORT, ROUNDING_STARBOARD):
-            radius = minimum = maximum = None
-        if (
-            _point_rounding(point) == value
-            and _point_rounding_radius(point) == radius
-            and _point_rounding_exit_min(point) == minimum
-            and _point_rounding_exit_max(point) == maximum
-        ):
+            radius = None
+        if _point_rounding(point) == value and _point_rounding_radius(point) == radius:
             return False
         self.points[index] = NamedPoint(
             tuple(point),
             _point_name(point),
             value,
             radius,
-            minimum,
-            maximum,
         )
         self.touch()
         if self.collection is not None:
@@ -330,7 +278,7 @@ class ElementMultiPoint(Element):
             return False
         if normalized is None:
             side = DEFAULT_ROUNDING
-            radius = minimum = maximum = None
+            radius = None
         else:
             side = ROUNDING_PORT if normalized["side"] == "port" else ROUNDING_STARBOARD
             radius = (
@@ -338,15 +286,11 @@ class ElementMultiPoint(Element):
                 if normalized["radius_nm"] == DEFAULT_ROUNDING_RADIUS_NM
                 else normalized["radius_nm"]
             )
-            minimum = normalized["exit_bearing_min_deg"]
-            maximum = normalized["exit_bearing_max_deg"]
         self.points[index] = NamedPoint(
             tuple(point),
             _point_name(point),
             side,
             radius,
-            minimum,
-            maximum,
         )
         self.touch()
         if self.collection is not None:
@@ -432,8 +376,6 @@ class ElementMultiPoint(Element):
                     _point_name(point),
                     _point_rounding(point),
                     _point_rounding_radius(point),
-                    _point_rounding_exit_min(point),
-                    _point_rounding_exit_max(point),
                 )
             )
         self.touch()
@@ -451,8 +393,6 @@ class ElementMultiPoint(Element):
             _point_name(point),
             _point_rounding(point),
             _point_rounding_radius(point),
-            _point_rounding_exit_min(point),
-            _point_rounding_exit_max(point),
         )
         self.touch()
         self.collection.save()

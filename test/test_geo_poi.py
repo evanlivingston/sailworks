@@ -50,54 +50,6 @@ class TestPOI(unittest.TestCase):
         self.assertAlmostEqual(gpx_obj.longitude, 9.8)
         self.assertEqual(gpx_obj.name, "TestWP")
 
-    def test_to_nmea_fpec_starts_with_prefix(self):
-        poi = POI("WP0001", (40.2, 9.97))
-        nmea = poi.to_nmea_fpec()
-        self.assertTrue(nmea.startswith("$PFEC,GPwpl,"))
-
-    def test_to_nmea_fpec_positive_lat_is_north(self):
-        poi = POI("WP0001", (40.2, 9.97))
-        nmea = poi.to_nmea_fpec()
-        parts = nmea.split(",")
-        # parts[3] is N/S indicator
-        self.assertEqual(parts[3], "N")
-
-    def test_to_nmea_fpec_negative_lat_is_south(self):
-        poi = POI("WP0001", (-40.2, 9.97))
-        nmea = poi.to_nmea_fpec()
-        parts = nmea.split(",")
-        self.assertEqual(parts[3], "S")
-
-    def test_to_nmea_fpec_positive_lon_is_east(self):
-        poi = POI("WP0001", (40.2, 9.97))
-        nmea = poi.to_nmea_fpec()
-        parts = nmea.split(",")
-        # parts[5] is E/W indicator
-        self.assertEqual(parts[5], "E")
-
-    def test_to_nmea_fpec_negative_lon_is_west(self):
-        poi = POI("WP0001", (40.2, -9.97))
-        nmea = poi.to_nmea_fpec()
-        parts = nmea.split(",")
-        self.assertEqual(parts[5], "W")
-
-    def test_to_nmea_fpec_name_padding(self):
-        """Short names are padded to 6 chars."""
-        poi = POI("AB", (40.0, 9.0))
-        nmea = poi.to_nmea_fpec()
-        parts = nmea.split(",")
-        # parts[6] is the name field
-        self.assertEqual(len(parts[6]), 6)
-        self.assertTrue(parts[6].startswith("AB"))
-
-    def test_to_nmea_fpec_name_truncation(self):
-        """Long names are truncated to 6 chars."""
-        poi = POI("ABCDEFGHIJ", (40.0, 9.0))
-        nmea = poi.to_nmea_fpec()
-        parts = nmea.split(",")
-        self.assertEqual(len(parts[6]), 6)
-        self.assertEqual(parts[6], "ABCDEF")
-
 
 if __name__ == "__main__":
     unittest.main()

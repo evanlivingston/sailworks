@@ -370,20 +370,16 @@ enum class RoundingSide { Port, Starboard };
 
 // Legacy per-mark request carried by the radius-era engine. The target point
 // is the mark; `radiusNm` is legacy metadata and never a planning or acceptance
-// constraint in the shared closest-pass evaluator.
+// constraint in the shared closest-pass evaluator. Rounding is side only.
 struct RoundingConstraint {
   RoundingSide side{RoundingSide::Port};
   double radiusNm{};
-  std::optional<double> exitBearingMinDegrees;
-  std::optional<double> exitBearingMaxDegrees;
 };
 
 // Side-of-track rounding contract. Distance from the mark is never part of the
 // contract; the shared closest-pass evaluator in Rounding.h decides passage.
 struct RoundingSpec {
   RoundingSide side{RoundingSide::Port};
-  std::optional<double> exitBearingMinDegrees;
-  std::optional<double> exitBearingMaxDegrees;
 };
 
 enum class RoundingFailure {
@@ -398,8 +394,6 @@ enum class RoundingFailure {
   SideAmbiguous,
   // The closest pass is on the opposite side of the request.
   WrongSide,
-  // The delivered outbound course is outside the inclusive exit range.
-  ExitBearingOutOfRange,
   NotEvaluated,
 };
 
@@ -416,7 +410,6 @@ struct RoundingMeasurement {
   double signedLateralNm{};
   std::optional<RoundingSide> achievedSide;
   int passageCount{};
-  bool exitRangeSatisfied{true};
   RoundingFailure failure{RoundingFailure::NotEvaluated};
   // Transitional diagnostics for the radius-era engine call sites. They mirror
   // the delivered endpoint until the engine passes full leg sub-tracks.
@@ -545,8 +538,8 @@ enum class RoutingStatus {
   Cancelled,
   InternalError,
   // A rounding was requested but no searched arrival satisfied the required
-  // side or exit bearing. This is never treated as an ordinary no-route or as
-  // a successful exact-point arrival.
+  // side. This is never treated as an ordinary no-route or as a successful
+  // exact-point arrival.
   UnsatisfiableRounding
 };
 
@@ -739,8 +732,9 @@ struct RoutingDiagnostics {
   // structured failure diagnostics; it is never used to accept a route.
   bool roundingAttempted{};
   // Hard bound on rounding search expansion. Counts the rounding candidates
-  // that cost a motion replay, so an exit range no candidate can satisfy is
-  // rejected deterministically instead of being explored without limit.
+  // that cost a motion replay, so an unsatisfiable rounding is rejected
+  // deterministically instead of being explored without limit. This is a
+  // last-resort safety net, not a correctness rule.
   std::uint64_t roundingAttempts{};
   std::string roundingFailureCode;
   double roundingClosestDistanceNm{std::numeric_limits<double>::infinity()};

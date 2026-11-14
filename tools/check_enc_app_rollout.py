@@ -108,7 +108,7 @@ def _application(report, data, output, deadline):  # noqa: C901 - one native app
     controller = SessionController()
     canvas = ViewportMap(controller)
     canvas.resize(710, 743)
-    panel = WeatherPanel(controller, lambda: canvas, lambda: None, lambda: None)
+    panel = WeatherPanel(controller, lambda: canvas, lambda: None)
 
     def center():
         canvas._center_lat, canvas._center_lon, canvas._zoom = (

@@ -68,9 +68,6 @@ class WorkspacePreferences(QObject):
         window.polar_workspace.splitter.splitterMoved.connect(self.changed)
         window.polar_workspace.selection_changed.connect(self.changed)
         window.polar_workspace.performance.changed.connect(self.changed)
-        window.navigation_panel.tabs.currentChanged.connect(self.changed)
-        window.navigation_panel.track_split.splitterMoved.connect(self.changed)
-        window.navigation_panel.route_split.splitterMoved.connect(self.changed)
         window.ais_action.toggled.connect(self.changed)
         window.weather_panel.wind.toggled.connect(self.changed)
         for action in window.map_display_actions:
@@ -78,7 +75,6 @@ class WorkspacePreferences(QObject):
         panel = window.routing_panel
         for combo in (panel.polar, panel.algorithm):
             combo.currentIndexChanged.connect(self.changed)
-        window.navigation_panel.route_selected.connect(self.changed)
         panel.coastlines.toggled.connect(self.changed)
         panel.pages.currentChanged.connect(self.changed)
         for panel in window.marine_panels.values():
@@ -123,7 +119,7 @@ class WorkspacePreferences(QObject):
         if not normal.isValid():
             normal = window.geometry()
         panel = window.routing_panel
-        route = window.navigation_panel.route
+        route = window.controller.core.routingManager.get_active()
         return {
             "window": {**geometry(normal), "maximized": window.isMaximized()},
             "panels": window.panel_state(),
@@ -145,14 +141,7 @@ class WorkspacePreferences(QObject):
                     for kind, panel in window.marine_panels.items()
                 },
             },
-            "navigation": {
-                "tab": window.navigation_panel.tabs.tabText(
-                    window.navigation_panel.tabs.currentIndex()
-                ),
-                "tracks_split": window.navigation_panel.track_split.sizes(),
-                "routes_split": window.navigation_panel.route_split.sizes(),
-                "ais_visible": window.ais_action.isChecked(),
-            },
+            "ais_visible": window.ais_action.isChecked(),
             "polars": {
                 "selected": window.polar_workspace.name,
                 "split": window.polar_workspace.splitter.sizes(),
@@ -282,27 +271,13 @@ class WorkspacePreferences(QObject):
             fit_window(self.window, saved)
             self.maximize_on_show = saved.get("maximized") is True
 
-    def _restore_navigation(self, state):
-        navigation = mapping(state.get("navigation"))
-        self.window._view_changed()
-        panel = self.window.navigation_panel
-        for index in range(panel.tabs.count()):
-            if panel.tabs.tabText(index) == navigation.get(
-                "tab"
-            ) and panel.tabs.isTabVisible(index):
-                panel.tabs.setCurrentIndex(index)
-        for splitter, key in (
-            (panel.track_split, "tracks_split"),
-            (panel.route_split, "routes_split"),
-        ):
-            saved = navigation.get(key)
-            if isinstance(saved, list) and len(saved) == 2:
-                splitter.setSizes([int(number(v, 300, 60, 10000)) for v in saved])
-        if isinstance(navigation.get("ais_visible"), bool):
-            self.window.ais_action.setChecked(navigation["ais_visible"])
-
     def _restore_views(self, state):
-        self._restore_navigation(state)
+        ais_visible = state.get("ais_visible")
+        if ais_visible is None:
+            # Older workspace files kept this inside the navigation panel state.
+            ais_visible = mapping(state.get("navigation")).get("ais_visible")
+        if isinstance(ais_visible, bool):
+            self.window.ais_action.setChecked(ais_visible)
         polars = mapping(state.get("polars"))
         workspace = self.window.polar_workspace
         selected = polars.get("selected")

@@ -36,13 +36,6 @@ class _POICollection(Collection, Generic[T]):
                 )
             )
 
-    def to_nmea_fpec(self):
-        s = ""
-        for x in self.elements:
-            s += x.to_nmea_fpec() + "\n"
-        s += "$PFEC,GPxfr,CTL,E"
-        return s
-
     def move(self, name, lat, lon):
         c = self.get_by_name(name)
         if c is not None:

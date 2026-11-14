@@ -1,15 +1,15 @@
 """Properties dialog for a track or route point."""
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
-    QFormLayout,
+    QGridLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
+    QStyle,
+    QStyleOptionFrame,
     QVBoxLayout,
-    QWidget,
 )
 
 from sailworks.core.geo.rounding import (
@@ -21,6 +21,14 @@ from sailworks.core.geo.rounding import (
 )
 from .dropdown import Dropdown
 
+# One label column, one field column: every row starts at the same x.
+LABEL_COLUMN = 0
+FIELD_COLUMN = 1
+MARGIN = 12
+SPACING = 8
+# Value padding, chevron and field margins the dropdown draws inside its width.
+DROPDOWN_CHROME = 40
+
 
 class PointEditDialog(QDialog):
     """Edit a point name and, for route marks, its rounding constraint."""
@@ -31,60 +39,63 @@ class PointEditDialog(QDialog):
         rounding=None,
         coordinates=None,
         radius_nm=None,
-        exit_bearing_min_deg=None,
-        exit_bearing_max_deg=None,
         parent=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Point Properties")
         layout = QVBoxLayout(self)
-        form = QFormLayout()
+        layout.setContentsMargins(MARGIN, MARGIN, MARGIN, MARGIN)
+        layout.setSpacing(SPACING)
+
+        form = QGridLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setHorizontalSpacing(SPACING * 2)
+        form.setVerticalSpacing(SPACING)
+        form.setColumnStretch(FIELD_COLUMN, 1)
+        self.form = form
+
         self.name_edit = QLineEdit(str(name or ""))
-        form.addRow("Name", self.name_edit)
+        self.name_label = self._form_label("Name")
+        form.addWidget(self.name_label, 0, LABEL_COLUMN)
+        form.addWidget(self.name_edit, 0, FIELD_COLUMN)
+
         self.rounding_combo = None
+        self.rounding_label = None
         self.rounding_details = None
         # The persisted radius is inert legacy metadata: it is carried through
         # untouched so saving the dialog never rewrites or drops it.
         self.radius_nm = radius_nm
-        self.exit_min = None
-        self.exit_max = None
+        row = 1
         if rounding is not None:
-            self.rounding_combo = Dropdown("Rounding")
+            self.rounding_label = self._form_label("Rounding")
+            # The dropdown draws its own right-aligned label; this row already
+            # has one in the label column, so the widget is used unlabelled.
+            self.rounding_combo = Dropdown()
+            self.rounding_combo.setAccessibleName("Rounding")
             for value, label in ROUNDING_LABELS.items():
                 self.rounding_combo.addItem(label, value)
             self.rounding_combo.setCurrentIndex(
                 self.rounding_combo.findData(normalize_rounding(rounding))
             )
-            form.addRow(self.rounding_combo)
+            # Align the value with the Name field's text and keep the longest
+            # rounding label inside the field without eliding it.
+            self.rounding_combo.setValueInset(self._line_edit_text_inset())
+            self.rounding_combo.setMinimumWidth(self._rounding_width())
+            form.addWidget(self.rounding_label, row, LABEL_COLUMN)
+            form.addWidget(self.rounding_combo, row, FIELD_COLUMN)
+            row += 1
 
-            self.rounding_details = QWidget()
-            details = QFormLayout(self.rounding_details)
-            details.setContentsMargins(0, 0, 0, 0)
-            self.exit_min = QDoubleSpinBox()
-            self.exit_min.setRange(-1, 360)
-            self.exit_min.setDecimals(1)
-            self.exit_min.setSpecialValueText("none")
-            self.exit_min.setValue(
-                -1 if exit_bearing_min_deg is None else float(exit_bearing_min_deg)
-            )
-            details.addRow("Exit min", self.exit_min)
-
-            self.exit_max = QDoubleSpinBox()
-            self.exit_max.setRange(-1, 360)
-            self.exit_max.setDecimals(1)
-            self.exit_max.setSpecialValueText("none")
-            self.exit_max.setValue(
-                -1 if exit_bearing_max_deg is None else float(exit_bearing_max_deg)
-            )
-            details.addRow("Exit max", self.exit_max)
-            form.addRow(self.rounding_details)
-
-            self.rounding_combo.currentIndexChanged.connect(self._sync_rounding_fields)
-            self._sync_rounding_fields()
+        self.position_label = None
+        self.position_value = None
         if coordinates is not None:
-            form.addRow(
-                "Position", QLabel(f"{coordinates[0]:.6f}, {coordinates[1]:.6f}")
+            self.position_label = self._form_label("Position")
+            self.position_value = QLabel(f"{coordinates[0]:.6f}, {coordinates[1]:.6f}")
+            self.position_value.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
             )
+            form.addWidget(self.position_label, row, LABEL_COLUMN)
+            form.addWidget(self.position_value, row, FIELD_COLUMN)
+
         layout.addLayout(form)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -93,49 +104,31 @@ class PointEditDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def _sync_rounding_fields(self, *_):
-        if self.rounding_combo is None or self.rounding_details is None:
-            return
-        enabled = self.rounding_combo.currentData() in (
-            ROUNDING_PORT,
-            ROUNDING_STARBOARD,
-        )
-        self.rounding_details.setVisible(enabled)
-        for widget in (self.exit_min, self.exit_max):
-            if widget is not None:
-                widget.setEnabled(enabled)
+    @staticmethod
+    def _form_label(text):
+        label = QLabel(text)
+        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        return label
 
-    def accept(self):
-        if self.rounding_combo is not None and self.rounding_combo.currentData() in (
-            ROUNDING_PORT,
-            ROUNDING_STARBOARD,
-        ):
-            minimum = self.exit_min.value()
-            maximum = self.exit_max.value()
-            has_minimum = minimum >= 0
-            has_maximum = maximum >= 0
-            if has_minimum != has_maximum:
-                QMessageBox.warning(
-                    self,
-                    "Rounding",
-                    "Set both exit bearings, or leave both at none.",
-                )
-                return
-            if has_minimum and maximum >= 360:
-                QMessageBox.warning(
-                    self,
-                    "Rounding",
-                    "Exit maximum must be less than 360 degrees.",
-                )
-                return
-            if has_minimum and minimum > maximum:
-                QMessageBox.warning(
-                    self,
-                    "Rounding",
-                    "Exit minimum must not be greater than exit maximum.",
-                )
-                return
-        super().accept()
+    def _line_edit_text_inset(self):
+        """Left padding the Name field applies before its text."""
+        edit = self.name_edit
+        option = QStyleOptionFrame()
+        option.initFrom(edit)
+        option.rect = edit.rect()
+        contents = edit.style().subElementRect(
+            QStyle.SubElement.SE_LineEditContents, option, edit
+        )
+        return max(0, contents.left()) + edit.textMargins().left()
+
+    def _rounding_width(self):
+        """Minimum width that keeps the longest rounding label inside the field."""
+        metrics = self.rounding_combo.fontMetrics()
+        widest = max(
+            (metrics.horizontalAdvance(label) for label in ROUNDING_LABELS.values()),
+            default=0,
+        )
+        return widest + DROPDOWN_CHROME
 
     def point_name(self):
         return self.name_edit.text().strip()
@@ -151,13 +144,9 @@ class PointEditDialog(QDialog):
         side = self.rounding_combo.currentData()
         if side not in (ROUNDING_PORT, ROUNDING_STARBOARD):
             return None
-        minimum = self.exit_min.value()
-        maximum = self.exit_max.value()
         return normalize_rounding_spec(
             {
                 "side": "port" if side == ROUNDING_PORT else "starboard",
                 "radius_nm": self.radius_nm,
-                "exit_bearing_min_deg": None if minimum < 0 else minimum,
-                "exit_bearing_max_deg": None if maximum < 0 else maximum,
             }
         )

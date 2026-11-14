@@ -205,8 +205,6 @@ def test_panel_reads_mark_rounding_from_track_points(app):
         {
             "side": "port",
             "radius_nm": 0.4,
-            "exit_bearing_min_deg": 30,
-            "exit_bearing_max_deg": 60,
         },
     )
     track.set_point_rounding_spec(2, None)
@@ -223,8 +221,6 @@ def test_panel_reads_mark_rounding_from_track_points(app):
     assert request.roundings[0] is None
     assert request.roundings[1] == dict(
         side="port",
-        exit_bearing_min_deg=30.0,
-        exit_bearing_max_deg=60.0,
         name="Duntze Rock",
     )
     assert request.roundings[2] is None
@@ -649,12 +645,16 @@ def test_failed_native_then_legacy_clears_overlay_and_inspector(app):
     assert controller.native_overlay is not None
 
     window = SimpleNamespace(
-        controller=SimpleNamespace(routing=controller),
+        controller=SimpleNamespace(
+            routing=controller,
+            core=SimpleNamespace(
+                routingManager=SimpleNamespace(get_active=lambda: None)
+            ),
+        ),
         map=SimpleNamespace(
             native_routing=controller.native_overlay,
             set_isochrones=Mock(),
         ),
-        navigation_panel=SimpleNamespace(route=None),
         routing_inspector=Mock(),
         _routing_selection_unsubscribe=None,
         _routing_selection_target=None,

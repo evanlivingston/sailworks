@@ -88,8 +88,81 @@ def _route_datetime(value):
     return dateutil.parser.parse(value)
 
 
-def routing_summary(r):
-    """Build a short summary string for a routing.
+ROUTING_POINT_FIELDS = ("time", "twa", "tws", "speed", "brg")
+
+
+def routing_point_time_label(value):
+    """Display string for a route point's time cell.
+
+    A timestamp that carries a timezone is shown in local time; a legacy naive
+    time is shown as written. An unparseable value falls back to its text.
+    """
+    try:
+        stamp = dateutil.parser.parse(str(value))
+        stamp = stamp.astimezone() if stamp.tzinfo is not None else stamp
+        return stamp.strftime("%d/%m %H:%M")
+    except (ValueError, TypeError):
+        return str(value)
+
+
+def routing_point_short_time_label(value):
+    """Time of day only, for a scene row whose route repeats the date.
+
+    The table keeps the full ``routing_point_time_label``; a mark row shows the
+    clock time and carries the whole timestamp in its tooltip and item data.
+    """
+    try:
+        stamp = dateutil.parser.parse(str(value))
+        stamp = stamp.astimezone() if stamp.tzinfo is not None else stamp
+        return stamp.strftime("%H:%M")
+    except (ValueError, TypeError):
+        return str(value)
+
+
+def routing_point_cells(point, time_label=routing_point_time_label):
+    """The navigation table's display strings for one route point.
+
+    ``point`` is a serialized route point, with time, TWA, TWS, speed and
+    bearing at indices 2 to 6. A missing figure stays empty rather than showing
+    zero, so the table and the scene tree cannot disagree. ``time_label`` picks
+    the time cell's format; the table keeps the default.
+    """
+    return (
+        time_label(point[2]),
+        f"{point[3]:.0f}°" if point[3] else "",
+        f"{point[4]:.1f}" if point[4] else "",
+        f"{point[5]:.1f}" if point[5] else "",
+        f"{point[6]:.0f}°" if point[6] else "",
+    )
+
+
+def routing_point_tree_cells(point):
+    """A routing mark row's painted strings: the clock time, not the full date.
+
+    The full timestamp stays on the item and in its tooltip, because the date
+    repeats on every mark row of the same route.
+    """
+    return routing_point_cells(point, routing_point_short_time_label)
+
+
+def routing_point_detail_fields(point):
+    """Ordered (label, value) detail fields for a routing mark row.
+
+    The same order as the navigation table, so time is the highest priority
+    segment and bearing the first to drop. A point without the serialized
+    figures has no fields.
+    """
+    if len(point) < 7:
+        return []
+    return list(zip(ROUTING_POINT_FIELDS, routing_point_cells(point)))
+
+
+def routing_detail_fields(r):
+    """Ordered (label, value) figures for a routing, highest priority first.
+
+    Distance, duration and average speed are the same display strings the
+    routing summary uses, so the tooltip and the scene tree cannot disagree.
+    A route with too few complete points has no fields.
 
     Saved routes may carry partial points (for example a two-value coordinate
     without time or speed). They are skipped rather than allowed to crash the
@@ -103,7 +176,7 @@ def routing_summary(r):
     """
     points = [point for point in r if len(point) >= 6]
     if len(points) < 2:
-        return ""
+        return []
     total_dist = 0.0
     total_speed = 0.0
     speed_count = 0
@@ -116,25 +189,6 @@ def routing_summary(r):
             total_speed += speed
             speed_count += 1
     total_dist_nm = total_dist
-    provenance = r.provenance or {}
-    source_note = ""
-    if provenance.get("routing") == "isochrone-with-currents":
-        currents = provenance["currents"]
-        selected = currents["selected_sources"]
-        used = set(currents["actual_sources"])
-        models = sorted({s["model"] for s in selected if s["dataset_id"] in used})
-        source_note = " | currents: " + ", ".join(models) + " · coverage checked"
-        resolutions = {s["dataset_id"]: s.get("resolution_m") for s in selected}
-        finest = min(
-            (r for r in (s.get("resolution_m") for s in selected) if r is not None),
-            default=None,
-        )
-        if finest is not None and any(
-            resolutions.get(i, finest) > finest for i in used
-        ):
-            source_note += " · incl. fallback"
-    elif provenance.get("routing") == "wind-only":
-        source_note = " | wind only"
     dur_str = None
     avg_speed = None
     leg_mean = False
@@ -156,15 +210,80 @@ def routing_summary(r):
     if avg_speed is None and speed_count:
         avg_speed = total_speed / speed_count
         leg_mean = True
-    parts = ["%.0f nm" % total_dist_nm]
+    fields = [("distance", "%.0f nm" % total_dist_nm)]
     if dur_str:
-        parts.append(dur_str)
+        fields.append(("duration", dur_str))
     if avg_speed is not None:
         avg_str = "avg %.1f kts" % avg_speed
         if leg_mean:
             avg_str += " (leg mean)"
-        parts.append(avg_str)
-    return " | ".join(parts) + source_note
+        fields.append(("speed", avg_str))
+    return fields
+
+
+def track_mark_count(count):
+    """The mark count noun phrase, shared by the row, its fields and tooltip."""
+    return f"{count} mark" if count == 1 else f"{count} marks"
+
+
+def track_detail_fields(points):
+    """Ordered (label, value) detail fields for a track row.
+
+    Mark count first and total distance second, so a narrow scene tree keeps
+    the count. Distance sums the same great-circle legs the routing figures
+    use.
+    """
+    points = list(points)
+    distance = 0.0
+    for index in range(1, len(points)):
+        distance += utils.point_distance(
+            points[index - 1][0],
+            points[index - 1][1],
+            points[index][0],
+            points[index][1],
+        )
+    count = len(points)
+    return [
+        ("marks", track_mark_count(count)),
+        ("distance", "%.1f nm" % distance),
+    ]
+
+
+def _routing_source_note(r):
+    """Provenance note appended to a routing summary, or an empty string."""
+    provenance = r.provenance or {}
+    source_note = ""
+    if provenance.get("routing") == "isochrone-with-currents":
+        currents = provenance["currents"]
+        selected = currents["selected_sources"]
+        used = set(currents["actual_sources"])
+        models = sorted({s["model"] for s in selected if s["dataset_id"] in used})
+        source_note = " | currents: " + ", ".join(models) + " · coverage checked"
+        resolutions = {s["dataset_id"]: s.get("resolution_m") for s in selected}
+        finest = min(
+            (r for r in (s.get("resolution_m") for s in selected) if r is not None),
+            default=None,
+        )
+        if finest is not None and any(
+            resolutions.get(i, finest) > finest for i in used
+        ):
+            source_note += " · incl. fallback"
+    elif provenance.get("routing") == "wind-only":
+        source_note = " | wind only"
+    return source_note
+
+
+def routing_summary(r):
+    """Build a short summary string for a routing.
+
+    The figures come from ``routing_detail_fields`` so the tooltip and the
+    scene tree show the same distance, duration and average speed. A route
+    with too few complete points has no summary.
+    """
+    fields = routing_detail_fields(r)
+    if not fields:
+        return ""
+    return " | ".join(value for _, value in fields) + _routing_source_note(r)
 
 
 def _draw_route_legend(cr, title, entries, x=12.0, y=12.0):

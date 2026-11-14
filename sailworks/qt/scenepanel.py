@@ -2,16 +2,18 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPalette
+from PySide6.QtCore import QEvent, QPoint, QRect, QSignalBlocker, Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QCursor, QFont, QGuiApplication, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFormLayout,
     QFrame,
-    QHBoxLayout,
     QHeaderView,
-    QPushButton,
+    QLabel,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -22,7 +24,13 @@ from PySide6.QtWidgets import (
 )
 
 from sailworks.common import resource_path
-from sailworks.core.geo.rounding import ROUNDING_SHORT, normalize_rounding
+from sailworks.core.geo.rounding import (
+    ROUNDING_PORT,
+    ROUNDING_SHORT,
+    ROUNDING_STARBOARD,
+    normalize_rounding,
+    rounding_label,
+)
 from sailworks.core.geo.routing import (
     DEFAULT_ISOCHRONE_COLOUR_MODE,
     DEFAULT_ROUTE_COLOUR_MODE,
@@ -36,20 +44,78 @@ from sailworks.core.scene import (
     KIND_POI,
     KIND_ROUTING,
     KIND_TRACK,
-    TYPE_TITLES,
     SceneCollection,
     SceneEntry,
 )
+from sailworks.rendering.navigation import (
+    routing_detail_fields,
+    routing_point_detail_fields,
+    routing_point_tree_cells,
+    routing_summary,
+    track_detail_fields,
+    track_mark_count,
+)
+from .navigationcommands import (
+    AddPointCommand,
+    RemovePointCommand,
+    RenamePointCommand,
+)
 from .pointeditdialog import PointEditDialog
-from .theme import MenuBuilder, symbol_icon, ThemedMenu
+from .theme import (
+    BORDER,
+    PANEL,
+    SURFACE,
+    TEXT,
+    MenuBuilder,
+    alternate_row_base,
+    symbol_icon,
+    ThemedMenu,
+)
 
 NODE_ROLE = Qt.ItemDataRole.UserRole
 COORDINATE_ROLE = Qt.ItemDataRole.UserRole + 1
 ROUNDING_ROLE = Qt.ItemDataRole.UserRole + 2
-LEGS_LOADED_ROLE = Qt.ItemDataRole.UserRole + 3
+DETAIL_ROLE = Qt.ItemDataRole.UserRole + 3
+# Dev's routing-legs grouping caches its children, so it needs its own role now
+# that the point-detail fields claim +3.
+LEGS_LOADED_ROLE = Qt.ItemDataRole.UserRole + 4
+# Set on the Marks row while it is expanded, so the delegate knows to paint the
+# column headers there.
+MARK_HEADERS_ROLE = Qt.ItemDataRole.UserRole + 5
+# The strings a mark row paints: a routing mark shows the clock time while the
+# item data and tooltip keep the full timestamp.
+MARK_DETAIL_ROLE = Qt.ItemDataRole.UserRole + 6
 MUTED = QColor("#b0b0ad")
-POINT_COORDINATE = QColor("#8a8a87")
-ROUNDING_COLOR = QColor("#78aeed")
+POINT_DETAIL = QColor("#8a8a87")
+ROUNDING_COLOR = MUTED
+# Port and starboard are distinct side constraints; sail-to-mark and gate stay
+# neutral so only a real side choice draws the eye.
+ROUNDING_COLORS = {
+    ROUNDING_PORT: QColor("#d05a4f"),
+    ROUNDING_STARBOARD: QColor("#4e9d63"),
+}
+ROUNDING_SIDES = {label: side for side, label in ROUNDING_SHORT.items()}
+ROUNDING_GAP = 8
+DETAIL_GAP = 12
+DETAIL_MIN_LABEL = 48
+# A point row gives up detail fields before it gives up the name.
+POINT_MIN_LABEL = 56
+# Routing mark rows share a fixed column grid so a column's right edge is the
+# same on every row. Each width is sized for the widest realistic value, never
+# for the row's own text, and the headers reuse those widths so a header drops
+# with its column. The time cell is the time of day only; the row's tooltip and
+# item data keep the full date. The placeholders use the widest digits of a
+# proportional font: a sample like "08:01" is narrower than a real "00:00"
+# because "1" advances less than "8".
+MARK_COLUMN_WIDEST = ("88:88", "888°", "88.8", "88.8", "888°")
+MARK_COLUMN_HEADERS = ("Time", "TWA", "TWS", "Speed", "Brg")
+# Mark rows squeeze harder than point rows: a tighter gap and a smaller name
+# reserve are what let the five fields share the narrow default panel.
+MARK_DETAIL_GAP = 6
+MARK_MIN_LABEL = 44
+# The rounding slot is only as wide as "Stbd", so the full "Rounding" header
+# would crowd its neighbour; the column gets the short form instead.
+MARK_ROUNDING_HEADER = "Rnd"
 NAME_COLUMN = 0
 VISIBLE_COLUMN = 1
 TYPE_ICONS = {
@@ -58,6 +124,169 @@ TYPE_ICONS = {
     KIND_POI: "poi-symbolic",
     KIND_LOG: "information-symbolic",
 }
+
+
+def item_tooltip(entry, element, detail):
+    """Tooltip for a scene item row: the navigation summary or name and detail.
+
+    A routing row shows only its navigation summary, since the row already
+    carries the name and the icon carries the type. Other rows keep the name
+    and detail. Empty fields are dropped so the tooltip never ends in a blank
+    line.
+    """
+    if entry.kind == KIND_ROUTING:
+        return routing_summary(element) if element is not None else ""
+    return "\n".join(line for line in (entry.name, detail) if line)
+
+
+def rounding_column_width(metrics):
+    """Fixed width for the rounding slot, sized for the longest short label."""
+    widest = max(
+        (metrics.horizontalAdvance(label) for label in ROUNDING_SHORT.values()),
+        default=0,
+    )
+    return widest + 6
+
+
+def rounding_color(short_label):
+    """Label colour for a rounding short label; neutral unless it names a side."""
+    return ROUNDING_COLORS.get(ROUNDING_SIDES.get(short_label), ROUNDING_COLOR)
+
+
+def point_columns(rect, metrics, label_left=None):
+    """The rounding slot for a point row, anchored to the row's right edge.
+
+    Coordinates are no longer painted on point rows, so the rounding label
+    takes the row's right edge and every point row starts it at the same
+    offset from that edge whatever its name. The slot has a fixed width sized
+    for the longest short label, which also fixes the right edge of the detail
+    fields beside it. A row too narrow for the slot beside a readable name
+    shows the elided name alone rather than an empty name with right-hand
+    fields.
+    """
+    left = rect.left() if label_left is None else max(rect.left(), label_left)
+    available = max(0, rect.right() - left + 1)
+    slot = rounding_column_width(metrics)
+    minimum = min(POINT_MIN_LABEL, available)
+    if slot <= 0 or available - minimum - ROUNDING_GAP < slot:
+        return QRect(rect.right() + 1, rect.top(), 0, rect.height())
+    return QRect(rect.right() - slot + 1, rect.top(), slot, rect.height())
+
+
+def point_label_width(label_rect, rounding_rect):
+    """Width a point row's name may use before the rounding slot starts."""
+    return max(0, rounding_rect.left() - label_rect.left() - ROUNDING_GAP)
+
+
+def row_geometry(rect, metrics, icon_width):
+    """Rects a point row paints into: icon, label and rounding label."""
+    icon = QRect(rect.left(), rect.top(), icon_width, rect.height())
+    label = rect.adjusted(icon_width, 0, 0, 0)
+    rounding = point_columns(rect, metrics, label.left())
+    return icon, label, rounding
+
+
+def detail_columns(rect, metrics, values, label_left, min_label=DETAIL_MIN_LABEL):
+    """Rects for the detail segments a row can show, highest priority first.
+
+    The values are painted as separate right-aligned segments ending at the
+    row's right edge, in priority order from left to right. Segments are kept
+    only while the block leaves ``min_label`` pixels for the label, so a
+    narrow panel drops the lowest priority fields instead of painting them over
+    the name. A value that does not fit stops the block, keeping the order
+    intact rather than skipping to a shorter lower priority field.
+    """
+    available = max(0, rect.right() - label_left + 1)
+    kept = []
+    width = 0
+    for value in values:
+        text = str(value or "")
+        if not text:
+            continue
+        text_width = metrics.horizontalAdvance(text)
+        added = text_width + (DETAIL_GAP if kept else 0)
+        if width + added + min_label > available:
+            break
+        kept.append((text, text_width))
+        width += added
+    columns = []
+    right = rect.right()
+    for text, text_width in reversed(kept):
+        columns.append(
+            (
+                text,
+                QRect(right - text_width + 1, rect.top(), text_width, rect.height()),
+            )
+        )
+        right -= text_width + DETAIL_GAP
+    columns.reverse()
+    return columns
+
+
+def mark_column_widths(metrics):
+    """Fixed width per routing mark column, sized for its widest value or header."""
+    return tuple(
+        max(metrics.horizontalAdvance(widest), metrics.horizontalAdvance(header))
+        for widest, header in zip(MARK_COLUMN_WIDEST, MARK_COLUMN_HEADERS)
+    )
+
+
+def mark_columns(rect, metrics, values, label_left, rounding_rect):
+    """Rects for a routing mark row's fixed columns, highest priority first.
+
+    Every column keeps the same width on every row, so a value's right edge
+    does not depend on the text beside it. Columns are laid out right to left
+    from the rounding slot and drop whole from the right (bearing first, then
+    speed, TWS, TWA and time) while ``MARK_MIN_LABEL`` remains for the name.
+    A column with no value keeps its slot so the rows below stay aligned.
+    """
+    widths = mark_column_widths(metrics)
+    right = (
+        rounding_rect.left() if rounding_rect.width() > 0 else rect.right() + 1
+    ) - MARK_DETAIL_GAP
+    limit = label_left + MARK_MIN_LABEL
+    kept = 0
+    used = 0
+    for width in widths:
+        added = width + (MARK_DETAIL_GAP if kept else 0)
+        if right - used - added + 1 < limit:
+            break
+        kept += 1
+        used += added
+    columns = []
+    edge = right
+    for index in range(kept - 1, -1, -1):
+        width = widths[index]
+        text = str(values[index] or "") if index < len(values) else ""
+        columns.append(
+            (text, QRect(edge - width + 1, rect.top(), width, rect.height()))
+        )
+        edge -= width + MARK_DETAIL_GAP
+    columns.reverse()
+    return columns
+
+
+def mark_header_columns(rect, metrics, icon_width, indent):
+    """Header text and rects for an expanded Marks row.
+
+    ``rect`` is the Marks row's own paint rect. Its mark rows sit one
+    indentation level below and share its right edge, so shifting by
+    ``indent`` reproduces their column geometry; the headers then end at
+    exactly the same right edges as the values beneath them and drop with a
+    column the row is too narrow to show.
+    """
+    child = rect.adjusted(indent, 0, 0, 0)
+    _, label, rounding = row_geometry(child, metrics, icon_width)
+    columns = mark_columns(child, metrics, (), label.left(), rounding)
+    pairs = [
+        (MARK_COLUMN_HEADERS[index], column)
+        for index, (_, column) in enumerate(columns)
+    ]
+    if rounding.width() > 0 and (
+        metrics.horizontalAdvance(MARK_ROUNDING_HEADER) <= rounding.width()
+    ):
+        pairs.append((MARK_ROUNDING_HEADER, rounding))
+    return pairs
 
 
 def _visibility_style():
@@ -74,6 +303,86 @@ def _visibility_style():
     )
 
 
+SCENE_TOOLTIP_STYLE = (
+    f"QFrame#scene-tooltip {{ background: {PANEL}; color: {TEXT};"
+    f" border: 1px solid {BORDER}; border-radius: 4px; padding: 4px 6px; }}"
+    f"QFrame#scene-tooltip QLabel {{ background: transparent; color: {TEXT}; }}"
+)
+
+
+TOOLTIP_OFFSET_X = 16
+TOOLTIP_OFFSET_Y = 20
+
+
+class SceneTooltip(QFrame):
+    """Themed tooltip window for the scene tree.
+
+    The native tooltip keeps its white frame on macOS whatever the application
+    stylesheet says, so the scene tree draws its own frame instead, matching the
+    application's panels.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("scene-tooltip")
+        self.setWindowFlags(
+            Qt.WindowType.ToolTip
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.NoDropShadowWindowHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setFrameShadow(QFrame.Shadow.Plain)
+        self.setLineWidth(0)
+        self.setStyleSheet(SCENE_TOOLTIP_STYLE)
+
+        self.label = QLabel(self)
+        self.label.setTextFormat(Qt.TextFormat.PlainText)
+        self.label.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.label.setStyleSheet(f"background: transparent; color: {TEXT};")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.label)
+        self.hide()
+
+    def show_text(self, text, position=None):
+        """Show ``text`` at the global ``position``, kept inside the screen."""
+        if not text:
+            self.hide()
+            return
+        self.label.setText(text)
+        self.adjustSize()
+        anchor = QCursor.pos() if position is None else position
+        self.move(self._clamped_position(anchor))
+        self.show()
+
+    def _clamped_position(self, anchor):
+        """Anchor position moved clear of the pointer and onto the screen.
+
+        The tooltip sits below and to the right of the anchor so the pointer
+        does not cover its text, then moves back inside the available
+        geometry of the screen it is on.
+        """
+        screen = QGuiApplication.screenAt(anchor) or QGuiApplication.primaryScreen()
+        if screen is None:
+            return QPoint(anchor.x() + TOOLTIP_OFFSET_X, anchor.y() + TOOLTIP_OFFSET_Y)
+        bounds = screen.availableGeometry()
+        size = self.sizeHint()
+        x = min(
+            max(anchor.x() + TOOLTIP_OFFSET_X, bounds.left()),
+            bounds.right() - size.width() + 1,
+        )
+        y = min(
+            max(anchor.y() + TOOLTIP_OFFSET_Y, bounds.top()),
+            bounds.bottom() - size.height() + 1,
+        )
+        return QPoint(x, y)
+
+
 def _isochrone_modes_for(element):
     """Isochrone modes this element can honour.
 
@@ -86,23 +395,90 @@ def _isochrone_modes_for(element):
 
 
 class SceneTree(QTreeWidget):
-    """Tree widget that hands drops back to the scene panel."""
+    """Tree widget that hands drops back to the scene panel.
+
+    It also shows a themed tooltip for its rows and suppresses the native one,
+    whose white frame cannot be styled away on macOS.
+    """
 
     def __init__(self, panel, parent=None):
         super().__init__(parent)
         self.panel = panel
+        self.tooltip = SceneTooltip(self)
+        # Blender-style alternating rows: every row at every depth gets a barely
+        # visible tint over the panel surface. The row palette is set from the
+        # theme rather than inherited so the tint stays proportional when the
+        # application palette is not the dark one. Selection is painted on top
+        # by the style, so a selected row keeps the normal highlight.
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Base, QColor(SURFACE))
+        palette.setColor(QPalette.ColorRole.AlternateBase, alternate_row_base())
+        self.setPalette(palette)
+        self.setAlternatingRowColors(True)
+        self.verticalScrollBar().valueChanged.connect(self.tooltip.hide)
+        self.horizontalScrollBar().valueChanged.connect(self.tooltip.hide)
 
     def dropEvent(self, event):  # noqa: N802 - Qt virtual method name
         self.panel.drop_scene_items(event)
 
+    def _hide_tooltip(self):
+        # Qt can deliver viewport events while the base class is still being
+        # constructed, before the tooltip exists.
+        tooltip = getattr(self, "tooltip", None)
+        if tooltip is not None:
+            tooltip.hide()
+
+    def viewportEvent(self, event):  # noqa: N802 - Qt virtual method name
+        kind = event.type()
+        if kind == QEvent.Type.ToolTip:
+            return self._show_row_tooltip(event)
+        if kind in (
+            QEvent.Type.Leave,
+            QEvent.Type.Hide,
+            QEvent.Type.Wheel,
+            QEvent.Type.MouseButtonPress,
+        ):
+            self._hide_tooltip()
+        elif kind == QEvent.Type.MouseMove:
+            # Hiding on every move also covers moving to a row without a
+            # tooltip; Qt re-sends the tooltip event once the pointer settles.
+            self._hide_tooltip()
+        return super().viewportEvent(event)
+
+    def hideEvent(self, event):  # noqa: N802 - Qt virtual method name
+        self._hide_tooltip()
+        super().hideEvent(event)
+
+    def _show_row_tooltip(self, event):
+        """Show the themed tooltip for the row under the cursor.
+
+        Returns True so Qt does not show the native tooltip as well.
+        """
+        item = self.itemAt(event.pos())
+        text = "" if item is None else item.toolTip(NAME_COLUMN)
+        if not text:
+            self.tooltip.hide()
+            return False
+        self.tooltip.show_text(text, self.viewport().mapToGlobal(event.pos()))
+        return True
+
 
 class SceneItemDelegate(QStyledItemDelegate):
-    """Paint point coordinates and mark rounding in a point's name cell."""
+    """Paint a row's detail fields and mark rounding.
+
+    Point rows paint the name and the right-aligned rounding label; their
+    coordinates live in the tooltip only. Track and routing rows carry detail
+    fields instead, painted as right-aligned segments before the label so they
+    never cover the name.
+    """
 
     def paint(self, painter, option, index):
         coordinates = index.data(COORDINATE_ROLE)
-        if coordinates is None:
+        details = index.data(MARK_DETAIL_ROLE) or index.data(DETAIL_ROLE) or ()
+        if coordinates is None and not details:
             super().paint(painter, option, index)
+            if index.data(MARK_HEADERS_ROLE):
+                self._paint_mark_headers(painter, option, index)
             return
 
         adjusted = QStyleOptionViewItem(option)
@@ -118,7 +494,7 @@ class SceneItemDelegate(QStyledItemDelegate):
         selected = bool(adjusted.state & QStyle.StateFlag.State_Selected)
         if selected:
             label_color = adjusted.palette.color(QPalette.ColorRole.HighlightedText)
-            coordinate_color = label_color
+            detail_color = label_color
         else:
             foreground = index.data(Qt.ItemDataRole.ForegroundRole)
             label_color = (
@@ -126,7 +502,7 @@ class SceneItemDelegate(QStyledItemDelegate):
                 if isinstance(foreground, QBrush)
                 else adjusted.palette.color(QPalette.ColorRole.Text)
             )
-            coordinate_color = POINT_COORDINATE
+            detail_color = POINT_DETAIL
 
         rect = adjusted.rect.adjusted(4, 0, -4, 0)
         metrics = adjusted.fontMetrics
@@ -136,16 +512,36 @@ class SceneItemDelegate(QStyledItemDelegate):
             if size is None or size.width() <= 0:
                 size = widget.iconSize() if widget is not None else None
             icon_width = (size.width() if size is not None else 16) + 4
-        label_rect = rect.adjusted(icon_width, 0, 0, 0)
+
+        if coordinates is None:
+            self._paint_details(
+                painter,
+                adjusted,
+                rect,
+                metrics,
+                icon_width,
+                label,
+                details,
+                label_color,
+                detail_color,
+            )
+            return
+
         rounding_text = str(index.data(ROUNDING_ROLE) or "")
-        rounding_width = metrics.horizontalAdvance(rounding_text)
-        coordinate_text = metrics.elidedText(
-            str(coordinates), Qt.TextElideMode.ElideLeft, int(rect.width() * 0.6)
+        _, label_rect, rounding_rect = row_geometry(rect, metrics, icon_width)
+        segments = (
+            mark_columns(rect, metrics, details, label_rect.left(), rounding_rect)
+            if details
+            else []
         )
-        coordinate_width = metrics.horizontalAdvance(coordinate_text)
-        label_width = max(
-            0, label_rect.width() - coordinate_width - rounding_width - 16
-        )
+        if segments:
+            label_width = max(
+                0, segments[0][1].left() - label_rect.left() - MARK_DETAIL_GAP
+            )
+        elif rounding_rect.width() > 0:
+            label_width = point_label_width(label_rect, rounding_rect)
+        else:
+            label_width = max(0, rect.right() - label_rect.left() + 1)
         label_text = metrics.elidedText(
             str(label), Qt.TextElideMode.ElideRight, label_width
         )
@@ -158,19 +554,101 @@ class SceneItemDelegate(QStyledItemDelegate):
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
             label_text,
         )
-        if rounding_text:
-            painter.setPen(label_color if selected else ROUNDING_COLOR)
+        if rounding_text and rounding_rect.width() > 0:
+            painter.setPen(label_color if selected else rounding_color(rounding_text))
             painter.drawText(
-                rect.adjusted(0, 0, -(coordinate_width + 12), 0),
+                rounding_rect,
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                 rounding_text,
             )
-        painter.setPen(coordinate_color)
-        painter.drawText(
-            rect,
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-            coordinate_text,
+        if segments:
+            painter.setPen(detail_color)
+            for text, segment in segments:
+                if not text:
+                    continue
+                painter.drawText(
+                    segment,
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                    text,
+                )
+        painter.restore()
+
+    def _header_segments(self, option, index):
+        """Header text and rects for an expanded Marks row."""
+        adjusted = QStyleOptionViewItem(option)
+        self.initStyleOption(adjusted, index)
+        widget = adjusted.widget
+        rect = adjusted.rect.adjusted(4, 0, -4, 0)
+        metrics = adjusted.fontMetrics
+        icon_width = 0
+        if index.data(Qt.ItemDataRole.DecorationRole) is not None:
+            size = adjusted.decorationSize
+            if size is None or size.width() <= 0:
+                size = widget.iconSize() if widget is not None else None
+            icon_width = (size.width() if size is not None else 16) + 4
+        indent = widget.indentation() if widget is not None else 0
+        return mark_header_columns(rect, metrics, icon_width, indent)
+
+    def _paint_mark_headers(self, painter, option, index):
+        """Paint the mark column headers on the Marks row that heads them."""
+        segments = self._header_segments(option, index)
+        if not segments:
+            return
+        adjusted = QStyleOptionViewItem(option)
+        self.initStyleOption(adjusted, index)
+        selected = bool(adjusted.state & QStyle.StateFlag.State_Selected)
+        color = (
+            adjusted.palette.color(QPalette.ColorRole.HighlightedText)
+            if selected
+            else POINT_DETAIL
         )
+        painter.save()
+        painter.setFont(adjusted.font)
+        painter.setPen(color)
+        for text, segment in segments:
+            painter.drawText(
+                segment,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                text,
+            )
+        painter.restore()
+
+    @staticmethod
+    def _paint_details(
+        painter,
+        option,
+        rect,
+        metrics,
+        icon_width,
+        label,
+        details,
+        label_color,
+        detail_color,
+    ):
+        """Paint the label followed by the detail segments that fit."""
+        label_rect = rect.adjusted(icon_width, 0, 0, 0)
+        segments = detail_columns(rect, metrics, details, label_rect.left())
+        detail_left = segments[0][1].left() if segments else rect.right() + 1
+        label_text = metrics.elidedText(
+            str(label),
+            Qt.TextElideMode.ElideRight,
+            max(0, detail_left - label_rect.left() - DETAIL_GAP),
+        )
+        painter.save()
+        painter.setFont(option.font)
+        painter.setPen(label_color)
+        painter.drawText(
+            label_rect,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            label_text,
+        )
+        painter.setPen(detail_color)
+        for text, segment in segments:
+            painter.drawText(
+                segment,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                text,
+            )
         painter.restore()
 
 
@@ -186,11 +664,12 @@ class ScenePanel(QWidget):
     edit_track_requested = Signal(str)
     routing_visibility_changed = Signal()
 
-    def __init__(self, controller, parent=None, scene_path=None):
+    def __init__(self, controller, parent=None, scene_path=None, undo_stack=None):
         super().__init__(parent)
         self.controller = controller
         self.core = controller.core
         self.scene = SceneCollection(scene_path)
+        self.undo_stack = undo_stack
         self.syncing = False
         self._rows = {}
         self._expanded_items = set()
@@ -237,16 +716,6 @@ class ScenePanel(QWidget):
         self.tree.customContextMenuRequested.connect(self._context_menu)
         layout.addWidget(self.tree, 1)
 
-        row = QHBoxLayout()
-        row.setSpacing(6)
-        self.new_button = QPushButton("+ Collection")
-        self.new_button.clicked.connect(self._new_collection)
-        row.addWidget(self.new_button)
-        self.group_button = QPushButton("Group Selection")
-        self.group_button.clicked.connect(self._group_selection)
-        row.addWidget(self.group_button)
-        layout.addLayout(row)
-
         self.refresh()
 
     # ------------------------------------------------------------------
@@ -258,7 +727,7 @@ class ScenePanel(QWidget):
             details = (
                 "Race track"
                 if getattr(track, "race_track", False)
-                else f"{len(track)} fixes"
+                else track_mark_count(len(track))
             )
             entries.append(
                 SceneEntry(
@@ -315,7 +784,9 @@ class ScenePanel(QWidget):
                             key=f"race:{race_id}:{track.boat_id}",
                             name=track.name,
                             visible=bool(track.visible),
-                            detail=f"{race_name} · {len(track.points)} race fixes",
+                            detail=(
+                                f"{race_name} · {track_mark_count(len(track.points))}"
+                            ),
                             group=race_group.id,
                             element=track,
                         )
@@ -474,6 +945,21 @@ class ScenePanel(QWidget):
             self._add_groups(row, group.id)
             self._add_items(row, group.id)
 
+    @staticmethod
+    def _detail_fields(kind, element):
+        """Ordered (label, value) detail fields for a row, highest priority first.
+
+        Only routings and tracks carry them; collections, groups, POIs and logs
+        have no extra detail worth a segment.
+        """
+        if element is None:
+            return []
+        if kind == KIND_ROUTING:
+            return routing_detail_fields(element)
+        if kind == KIND_TRACK:
+            return track_detail_fields(getattr(element, "points", ()))
+        return []
+
     def _add_items(self, parent_item, group_id):
         for entry in self.scene.items_in(group_id):
             row = QTreeWidgetItem([entry.name, ""])
@@ -503,10 +989,11 @@ class ScenePanel(QWidget):
             row.setFlags(flags)
             live = self.scene.live_entry(entry.kind, entry.key)
             detail = live.detail if live is not None else ""
-            row.setToolTip(
-                NAME_COLUMN,
-                f"{entry.name}\n{TYPE_TITLES.get(entry.kind, '')}\n{detail}",
-            )
+            element = live.element if live is not None else None
+            fields = self._detail_fields(entry.kind, element)
+            if fields:
+                row.setData(NAME_COLUMN, DETAIL_ROLE, [value for _, value in fields])
+            row.setToolTip(NAME_COLUMN, item_tooltip(entry, element, detail))
             if not self.scene.effective_visible(entry.kind, entry.key):
                 row.setForeground(NAME_COLUMN, QBrush(MUTED))
             parent_item.addChild(row)
@@ -551,12 +1038,39 @@ class ScenePanel(QWidget):
                 NAME_COLUMN, NODE_ROLE, ("point", entry.kind, entry.key, index)
             )
             child.setData(NAME_COLUMN, COORDINATE_ROLE, coordinates)
+            rounding_value = (
+                normalize_rounding(point_rounding(index))
+                if callable(point_rounding)
+                else None
+            )
             if callable(point_rounding):
                 child.setData(
                     NAME_COLUMN,
                     ROUNDING_ROLE,
-                    ROUNDING_SHORT[normalize_rounding(point_rounding(index))],
+                    ROUNDING_SHORT[rounding_value],
                 )
+            details = []
+            if entry.kind == KIND_ROUTING:
+                details = [value for _, value in routing_point_detail_fields(point)]
+                if details:
+                    child.setData(NAME_COLUMN, DETAIL_ROLE, details)
+                    child.setData(
+                        NAME_COLUMN,
+                        MARK_DETAIL_ROLE,
+                        list(routing_point_tree_cells(point)),
+                    )
+            child.setToolTip(
+                NAME_COLUMN,
+                "\n".join(
+                    text
+                    for text in (
+                        rounding_label(rounding_value),
+                        coordinates,
+                        details[0] if entry.kind == KIND_ROUTING and details else "",
+                    )
+                    if text
+                ),
+            )
             child.setIcon(NAME_COLUMN, symbol_icon("poi-symbolic"))
             flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
             if callable(rename_point):
@@ -569,8 +1083,8 @@ class ScenePanel(QWidget):
         """Add calculated-result wrappers below a routing item.
 
         These are display wrappers over the saved result, not editable
-        waypoints. Neither wrapper reads the artifact until Legs is expanded,
-        so a collapsed tree never hydrates contours.
+        waypoints. Neither wrapper reads the artifact until the Marks node is
+        expanded, so a collapsed tree never hydrates contours.
         """
         identity = (entry.kind, entry.key)
         visible = bool(getattr(element, "isochrones_visible", True))
@@ -645,20 +1159,23 @@ class ScenePanel(QWidget):
         # Route marks are editable waypoints, like track points, but they stay
         # grouped with the calculated legs. Legacy routes without a result still
         # get the wrapper so their marks keep one consistent location.
-        legs = QTreeWidgetItem(["Legs", ""])
+        # The node groups the route's marks; calculated legs appear below them
+        # when it is expanded. Its "routing-legs" id and LEGS_LOADED_ROLE keep
+        # their original names because expansion state is keyed on them.
+        legs = QTreeWidgetItem(["Marks", ""])
         legs.setData(NAME_COLUMN, NODE_ROLE, ("routing-legs", entry.kind, entry.key))
         legs.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
         legs.setIcon(NAME_COLUMN, symbol_icon("track-symbolic"))
         legs.setToolTip(
             NAME_COLUMN,
-            "Route marks and calculated result legs. Expand to read calculated "
-            "legs from the saved result.",
+            "Route marks. Expand to read calculated legs from the saved result.",
         )
         legs.setChildIndicatorPolicy(QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
         row.addChild(legs)
         self._rows[("routing-legs", entry.kind, entry.key)] = legs
         self._add_point_rows(legs, entry, element, "Mark")
         if identity in self._expanded_legs:
+            legs.setData(NAME_COLUMN, MARK_HEADERS_ROLE, True)
             legs.setExpanded(True)
             self._populate_legs(legs, entry)
 
@@ -899,6 +1416,7 @@ class ScenePanel(QWidget):
         elif node[0] == "routing-legs":
             identity = (node[1], node[2])
             self._expanded_legs.add(identity)
+            row.setData(NAME_COLUMN, MARK_HEADERS_ROLE, True)
             item = self.scene.item(*identity)
             if item is not None:
                 self._populate_legs(row, item)
@@ -915,6 +1433,7 @@ class ScenePanel(QWidget):
             self._expanded_items.discard((node[1], node[2]))
         elif node[0] == "routing-legs":
             self._expanded_legs.discard((node[1], node[2]))
+            row.setData(NAME_COLUMN, MARK_HEADERS_ROLE, False)
 
     def _rename_item(self, item, name):
         if item.kind == KIND_LOG:
@@ -961,14 +1480,159 @@ class ScenePanel(QWidget):
         element = self._point_element(node)
         if element is None:
             return
-        if element.rename_point(node[3], name):
-            self.changed.emit()
-        self.refresh()
+        index = int(node[3])
+        normalized = "" if name is None else str(name).strip()
+        get_name = getattr(element, "point_name", None)
+        before = get_name(index) if callable(get_name) else ""
+        if before == normalized:
+            self.refresh()
+            return
+        if self.undo_stack is None:
+            if element.rename_point(index, normalized):
+                self.changed.emit()
+            self.refresh()
+            return
+        self.undo_stack.push(
+            RenamePointCommand(self._points_changed, element, index, before, normalized)
+        )
 
     def _move_point(self, node):
         element = self._point_element(node)
         if element is not None:
             self.move_point_requested.emit(element, int(node[3]))
+
+    def _track_element(self, node):
+        if node is None or node[1] != KIND_TRACK:
+            return None
+        entry = self.scene.live_entry(node[1], node[2])
+        element = entry.element if entry is not None else None
+        if element is None or not callable(getattr(element, "add", None)):
+            return None
+        return element
+
+    def _point_target(self):
+        """The track that receives a point added outside the tree."""
+        return self._ensure_point_target()[0]
+
+    def _ensure_point_target(self):
+        """Return the target track and whether this call created it."""
+        manager = self.core.trackManager
+        get_active = getattr(manager, "get_active", None)
+        active = get_active() if callable(get_active) else None
+        if active is not None:
+            return active, False
+        elements = list(manager)
+        if len(elements) > 1:
+            return None, False
+        created = False
+        if elements:
+            active = elements[0]
+        else:
+            new_element = getattr(manager, "new_element", None)
+            if not callable(new_element):
+                return None, False
+            active = new_element(points=[])
+            created = True
+        set_active = getattr(manager, "set_active", None)
+        if callable(set_active):
+            set_active(active)
+        return active, created
+
+    def add_point(self, coordinates):
+        """Append a point to the track being edited, creating one if needed."""
+        element, created = self._ensure_point_target()
+        if element is None:
+            return None
+        return self._append_point(element, coordinates, created=created)
+
+    def add_poi(self, coordinates):
+        """Create a POI at the requested position."""
+        create = getattr(self.core.poiManager, "create", None)
+        if not callable(create):
+            return None
+        poi = create(tuple(coordinates))
+        self._points_changed()
+        return poi
+
+    def add_navigation_request(self, kind, coordinates):
+        """Route a map request to a POI mark or a track point."""
+        if kind == "poi":
+            return self.add_poi(coordinates)
+        return self.add_point(coordinates)
+
+    def _append_point(self, element, coordinates, created=False):
+        add = getattr(element, "add", None)
+        if not callable(add):
+            return None
+        if self.undo_stack is None:
+            add(coordinates[0], coordinates[1])
+            self._points_changed()
+            return element
+        self.undo_stack.push(
+            AddPointCommand(
+                self._points_changed,
+                element,
+                coordinates,
+                collection=self.core.trackManager,
+                created=created,
+            )
+        )
+        return element
+
+    def _points_changed(self):
+        self.changed.emit()
+        self.refresh()
+
+    def _add_point(self, node):
+        element = self._track_element(node)
+        created = False
+        if element is None:
+            element, created = self._ensure_point_target()
+        if element is None:
+            return
+        default = tuple(element.points[-1][:2]) if len(element) else (0.0, 0.0)
+
+        def add(coordinates):
+            self._append_point(element, coordinates, created=created)
+
+        self._coordinates_dialog("Add track point", default, add)
+
+    def _delete_point(self, node):
+        element = self._point_element(node)
+        if element is None:
+            return
+        index = int(node[3])
+        if not 0 <= index < len(element):
+            return
+        if self.undo_stack is None:
+            element.remove(index)
+            self._points_changed()
+            return
+        self.undo_stack.push(RemovePointCommand(self._points_changed, element, [index]))
+
+    def _coordinates_dialog(self, title, default, callback):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        form = QFormLayout(dialog)
+        latitude, longitude = QDoubleSpinBox(), QDoubleSpinBox()
+        for control, limit, value in (
+            (latitude, 90, default[0]),
+            (longitude, 180, default[1]),
+        ):
+            control.setRange(-limit, limit)
+            control.setDecimals(6)
+            control.setValue(value)
+        form.addRow("Latitude", latitude)
+        form.addRow("Longitude", longitude)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            callback((latitude.value(), longitude.value()))
+        dialog.deleteLater()
 
     def _edit_point(self, node):
         element = self._point_element(node)
@@ -989,8 +1653,6 @@ class ScenePanel(QWidget):
             rounding=current_rounding,
             coordinates=tuple(element.points[index][:2]),
             radius_nm=spec.get("radius_nm"),
-            exit_bearing_min_deg=spec.get("exit_bearing_min_deg"),
-            exit_bearing_max_deg=spec.get("exit_bearing_max_deg"),
             parent=self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -1025,22 +1687,6 @@ class ScenePanel(QWidget):
             ):
                 changed = set_rounding(index, rounding) or changed
         if changed:
-            self.changed.emit()
-        self.refresh()
-
-    def _cycle_rounding(self, node):
-        element = self._point_element(node)
-        if element is None:
-            return
-        set_rounding = getattr(element, "set_point_rounding", None)
-        if not callable(set_rounding):
-            return
-        index = int(node[3])
-        point_rounding = getattr(element, "point_rounding", None)
-        current = normalize_rounding(
-            point_rounding(index) if callable(point_rounding) else None
-        )
-        if set_rounding(index, (current + 1) % 4):
             self.changed.emit()
         self.refresh()
 
@@ -1154,6 +1800,12 @@ class ScenePanel(QWidget):
         fit_nodes = self._nodes_for_fit(nodes)
         delete_nodes = self._nodes_for_delete(nodes)
         point_element = self._point_element(node)
+        track_element = self._track_element(node)
+        point_delete = point_element is not None and not node[2].startswith("race:")
+        if point_delete:
+            delete_nodes = [
+                candidate for candidate in delete_nodes if candidate != node
+            ]
         rename = (
             len(groups) == 1 and node is not None and node[0] == "group"
         ) or point_element is not None
@@ -1212,10 +1864,21 @@ class ScenePanel(QWidget):
                 )
                 action.setCheckable(True)
                 action.setChecked(mode == current)
-        if fit_nodes or point_element is not None or edit_track:
+        if (
+            fit_nodes
+            or point_element is not None
+            or track_element is not None
+            or edit_track
+        ):
             builder.section()
             if fit_nodes:
                 builder.add("Fit", lambda: self.fit_requested.emit(fit_nodes), key="F")
+            if track_element is not None:
+                builder.add(
+                    "Add Point…",
+                    lambda: self._add_point(node),
+                    key="P",
+                )
             if edit_track:
                 builder.add(
                     "Edit Track",
@@ -1229,20 +1892,15 @@ class ScenePanel(QWidget):
                     key="E",
                 )
                 builder.add(
-                    "Move",
+                    "Move Point",
                     lambda: self._move_point(node),
                     key="V",
-                )
-                builder.add(
-                    "Cycle Rounding",
-                    lambda: self._cycle_rounding(node),
-                    key="C",
                 )
         if rename or open_log:
             builder.section()
             if rename:
                 builder.add(
-                    "Rename",
+                    "Rename Point" if point_element is not None else "Rename",
                     lambda: self.tree.editItem(row, NAME_COLUMN),
                     key="R",
                 )
@@ -1255,6 +1913,8 @@ class ScenePanel(QWidget):
                     key="O",
                 )
         destructive = []
+        if point_delete:
+            destructive.append(("Delete Point", lambda: self._delete_point(node), "D"))
         if delete_nodes:
             destructive.append(
                 (

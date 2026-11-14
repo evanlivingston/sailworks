@@ -148,14 +148,24 @@ class _RoutingCollection(CollectionWithActiveElement, Generic[T]):
         )
 
     def import_from_gpx(self, gpx):
-        for track in gpx.routes:
-            waypoints = []
+        """Import GPX routes as routings built from each route's points.
 
-            for segment in track.segments:
-                for point in segment.points:
-                    waypoints.append([point.latitude, point.longitude])
+        A ``GPXRoute`` keeps a flat ``.points`` list (it has no segments, unlike
+        a track), so each route becomes one routing. Routes without points have
+        nothing to display and are skipped rather than added as empty entries.
+        """
+        for route in gpx.routes:
+            waypoints = [[point.latitude, point.longitude] for point in route.points]
+            if not waypoints:
+                continue
 
-            self.append(Routing(track.name, waypoints, collection=self))
+            self.append(
+                Routing(
+                    self.get_unique_name(route.name or self.base_name),
+                    waypoints,
+                    collection=self,
+                )
+            )
 
 
 RoutingCollection = _RoutingCollection[Routing]

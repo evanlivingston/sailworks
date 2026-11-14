@@ -299,11 +299,12 @@ bool roundingStartAmbiguous(const RoutingRequest& request, GeoPoint start) {
   return distanceNm(start, request.destination) <= 1e-6;
 }
 
-// Hard bound on rounding search expansion. Every delivered rounding candidate
-// costs a full motion replay, so an exit range no candidate can satisfy would
-// otherwise be explored until the generated-state budget runs out. Counted at
-// the replay site in directConnection so cheap retained-node inspections do not
-// consume it, and every replay path shares one bound.
+// Hard bound on rounding search expansion. This is a last-resort safety net
+// against an unbounded search, not a correctness rule: every delivered rounding
+// candidate costs a full motion replay, so a request the solver cannot satisfy
+// would otherwise be explored until the generated-state budget runs out.
+// Counted at the replay site in directConnection so cheap retained-node
+// inspections do not consume it, and every replay path shares one bound.
 constexpr std::uint64_t kMaximumRoundingAttempts = 20000;
 
 void recordRoundingAttempt(const RoutingRequest& request,
@@ -327,12 +328,12 @@ bool roundingExpansionExhausted(const RoutingRequest& request,
          diagnostics.roundingAttempts >= kMaximumRoundingAttempts;
 }
 
-// Named reason for an exit range that the bounded search could not deliver.
-// Distinct from side_unreachable so a caller can tell a wrong-side delivery
-// from an outbound course no pass could produce.
+// Named reason for a rounding search that hit the expansion bound without a
+// satisfying pass. Distinct from side_unreachable so a caller can tell a
+// wrong-side delivery from a search that ran out of replay budget.
 void noteRoundingExhaustion(RoutingDiagnostics& diagnostics) {
   diagnostics.roundingAttempted = true;
-  diagnostics.roundingFailureCode = "exit_range_unreachable";
+  diagnostics.roundingFailureCode = "rounding_search_exhausted";
 }
 
 std::vector<double> headings(double step, double bearing, bool adaptive,
@@ -3574,17 +3575,6 @@ RoutingResult Solver::routeMember(
       result.diagnostics.roundingFailureCode = "invalid_rounding";
       return result;
     }
-    if (roundingGeometricallyImpossible(request.destination, *request.rounding,
-                                        request.roundingNextPoint)) {
-      result.status = RoutingStatus::UnsatisfiableRounding;
-      result.message =
-          "rounding not satisfied: exit_range_unreachable (the required exit "
-          "range lies entirely beyond the departing leg toward the next course "
-          "point)";
-      result.diagnostics.roundingAttempted = true;
-      result.diagnostics.roundingFailureCode = "exit_range_unreachable";
-      return result;
-    }
     if (roundingStartAmbiguous(request, request.start)) {
       result.status = RoutingStatus::UnsatisfiableRounding;
       result.message =
@@ -3984,15 +3974,15 @@ RoutingResult Solver::routeMember(
     }
     if (latest.convergenceStalled) break;
   }
-  // Every further stage would spend the same rounding candidate budget on the
-  // same unreachable exit range, so return the named rejection instead of
-  // handing it to reverse or graph recovery.
+  // Every further stage would spend the same rounding candidate budget, so
+  // return the named rejection instead of handing it to reverse or graph
+  // recovery.
   if (!found && latest.failure != RoutingStatus::Cancelled &&
       roundingExpansionExhausted(request, result.diagnostics)) {
     noteRoundingExhaustion(result.diagnostics);
     result.status = RoutingStatus::UnsatisfiableRounding;
     std::ostringstream message;
-    message << "rounding not satisfied: exit_range_unreachable";
+    message << "rounding not satisfied: rounding_search_exhausted";
     if (std::isfinite(result.diagnostics.roundingClosestDistanceNm)) {
       message << " (closest " << result.diagnostics.roundingClosestDistanceNm
               << " NM, terminal course "

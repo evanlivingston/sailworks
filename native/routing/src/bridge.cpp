@@ -810,18 +810,6 @@ py::dict runDict(const SyntheticRun& run,
     }
     item["side"] = roundingSideName(report.rounding->side);
     item["radius_nm"] = report.rounding->radiusNm;
-    if (report.rounding->exitBearingMinDegrees) {
-      item["exit_bearing_min_deg"] =
-          *report.rounding->exitBearingMinDegrees;
-    } else {
-      item["exit_bearing_min_deg"] = py::none();
-    }
-    if (report.rounding->exitBearingMaxDegrees) {
-      item["exit_bearing_max_deg"] =
-          *report.rounding->exitBearingMaxDegrees;
-    } else {
-      item["exit_bearing_max_deg"] = py::none();
-    }
     if (std::isfinite(report.measurement.closestDistanceNm)) {
       item["achieved_closest_distance_nm"] =
           report.measurement.closestDistanceNm;
@@ -1008,17 +996,8 @@ py::dict runUserBridge(py::function wind, py::function current,
     rounding.radiusNm = kLegacyRoundingRadiusNm;
     if (item.contains("radius_nm") && !item["radius_nm"].is_none())
       rounding.radiusNm = py::cast<double>(item["radius_nm"]);
-    if (item.contains("exit_bearing_min_deg") &&
-        !item["exit_bearing_min_deg"].is_none())
-      rounding.exitBearingMinDegrees =
-          py::cast<double>(item["exit_bearing_min_deg"]);
-    if (item.contains("exit_bearing_max_deg") &&
-        !item["exit_bearing_max_deg"].is_none())
-      rounding.exitBearingMaxDegrees =
-          py::cast<double>(item["exit_bearing_max_deg"]);
     if (!wr::roundingConstraintValid(rounding))
-      throw py::value_error(
-          "rounding radius, side and exit bearing range are invalid");
+      throw py::value_error("rounding side is invalid");
     input.roundings.push_back(rounding);
   }
 

@@ -328,6 +328,7 @@ class Provenance:
             raise SchemaError("route_environment must be recorded or absent")
         if not isinstance(self.roundings, (list, tuple)):
             raise SchemaError("provenance roundings must be a sequence")
+        cleaned = []
         for index, item in enumerate(self.roundings):
             if not isinstance(item, Mapping):
                 raise SchemaError("provenance rounding must be a mapping")
@@ -336,17 +337,15 @@ class Provenance:
                     raise SchemaError(f"provenance rounding[{index}] is missing {key}")
             # radius_nm is inert legacy metadata: the native payload omits it
             # while older records still carry it. It is optional (empty default
-            # None) and never validated or rewritten here.
-            minimum = item.get("exit_bearing_min_deg")
-            maximum = item.get("exit_bearing_max_deg")
-            if (minimum is None) != (maximum is None):
-                raise SchemaError(
-                    f"provenance rounding[{index}] needs both exit bearings "
-                    "or neither"
-                )
-        object.__setattr__(
-            self, "roundings", _json_value(tuple(self.roundings), "roundings")
-        )
+            # None) and never validated or rewritten here. Legacy exit-bearing
+            # keys are dropped: rounding is side only now.
+            sanitized = {
+                key: value
+                for key, value in item.items()
+                if key not in ("exit_bearing_min_deg", "exit_bearing_max_deg")
+            }
+            cleaned.append(sanitized)
+        object.__setattr__(self, "roundings", _json_value(tuple(cleaned), "roundings"))
 
     def to_dict(self) -> dict:
         data = {

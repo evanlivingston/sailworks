@@ -65,10 +65,8 @@ int main() {
           "routing defaults are unchanged by rounding support");
   const wr::GeoPoint mark{48.0, -123.0};
   // Shared closest-pass rounding evaluator: side of track, never distance.
-  const wr::RoundingSpec portSpec{wr::RoundingSide::Port, std::nullopt,
-                                  std::nullopt};
-  const wr::RoundingSpec starboardSpec{wr::RoundingSide::Starboard,
-                                       std::nullopt, std::nullopt};
+  const wr::RoundingSpec portSpec{wr::RoundingSide::Port};
+  const wr::RoundingSpec starboardSpec{wr::RoundingSide::Starboard};
   const auto pointAt = [&mark](double eastNm, double northNm) -> wr::GeoPoint {
     if (eastNm == 0.0 && northNm == 0.0) return mark;
     double bearing = std::atan2(eastNm, northNm) * 180.0 / std::numbers::pi;
@@ -210,49 +208,12 @@ int main() {
               sideAmbiguous.failureCode() == "side_ambiguous",
           "a lateral within the ambiguity epsilon is rejected");
 
-  // The exit range is inclusive on the delivered outbound course.
-  const wr::GeoPoint exitBase = wr::destinationPoint(mark, 315.0, 5.0);
-  const std::vector<wr::GeoPoint> exitTrack{
-      wr::destinationPoint(exitBase, 225.0, 15.0),
-      wr::destinationPoint(exitBase, 45.0, 15.0)};
-  const auto exitAtMinAndMax = wr::measureRounding(
-      wr::RoundingSpec{wr::RoundingSide::Starboard, 45.0, 45.0}, exitTrack,
-      mark, 45.0);
-  require(exitAtMinAndMax.satisfied && exitAtMinAndMax.exitRangeSatisfied,
-          "the exit range accepts exactly min and exactly max");
-  require(wr::measureRounding(
-              wr::RoundingSpec{wr::RoundingSide::Starboard, 0.0, 45.0},
-              exitTrack, mark, 45.0)
-              .satisfied,
-          "the exit range accepts exactly its maximum");
-  require(wr::measureRounding(
-              wr::RoundingSpec{wr::RoundingSide::Starboard, 45.0, 90.0},
-              exitTrack, mark, 45.0)
-              .satisfied,
-          "the exit range accepts exactly its minimum");
-  const auto exitBelow = wr::measureRounding(
-      wr::RoundingSpec{wr::RoundingSide::Starboard, 46.0, 90.0}, exitTrack,
-      mark, 45.0);
-  require(!exitBelow.satisfied &&
-              exitBelow.failure ==
-                  wr::RoundingFailure::ExitBearingOutOfRange &&
-              !exitBelow.exitRangeSatisfied &&
-              exitBelow.failureCode() == "exit_bearing_out_of_range",
-          "a course below the exit range is rejected");
-  require(wr::measureRounding(
-              wr::RoundingSpec{wr::RoundingSide::Starboard, 0.0, 44.0},
-              exitTrack, mark, 45.0)
-                  .failure == wr::RoundingFailure::ExitBearingOutOfRange,
-          "a course above the exit range is rejected");
-
   // The legacy radius field is inert: the same geometry gives the same verdict
   // at any radius.
   const std::vector<wr::GeoPoint> radiusTrack{pointAt(20.0, -10.0),
                                               pointAt(20.0, 10.0)};
-  const wr::RoundingConstraint tinyRadius{wr::RoundingSide::Port, 1e-6,
-                                          std::nullopt, std::nullopt};
-  const wr::RoundingConstraint hugeRadius{wr::RoundingSide::Port, 1e6,
-                                          std::nullopt, std::nullopt};
+  const wr::RoundingConstraint tinyRadius{wr::RoundingSide::Port, 1e-6};
+  const wr::RoundingConstraint hugeRadius{wr::RoundingSide::Port, 1e6};
   const auto tinyVerdict = wr::measureRounding(tinyRadius, radiusTrack, mark, 0.0);
   const auto hugeVerdict = wr::measureRounding(hugeRadius, radiusTrack, mark, 0.0);
   require(tinyVerdict.satisfied && hugeVerdict.satisfied &&
@@ -260,8 +221,7 @@ int main() {
               tinyVerdict.passageCount == 1 &&
               near(tinyVerdict.closestDistanceNm, 20.0, 0.1),
           "radius has no effect on a correct-side pass");
-  const wr::RoundingConstraint hugeStarboard{wr::RoundingSide::Starboard, 1e6,
-                                             std::nullopt, std::nullopt};
+  const wr::RoundingConstraint hugeStarboard{wr::RoundingSide::Starboard, 1e6};
   require(wr::measureRounding(hugeStarboard, radiusTrack, mark, 0.0).failure ==
               wr::RoundingFailure::WrongSide,
           "a huge radius never rescues a wrong-side pass");
@@ -304,8 +264,7 @@ int main() {
           "an ending mark that is not reached exactly is rejected");
 
   // Terminal candidates are a bounded solver decision, not a radius circle.
-  const wr::RoundingConstraint tinyCandidateRadius{
-      wr::RoundingSide::Port, 1e-6, std::nullopt, std::nullopt};
+  const wr::RoundingConstraint tinyCandidateRadius{wr::RoundingSide::Port, 1e-6};
   const auto candidates =
       wr::roundingTargets(pointAt(-30.0, 0.0), mark, tinyCandidateRadius);
   bool wideCandidate = false;
@@ -321,10 +280,8 @@ int main() {
   noRadius.side = wr::RoundingSide::Port;
   require(wr::roundingConstraintValid(noRadius),
           "a rounding payload without a radius is accepted");
-  const wr::RoundingConstraint smallLegacyRadius{wr::RoundingSide::Port, 0.001,
-                                                 std::nullopt, std::nullopt};
-  const wr::RoundingConstraint largeLegacyRadius{wr::RoundingSide::Port, 1000.0,
-                                                 std::nullopt, std::nullopt};
+  const wr::RoundingConstraint smallLegacyRadius{wr::RoundingSide::Port, 0.001};
+  const wr::RoundingConstraint largeLegacyRadius{wr::RoundingSide::Port, 1000.0};
   require(wr::roundingConstraintValid(smallLegacyRadius) &&
               wr::roundingConstraintValid(largeLegacyRadius),
           "legacy radii are not validated");
@@ -340,14 +297,9 @@ int main() {
                    largeLegacyVerdict.signedLateralNm, 1e-12),
           "arbitrary legacy radii produce identical verdicts");
 
-  wr::RoundingConstraint wrapper{wr::RoundingSide::Port, 0.5, std::nullopt,
-                                 std::nullopt};
+  wr::RoundingConstraint wrapper{wr::RoundingSide::Port, 0.5};
   require(wr::roundingConstraintValid(wrapper),
           "valid rounding constraint is accepted");
-  wrapper.exitBearingMinDegrees = 20.0;
-  wrapper.exitBearingMaxDegrees = 10.0;
-  require(!wr::roundingConstraintValid(wrapper),
-          "wrapped exit range is rejected");
 
   auto vessel = fixtureVesselConfiguration();
   vessel.profiles.front().efficiency = 0.85;

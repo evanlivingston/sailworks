@@ -71,7 +71,8 @@ from .plotdata import elapsed_offsets
 from .workspace import WorkspacePreferences
 from .polarworkspace import PolarWorkspace
 from .polarlibrary import PolarLibrary
-from .navigationpanel import MovePointCommand, NavigationPanel, RemoveNavigationCommand
+from .navigationcommands import MovePointCommand, RemoveNavigationCommand
+from . import navigationio
 from .scenepanel import ScenePanel
 from .racepanel import RacesPanel
 from .marinepanel import MarinePanel
@@ -148,7 +149,7 @@ class PreviewWindow(QMainWindow):
         self.marine_settings = None
         self.setWindowTitle("Sailworks")
         self.setWindowIcon(QIcon(resource_path("sailworks", "data/icon.png")))
-        self.resize(1200, 800)
+        self.resize(1380, 800)
         if sys.platform == "darwin":
             self.setUnifiedTitleAndToolBarOnMac(True)
         self.map = ViewportMap(controller, self, show_timeline=True)
@@ -233,7 +234,7 @@ class PreviewWindow(QMainWindow):
         controller.polars.changed.connect(self.routing_panel.refresh_polars)
         controller.polars.use_requested.connect(self._use_polar)
         self.undo_stack = QUndoStack(self)
-        self.scene_panel = ScenePanel(controller, self)
+        self.scene_panel = ScenePanel(controller, self, undo_stack=self.undo_stack)
         self.scene_panel.changed.connect(self._scene_changed)
         self.scene_panel.routing_visibility_changed.connect(
             self._routing_visibility_changed
@@ -244,23 +245,14 @@ class PreviewWindow(QMainWindow):
         self.scene_panel.delete_requested.connect(self._scene_delete)
         self.scene_panel.move_point_requested.connect(self._move_scene_point)
         controller.log_library_changed.connect(self.scene_panel.refresh)
-        self.navigation_panel = NavigationPanel(
-            controller, self.map, self, undo_stack=self.undo_stack
-        )
-        navigation_scroll = NavigationScroll()
-        style_scrollarea(navigation_scroll)
-        navigation_scroll.setWidgetResizable(True)
-        navigation_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        navigation_scroll.setWidget(self.navigation_panel)
-        self.navigation_scroll = navigation_scroll
-        self.navigation_panel.changed.connect(self._navigation_changed)
-        self.navigation_panel.changed.connect(self.scene_panel.refresh)
-        self.navigation_panel.route_selected.connect(self._navigation_route_selected)
-        self.navigation_panel.move_requested.connect(self._move_navigation_point)
         self.scene_panel.edit_track_requested.connect(self._scene_edit_track)
         self.map.track_point_move_requested.connect(self._move_scene_mark)
-        self.navigation_panel.ais_updated.connect(self._ais_updated)
-        self._ais_updated(tuple(self.navigation_panel.ais_targets))
+        self.map.track_edit_cancel_requested.connect(self._exit_track_edit)
+        self.ais_timer = QTimer(self)
+        self.ais_timer.setInterval(3000)
+        self.ais_timer.timeout.connect(self._refresh_ais)
+        self.ais_timer.start()
+        self._refresh_ais()
         self._race_boat_positions = []
         self._race_timeline_bounds = None
         self._race_region_installed = False
@@ -347,7 +339,7 @@ class PreviewWindow(QMainWindow):
             window_menu.addAction(action)
         window_menu.addSeparator()
         window_menu.addAction("Reset Panels", self.reset_panels)
-        file_menu.addAction("Import GPX…", self.navigation_panel.import_gpx)
+        file_menu.addAction("Import GPX…", lambda: navigationio.import_gpx(self))
         file_menu.addAction("Export navigation…", self._export_navigation)
         fit_menu = self.menuBar().addMenu("Navigate")
         fit_menu.addAction("Fit NMEA track", self._fit_track)
@@ -401,8 +393,8 @@ class PreviewWindow(QMainWindow):
 
     def _build_panel_stacks(self):
         """Build the left and right Blender-style panel stacks."""
-        left_stack = PanelStack()
-        right_stack = PanelStack()
+        left_stack = PanelStack(self)
+        right_stack = PanelStack(self)
         for stack in (left_stack, right_stack):
             stack.setMinimumWidth(300)
             stack.setMaximumWidth(560)
@@ -413,7 +405,6 @@ class PreviewWindow(QMainWindow):
 
         definitions = (
             ("left", "scene", "Scene", self.scene_panel),
-            ("left", "navigation", "Navigation", self.navigation_scroll),
             ("left", "races", "Races", self.race_scroll),
             ("right", "nmea", "NMEA", self.nmea_scroll),
             ("right", "routing", "Routing", self.routing_panel),
@@ -460,11 +451,11 @@ class PreviewWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
-        splitter.setSizes([300, 520, 380])
+        splitter.setSizes([480, 520, 380])
         self.setCentralWidget(splitter)
         self._panel_splitter = splitter
         self._panel_stacks = {"left": left_stack, "right": right_stack}
-        self._panel_stack_width = {"left": 300, "right": 380}
+        self._panel_stack_width = {"left": 480, "right": 380}
         self._panel_stack_open = {"left": True, "right": True}
         self._panel_stack_animation = None
         self.panel_stack = right_stack
@@ -941,12 +932,15 @@ class PreviewWindow(QMainWindow):
         self._show_panel("polar-selector")
 
     def _select_saved_route(self, route):
+        # The routing manager's active route is the window's current route now
+        # that the navigation panel is gone; selecting must publish it before
+        # the overlay/isochrone sync reads it.
+        self.controller.core.routingManager.set_active(route)
         # A successful restore selects the route itself while presenting the
         # saved result. Select once here only when no restore will do so.
         if not getattr(self, "_restoring_saved_routing", False):
             if self._restore_saved_routing_overlay(route):
                 return True
-        self.navigation_panel.select_route(route)
         self._navigation_route_selected(route)
         return False
 
@@ -1111,7 +1105,6 @@ class PreviewWindow(QMainWindow):
 
     def _race_tracks_changed(self):
         self._publish_race_track_overlay()
-        self.navigation_panel.refresh()
         self._navigation_changed()
         self._race_time_changed(self.controller.time_control.time)
 
@@ -1158,6 +1151,7 @@ class PreviewWindow(QMainWindow):
                     canvas.offsets = ()
                     canvas.position = None
                 except Exception:
+                    # Canvas may not have these attributes in all configurations
                     pass
         else:
             try:
@@ -1207,17 +1201,21 @@ class PreviewWindow(QMainWindow):
                 canvas.race_positions = positions
                 canvas.race_boat_markers = markers
             except Exception:
+                # Not all canvases support race boat positions
                 pass
             try:
                 canvas.refresh_route_overlay()
             except Exception:
+                # Canvas may not have route overlay
                 pass
             canvas.invalidate_navigation()
             canvas.update()
 
     def _navigation_changed(self):
         self.routing_panel.refresh_destinations()
-        self._navigation_route_selected(self.navigation_panel.route)
+        self._navigation_route_selected(
+            self.controller.core.routingManager.get_active()
+        )
         for canvas in (self.map, self.log_map):
             canvas.invalidate_navigation()
             refresh = getattr(canvas, "refresh_route_overlay", None)
@@ -1225,16 +1223,19 @@ class PreviewWindow(QMainWindow):
                 refresh()
             canvas.update()
 
+    def _navigation_refresh(self):
+        """Repaint the scene tree and navigation overlays after a data change."""
+        self.scene_panel.refresh()
+        self._navigation_changed()
+        if hasattr(self, "workspace"):
+            self.workspace.changed()
+
     def _navigation_request(self, kind, coordinates):
-        self._show_panel("navigation")
-        if kind == "poi":
-            self.navigation_panel.add_poi(coordinates)
-        else:
-            self.navigation_panel.add_point(coordinates)
+        self._show_panel("scene")
+        self.scene_panel.add_navigation_request(kind, coordinates)
 
     def _scene_changed(self):
         self._sync_isochrone_colour_mode()
-        self.navigation_panel.refresh()
         self._publish_race_track_overlay()
         for canvas in (self.map, self.log_map):
             invalidate = getattr(canvas, "invalidate_navigation", None)
@@ -1254,6 +1255,9 @@ class PreviewWindow(QMainWindow):
     def _scene_selected(self, kind, key):
         if kind == KIND_TRACK:
             if key.startswith("race:"):
+                # A race track is not editable here, so selecting one leaves
+                # any retained edit mode on a saved track behind.
+                self._exit_track_edit()
                 _prefix, race_id, boat_id = key.split(":", 2)
                 race_tracks = self.race_panel.loaded_race_tracks().get(race_id, ())
                 self.race_panel.active_race_track = next(
@@ -1268,7 +1272,7 @@ class PreviewWindow(QMainWindow):
             )
             if track is not None:
                 self.controller.core.trackManager.set_active(track)
-                self.navigation_panel.refresh()
+                self._exit_track_edit()
                 self.map.invalidate_navigation()
                 self.log_map.invalidate_navigation()
                 self.map.update()
@@ -1282,6 +1286,7 @@ class PreviewWindow(QMainWindow):
                 None,
             )
             if route is not None:
+                self._exit_track_edit()
                 self.controller.core.routingManager.set_active(route)
                 self._select_saved_route(route)
         elif kind == KIND_POI:
@@ -1290,10 +1295,62 @@ class PreviewWindow(QMainWindow):
                 None,
             )
             if poi is not None:
-                self.navigation_panel.poi = poi
-                self.navigation_panel.refresh()
+                self._exit_track_edit()
                 self.map.invalidate_navigation()
                 self.map.update()
+
+    def _set_track_editing(self, track):
+        """Publish the renderer's edit track and repaint the retained overlay."""
+        navigation = self.map.navigation
+        navigation.edit_track = track
+        navigation.hl_track_hover = None
+        invalidate_race = getattr(self.map, "invalidate_race_geometry", None)
+        if callable(invalidate_race):
+            invalidate_race()
+        # The retained QML overlay keys its track payload on the editing flag,
+        # so publish while the cache still describes the previous mode.
+        refresh = getattr(self.map, "refresh_route_overlay", None)
+        if callable(refresh):
+            refresh()
+        self.map.invalidate_navigation()
+        self.map.update()
+
+    def _exit_track_edit(self):
+        """Leave track edit mode while keeping the active track selected."""
+        if self.map.navigation.edit_track is None:
+            return
+        self._set_track_editing(None)
+
+    def _focus_map_surface(self):
+        """Route keyboard input to the map so Escape leaves edit mode.
+
+        Entering edit mode from the Scene Collection tree leaves the tree (or
+        the context menu it opened) holding focus, so the viewport never sees
+        the key.  The desktop map hosts its mouse and key surface in a
+        ``QQuickView``, so focus both it and the containing widget.
+        """
+        target = getattr(self.map, "map_pointer_target", None)
+        surface = target() if callable(target) else None
+        if surface is not None and surface is not self.map:
+            focus = getattr(surface, "setFocus", None)
+            if callable(focus):
+                focus()
+        focus = getattr(self.map, "setFocus", None)
+        if callable(focus):
+            focus()
+
+    def keyPressEvent(self, event):  # noqa: N802 - Qt virtual method name
+        # Unhandled keys from the Scene Collection tree propagate here; Escape
+        # must still leave track edit mode when the map does not own focus.
+        if (
+            event.key() == Qt.Key.Key_Escape
+            and getattr(getattr(self.map, "navigation", None), "edit_track", None)
+            is not None
+        ):
+            self._exit_track_edit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def _scene_edit_track(self, key):
         """Activate a Scene Collection track and enter its edit mode."""
@@ -1304,12 +1361,10 @@ class PreviewWindow(QMainWindow):
         if track is None:
             return
         self.controller.core.trackManager.set_active(track)
-        self.navigation_panel.refresh()
-        self.navigation_panel.edit_track()
+        self.scene_panel.refresh()
+        self._set_track_editing(track)
         self.views.setCurrentWidget(self.map)
-        self.map.invalidate_navigation()
-        self.log_map.invalidate_navigation()
-        self.map.update()
+        self._focus_map_surface()
 
     def _scene_open(self, kind, key):
         if kind != KIND_LOG:
@@ -1318,6 +1373,9 @@ class PreviewWindow(QMainWindow):
             path = self.controller.log_library.path(key)
         except (KeyError, ValueError):
             return
+        # Opening a log changes what the map shows, so a retained edit mode on
+        # a saved track would act on marks that are no longer drawn.
+        self._exit_track_edit()
         self.controller.load_paths([path])
 
     def _scene_fit(self, nodes):
@@ -1370,7 +1428,7 @@ class PreviewWindow(QMainWindow):
             (
                 self.controller.core.routingManager,
                 routes,
-                self.navigation_panel.route,
+                self.controller.core.routingManager.get_active(),
                 "route",
             ),
         ):
@@ -1382,17 +1440,26 @@ class PreviewWindow(QMainWindow):
             ]
             if removed:
                 removals.append((manager, removed, current, kind))
+        edited = getattr(getattr(self.map, "navigation", None), "edit_track", None)
+        if edited is not None and any(
+            element is edited
+            for _manager, removed, _current, _kind in removals
+            for _index, element in removed
+        ):
+            # The track being edited is about to disappear.  Leave edit mode
+            # before the removal refresh runs, otherwise the overlay keeps a
+            # stale track whose marks can still be hit-tested and dragged.
+            self._exit_track_edit()
         if removals:
             self.undo_stack.beginMacro("Delete scene items")
             try:
                 for manager, removed, current, kind in removals:
                     self.undo_stack.push(
                         RemoveNavigationCommand(
-                            self.navigation_panel,
+                            self._navigation_refresh,
                             manager,
                             removed,
                             current,
-                            self.navigation_panel.point_index,
                             kind,
                         )
                     )
@@ -1406,8 +1473,7 @@ class PreviewWindow(QMainWindow):
                     element.remove(index)
                     changed = True
         if changed:
-            self.navigation_panel.refresh()
-            self.navigation_panel.changed.emit()
+            self._navigation_refresh()
 
     def _move_scene_mark(self, element, index):
         """Drag a mark that the retained scene already draws and previews.
@@ -1463,14 +1529,22 @@ class PreviewWindow(QMainWindow):
         self.scene_panel.refresh()
         self._scene_changed()
 
-    def _move_navigation_point(self, callback):
-        self.views.setCurrentWidget(self.map)
-        self.map.begin_move(callback)
-
     def _toggle_ais(self, visible):
         for canvas in (self.map, self.log_map):
             canvas.ais_visible = visible
             canvas.update()
+
+    def _refresh_ais(self):
+        core = self.controller.core
+        targets = tuple(
+            target
+            for target in core.ais_manager.get_active_targets()
+            if target.has_valid_position()
+        )
+        for canvas in (self.map, self.log_map):
+            canvas.ais_targets = targets
+        self.map.update()
+        self._ais_updated(targets)
 
     def _ais_updated(self, targets):
         self.log_map.ais_targets = targets
@@ -1479,15 +1553,8 @@ class PreviewWindow(QMainWindow):
     def _export_navigation(self):
         menu = ThemedMenu(self)
         builder = MenuBuilder(menu)
-        builder.add("Export GPX…", self.navigation_panel.export_all, key="G")
-        builder.add(
-            "Export POIs as NMEA PFEC…",
-            self.navigation_panel.export_pfec,
-            key="P",
-        )
-        menu.exec(
-            self.navigation_panel.mapToGlobal(self.navigation_panel.rect().bottomLeft())
-        )
+        builder.add("Export GPX…", lambda: navigationio.export_all(self), key="G")
+        menu.exec(self.map.mapToGlobal(self.map.rect().bottomLeft()))
 
     def _show_panel(self, panel):
         name = panel if isinstance(panel, str) else None
@@ -1500,7 +1567,7 @@ class PreviewWindow(QMainWindow):
                 ),
                 None,
             )
-        if name is None:
+        if name is None or name not in self.panels:
             return
         side = self._panel_side(name) or self._panel_home.get(name, "right")
         if not self._panel_visible(name):
@@ -1513,7 +1580,7 @@ class PreviewWindow(QMainWindow):
         wrapper = self.panels[name]
         wrapper.set_collapsed(False, animate=False)
         self._panel_stacks[side].scroll.ensureWidgetVisible(wrapper)
-        if name in ("weather", "navigation", "routing", "currents", "tides"):
+        if name in ("weather", "routing", "currents", "tides"):
             self.views.setCurrentWidget(self.map)
 
     def show_marine_settings(self, tab):
@@ -1595,7 +1662,7 @@ class PreviewWindow(QMainWindow):
         """Apply the active route's mode on scene changes without artifact I/O."""
         routing = getattr(self.controller, "routing", None)
         native = getattr(routing, "native_overlay", None)
-        route = getattr(getattr(self, "navigation_panel", None), "route", None)
+        route = self.controller.core.routingManager.get_active()
         mode = _routing_isochrone_mode(
             route, native, getattr(self, "_routing_active_route", None)
         )
@@ -1616,7 +1683,7 @@ class PreviewWindow(QMainWindow):
             # A row update requested by this sync must not re-enter it.
             return
         if not self.controller.routing.busy:
-            route = self.navigation_panel.route
+            route = self.controller.core.routingManager.get_active()
             show = (
                 route is not None
                 and bool(getattr(route, "visible", True))
@@ -2220,7 +2287,8 @@ class PreviewWindow(QMainWindow):
         self.dispose_marine()
         if hasattr(self, "weather_panel"):
             self.weather_panel.dispose()
-        self.navigation_panel.dispose()
+        navigationio.close(self)
+        self.ais_timer.stop()
         self.polar_workspace.dispose()
         self.live_timer.stop()
         self._chart_place_timer.stop()

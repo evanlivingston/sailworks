@@ -13,31 +13,8 @@ namespace {
 
 constexpr double kRoundingCoincidentEpsilonNm = 1e-6;
 constexpr double kRoundingLateralEpsilonNm = 0.01;
-constexpr double kRoundingExitBearingEpsilonDegrees = 1e-9;
 constexpr double kRoundingNmPerDegree = 60.0;
 constexpr std::size_t kMaximumRoundingTargets = 10;
-
-bool validExitRange(const RoundingConstraint& rounding) {
-  if (!rounding.exitBearingMinDegrees && !rounding.exitBearingMaxDegrees)
-    return true;
-  if (!rounding.exitBearingMinDegrees || !rounding.exitBearingMaxDegrees)
-    return false;
-  const double minimum = *rounding.exitBearingMinDegrees;
-  const double maximum = *rounding.exitBearingMaxDegrees;
-  return std::isfinite(minimum) && std::isfinite(maximum) && minimum >= 0.0 &&
-         minimum <= maximum && maximum < 360.0;
-}
-
-bool validExitRange(const RoundingSpec& rounding) {
-  if (!rounding.exitBearingMinDegrees && !rounding.exitBearingMaxDegrees)
-    return true;
-  if (!rounding.exitBearingMinDegrees || !rounding.exitBearingMaxDegrees)
-    return false;
-  const double minimum = *rounding.exitBearingMinDegrees;
-  const double maximum = *rounding.exitBearingMaxDegrees;
-  return std::isfinite(minimum) && std::isfinite(maximum) && minimum >= 0.0 &&
-         minimum <= maximum && maximum < 360.0;
-}
 
 // Local equirectangular offset from `origin`, in nautical miles. Only the ray
 // crossing sign test uses this planar frame; the closest-pass projection below
@@ -204,31 +181,10 @@ void addTarget(std::vector<GeoPoint>& targets, GeoPoint point) {
 
 bool roundingConstraintValid(const RoundingConstraint& rounding) {
   // radiusNm is legacy metadata: a payload that omits it (or carries any
-  // arbitrary value) is still a valid side/exit contract. Distance never gates
-  // the rounding, so there is no radius requirement here.
-  return validExitRange(rounding);
-}
-
-bool roundingGeometricallyImpossible(GeoPoint mark,
-                                     const RoundingConstraint& rounding,
-                                     std::optional<GeoPoint> nextPoint) {
-  // Structural validation owns malformed ranges; the preflight only judges a
-  // well-formed range, and only for the one case where geometry decides it.
-  if (!validExitRange(rounding)) return false;
-  if (!rounding.exitBearingMinDegrees || !rounding.exitBearingMaxDegrees)
-    return false;
-  if (!nextPoint) return false;
-  if (distanceNm(mark, *nextPoint) <= kRoundingCoincidentEpsilonNm) return false;
-  const double outbound = initialBearingDegrees(mark, *nextPoint);
-  const double minimum = *rounding.exitBearingMinDegrees;
-  const double maximum = *rounding.exitBearingMaxDegrees;
-  if (outbound >= minimum && outbound <= maximum) return false;
-  // The range does not wrap (minimum <= maximum), so the nearest endpoint is
-  // the true angular distance from the outbound bearing to the whole range.
-  const double gap =
-      std::min(std::abs(angularDifferenceDegrees(outbound, minimum)),
-               std::abs(angularDifferenceDegrees(outbound, maximum)));
-  return gap > 90.0;
+  // arbitrary value) is still a valid side contract. Rounding is side only, so
+  // there is nothing further to constrain.
+  (void)rounding;
+  return true;
 }
 
 std::string RoundingMeasurement::failureCode() const {
@@ -245,8 +201,6 @@ std::string RoundingMeasurement::failureCode() const {
       return "side_ambiguous";
     case RoundingFailure::WrongSide:
       return "wrong_side";
-    case RoundingFailure::ExitBearingOutOfRange:
-      return "exit_bearing_out_of_range";
     case RoundingFailure::NotEvaluated:
       return "not_evaluated";
   }
@@ -267,8 +221,6 @@ std::string RoundingMeasurement::failureReason() const {
       return "side ambiguous";
     case RoundingFailure::WrongSide:
       return "wrong side";
-    case RoundingFailure::ExitBearingOutOfRange:
-      return "exit bearing out of range";
     case RoundingFailure::NotEvaluated:
       return "not evaluated";
   }
@@ -327,21 +279,6 @@ RoundingMeasurement measureRounding(const RoundingSpec& rounding,
     return result;
   }
 
-  if (rounding.exitBearingMinDegrees && rounding.exitBearingMaxDegrees &&
-      validExitRange(rounding)) {
-    const double minimum = *rounding.exitBearingMinDegrees;
-    const double maximum = *rounding.exitBearingMaxDegrees;
-    result.exitRangeSatisfied =
-        result.terminalCourseDegrees >=
-            minimum - kRoundingExitBearingEpsilonDegrees &&
-        result.terminalCourseDegrees <=
-            maximum + kRoundingExitBearingEpsilonDegrees;
-    if (!result.exitRangeSatisfied) {
-      result.failure = RoundingFailure::ExitBearingOutOfRange;
-      return result;
-    }
-  }
-
   result.satisfied = true;
   result.failure = RoundingFailure::None;
   return result;
@@ -350,8 +287,6 @@ RoundingMeasurement measureRounding(const RoundingSpec& rounding,
 RoundingSpec roundingSpec(const RoundingConstraint& rounding) {
   RoundingSpec spec;
   spec.side = rounding.side;
-  spec.exitBearingMinDegrees = rounding.exitBearingMinDegrees;
-  spec.exitBearingMaxDegrees = rounding.exitBearingMaxDegrees;
   return spec;
 }
 
@@ -385,7 +320,7 @@ RoundingMeasurement measureEndingMark(const std::vector<GeoPoint>& subTrack,
       initialBearingDegrees(subTrack.back(), mark);
   result.terminalCourseDegrees = result.courseAtClosestDegrees;
   // An ending mark is an exact course point: the delivered sub-track must end
-  // there. No side or exit constraint applies to it.
+  // there. No side constraint applies to it.
   if (distanceNm(subTrack.back(), mark) > kRoundingCoincidentEpsilonNm) {
     result.failure = RoundingFailure::NotPassed;
     return result;
@@ -400,8 +335,7 @@ std::vector<GeoPoint> roundingTargets(GeoPoint from, GeoPoint mark,
                                       std::optional<GeoPoint> nextPoint) {
   std::vector<GeoPoint> targets;
   const double distance = distanceNm(from, mark);
-  if (distance <= kRoundingCoincidentEpsilonNm || !validExitRange(rounding))
-    return targets;
+  if (distance <= kRoundingCoincidentEpsilonNm) return targets;
 
   // With a next course point the leg joins it, so the outbound course decides
   // which side of the mark the passing point must sit on. Without one the
@@ -436,46 +370,6 @@ std::vector<GeoPoint> roundingTargets(GeoPoint from, GeoPoint mark,
                               kTangentRadiusNm));
   }
 
-  if (rounding.exitBearingMinDegrees && rounding.exitBearingMaxDegrees) {
-    const double minimum = *rounding.exitBearingMinDegrees;
-    const double maximum = *rounding.exitBearingMaxDegrees;
-    // Port means the mark is left of the outbound course, so the mark is the
-    // clockwise tangent of that course. Starboard is the opposite tangent.
-    const double exitSideOffset =
-        rounding.side == RoundingSide::Port ? 90.0 : -90.0;
-    const std::array<double, 3> exits{
-        minimum, normalizeHeading((minimum + maximum) / 2.0), maximum};
-    for (const double exit : exits) {
-      if (nextPoint) {
-        // Interior mark: the passing point sits abeam of the mark on the
-        // required side, so the outbound tangent of the point itself is the
-        // exit course. The departing leg to the next course point decides
-        // whether that tangent is deliverable, and the preflight has already
-        // rejected a range the leg cannot reach.
-        addTarget(targets, destinationPoint(mark, exit + exitSideOffset, 0.5));
-        continue;
-      }
-      // Terminal mark: the delivered outbound course is the course of the
-      // final leg into the passing point, not an abeam assumption. Place the
-      // point where the ray from the current position at bearing `exit` meets
-      // the perpendicular from the mark, so the departing leg leaves exactly
-      // on `exit` while the mark is abeam on the required side. A point that
-      // cannot deliver the course, lies behind the current position, or puts
-      // the mark on the wrong side is not a candidate.
-      const LocalOffset offset = localOffset(mark, from);
-      const double radians = exit * std::numbers::pi / 180.0;
-      const double along =
-          offset.eastNm * std::sin(radians) + offset.northNm * std::cos(radians);
-      const double lateral =
-          offset.eastNm * std::cos(radians) - offset.northNm * std::sin(radians);
-      if (along <= kRoundingCoincidentEpsilonNm) continue;
-      if (std::abs(lateral) <= kRoundingLateralEpsilonNm) continue;
-      const bool portSide = rounding.side == RoundingSide::Port;
-      if (portSide != (lateral < 0.0)) continue;
-      addTarget(targets, destinationPoint(from, exit, along));
-    }
-  }
-
   return targets;
 }
 
@@ -501,9 +395,6 @@ double roundingProgress(const RoundingMeasurement& measured) {
       break;
     case RoundingFailure::WrongSide:
       progress += 50.0;
-      break;
-    case RoundingFailure::ExitBearingOutOfRange:
-      progress += 0.25;
       break;
     case RoundingFailure::NotEvaluated:
       progress += 1000.0;

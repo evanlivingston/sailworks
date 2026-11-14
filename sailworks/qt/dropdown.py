@@ -14,6 +14,9 @@ from PySide6.QtWidgets import (
 )
 
 FIELD_FRACTION = 0.55
+# Padding before the value text and space reserved for the chevron.
+VALUE_INSET = 8
+CHEVRON_WIDTH = 26
 
 
 class _HoverItemDelegate(QStyledItemDelegate):
@@ -39,6 +42,7 @@ class Dropdown(QComboBox):
     def __init__(self, label="", parent=None):
         super().__init__(parent)
         self._label = label
+        self._value_inset = VALUE_INSET
         self.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
@@ -61,24 +65,39 @@ class Dropdown(QComboBox):
             self.setAccessibleName(text)
         self.update()
 
+    def valueInset(self):
+        return self._value_inset
+
+    def setValueInset(self, inset):
+        """Match the left padding another field (e.g. a QLineEdit) uses."""
+        self._value_inset = max(0, int(inset))
+        self._sync_editable()
+        self.update()
+
     def _field_rect(self) -> QRectF:
         width = self.width()
         height = self.height()
-        left = round(width * (1.0 - FIELD_FRACTION))
+        # An unlabelled dropdown has no label band: the field uses the full
+        # width. Only a labelled row reserves the left part for its label.
+        left = round(width * (1.0 - FIELD_FRACTION)) if self._label else 0
         return QRectF(left, 2, max(0, width - left - 2), max(0, height - 4))
+
+    def value_rect(self) -> QRectF:
+        """Rect the current value is painted in, inside the field."""
+        return self._field_rect().adjusted(self._value_inset, 0, -CHEVRON_WIDTH, 0)
 
     def _sync_editable(self):
         if not self.isEditable() or self.lineEdit() is None:
             return
-        field = self._field_rect()
+        field = self.value_rect()
         self.lineEdit().setStyleSheet(
             "background: transparent; border: none; padding: 0px;"
         )
         self.lineEdit().setTextMargins(0, 0, 0, 0)
         self.lineEdit().setGeometry(
-            int(field.left()) + 8,
+            int(field.left()),
             int(field.top()) + 1,
-            max(0, int(field.width()) - 32),
+            max(0, int(field.width())),
             max(0, int(field.height()) - 2),
         )
 
@@ -166,7 +185,7 @@ class Dropdown(QComboBox):
                 ),
             )
 
-        value_rect = field.adjusted(8, 0, -26, 0)
+        value_rect = self.value_rect()
         if not self.isEditable():
             painter.setPen(text)
             painter.drawText(

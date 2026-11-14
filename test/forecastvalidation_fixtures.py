@@ -87,8 +87,7 @@ class GlobalDataset(Dataset):
 
 class RotatedDataset(Dataset):
     def __init__(self, bands):
-        self.bands = [Band(item) for item in bands]
-        self.closed = False
+        super().__init__(bands)
         wkt = CRS.from_cf(
             {
                 "grid_mapping_name": "rotated_latitude_longitude",

@@ -132,16 +132,6 @@ def _panel_scene(
     return Scene(f"panel-{name}", title, description, prepare)
 
 
-def _navigation_tracks(window):
-    _show_panel(window, "navigation")
-    _select_tab(window.navigation_panel.tabs, "Tracks")
-
-
-def _navigation_routings(window):
-    _show_panel(window, "navigation")
-    _select_tab(window.navigation_panel.tabs, "Routings")
-
-
 def _chart(window):
     window.reset_panels()
     for stack in window._panel_stacks.values():
@@ -181,19 +171,6 @@ SCENES = (
         "Chart with satellite basemap",
         "Satellite imagery under the chart for the Pacific NW Offshore course and boats.",
         _chart,
-    ),
-    _panel_scene(
-        "navigation",
-        "Navigation panel",
-        "Tracks, routings, POIs and AIS targets, with the Tracks tab selected.",
-        _navigation_tracks,
-    ),
-    _panel_scene(
-        "navigation-routings",
-        "Navigation panel: routings",
-        "Saved and calculated routes, with the legs of the selected route.",
-        _navigation_routings,
-        panel="navigation",
     ),
     _panel_scene(
         "routing",
