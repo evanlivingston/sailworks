@@ -29,11 +29,9 @@ from .style import (
     ROUTE_SAIL_CHANGE_COLOUR,
     ROUTE_UNKNOWN_COLOUR,
     Style,
-    route_leg_colour,
-    route_legend_entries,
-    route_legend_title,
     route_speed_color as _speed_color,
 )
+from .palettes import colour_for, legend_for, metric_label
 
 
 def sail_change_indices(identities):
@@ -383,7 +381,7 @@ class NavigationRenderer:
                     entries = tuple(legend)
                     if sail_changes:
                         entries += (("Sail change", ROUTE_SAIL_CHANGE_COLOUR),)
-                    _draw_route_legend(cr, route_legend_title(mode), entries)
+                    _draw_route_legend(cr, metric_label(mode), entries)
 
     def _route_overlay_geometry(self, route):
         """Static route geometry, cached until its revision or artifact changes.
@@ -428,12 +426,37 @@ class NavigationRenderer:
         self._route_geometry[key] = (route, geometry)
         return geometry
 
+    _CATEGORICAL_LOADERS = {
+        "tack": "leg_tacks",
+        "sail_plan": "leg_profile_identities",
+        "propulsion": "leg_propulsion_modes",
+    }
+
+    def _route_leg_values(self, route, mode, legs):
+        """Recorded per-leg values for a categorical mode, or () when unusable.
+
+        Only the recorded readouts that line up one-for-one with the displayed
+        legs are trusted, the same guard the sail markers use. A mid-route
+        point insert would otherwise shift every colour onto the wrong leg;
+        mismatched readouts stay unknown. The readout is the cached leg path,
+        so this adds no per-frame artifact read.
+        """
+        loader_name = self._CATEGORICAL_LOADERS.get(mode)
+        if loader_name is None:
+            return ()
+        loader = getattr(route, loader_name, None)
+        if not callable(loader):
+            return ()
+        recorded = tuple(loader())
+        return recorded if len(recorded) == legs else ()
+
     def _route_colours(self, route, mode):
         """Per-leg colour arrays for one route in the requested mode.
 
         Segment ``j`` runs from point ``j`` to ``j + 1`` and belongs to leg
         ``j``, matching ``_result_points``. Speed keeps the historical
         destination-point sample so the default rendering does not change.
+        Colours and the legend are resolved by the shared metric registry.
         """
         key = (
             id(route),
@@ -446,34 +469,30 @@ class NavigationRenderer:
             return cached[1]
         points, _rows, _stamps, twas, _changes = self._route_overlay_geometry(route)
         legs = max(0, len(points) - 1)
-        tacks = ()
-        if mode == "tack":
-            loader = getattr(route, "leg_tacks", None)
-            if callable(loader):
-                recorded = loader()
-                # Only trust recorded tacks when they line up one-for-one with
-                # the displayed legs, the same guard the sail markers use. A
-                # mid-route point insert would otherwise shift every colour
-                # onto the wrong leg; mismatched readouts stay unknown.
-                if len(recorded) == legs:
-                    tacks = recorded
+        values = self._route_leg_values(route, mode, legs)
         segment_colours = []
         for index in range(legs):
-            speed = points[index + 1][2] if mode == "speed" else None
-            twa = twas[index] if index < len(twas) else None
-            tack = tacks[index] if index < len(tacks) else None
-            segment_colours.append(route_leg_colour(mode, speed, twa, tack))
+            if mode == "speed":
+                value = points[index + 1][2]
+            elif mode == "wind_angle":
+                value = twas[index] if index < len(twas) else None
+            else:
+                value = values[index] if index < len(values) else None
+            segment_colours.append(colour_for(mode, value, values))
         point_colours = []
         for index, point in enumerate(points):
             leg = min(index, legs - 1) if legs else 0
-            speed = point[2] if mode == "speed" else None
-            twa = twas[leg] if leg < len(twas) else None
-            tack = tacks[leg] if leg < len(tacks) else None
-            point_colours.append(route_leg_colour(mode, speed, twa, tack))
+            if mode == "speed":
+                value = point[2]
+            elif mode == "wind_angle":
+                value = twas[leg] if leg < len(twas) else None
+            else:
+                value = values[leg] if leg < len(values) else None
+            point_colours.append(colour_for(mode, value, values))
         colours = (
             tuple(point_colours),
             tuple(segment_colours),
-            route_legend_entries(mode),
+            legend_for(mode, values),
         )
         self._route_styles[key] = (route, colours)
         return colours
@@ -510,6 +529,8 @@ class NavigationRenderer:
                 "highlight": tr.name == self.hl_routing,
                 "boat": boat,
                 "colour_by": mode,
+                # The registry id the client should treat as the dimension.
+                "metric": mode,
                 "point_colors": [list(colour[:3]) for colour in point_colours],
                 "segment_colors": [list(colour[:3]) for colour in segment_colours],
                 # Recorded plan transitions only, as indices into ``points``.
@@ -521,7 +542,7 @@ class NavigationRenderer:
                 if sail_changes:
                     entries.append(("Sail change", ROUTE_SAIL_CHANGE_COLOUR))
                 route_data["legend"] = {
-                    "title": route_legend_title(mode),
+                    "title": metric_label(mode),
                     "entries": [[label, list(colour[:3])] for label, colour in entries],
                 }
             routes.append(route_data)

@@ -398,7 +398,7 @@ def test_route_isochrone_toggle_is_independent_of_route_visibility(tmp_path):
     emitted = []
     panel.changed.connect(lambda: emitted.append(True))
     routing_events = []
-    panel.routing_visibility_changed.connect(lambda: routing_events.append(True))
+    panel.routing_visibility_changed.connect(lambda *_: routing_events.append(True))
     row = panel.item_row(KIND_ROUTING, "r1")
     row.setExpanded(True)
 
@@ -453,7 +453,7 @@ def test_route_traces_toggle_is_independent_of_isochrones_and_route(
     emitted = []
     panel.changed.connect(lambda: emitted.append(True))
     routing_events = []
-    panel.routing_visibility_changed.connect(lambda: routing_events.append(True))
+    panel.routing_visibility_changed.connect(lambda *_: routing_events.append(True))
     row = panel.item_row(KIND_ROUTING, "r1")
     row.setExpanded(True)
 

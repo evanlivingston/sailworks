@@ -33,9 +33,8 @@ from sailworks.core.geo.routing import (
     DEFAULT_ROUTE_COLOUR_MODE,
     ISOCHRONE_COLOUR_MODE_LABELS,
     ISOCHRONE_COLOUR_MODES,
-    ROUTE_COLOUR_MODE_LABELS,
-    ROUTE_COLOUR_MODES,
 )
+from sailworks.rendering.palettes import route_metrics
 from sailworks.core.scene import (
     KIND_LOG,
     KIND_POI,
@@ -342,6 +341,37 @@ def _isochrone_modes_for(element):
     return ISOCHRONE_COLOUR_MODES
 
 
+_ROUTE_METRIC_LOADERS = {
+    "tack": "leg_tacks",
+    "sail_plan": "leg_profile_identities",
+    "propulsion": "leg_propulsion_modes",
+}
+
+
+def route_metric_reason(element, metric_id):
+    """Why a route cannot be coloured by ``metric_id``, or None when it can.
+
+    The readout is the route's cached leg path, so opening the menu never adds
+    a second artifact read. A dimension whose data is absent is disabled with
+    this reason rather than hidden, so the choice is explained.
+    """
+    if metric_id not in _ROUTE_METRIC_LOADERS:
+        # Geometry dimensions (speed, wind angle) need no recorded readout.
+        return None
+    if getattr(element, "result_ref", None) is None:
+        return "No saved result: recorded legs are unavailable"
+    loader = getattr(element, _ROUTE_METRIC_LOADERS[metric_id], None)
+    if not callable(loader):
+        return "Recorded legs are unavailable"
+    try:
+        recorded = tuple(loader())
+    except (OSError, KeyError, ValueError, LookupError):
+        return "The saved result could not be read"
+    if not recorded or all(value is None for value in recorded):
+        return "The saved result has no recorded values for this dimension"
+    return None
+
+
 class SceneTree(QTreeWidget):
     """Tree widget that hands drops back to the scene panel.
 
@@ -542,7 +572,10 @@ class ScenePanel(QWidget):
     fit_requested = Signal(object)
     delete_requested = Signal(object)
     move_point_requested = Signal(object, int)
-    routing_visibility_changed = Signal()
+    # The toggled scene element is carried with the signal: the row names the
+    # route whose flag changed, which is not necessarily the route the
+    # Navigation panel happens to have selected.
+    routing_visibility_changed = Signal(object)
 
     def __init__(self, controller, parent=None, scene_path=None):
         super().__init__(parent)
@@ -990,6 +1023,63 @@ class ScenePanel(QWidget):
         row.addChild(isochrones)
         self._rows[("routing-isochrones", entry.kind, entry.key)] = isochrones
 
+        # The nested fill is a reading aid over the same contours, so it is its
+        # own checkbox and not a second isochrone visibility flag. It follows
+        # the isochrone eye at paint time. Off by default.
+        fill = QTreeWidgetItem(["Fill", ""])
+        fill.setData(NAME_COLUMN, NODE_ROLE, ("routing-fill", entry.kind, entry.key))
+        fill.setFlags(
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsUserCheckable
+        )
+        fill.setCheckState(
+            VISIBLE_COLUMN,
+            (
+                Qt.CheckState.Checked
+                if bool(getattr(element, "isochrone_fill_visible", False))
+                else Qt.CheckState.Unchecked
+            ),
+        )
+        fill.setIcon(NAME_COLUMN, symbol_icon("isochrone-symbolic"))
+        fill.setToolTip(
+            NAME_COLUMN,
+            "Fill the interior of closed isochrones. Open or land-truncated "
+            "contours are never filled. Hidden by default.",
+        )
+        row.addChild(fill)
+        self._rows[("routing-fill", entry.kind, entry.key)] = fill
+
+        # Hull outlines are drawn from the same per-layer envelope the fill
+        # uses, so this is a third independent checkbox: Fill paints the hull
+        # interior, Outlines strokes its boundary. Off by default, persisted
+        # like the others, and it never changes the branch frontiers.
+        outlines = QTreeWidgetItem(["Outlines", ""])
+        outlines.setData(
+            NAME_COLUMN, NODE_ROLE, ("routing-outlines", entry.kind, entry.key)
+        )
+        outlines.setFlags(
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsUserCheckable
+        )
+        outlines.setCheckState(
+            VISIBLE_COLUMN,
+            (
+                Qt.CheckState.Checked
+                if bool(getattr(element, "isochrone_outlines_visible", False))
+                else Qt.CheckState.Unchecked
+            ),
+        )
+        outlines.setIcon(NAME_COLUMN, symbol_icon("isochrone-symbolic"))
+        outlines.setToolTip(
+            NAME_COLUMN,
+            "Stroke the per-layer isochrone hull. Independent of Fill: either "
+            "can be on alone. Hidden by default.",
+        )
+        row.addChild(outlines)
+        self._rows[("routing-outlines", entry.kind, entry.key)] = outlines
+
         # Traces are their own layer: they stay available when the isochrones
         # are hidden. Off by default because the dense trace web makes the map
         # unreadable. Legacy routes keep the toggle but have no trace geometry.
@@ -1223,7 +1313,7 @@ class ScenePanel(QWidget):
                 element.isochrones_visible = visible
                 self._save_visible_elements({KIND_ROUTING})
                 self.changed.emit()
-                self.routing_visibility_changed.emit()
+                self.routing_visibility_changed.emit(element)
             return
         elif node[0] == "routing-traces":
             entry = self.scene.live_entry(node[1], node[2])
@@ -1235,7 +1325,31 @@ class ScenePanel(QWidget):
                 element.traces_visible = visible
                 self._save_visible_elements({KIND_ROUTING})
                 self.changed.emit()
-                self.routing_visibility_changed.emit()
+                self.routing_visibility_changed.emit(element)
+            return
+        elif node[0] == "routing-fill":
+            entry = self.scene.live_entry(node[1], node[2])
+            element = entry.element if entry is not None else None
+            if element is None:
+                return
+            visible = row.checkState(VISIBLE_COLUMN) == Qt.CheckState.Checked
+            if bool(getattr(element, "isochrone_fill_visible", False)) != visible:
+                element.isochrone_fill_visible = visible
+                self._save_visible_elements({KIND_ROUTING})
+                self.changed.emit()
+                self.routing_visibility_changed.emit(element)
+            return
+        elif node[0] == "routing-outlines":
+            entry = self.scene.live_entry(node[1], node[2])
+            element = entry.element if entry is not None else None
+            if element is None:
+                return
+            visible = row.checkState(VISIBLE_COLUMN) == Qt.CheckState.Checked
+            if bool(getattr(element, "isochrone_outlines_visible", False)) != visible:
+                element.isochrone_outlines_visible = visible
+                self._save_visible_elements({KIND_ROUTING})
+                self.changed.emit()
+                self.routing_visibility_changed.emit(element)
             return
         elif node[0] == "point":
             self._rename_point(node, row.text(NAME_COLUMN))
@@ -1249,7 +1363,7 @@ class ScenePanel(QWidget):
                     self._save_visible_elements(applied)
                 self._refresh_timer.start(0)
                 if KIND_ROUTING in applied:
-                    self.routing_visibility_changed.emit()
+                    self.routing_visibility_changed.emit(None)
 
     def _deferred_change(self):
         self.syncing = True
@@ -1431,7 +1545,7 @@ class ScenePanel(QWidget):
         if changed or structural:
             self.changed.emit()
         if KIND_ROUTING in changed:
-            self.routing_visibility_changed.emit()
+            self.routing_visibility_changed.emit(None)
 
     def _new_collection(self):
         parent = self._current_group()
@@ -1537,13 +1651,19 @@ class ScenePanel(QWidget):
             submenu = builder.add_menu("Colour by", key="U")
             sub_builder = MenuBuilder(submenu)
             current = getattr(colour_target, "colour_by", DEFAULT_ROUTE_COLOUR_MODE)
-            for mode in ROUTE_COLOUR_MODES:
+            for metric in route_metrics():
                 action = sub_builder.add(
-                    ROUTE_COLOUR_MODE_LABELS[mode],
-                    lambda _checked=False, m=mode: self._set_colour_by(node, m),
+                    metric.label,
+                    lambda _checked=False, m=metric.id: self._set_colour_by(node, m),
                 )
                 action.setCheckable(True)
-                action.setChecked(mode == current)
+                action.setChecked(metric.id == current)
+                reason = route_metric_reason(colour_target, metric.id)
+                if reason is not None:
+                    # Disabled with an explanation rather than hidden, so the
+                    # dimension stays discoverable on a legacy route.
+                    action.setEnabled(False)
+                    action.setToolTip(reason)
             # Isochrone portrayal is independent of the route-line mode and
             # rides the same routing context menu.
             submenu = builder.add_menu("Isochrones", key="I")
@@ -1631,6 +1751,10 @@ class ScenePanel(QWidget):
         element = self._colour_by_target(node)
         if element is None or getattr(element, "colour_by", None) == mode:
             return
+        # Never persist a dimension the route cannot draw, matching the menu's
+        # disabled state (e.g. sail plan on a legacy route without an artifact).
+        if route_metric_reason(element, mode) is not None:
+            return
         # The property setter bumps the route revision, which invalidates the
         # viewport overlay cache; emitting changed saves and repaints.
         element.colour_by = mode
@@ -1640,7 +1764,7 @@ class ScenePanel(QWidget):
         element = self._colour_by_target(node)
         if element is None or getattr(element, "isochrone_colour_by", None) == mode:
             return
-        if mode == "time" and mode not in _isochrone_modes_for(element):
+        if mode not in _isochrone_modes_for(element):
             return
         # Separate from route colour and from the isochrone eye toggle. The
         # setter bumps the revision, invalidating cached overlay payloads.

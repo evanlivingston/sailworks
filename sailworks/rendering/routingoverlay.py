@@ -58,6 +58,8 @@ class _Style:
     thickness: Dict[str, float] = field(default_factory=dict)
     traces_visible: bool = True
     contours_visible: bool = True
+    fill_visible: bool = False
+    outlines_visible: bool = False
 
 
 def _split_world_wrap(
@@ -153,6 +155,7 @@ class RoutingOverlayModel:
         self._selection = None
         self._hover_trace_id: Optional[str] = None
         self._geometry_revision = 1
+        self._boundary_cache = None
         self._style = _Style()
         self._style_revision = 0
         self._digest = self._compute_digest()
@@ -184,6 +187,66 @@ class RoutingOverlayModel:
     @property
     def polylines(self) -> Tuple[Polyline, ...]:
         return self._polylines
+
+    @property
+    def boundary_polylines(self) -> Tuple[Polyline, ...]:
+        """Contour strokes for the single-colour painter, hull first.
+
+        The retained item cannot read the payload's ``frontiers``, so it needs
+        the same precedence as data: one closed ring per hull for a layer the
+        hull stage can reduce, and that layer's unchanged engine polylines
+        otherwise. Trace polylines are excluded, so their geometry, ids and
+        picking are untouched. ``polylines`` keeps the engine geometry, so this
+        is a display choice and never a rewrite of the calculation.
+        """
+        rings = self._layer_hull_rings()
+        strokes: list = []
+        for layer in self._layers:
+            layer_rings = rings.get(layer.layer_id) or ()
+            if not layer_rings:
+                strokes.extend(
+                    polyline
+                    for polyline in self._polylines
+                    if polyline.kind == "contour"
+                    and polyline.layer_id == layer.layer_id
+                )
+                continue
+            for index, ring in enumerate(_ordered_rings(layer_rings)):
+                strokes.append(
+                    Polyline(
+                        f"{layer.layer_id}:hull:{index}",
+                        self._calculation_id,
+                        layer.layer_id,
+                        "contour",
+                        tuple(ring) + (tuple(ring[0]),),
+                        True,
+                        layer.epoch_s,
+                    )
+                )
+        return tuple(strokes)
+
+    def _layer_hull_rings(self) -> Dict[str, tuple]:
+        """Hull rings per layer, cached by geometry revision.
+
+        The rings depend on the calculation geometry only, so a style toggle
+        reuses them; new geometry either bumps the revision or arrives as a new
+        model.
+        """
+        if self._boundary_cache is not None and (
+            self._boundary_cache[0] == self._geometry_revision
+        ):
+            return self._boundary_cache[1]
+        rings = {}
+        for layer in self._layers:
+            points = [
+                point
+                for polyline in self._polylines
+                if polyline.kind == "contour" and polyline.layer_id == layer.layer_id
+                for point in polyline.points
+            ]
+            rings[layer.layer_id] = layer_hulls(points) if points else ()
+        self._boundary_cache = (self._geometry_revision, rings)
+        return rings
 
     @property
     def trace_ids(self) -> Tuple[str, ...]:
@@ -248,6 +311,32 @@ class RoutingOverlayModel:
     def contour_visible(self, layer_id: str) -> bool:
         """Whether a contour layer is actually drawn right now."""
         return self._style.contours_visible and self.is_layer_visible(layer_id)
+
+    @property
+    def fill_visible(self) -> bool:
+        """Nested isochrone band fill; the payload reads it by default."""
+        return self._style.fill_visible
+
+    def set_fill_visible(self, visible: bool) -> None:
+        if not isinstance(visible, bool):
+            raise TypeError("fill visibility must be a boolean")
+        if self._style.fill_visible == visible:
+            return
+        self._style.fill_visible = visible
+        self._style_revision += 1
+
+    @property
+    def outlines_visible(self) -> bool:
+        """Hull boundary strokes; independent of the fill it may accompany."""
+        return self._style.outlines_visible
+
+    def set_outlines_visible(self, visible: bool) -> None:
+        if not isinstance(visible, bool):
+            raise TypeError("outline visibility must be a boolean")
+        if self._style.outlines_visible == visible:
+            return
+        self._style.outlines_visible = visible
+        self._style_revision += 1
 
     def set_traces_visible(self, visible: bool) -> None:
         if not isinstance(visible, bool):
@@ -364,32 +453,118 @@ class RoutingOverlayModel:
         return digest.hexdigest()
 
 
-# Oldest to newest. Deep blue, blue, cyan, green, yellow, orange, red: the same
-# ordering the eye reads as "later in the forecast". Kept here rather than in
-# QML so the payload, legend and tests share one definition.
-ISOCHRONE_TIME_GRADIENT = (
-    (0.02, 0.05, 0.35),
-    (0.00, 0.30, 0.85),
-    (0.00, 0.68, 0.75),
-    (0.35, 0.82, 0.35),
-    (0.95, 0.85, 0.15),
-    (0.95, 0.50, 0.05),
-    (0.65, 0.05, 0.05),
+# The time ramp lives in the shared metric registry so the payload, legend and
+# tests share one definition; it is re-exported here for existing callers.
+from .palettes import (  # noqa: E402 - re-export beside the gradient helpers
+    ISOCHRONE_FILL_ALPHA,
+    ISOCHRONE_FILL_MAX_CONTOURS,
+    ISOCHRONE_FILL_MAX_POINTS,
+    ISOCHRONE_HULL_MAX_HULLS,
+    ISOCHRONE_HULL_MAX_POINTS,
+    ISOCHRONE_TIME_GRADIENT,
+    ISOCHRONE_UNIFORM_COLOUR,
+    gradient_colour,
+    metric_label,
 )
+
+from .isohull import hull_area, layer_hulls
+
+
+from .daynight import day_night_colour, day_night_legend
+
+from .isobands import band_colour, build_bands
 
 
 def _gradient_colour(position: float) -> list:
-    """Sample ``ISOCHRONE_TIME_GRADIENT``; 0 is oldest, 1 is newest."""
-    position = min(1.0, max(0.0, float(position)))
-    stops = ISOCHRONE_TIME_GRADIENT
-    scaled = position * (len(stops) - 1)
-    index = min(int(scaled), len(stops) - 2)
-    fraction = scaled - index
-    first, second = stops[index], stops[index + 1]
+    """Sample the registered time gradient; 0 is oldest, 1 is newest."""
+    return gradient_colour("layer_time", position)
+
+
+def isochrone_canvas_coloured(mode: str) -> bool:
+    """Whether contours are painted on the canvas rather than the retained item.
+
+    The retained routing item draws one colour, so every mode with its own
+    palette is drawn per layer or per point on the canvas and the retained item
+    keeps only the trace web. Uniform stays with the retained item, which is
+    what keeps its payload and appearance unchanged.
+    """
+    return normalize_isochrone_colour_by(mode) != DEFAULT_ISOCHRONE_COLOUR_MODE
+
+
+def isochrone_contours_on_canvas(
+    mode: str, fill_visible: bool = False, outlines_visible: bool = False
+) -> bool:
+    """Whether contours must be painted by the canvas, not the retained item.
+
+    A coloured mode needs one colour per layer or per point, and the nested
+    fill or the hull outlines need each shape's own polygon. All are canvas-
+    only, and the retained item can draw none of them, so it must suppress its
+    contours rather than drawing a single-colour copy underneath.
+    """
+    return (
+        bool(fill_visible) or bool(outlines_visible) or isochrone_canvas_coloured(mode)
+    )
+
+
+def _polygon_area(points) -> float:
+    """Shoelace area in projected degrees, used only to order the fills.
+
+    Delegates to the hull helper so the fill ordering and the hull ordering
+    cannot disagree about which shape is larger.
+    """
+    return hull_area(points)
+
+
+def _ordered_rings(rings) -> list:
+    """Hull rings largest first, with a deterministic tie-break.
+
+    The canvas boundary and the retained painter order through this one helper,
+    so the two paths cannot disagree about which ring covers which.
+    """
+    return sorted(rings, key=lambda ring: (-hull_area(ring), ring[0]))
+
+
+def _hull_boundary_segments(rings) -> list:
+    """Closed stroke segments around each hull ring, largest ring first.
+
+    A hull is a closed ring, so the edge from its final vertex back to its first
+    is part of the boundary and is emitted too; without it the stroke would stop
+    one edge short of closing. Every emitted point is a hull vertex, so the
+    boundary invents no geometry beyond the envelope the points already imply.
+    """
+    ordered = _ordered_rings(rings)
     return [
-        round(first[channel] + (second[channel] - first[channel]) * fraction, 4)
-        for channel in range(3)
+        [list(first), list(second)]
+        for ring in ordered
+        for first, second in zip(ring, ring[1:] + ring[:1])
     ]
+
+
+def _mode_colour(layer, points, mode: str, layer_colours) -> list:
+    """Registry RGB for one shape under the active isochrone colour mode.
+
+    Uniform uses the mode's own base colour and time uses the layer's gradient
+    position, matching the frontier that encloses the shape. Day/night uses the
+    shape's representative point: one shape cannot cross a terminator, so a
+    centroid (the mean vertex position) is used because it describes the
+    interior the shape actually covers, unlike the first vertex on the edge.
+    """
+    if mode == "time":
+        base = layer_colours.get(layer.layer_id)
+        if base is None:
+            return []
+        return list(base)[:3]
+    if mode == "day_night":
+        latitude = sum(point[0] for point in points) / len(points)
+        longitude = sum(point[1] for point in points) / len(points)
+        return list(day_night_colour(layer.epoch_s, (latitude, longitude)))[:3]
+    return list(ISOCHRONE_UNIFORM_COLOUR)[:3]
+
+
+def _fill_colour(layer, points, mode: str, layer_colours) -> list:
+    """Band colour for one closed ring, as registry RGBA at fill alpha."""
+    rgb = _mode_colour(layer, points, mode, layer_colours)
+    return [] if not rgb else rgb + [ISOCHRONE_FILL_ALPHA]
 
 
 def _epoch_label(epoch_s: int, show_date: bool, show_seconds: bool = False) -> str:
@@ -439,7 +614,7 @@ def isochrone_time_legend(layers, colours) -> dict:
         if counters[label] > 1:
             label = f"{label} #{counters[label]}"
         entries.append([label, list(colours[layer_id])])
-    return {"title": "Isochrones (UTC)", "entries": entries}
+    return {"title": metric_label("layer_time"), "entries": entries}
 
 
 def _selected_trace_ids(model: RoutingOverlayModel):
@@ -454,6 +629,8 @@ def _selected_trace_ids(model: RoutingOverlayModel):
 def routing_overlay_data(
     model: RoutingOverlayModel,
     isochrone_colour_by: str = DEFAULT_ISOCHRONE_COLOUR_MODE,
+    fill_visible: Optional[bool] = None,
+    outlines_visible: Optional[bool] = None,
 ) -> dict:
     """QML-ready payload built only from engine-provided routing geometry.
 
@@ -463,13 +640,76 @@ def routing_overlay_data(
     isochrone overlay already consumes, so the native layer can replace the
     proximity-joined preview without changing the QML consumer.
 
+    A visible layer whose points the hull stage can reduce strokes its hull
+    envelope instead of every engine arm, so the default isochrone reads as the
+    reachable boundary rather than a starburst. ``frontiers[].source`` says
+    which geometry a frame shows: ``"hull"`` or ``"engine"``. The hull is
+    derived from the same points and adds none, and ``layers[].segments`` keeps
+    the raw ordered chains, so the calculation data, contour order and
+    open/closed state are untouched. A layer the hull stage cannot reduce
+    (collinear, fewer than three distinct points, or a ring wider than the
+    antimeridian guard) keeps its engine segments rather than being given an
+    invented chord, and its ``source`` stays ``"engine"``.
+
     ``isochrone_colour_by="time"`` adds a gradient colour to each visible layer
-    and frontier plus a legend keyed to the layers' recorded epochs. The
-    uniform payload is unchanged.
+    and frontier plus a legend keyed to the layers' recorded epochs.
+    ``"day_night"`` colours each frontier segment from its leading point, so a
+    contour that crosses the terminator shows both, plus a categorical legend.
+    The uniform payload is unchanged.
+
+    ``fill_visible=True`` adds ``bands``: one closed ring per paired contour
+    between consecutive visible layers that both lack a hull. A visible layer
+    with a hull is filled by that hull and splits the band run, so the layers
+    on either side of it are never paired across the gap. Already resampled
+    and direction-aligned, so the fill is continuous whether or not a contour
+    is closed.
+    Bands are the primary fill; ``fills`` stays as the fallback for closed
+    contours of a layer with no band coverage, for example a single visible
+    layer. Only engine contours marked closed reach ``fills``, because an open
+    interior would leak across land. Both arrays are omitted entirely when the
+    fill is off, so the default payload keeps its shape. A dense result is
+    capped, and ``bands_note`` discloses how many bands were left out.
+
+    Per-layer hulls supersede the raw chains for layers that can produce one.
+    Every visible layer's contour points are clustered and each cluster is
+    reduced to a convex hull, so the solver's all-heading expansion no longer
+    reads as a starburst; the hull is also the default frontier stroke, which is
+    why it is built even with both toggles off. ``outlines`` carries one closed
+    ring per hull, largest area first, for the painter to stroke, and is emitted
+    only when the outlines toggle asked for it. ``fills`` carries the same rings
+    as closed shapes when the fill is on. An outline strokes exactly the ring
+    the frontier boundary already strokes, so turning the toggle on emphasises
+    that boundary instead of painting a second shape.
+
+    Precedence, highest first: hull fill/outline for a layer with a hull, then
+    the gated band strip for a layer with no hull, then the closed-contour
+    fallback for a layer with neither. A band never covers a hulled layer, and
+    a contour fill never duplicates one, so no shape paints the same area
+    twice. Bands therefore remain a fallback for the degenerate layers only.
+
+    ``outlines_visible=True`` emits the hull rings even with the fill off, so
+    the two toggles stay independent: Fill paints hull interiors, Outlines
+    strokes hull boundaries. Both are omitted unless the contour eye is on.
+    Hull caps are separate from the closed-contour caps; a capped payload
+    discloses it in ``fills_note`` or ``outlines_note``.
+
+    The flag is owned by the model, exactly like contour and trace visibility,
+    so the payload follows a model toggle with no geometry rebuild. ``None``
+    reads that model flag; a caller that already resolved the flag elsewhere may
+    still pass an explicit boolean, which wins for this call only.
     """
 
     if not isinstance(model, RoutingOverlayModel):
         raise TypeError("model must be a RoutingOverlayModel")
+    if fill_visible is None:
+        fill_visible = model.fill_visible
+    else:
+        fill_visible = bool(fill_visible)
+    if outlines_visible is None:
+        outlines_visible = model.outlines_visible
+    else:
+        outlines_visible = bool(outlines_visible)
+    hulls_visible = fill_visible or outlines_visible
     mode = normalize_isochrone_colour_by(isochrone_colour_by)
     visible_layers = [
         layer for layer in model.layers if model.contour_visible(layer.layer_id)
@@ -477,11 +717,20 @@ def routing_overlay_data(
     layer_colours = {}
     if mode == "time":
         layer_colours = isochrone_time_colours(visible_layers)
+    per_point = mode == "day_night"
     layers = []
     frontiers = []
+    fill_shapes = []
+    band_inputs = []
+    hull_shapes = []
+    # The hull stage is the same one ``boundary_polylines`` uses, so reuse its
+    # revision-keyed cache instead of recomputing every hull each frame.
+    hull_rings = model._layer_hull_rings()
+    band_runs = []
     for layer in visible_layers:
         segments = []
         closed = []
+        band_contours = []
         for polyline in model.polylines:
             if polyline.kind != "contour" or polyline.layer_id != layer.layer_id:
                 continue
@@ -490,6 +739,33 @@ def routing_overlay_data(
                 for first, second in zip(polyline.points, polyline.points[1:])
             )
             closed.append(polyline.closed)
+            if fill_visible and len(polyline.points) >= 2:
+                band_contours.append(polyline.points)
+            if fill_visible and polyline.closed and len(polyline.points) >= 3:
+                fill_shapes.append((layer, polyline.points, polyline.object_id))
+        # Every visible layer is hulled, not only a filled or outlined one: the
+        # envelope is also the default boundary stroke. The hull is a display
+        # approximation of the engine's ordered chains, which the layer payload
+        # keeps unchanged.
+        layer_rings = hull_rings.get(layer.layer_id) or ()
+        if hulls_visible and layer_rings:
+            hull_shapes.extend((layer, ring) for ring in layer_rings)
+        # A hulled layer is filled by its hull, so it must not also be banded:
+        # bands stay the fallback for layers the hull stage could not reduce.
+        # A hulled layer also ends a run: the layers on either side are not
+        # consecutive visible layers, so their contours must not be paired
+        # across the layer the fill skipped.
+        if fill_visible and not layer_rings:
+            band_inputs.append(
+                {
+                    "layer_id": layer.layer_id,
+                    "epoch_s": layer.epoch_s,
+                    "contours": band_contours,
+                }
+            )
+        elif band_inputs:
+            band_runs.append(band_inputs)
+            band_inputs = []
         layer_payload = {
             "id": layer.layer_id,
             "time": layer.epoch_s,
@@ -498,8 +774,12 @@ def routing_overlay_data(
             "contour_count": len(closed),
             "closed": closed,
         }
+        boundary = _hull_boundary_segments(layer_rings)
         frontier_payload = {
-            "segments": segments,
+            # A hulled layer is stroked by its envelope; a hull-less layer keeps
+            # the engine chains rather than receiving an invented chord.
+            "segments": boundary or segments,
+            "source": "hull" if boundary else "engine",
             "points": [],
             "layer_id": layer.layer_id,
             "time": layer.epoch_s,
@@ -510,8 +790,146 @@ def routing_overlay_data(
             colour = layer_colours[layer.layer_id]
             layer_payload["colour"] = list(colour)
             frontier_payload["colour"] = list(colour)
+        if per_point:
+            # A layer spans one instant but many longitudes, so the frontier
+            # carries one colour per segment instead of one per layer.
+            frontier_payload["segment_colours"] = [
+                list(day_night_colour(layer.epoch_s, segment[0]))
+                for segment in frontier_payload["segments"]
+            ]
         layers.append(layer_payload)
         frontiers.append(frontier_payload)
+    if band_inputs:
+        band_runs.append(band_inputs)
+    bands = []
+    bands_note = None
+    banded_layers = set()
+    if fill_visible:
+        rings_total = 0
+        capped_total = 0
+        skipped_total = 0
+        for run in band_runs:
+            # A single layer has no frontier to pair with, and a run never
+            # contains the hulled layer that split it.
+            if len(run) < 2:
+                continue
+            built = build_bands(run)
+            rings_total += built["rings"]
+            capped_total += built["capped_rings"]
+            skipped_total += built["skipped"]
+            for band in built["bands"]:
+                colour = band_colour(band, mode, layer_colours)
+                if not colour:
+                    continue
+                bands.append(
+                    {
+                        **band,
+                        "points": [list(point) for point in band["points"]],
+                        "colour": colour,
+                    }
+                )
+                banded_layers.add(band["layer_id"])
+                banded_layers.add(band["prev_layer_id"])
+        if capped_total:
+            bands_note = f"{len(bands)} of {rings_total} layer bands drawn (capped)"
+        elif bands and skipped_total:
+            # The gate dropped a pair that did not look like the same front;
+            # say so rather than leaving an unexplained gap in the fill.
+            band_word = "band" if len(bands) == 1 else "bands"
+            pair_word = "pair" if skipped_total == 1 else "pairs"
+            bands_note = (
+                f"{len(bands)} {band_word} ({skipped_total} {pair_word} skipped)"
+            )
+    outlines = []
+    hull_fills = []
+    hull_note = None
+    if hull_shapes:
+        # Largest first so each smaller hull covers its parent's interior and
+        # leaves only the band between consecutive layers visible. The layer id
+        # breaks an equal-area tie deterministically.
+        ordered = sorted(
+            hull_shapes, key=lambda item: (-hull_area(item[1]), item[0].layer_id)
+        )
+        kept = []
+        used = 0
+        for layer, ring in ordered:
+            if len(kept) >= ISOCHRONE_HULL_MAX_HULLS:
+                break
+            # The largest hull is always kept: an over-budget single hull is
+            # better than an empty layer the user asked to fill or outline.
+            if kept and used + len(ring) > ISOCHRONE_HULL_MAX_POINTS:
+                break
+            kept.append((layer, ring))
+            used += len(ring)
+        if len(kept) < len(ordered):
+            hull_note = (
+                f"{len(kept)} of {len(ordered)} isochrone hulls drawn "
+                "(largest first)"
+            )
+        for layer, ring in kept:
+            colour = _mode_colour(layer, ring, mode, layer_colours)
+            if not colour:
+                continue
+            points = [list(point) for point in ring]
+            # Outlines are stroked only for the toggle that asked for them; the
+            # fill is a separate toggle and must not smuggle the stroke in.
+            if outlines_visible:
+                outlines.append(
+                    {
+                        "layer_id": layer.layer_id,
+                        "epoch_s": layer.epoch_s,
+                        "points": points,
+                        "colour": list(colour),
+                        "area": hull_area(ring),
+                    }
+                )
+            if fill_visible:
+                hull_fills.append(
+                    {
+                        "layer_id": layer.layer_id,
+                        "points": points,
+                        "colour": list(colour) + [ISOCHRONE_FILL_ALPHA],
+                        "closed": True,
+                    }
+                )
+    hulled_layers = {layer.layer_id for layer, _ring in hull_shapes}
+    fills = []
+    legacy_fills = []
+    if fill_visible:
+        # A layer covered by its hull or by bands is already filled, so its
+        # closed contours would paint the same area twice. Closed-contour fills
+        # are the last fallback, for a layer neither stage could cover.
+        fill_shapes = [
+            shape
+            for shape in fill_shapes
+            if shape[0].layer_id not in banded_layers
+            and shape[0].layer_id not in hulled_layers
+        ]
+        # Largest first so each smaller contour covers its parent's interior,
+        # leaving only the annular band between consecutive frontiers visible.
+        # Object id breaks an equal-area tie deterministically.
+        fill_shapes.sort(key=lambda item: (-_polygon_area(item[1]), item[2]))
+        fill_points = 0
+        for layer, points, _object_id in fill_shapes:
+            if len(legacy_fills) >= ISOCHRONE_FILL_MAX_CONTOURS:
+                break
+            # The largest contour is always kept: an over-budget single fill is
+            # better than an empty layer the user asked to fill.
+            if legacy_fills and fill_points + len(points) > ISOCHRONE_FILL_MAX_POINTS:
+                break
+            colour = _fill_colour(layer, points, mode, layer_colours)
+            if not colour:
+                continue
+            legacy_fills.append(
+                {
+                    "layer_id": layer.layer_id,
+                    "points": [list(point) for point in points],
+                    "colour": colour,
+                    "closed": True,
+                }
+            )
+            fill_points += len(points)
+    fills = hull_fills + legacy_fills
     traces = []
     if model.trace_ids and model.traces_visible:
         for polyline in model.polylines:
@@ -544,9 +962,33 @@ def routing_overlay_data(
         "path": [],
         "exclusions": [],
     }
+    if fills:
+        payload["fills"] = fills
+        total_closed = len(fill_shapes)
+        if hull_note:
+            payload["fills_note"] = hull_note
+        elif total_closed > len(legacy_fills):
+            # A dense result is capped so the frame stays responsive; the
+            # caption states what was left out instead of silently drawing a
+            # partial picture that looks complete.
+            payload["fills_note"] = (
+                f"{len(legacy_fills)} of {total_closed} closed contours filled "
+                "(largest first)"
+            )
+    if outlines:
+        payload["outlines"] = outlines
+        if hull_note and not fill_visible:
+            payload["outlines_note"] = hull_note
+    if bands:
+        payload["bands"] = bands
+    if bands_note:
+        payload["bands_note"] = bands_note
     if mode == "time":
         # Every schema-v1 layer carries a recorded epoch, so time is always
         # representable and is never downgraded to a uniform colour.
         payload["isochrone_colour_by"] = "time"
         payload["legend"] = isochrone_time_legend(visible_layers, layer_colours)
+    elif mode == "day_night":
+        payload["isochrone_colour_by"] = "day_night"
+        payload["legend"] = day_night_legend()
     return payload

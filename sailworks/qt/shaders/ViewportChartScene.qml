@@ -315,19 +315,6 @@ Item {
                                     panPadding + viewportHeight / 2 + y - centerY)
                 }
 
-                function speedColor(speed, alpha) {
-                    let r, g, b
-                    if (speed < 2) { r = 0.3; g = 0.5; b = 1.0 }
-                    else if (speed < 4) { r = 0.2; g = 0.7; b = 0.9 }
-                    else if (speed < 6) { r = 0.2; g = 0.85; b = 0.5 }
-                    else if (speed < 8) { r = 0.5; g = 0.9; b = 0.2 }
-                    else if (speed < 10) { r = 0.9; g = 0.85; b = 0.1 }
-                    else if (speed < 12) { r = 1.0; g = 0.6; b = 0.1 }
-                    else { r = 1.0; g = 0.3; b = 0.1 }
-                    return `rgba(${Math.round(r * 255)},${Math.round(g * 255)},` +
-                           `${Math.round(b * 255)},${alpha})`
-                }
-
                 function rgbColor(color, alpha) {
                     if (!color || color.length < 3)
                         return `rgba(140,140,140,${alpha})`
@@ -566,6 +553,62 @@ Item {
                 onPaint: {
                     const context = getContext("2d")
                     context.clearRect(0, 0, width, height)
+                    if (isochrones && (isochrones.bands || isochrones.fills)) {
+                        // Band strips are the primary fill: each band joins the
+                        // matching contour of two consecutive layers, so it is
+                        // continuous whether or not a contour is closed.
+                        // Closed-contour fills remain as the fallback for a
+                        // layer with no band coverage, largest first. Both paint
+                        // under the frontiers, traces and route path, never
+                        // over them.
+                        const shapes = (isochrones.bands || [])
+                            .concat(isochrones.fills || [])
+                        for (let f = 0; f < shapes.length; ++f) {
+                            const shape = shapes[f]
+                            const points = shape.points
+                            if (!points || points.length < 3)
+                                continue
+                            const colour = shape.colour || []
+                            const alpha = colour.length > 3 ? colour[3] : 0.3
+                            context.fillStyle = rgbColor(colour, alpha)
+                            context.beginPath()
+                            for (let p = 0; p < points.length; ++p) {
+                                const point = screenPoint(points[p])
+                                if (p === 0)
+                                    context.moveTo(point.x, point.y)
+                                else
+                                    context.lineTo(point.x, point.y)
+                            }
+                            context.closePath()
+                            context.fill()
+                        }
+                    }
+                    if (isochrones && isochrones.outlines) {
+                        // Hull boundaries: one closed ring per time-step
+                        // envelope, largest first, over the fills and under the
+                        // branch frontiers, traces and route. The ring is the
+                        // convex envelope of the same contour points, so the
+                        // stroke marks the edge of the area the fill covers.
+                        context.setLineDash([])
+                        context.lineWidth = 1.0
+                        for (let o = 0; o < isochrones.outlines.length; ++o) {
+                            const outline = isochrones.outlines[o]
+                            const points = outline.points
+                            if (!points || points.length < 3)
+                                continue
+                            context.strokeStyle = rgbColor(outline.colour, 0.85)
+                            context.beginPath()
+                            for (let p = 0; p < points.length; ++p) {
+                                const point = screenPoint(points[p])
+                                if (p === 0)
+                                    context.moveTo(point.x, point.y)
+                                else
+                                    context.lineTo(point.x, point.y)
+                            }
+                            context.closePath()
+                            context.stroke()
+                        }
+                    }
                     if (isochrones && isochrones.frontiers) {
                         for (let f = 0; f < isochrones.frontiers.length; ++f) {
                             const frontier = isochrones.frontiers[f]
@@ -573,6 +616,11 @@ Item {
                             // preview frontier has no selection identity.
                             const selected = frontier.selected === true
                             const timeColour = frontier.colour
+                            const segmentColours = frontier.segment_colours
+                            // A day/night frontier crosses the terminator, so
+                            // its colour is per segment rather than per layer.
+                            const perPoint = segmentColours
+                                && segmentColours.length === frontier.segments.length
                             context.strokeStyle = timeColour
                                 ? rgbColor(timeColour, selected ? 0.95 : 0.55)
                                 : (selected
@@ -584,6 +632,9 @@ Item {
                                 const segment = frontier.segments[s]
                                 const first = screenPoint(segment[0])
                                 const second = screenPoint(segment[1])
+                                if (perPoint)
+                                    context.strokeStyle = rgbColor(
+                                        segmentColours[s], selected ? 0.95 : 0.75)
                                 context.beginPath()
                                 context.moveTo(first.x, first.y)
                                 context.lineTo(second.x, second.y)
@@ -660,6 +711,19 @@ Item {
                     }
                     if (isochrones && isochrones.legend)
                         drawIsochroneLegend(context, isochrones.legend)
+                    const fillNote = isochrones
+                        && (isochrones.bands_note || isochrones.fills_note
+                            || isochrones.outlines_note)
+                    if (fillNote) {
+                        // The fill is capped on very dense results; say so
+                        // instead of showing a partial picture that reads as
+                        // the whole result.
+                        context.save()
+                        context.font = "10px sans-serif"
+                        context.fillStyle = "rgba(255,220,150,0.95)"
+                        context.fillText(fillNote, 12, height - 12)
+                        context.restore()
+                    }
                     drawRoute(context, routePlan, "#5295d2")
                     drawRoute(context, routePreview, "#ef5a8c")
                     if (trackPoints && trackPoints.length > 1) {
@@ -686,8 +750,6 @@ Item {
                             if (!points || points.length < 2)
                                 continue
                             const highlight = Boolean(route.highlight)
-                            const categorical = route.colour_by &&
-                                                route.colour_by !== "speed"
                             for (let i = 1; i < points.length; ++i) {
                                 const previous = screenPoint(points[i - 1])
                                 const point = screenPoint(points[i])
@@ -702,11 +764,8 @@ Item {
                                 context.strokeStyle = segmentColor
                                     ? rgbColor(segmentColor,
                                                highlight ? 0.9 : 0.63)
-                                    : categorical
-                                        ? rgbColor(null,
-                                                   highlight ? 0.9 : 0.63)
-                                        : speedColor(points[i][2] || 0,
-                                                     highlight ? 0.9 : 0.63)
+                                    : rgbColor(null,
+                                               highlight ? 0.9 : 0.63)
                                 context.stroke()
                             }
                             context.font = "10px sans-serif"
@@ -722,9 +781,7 @@ Item {
                                     route.point_colors &&
                                     route.point_colors.length > i
                                         ? rgbColor(route.point_colors[i], 1.0)
-                                        : categorical
-                                            ? rgbColor(null, 1.0)
-                                            : speedColor(points[i][2] || 0, 1.0)
+                                        : rgbColor(null, 1.0)
                                 context.fill()
                             }
                             if (route.sail_changes && route.sail_changes.length) {

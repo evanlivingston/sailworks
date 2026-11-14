@@ -122,6 +122,22 @@ def _routing_isochrone_mode(route, native, active_route):
     return "uniform"
 
 
+def _routing_presented_route(toggled, route, native, active_route):
+    """Route whose isochrone flags govern the presented overlay.
+
+    A Scene Collection toggle names the route it belongs to. That route wins
+    whenever the native result was presented for it, because a saved route
+    restored from the scene has no Navigation panel selection. A route the
+    overlay does not own never takes over the presented flags. Pure so partial
+    window doubles need no extra bindings.
+    """
+    if toggled is None or toggled is route:
+        return route
+    if _routing_owns_route(toggled, native, active_route):
+        return toggled
+    return route
+
+
 class PreviewWindow(QMainWindow):
     def __init__(self, controller, workspace_path=None):
         super().__init__()
@@ -1540,13 +1556,16 @@ class PreviewWindow(QMainWindow):
                     if collection is not None:
                         collection.save()
 
-    def _routing_visibility_changed(self):
+    def _routing_visibility_changed(self, element=None):
         """Refresh isochrones when a scene toggle changes routing visibility.
 
         This is deliberately separate from ``_scene_changed``: unrelated scene
-        edits must not hydrate a referenced result artifact.
+        edits must not hydrate a referenced result artifact. ``element`` is the
+        scene route the toggle belongs to, so the flag is resolved from the
+        row the user just changed instead of only from the Navigation panel
+        selection (a saved route restored from the scene may have none).
         """
-        self._sync_route_isochrones()
+        self._sync_route_isochrones(element)
         for canvas in (self.map, self.log_map):
             invalidate = getattr(canvas, "invalidate_navigation", None)
             if callable(invalidate):
@@ -1554,6 +1573,10 @@ class PreviewWindow(QMainWindow):
             refresh = getattr(canvas, "refresh_route_overlay", None)
             if callable(refresh):
                 refresh()
+            else:
+                publish = getattr(canvas, "publish_route_overlay", None)
+                if callable(publish):
+                    publish(force=True)
             canvas.update()
 
     def _sync_isochrone_colour_mode(self):
@@ -1566,6 +1589,38 @@ class PreviewWindow(QMainWindow):
         )
         if mode is None:
             return
+        # With no route selected the fill has no owner here. Leave it alone
+        # instead of writing False, which would undo a toggle driven from the
+        # Scene Collection; ``_routing_visibility_changed`` applies that
+        # route's own flag once the row names it.
+        fill_visible = None
+        if route is not None:
+            fill_visible = bool(
+                native is not None
+                and self._native_owns_route(route, native)
+                and getattr(route, "isochrones_visible", True)
+                and getattr(route, "isochrone_fill_visible", False)
+            )
+            # The overlay model owns the fill flag; the canvas attribute below
+            # only mirrors it, exactly like the contour and trace flags.
+            setter = getattr(native, "set_fill_visible", None)
+            if callable(setter):
+                setter(fill_visible)
+            # Hull outlines are independent of the fill and follow the same
+            # ownership rule: only this route's presented result may set them.
+            outlines_visible = bool(
+                native is not None
+                and self._native_owns_route(route, native)
+                and getattr(route, "isochrones_visible", True)
+                and getattr(route, "isochrone_outlines_visible", False)
+            )
+            outlines_setter = getattr(native, "set_outlines_visible", None)
+            if callable(outlines_setter):
+                outlines_setter(outlines_visible)
+            for canvas in (getattr(self, "map", None), getattr(self, "log_map", None)):
+                if canvas is not None:
+                    canvas.isochrone_fill_visible = fill_visible
+                    canvas.isochrone_outlines_visible = outlines_visible
         for canvas in (getattr(self, "map", None), getattr(self, "log_map", None)):
             if canvas is not None:
                 canvas.isochrone_colour_by = mode
@@ -1576,12 +1631,22 @@ class PreviewWindow(QMainWindow):
             route, native, getattr(self, "_routing_active_route", None)
         )
 
-    def _sync_route_isochrones(self):
+    def _sync_route_isochrones(self, toggled=None):
         if getattr(self, "_syncing_route_isochrones", False):
             # A row update requested by this sync must not re-enter it.
             return
         if not self.controller.routing.busy:
-            route = self.navigation_panel.route
+            native = getattr(
+                getattr(getattr(self, "controller", None), "routing", None),
+                "native_overlay",
+                None,
+            )
+            route = _routing_presented_route(
+                toggled,
+                getattr(getattr(self, "navigation_panel", None), "route", None),
+                native,
+                getattr(self, "_routing_active_route", None),
+            )
             show = (
                 route is not None
                 and bool(getattr(route, "visible", True))
@@ -1591,7 +1656,6 @@ class PreviewWindow(QMainWindow):
             # before this sync hydrates the artifact and record a transition.
             error_before = getattr(route, "contour_error", None)
             # Do not hydrate a referenced artifact while the layer is hidden.
-            native = self.controller.routing.native_overlay
             if native is not None and route is not None:
                 active = getattr(self, "_routing_active_route", None)
                 if self._native_owns_route(route, native):
@@ -1613,16 +1677,50 @@ class PreviewWindow(QMainWindow):
             mode = _routing_isochrone_mode(
                 route, native, getattr(self, "_routing_active_route", None)
             )
-            if mode is not None:
-                # Both canvases share the mode attribute so switching between
-                # the map and log views never shows a stale colour mode. Only
-                # the primary map presents the routing isochrones.
-                for canvas in (
-                    getattr(self, "map", None),
-                    getattr(self, "log_map", None),
-                ):
-                    if canvas is not None:
-                        canvas.isochrone_colour_by = mode
+            # The fill belongs to this route's presented result only: a stale
+            # or independently opened overlay must never inherit it. It also
+            # follows the isochrone eye, so hiding the contours never leaves a
+            # filled band with no frontier.
+            fill_visible = bool(
+                show
+                and route is not None
+                and native is not None
+                and self._native_owns_route(route, native)
+                and getattr(route, "isochrone_fill_visible", False)
+            )
+            # Outlines share the fill's ownership gate but not its value: the
+            # user can stroke hulls without filling them, or fill without a
+            # boundary.
+            outlines_visible = bool(
+                show
+                and route is not None
+                and native is not None
+                and self._native_owns_route(route, native)
+                and getattr(route, "isochrone_outlines_visible", False)
+            )
+            for canvas in (
+                getattr(self, "map", None),
+                getattr(self, "log_map", None),
+            ):
+                if canvas is None:
+                    continue
+                if mode is not None:
+                    # Both canvases share the mode attribute so switching
+                    # between the map and log views never shows a stale colour
+                    # mode. Only the primary map presents the routing
+                    # isochrones.
+                    canvas.isochrone_colour_by = mode
+                canvas.isochrone_fill_visible = fill_visible
+                canvas.isochrone_outlines_visible = outlines_visible
+            # The model owns the fill flag, so the host attribute is only a
+            # mirror. An independent or stale overlay is set to False here,
+            # which is what keeps it from inheriting another route's fill.
+            fill_setter = getattr(native, "set_fill_visible", None)
+            if callable(fill_setter):
+                fill_setter(fill_visible)
+            outlines_setter = getattr(native, "set_outlines_visible", None)
+            if callable(outlines_setter):
+                outlines_setter(outlines_visible)
             self.map.native_routing = native
             # Traces use their own flag, independent of the contour gate: a
             # hidden isochrone layer must not hide the trace web. Only the
