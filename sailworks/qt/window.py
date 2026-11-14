@@ -362,6 +362,10 @@ class PreviewWindow(QMainWindow):
             controller.core.routingManager.get_active()
             or next(iter(controller.core.routingManager), None)
         )
+        # Restoring a saved result presents it through the shared presenter,
+        # which opens the dock. A launch should start with it closed; the
+        # content stays loaded for when the user opens it from the View menu.
+        self.routing_inspector_dock.hide()
         self.statusBar().setContentsMargins(12, 4, 12, 4)
         self.instruments = QLabel()
         self.cursor_status = CursorStatus()
