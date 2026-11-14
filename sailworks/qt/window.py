@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sailworks import build_label
 from sailworks.core.timecontrol import (
     TimeControl,
     naive_wall_time,
@@ -147,7 +148,8 @@ class PreviewWindow(QMainWindow):
             pass
         self.setAcceptDrops(True)
         self.marine_settings = None
-        self.setWindowTitle("Sailworks")
+        label = build_label()
+        self.setWindowTitle(f"Sailworks — {label}" if label else "Sailworks")
         self.setWindowIcon(QIcon(resource_path("sailworks", "data/icon.png")))
         self.resize(1380, 800)
         if sys.platform == "darwin":

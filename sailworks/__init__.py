@@ -14,9 +14,21 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
+from functools import lru_cache
+from pathlib import Path
+
 # isort:skip_file
 from . import geometry as _geometry  # noqa: F401  Install before routing is imported.
 
 from . import core  # noqa: F401
 
 __version__ = "0.3.6"
+
+
+@lru_cache(maxsize=1)
+def build_label() -> str:
+    """Name of the source tree holding this package, to tell builds apart."""
+    try:
+        return Path(__file__).resolve().parent.parent.name
+    except Exception:
+        return ""
