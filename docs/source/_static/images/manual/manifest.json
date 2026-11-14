@@ -30,24 +30,6 @@
       "height": 1400
     },
     {
-      "name": "panel-navigation",
-      "title": "Navigation panel",
-      "description": "Tracks, routings, POIs and AIS targets, with the Tracks tab selected.",
-      "file": "panel-navigation.png",
-      "sha256": "b1e7e4966c81a567236bf9581396e4698e75c5b3664423ad37ed8d9f3cd1f432",
-      "width": 920,
-      "height": 1056
-    },
-    {
-      "name": "panel-navigation-routings",
-      "title": "Navigation panel: routings",
-      "description": "Saved and calculated routes, with the legs of the selected route.",
-      "file": "panel-navigation-routings.png",
-      "sha256": "5dd88e356f6248993fe7bf23e4abb42f253eb30b3a72f6757e4af348847e7356",
-      "width": 920,
-      "height": 1056
-    },
-    {
       "name": "panel-polar-selector",
       "title": "Polar selector",
       "description": "Choose the polar used for routing and performance readouts.",
