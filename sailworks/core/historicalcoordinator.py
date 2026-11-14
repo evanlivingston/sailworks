@@ -34,7 +34,7 @@ from sailworks.core.historicalpublication import (
     CoordinatorError,
     HistoricalPublisher,
 )
-from sailworks.core.historicalretry import HistoricalRetrier
+from sailworks.core.historicalretry import HistoricalRecheckMixin, HistoricalRetrier
 from sailworks.core.historicalrouting import (
     JobState,
     YearState,
@@ -48,6 +48,7 @@ __all__ = [
     "PUBLISHED_ROUTE_PREFIX",
     "CoordinatorError",
     "HistoricalPublisher",
+    "HistoricalRecheckMixin",
     "HistoricalRetrier",
     "HistoricalRoutingCoordinator",
 ]
@@ -239,6 +240,34 @@ class HistoricalRoutingCoordinator:
         """See :meth:`historicalretry.HistoricalRetrier.rerun_failed_units`."""
         return self.retrier.rerun_failed_units(
             job_id, ensure_wind=ensure_wind, on_progress=on_progress
+        )
+
+    def recheck_excluded(
+        self,
+        job_id,
+        base_request,
+        *,
+        ensure_wind,
+        run_bound,
+        concurrency=None,
+        on_progress=None,
+        on_outcome=None,
+        tranche_factory=None,
+        current_selection_factory=None,
+        now=None,
+    ) -> list:
+        """See :meth:`historicalretry.HistoricalRetrier.recheck_excluded`."""
+        return self.retrier.recheck_excluded(
+            job_id,
+            base_request,
+            ensure_wind=ensure_wind,
+            run_bound=run_bound,
+            concurrency=concurrency,
+            on_progress=on_progress,
+            on_outcome=on_outcome,
+            tranche_factory=tranche_factory,
+            current_selection_factory=current_selection_factory,
+            now=now,
         )
 
     def publish_routes(self, job_id, routes, *, entries=None):

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from sailworks.core import historicalcoordinator, historicaljob
+from sailworks.core import historicalcoordinator, historicaljob, historicalrecheck
 from sailworks.core.historicalcoordinator import (
     CoordinatorError,
     HistoricalRoutingCoordinator,
@@ -666,3 +666,274 @@ def test_determinate_no_finish_member_is_never_retried(monkeypatch, tmp_path):
     assert record.members[plans[0].member_id].attempts == 1
     assert record.members[plans[0].member_id].outcome == "no_finish"
     assert _is_retryable(record.members[plans[0].member_id]) is False
+
+
+def _currents_acquisition():
+    binding = CurrentBinding(
+        enabled=True,
+        priority="prefer_currents",
+        target_departure_utc=datetime(2019, 6, 1, 12, 0, tzinfo=UTC),
+        coverage_end_utc=datetime(2019, 6, 8, 12, 0, tzinfo=UTC),
+    )
+    return SimpleNamespace(
+        binding=binding,
+        coverage_end_utc=binding.coverage_end_utc,
+        hold_seconds=0.0,
+        provider="fixture",
+        field_ids=(),
+        field_hashes=(),
+    )
+
+
+def _excluded_2018_start(monkeypatch, store, *, currents=False):
+    """A started job whose 2018 year was dropped whole for missing coverage."""
+    spec = _spec(required_fields=("wind", "currents")) if currents else _spec()
+    availability = lambda window: (
+        "no coverage" if window.start_utc.year < 2019 else None
+    )
+    plans = plan_members(spec)
+    outcomes = [
+        MemberOutcome(plan.member_id, "finished", 30.0)
+        for plan in plans
+        if plan.year == 2019
+    ]
+    kwargs = {}
+    if currents:
+        kwargs["acquire_currents"] = lambda prepared: _currents_acquisition()
+        kwargs["current_selection_factory"] = lambda selection: object()
+    coordinator, job_id, _wind, _runner = _start(
+        monkeypatch, store, spec, availability=availability, outcomes=outcomes, **kwargs
+    )
+    return spec, plans, coordinator, job_id
+
+
+def _recheck(coordinator, job_id, outcomes, **kwargs):
+    wind = kwargs.pop("ensure_wind", FakeWind())
+    runner = kwargs.pop("run_bound", FakeRunner(outcomes))
+    kwargs.setdefault("tranche_factory", lambda member: object())
+    returned = coordinator.recheck_excluded(
+        job_id, _request(), ensure_wind=wind, run_bound=runner, **kwargs
+    )
+    return returned, wind, runner
+
+
+def test_recheck_admits_a_year_that_became_available(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    spec, plans, coordinator, job_id = _excluded_2018_start(monkeypatch, store)
+    assert store.load(job_id).excluded_years == (2018,)
+
+    monkeypatch.setattr(
+        historicalrecheck, "availability_reason", lambda window, now=None: None
+    )
+    fresh = [
+        MemberOutcome(plan.member_id, "finished", 18.0)
+        for plan in plans
+        if plan.year == 2018
+    ]
+    returned, wind, runner = _recheck(coordinator, job_id, fresh)
+
+    new_ids = {plan.member_id for plan in plans if plan.year == 2018}
+    assert {outcome.member_id for outcome in returned} == new_ids
+    record = store.load(job_id)
+    assert set(record.members) == {plan.member_id for plan in plans}
+    assert record.excluded_years == ()
+    assert record.effective_years == (2018, 2019)
+    assert record.requested_years == (2018, 2019)
+    assert record.years[2018].state == "eligible"
+    assert record.years[2018].previous_reasons
+    assert record.state == "complete"
+    assert record.spec["summary"]["effective_years"] == 2
+    assert record.spec["summary"]["finished"] == len(plans)
+    assert len(wind.calls) == 1
+    assert {unit.unit_id for unit in wind.calls[0]} == {
+        unit.unit_id
+        for unit in historicaljob._plan_units(
+            tuple(plan for plan in plans if plan.year == 2018), spec
+        )
+    }
+    assert len(runner.calls[0][0]) == len(new_ids)
+
+
+def test_recheck_keeps_a_year_that_is_still_unavailable(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    _spec_value, _plans, coordinator, job_id = _excluded_2018_start(monkeypatch, store)
+    before = store.load(job_id)
+    checkpoint = before.last_checkpoint_utc
+    history = len(before.attempt_history)
+
+    monkeypatch.setattr(
+        historicalrecheck,
+        "availability_reason",
+        lambda window, now=None: "still no coverage",
+    )
+    returned, wind, runner = _recheck(coordinator, job_id, [])
+
+    assert returned == []
+    assert wind.calls == []
+    assert runner.calls == []
+    after = store.load(job_id)
+    assert after.last_checkpoint_utc == checkpoint
+    assert len(after.attempt_history) == history
+    assert after.excluded_years == (2018,)
+    assert after.years[2018].state == "excluded"
+    assert after.years[2018].reason
+
+
+def test_recheck_is_idempotent_after_success(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    _spec_value, plans, coordinator, job_id = _excluded_2018_start(monkeypatch, store)
+    monkeypatch.setattr(
+        historicalrecheck, "availability_reason", lambda window, now=None: None
+    )
+    fresh = [
+        MemberOutcome(plan.member_id, "finished", 18.0)
+        for plan in plans
+        if plan.year == 2018
+    ]
+    _recheck(coordinator, job_id, fresh)
+
+    second, wind, runner = _recheck(coordinator, job_id, [])
+
+    assert second == []
+    assert wind.calls == []
+    assert runner.calls == []
+    assert store.load(job_id).excluded_years == ()
+
+
+def test_recheck_admits_only_the_year_that_became_available(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    spec = _spec()
+    plans = plan_members(spec)
+    coordinator, job_id, _wind, _runner = _start(
+        monkeypatch, store, spec, availability=lambda window: "no coverage"
+    )
+    assert store.load(job_id).excluded_years == (2018, 2019)
+
+    monkeypatch.setattr(
+        historicalrecheck,
+        "availability_reason",
+        lambda window, now=None: (
+            None if window.start_utc.year < 2019 else "still gone"
+        ),
+    )
+    fresh = [
+        MemberOutcome(plan.member_id, "finished", 18.0)
+        for plan in plans
+        if plan.year == 2018
+    ]
+    returned, _wind, runner = _recheck(coordinator, job_id, fresh)
+
+    assert {outcome.member_id for outcome in returned} == {
+        plan.member_id for plan in plans if plan.year == 2018
+    }
+    record = store.load(job_id)
+    assert len(record.members) == 3
+    assert record.effective_years == (2018,)
+    assert record.excluded_years == (2019,)
+    assert record.years[2019].state == "excluded"
+    assert record.state == "complete_with_exclusions"
+    assert len(runner.calls[0][0]) == 3
+
+
+def test_recheck_acquisition_failure_parks_the_job(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    _spec_value, plans, coordinator, job_id = _excluded_2018_start(monkeypatch, store)
+    monkeypatch.setattr(
+        historicalrecheck, "availability_reason", lambda window, now=None: None
+    )
+    failure = RuntimeError("wind blew")
+
+    with pytest.raises(RuntimeError, match="wind blew"):
+        coordinator.recheck_excluded(
+            job_id,
+            _request(),
+            ensure_wind=FakeWind(error=failure),
+            run_bound=FakeRunner(),
+        )
+
+    record = store.load(job_id)
+    assert record.state == "needs_attention"
+    assert "wind blew" in record.spec["last_error"]
+    assert record.excluded_years == ()
+
+
+def test_recheck_respects_the_currents_policy(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    _spec_value, _plans, coordinator, job_id = _excluded_2018_start(
+        monkeypatch, store, currents=True
+    )
+    monkeypatch.setattr(
+        historicalrecheck, "availability_reason", lambda window, now=None: None
+    )
+
+    record = store.load(job_id)
+    stored_binding = dict(record.current_binding)
+    record.current_binding = {}
+    store.save(record)
+    with pytest.raises(CoordinatorError, match="current"):
+        coordinator.recheck_excluded(
+            job_id,
+            _request(),
+            ensure_wind=FakeWind(),
+            run_bound=FakeRunner(),
+            tranche_factory=lambda member: object(),
+        )
+    assert store.load(job_id).current_binding == {}
+
+    record = store.load(job_id)
+    record.current_binding = stored_binding
+    store.save(record)
+    with pytest.raises(CoordinatorError, match="current selection factory"):
+        coordinator.recheck_excluded(
+            job_id,
+            _request(),
+            ensure_wind=FakeWind(),
+            run_bound=FakeRunner(),
+            tranche_factory=lambda member: object(),
+        )
+
+
+def test_recheck_refuses_archived_and_running_jobs(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    _spec_value, _plans, coordinator, job_id = _excluded_2018_start(monkeypatch, store)
+
+    record = store.load(job_id)
+    record.state = "archived"
+    store.save(record)
+    with pytest.raises(CoordinatorError, match="archived"):
+        coordinator.recheck_excluded(
+            job_id, _request(), ensure_wind=FakeWind(), run_bound=FakeRunner()
+        )
+
+    record = store.load(job_id)
+    record.state = "running"
+    store.save(record)
+    with pytest.raises(CoordinatorError, match="already running"):
+        coordinator.recheck_excluded(
+            job_id, _request(), ensure_wind=FakeWind(), run_bound=FakeRunner()
+        )
+
+
+def test_rechecked_members_start_at_one_attempt_and_are_logged(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    _spec_value, plans, coordinator, job_id = _excluded_2018_start(monkeypatch, store)
+    monkeypatch.setattr(
+        historicalrecheck, "availability_reason", lambda window, now=None: None
+    )
+    fresh = [
+        MemberOutcome(plan.member_id, "finished", 18.0)
+        for plan in plans
+        if plan.year == 2018
+    ]
+    _recheck(coordinator, job_id, fresh)
+
+    record = store.load(job_id)
+    new_ids = {plan.member_id for plan in plans if plan.year == 2018}
+    assert {record.members[member_id].attempts for member_id in new_ids} == {1}
+    entries = [
+        entry for entry in record.attempt_history if entry.get("event") == "recheck"
+    ]
+    assert len(entries) == 1
+    assert entries[0]["year"] == 2018
+    assert entries[0]["previous_reason"]
+    assert set(entries[0]["members"]) == new_ids

@@ -23,6 +23,7 @@ from sailworks.core.historicaljob import (
     summarize_job,
 )
 from sailworks.core.historicalpublication import CoordinatorError
+from sailworks.core.historicalrecheck import HistoricalRecheckMixin
 from sailworks.core.historicalrouting import (
     HistoricalRoutingSpec,
     JobState,
@@ -32,6 +33,7 @@ from sailworks.core.historicalrouting import (
 __all__ = [
     "RETRYABLE_MEMBER_STATES",
     "RETRYABLE_UNIT_STATES",
+    "HistoricalRecheckMixin",
     "HistoricalRetrier",
 ]
 
@@ -189,7 +191,7 @@ def _retry_final_state(record, retry_ids) -> str:
     return JobState.COMPLETE.value
 
 
-class HistoricalRetrier:
+class HistoricalRetrier(HistoricalRecheckMixin):
     """Re-run the indeterminate parts of an existing historical job."""
 
     def __init__(self, coordinator):
