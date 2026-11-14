@@ -381,3 +381,24 @@ def test_recovery_reports_corrupt_job_files(tmp_path):
 
     assert (good, "attention") in recovered
     assert recovered[-1] == (corrupt, "attention")
+
+
+def test_job_record_current_binding_round_trips_and_defaults_empty(tmp_path):
+    store = make_store(tmp_path)
+    record = store.create({"years": 1}, [make_member(2019)])
+    record.current_binding = {
+        "field_ids": ["wind", "currents"],
+        "field_hashes": ["a" * 64],
+        "coverage_end_utc": "2019-06-11T12:00:00+00:00",
+    }
+    store.save(record)
+
+    loaded = store.load(record.job_id)
+    assert loaded.current_binding == record.current_binding
+    assert JobRecord.from_dict(loaded.to_dict()).current_binding == record.current_binding
+
+    path = tmp_path / "store" / "jobs" / f"{record.job_id}.json"
+    payload = json.loads(path.read_text(encoding="utf8"))
+    del payload["current_binding"]
+    path.write_text(json.dumps(payload), encoding="utf8")
+    assert store.load(record.job_id).current_binding == {}

@@ -181,6 +181,9 @@ class JobRecord:
     members: dict = field(default_factory=dict)
     acquisitions: dict = field(default_factory=dict)
     years: dict = field(default_factory=dict)
+    # The current snapshot this job sampled: binding ids, hashes and coverage.
+    # Older records without the key load as ``{}``.
+    current_binding: dict = field(default_factory=dict)
     published: dict = field(default_factory=dict)
     pending_publications: dict = field(default_factory=dict)
     artifact_pins: tuple = ()
@@ -203,6 +206,7 @@ class JobRecord:
             "members": {key: value.to_dict() for key, value in self.members.items()},
             "acquisitions": {key: value.to_dict() for key, value in self.acquisitions.items()},
             "years": {str(key): value.to_dict() for key, value in self.years.items()},
+            "current_binding": dict(self.current_binding),
             "published": dict(self.published),
             "pending_publications": dict(self.pending_publications),
             "artifact_pins": _strings(self.artifact_pins),
@@ -239,6 +243,7 @@ class JobRecord:
             members=members,
             acquisitions=acquisitions,
             years=years,
+            current_binding=dict(data.get("current_binding") or {}),
             published={
                 str(key): str(value) for key, value in dict(data.get("published", {})).items()
             },
