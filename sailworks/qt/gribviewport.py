@@ -1680,14 +1680,16 @@ def _grid_rect(view, lattice):
     return QRectF(x, y, (east - west) * span, span_y)
 
 
-def chart_withdrawn_on_camera_change(previous, camera, published):
-    """Whether a camera change must hide the retained chart image.
+def chart_preview_is_stale(previous, camera):
+    """Whether the retained chart image describes a different view or instant.
 
-    Only a zoom or forecast-time change makes the image wrong content; a pan
-    keeps the same scale and instant, so the image is shown at its shifted
-    position until its replacement is composed.
+    A pan keeps the same scale and instant, so the retained image is still the
+    current content at a shifted position. A zoom or forecast-time change makes
+    it a preview: `chart_placement` scales it about its geographic centre, and
+    the chart's own status reports it as loading until the composition at this
+    camera replaces it. Nothing withdraws it in the meantime.
     """
-    if not published or previous is None:
+    if previous is None:
         return False
     return previous.zoom != camera.zoom or previous.stamp() != camera.stamp()
 
@@ -6228,32 +6230,19 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         # frame across the move; withdraw it and present the
                         # desired target explicitly.
                         self._cancel_background_switch()
-                    # Show retained image as a scaled preview during zoom when ENC is off.
-                    # (Desktop viewport sets enc_chart_layer=True as a capability;
-                    # the preview should activate whenever ENC isn't actually enabled.)
-                    enc_enabled = getattr(self._chart_model, "_enc_enabled", False)
+                    # Keep the retained image as a scaled preview while the
+                    # replacement composes, for ENC as well as the basemap.
+                    # The same composer draws both, so a blank window for a
+                    # whole composition is worse than a picture the status
+                    # calls loading: `chart_placement` scales the retained
+                    # frame about its geographic centre, and the chart's own
+                    # status and the ENC source's ("ENC updating") both say
+                    # the frame is not current content yet.
                     if (
-                        not enc_enabled
-                        and previous_chart_camera is not None
-                        and previous_chart_camera.zoom != camera.zoom
+                        chart_preview_is_stale(previous_chart_camera, camera)
                         and self._chart_model._published is not None
                     ):
-                        # Show the retained image as a scaled preview while
-                        # the new native-scale composition waits for the view
-                        # to settle. The QML status makes the preview explicit.
                         cast(QObject, self._chart).setProperty("chartLoading", True)
-                    # Only withdraw the chart image immediately when ENC is actually
-                    # enabled. When ENC is off, keep the retained image as a scaled
-                    # preview (the non-ENC path above) to avoid blanking the basemap
-                    # on zoom/time changes.
-                    if enc_enabled and chart_withdrawn_on_camera_change(
-                        previous_chart_camera,
-                        camera,
-                        self._chart_model._published is not None,
-                    ):
-                        # Withdraw old-scale/time ENC immediately, not after
-                        # the settle timer or the replacement worker finishes.
-                        self._clear_chart()
                 # Check if the camera change invalidates the pan reference
                 # The wave layer is optional: resolve its members before the
                 # rebase and refresh branches read or write them.
