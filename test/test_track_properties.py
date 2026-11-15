@@ -64,3 +64,14 @@ def test_properties_dialog_starts_unset_for_a_plain_track(qtbot):
     assert not dialog.use_departure.isChecked()
     assert not dialog.departure.isEnabled()
     assert dialog.values() == {"default_departure": None, "color": None}
+
+
+def test_track_colour_parsing():
+    from sailworks.rendering.navigation import parse_track_colour
+
+    assert parse_track_colour("#ff8800") == (1.0, 136 / 255, 0.0, 1.0)
+    assert parse_track_colour("3366cc") == (51 / 255, 102 / 255, 204 / 255, 1.0)
+    # A malformed or absent value keeps the default dashed style.
+    assert parse_track_colour(None) is None
+    assert parse_track_colour("red") is None
+    assert parse_track_colour("#12345") is None
