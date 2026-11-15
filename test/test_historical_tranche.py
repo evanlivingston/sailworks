@@ -310,3 +310,37 @@ def test_another_area_storing_the_same_days_does_not_block_the_window(tmp_path):
     )
 
     assert [entry["artifact"] for entry in selected] == ["a1.grib"]
+
+
+def test_a_partial_day_and_its_whole_day_are_alternatives(tmp_path):
+    """Only one of two chunks for the same hours may reach the GRIB.
+
+    Taking both duplicated every hour downstream ("Bound wind contains
+    duplicate components"), so the covering chunk replaces the partial one.
+    """
+    store = make_store(tmp_path)
+    entries = [
+        chunk(store.root, "partial.grib", at(0), at(20)),
+        chunk(store.root, "whole.grib", at(0), at(23)),
+        chunk(
+            store.root,
+            "next.grib",
+            at(0) + timedelta(days=1),
+            at(3) + timedelta(days=1),
+        ),
+    ]
+    start = at(20)
+
+    selected = select_window_entries(
+        entries, start, at(3) + timedelta(days=1), CATALOG_AREA
+    )
+
+    artifacts = [entry["artifact"] for entry in selected]
+    assert "whole.grib" in artifacts
+    assert "partial.grib" not in artifacts
+    spans = [
+        (datetime.fromisoformat(entry["start"]), datetime.fromisoformat(entry["end"]))
+        for entry in selected
+    ]
+    for earlier, later in zip(spans, spans[1:]):
+        assert later[0] > earlier[1]

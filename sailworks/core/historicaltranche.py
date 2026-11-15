@@ -139,8 +139,7 @@ def select_window_entries(
             f"no ERA5 catalog entries match area {requested_area}"
         )
 
-    covered: dict[datetime, dict] = {}
-    selected = []
+    candidates = []
     for span, entry in matching:
         variables = tuple(entry.get("variables") or era5.VARIABLES)
         missing = [name for name in required if name not in variables]
@@ -149,20 +148,31 @@ def select_window_entries(
                 f"entry for {span[0].isoformat()} is missing variables: "
                 f"{', '.join(missing)}"
             )
-        cursor = max(span[0], start)
+        candidates.append((span, entry, variables))
+    candidates.sort(key=lambda item: item[0][0])
+
+    # Greedy interval cover. Each chosen chunk must start after the last chosen
+    # chunk ends, so no hour is concatenated into the GRIB twice, and the chunk
+    # that reaches furthest is preferred. A partial day and the whole day are
+    # alternatives, never both.
+    selected = []
+    covered: set[datetime] = set()
+    cursor = start
+    while cursor <= expected[-1]:
+        best = None
+        for span, entry, variables in candidates:
+            if span[0] > cursor or span[1] < cursor:
+                continue
+            if best is None or span[1] > best[0][1]:
+                best = (span, entry, variables)
+        if best is None:
+            raise HistoricalTrancheError(
+                f"window hour {cursor.isoformat()} is not covered by any entry"
+            )
+        span, entry, variables = best
         last = min(span[1], expected[-1])
-        used = False
-        while cursor <= last:
-            # Overlapping chunks are legitimate: acquisition may store a
-            # partial final day in one run and the whole day in another. The
-            # first entry to supply an hour wins; every hour must still be
-            # supplied by something.
-            if cursor not in covered:
-                covered[cursor] = entry
-                used = True
-            cursor += _HOUR
-        if not used:
-            continue
+        for hour in range(int((last - cursor).total_seconds() // 3600) + 1):
+            covered.add(cursor + _HOUR * hour)
         selected.append(
             {
                 "artifact": str(entry["artifact"]),
@@ -172,6 +182,7 @@ def select_window_entries(
                 "variables": list(variables),
             }
         )
+        cursor = span[1] + _HOUR
 
     for hour in expected:
         if hour not in covered:
