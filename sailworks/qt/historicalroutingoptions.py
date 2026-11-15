@@ -55,7 +55,6 @@ class HistoricalRoutingOptions(QWidget):
         super().__init__(parent)
         self._available = True
         self._available_reason = ""
-        self._setup_ready = True
         self._running = False
         self._build()
         self._sync_buttons()
@@ -153,15 +152,6 @@ class HistoricalRoutingOptions(QWidget):
         layout.addLayout(buttons)
         layout.addStretch(1)
 
-    # -- route readiness -------------------------------------------------
-    def set_setup_ready(self, ready):
-        """Allow a run only when the inherited Plan route is complete."""
-        self._setup_ready = bool(ready)
-        self._sync_buttons()
-
-    def is_setup_ready(self):
-        return self._setup_ready
-
     # -- values ----------------------------------------------------------
     def values(self):
         """The ensemble inputs. Region and current priority come from Plan."""
@@ -215,14 +205,9 @@ class HistoricalRoutingOptions(QWidget):
         self._sync_buttons()
 
     def _sync_buttons(self):
-        enabled = self._available and self._setup_ready and not self._running
-        self.run_button.setEnabled(enabled)
-        if not self._setup_ready:
-            tooltip = "Set the route and boat in Plan first."
-        else:
-            tooltip = self._available_reason
-        self.run_button.setToolTip(tooltip)
-        self.run_button.setAccessibleDescription(tooltip)
+        self.run_button.setEnabled(self._available and not self._running)
+        self.run_button.setToolTip(self._available_reason)
+        self.run_button.setAccessibleDescription(self._available_reason)
         self.cancel_button.setEnabled(self._running)
 
     # -- validation ------------------------------------------------------

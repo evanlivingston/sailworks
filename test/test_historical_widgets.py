@@ -78,8 +78,10 @@ def test_deleted_controls_are_gone(qtbot):
         "setup_hint",
     ):
         assert not hasattr(widget, name)
-    assert not hasattr(widget, "edit_plan_requested")
-    assert not hasattr(widget, "edit_region_requested")
+    for name in ("set_setup_ready", "is_setup_ready"):
+        assert not hasattr(widget, name)
+    for name in ("edit_plan_requested", "edit_region_requested"):
+        assert not hasattr(widget, name)
 
 
 def test_member_cap_is_reported_and_clears(qtbot):
@@ -141,17 +143,16 @@ def test_numeric_inputs_use_the_standard_slider(qtbot):
         assert control.accessibleName()
 
 
-def test_incomplete_route_disables_the_run_button(qtbot):
+def test_run_button_never_gates_on_route_readiness(qtbot):
     widget = options(qtbot)
-    assert widget.run_button.isEnabled()
-
-    widget.set_setup_ready(False)
-    assert not widget.run_button.isEnabled()
-    assert widget.run_button.toolTip() == "Set the route and boat in Plan first."
-
-    widget.set_setup_ready(True)
+    assert not hasattr(widget, "set_setup_ready")
     assert widget.run_button.isEnabled()
     assert widget.run_button.toolTip() == ""
+
+    widget.set_running(True)
+    assert not widget.run_button.isEnabled()
+    widget.set_running(False)
+    assert widget.run_button.isEnabled()
 
 
 def test_running_state_switches_buttons(qtbot):

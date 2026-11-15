@@ -160,18 +160,12 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
 
     # -- inherited route readiness ---------------------------------------
     def refresh_route_summary(self):
-        """Tell the form whether the inherited Plan route is complete."""
-        try:
-            request = self._base_request()
-        except Exception:
-            self.options.set_setup_ready(False)
-            return
-        ready = (
-            getattr(request, "start", None) is not None
-            and getattr(request, "destination", None) is not None
-            and bool(getattr(request, "polar_file", ""))
-        )
-        self.options.set_setup_ready(ready)
+        """Compatibility hook: run availability no longer depends on readiness.
+
+        An incomplete Plan route is reported when the user actually presses
+        Download & run, not by disabling the button on a stale snapshot.
+        """
+        return
 
     @staticmethod
     def _region_from_request(request):
@@ -197,7 +191,9 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         zone_id = local_timezone_id()
         region = self._region_from_request(base)
         if region is None:
-            raise ValueError("Set a route before starting historical routing.")
+            raise ValueError(
+                "The route has no start or destination to download around."
+            )
         region = tuple(float(value) for value in region)
         return HistoricalRoutingSpec(
             job_id="",
@@ -215,9 +211,6 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
 
     # -- job lifecycle ---------------------------------------------------
     def start_job(self):
-        self.refresh_route_summary()
-        if not self.options.is_setup_ready():
-            return
         self.results.set_has_run(True)
         self.actions.start_job()
 

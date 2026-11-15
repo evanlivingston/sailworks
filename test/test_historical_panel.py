@@ -198,28 +198,30 @@ def test_historical_panel_fits_a_narrow_compare_page(qtbot):
     assert panel.results.canvas.height() > 0
 
 
-def test_mode_combo_switches_the_stack_and_dispatches(qtbot, monkeypatch, tmp_path):
-    panel = routing_panel(qtbot, monkeypatch, tmp_path)
-    assert panel.compare_mode.currentData() == "parameter"
-    assert panel.compare_stack.currentIndex() == 0
-
-    panel.compare_mode.setCurrentIndex(panel.compare_mode.findData("historical"))
-    assert panel.compare_stack.currentIndex() == 1
-
-    panel.pages.setCurrentIndex(panel.pages.indexOf(panel.compare_page))
-    calls = []
-    monkeypatch.setattr(panel.historical, "start_job", lambda: calls.append(True))
-    panel._calculate()
-    assert calls == [True]
-    assert panel.routing.started == []
-
-
-def test_plan_tab_calculate_ignores_persisted_historical_mode(
+def test_compare_page_shows_axes_and_toggles_the_historical_section(
     qtbot, monkeypatch, tmp_path
 ):
     panel = routing_panel(qtbot, monkeypatch, tmp_path)
-    panel.compare_mode.setCurrentIndex(panel.compare_mode.findData("historical"))
-    panel.pages.setCurrentIndex(0)
+    assert not hasattr(panel, "compare_mode")
+    assert not hasattr(panel, "compare_stack")
+    assert len(panel.comparison_axes) == 4
+    assert panel.historical_enabled.text() == "Run historical years"
+    assert not panel.historical_enabled.isChecked()
+    assert panel.historical.isHidden()
+
+    panel.historical_enabled.setChecked(True)
+    assert not panel.historical.isHidden()
+
+    panel.historical_enabled.setChecked(False)
+    assert panel.historical.isHidden()
+
+
+def test_calculate_with_historical_checked_runs_the_standard_route(
+    qtbot, monkeypatch, tmp_path
+):
+    panel = routing_panel(qtbot, monkeypatch, tmp_path)
+    panel.historical_enabled.setChecked(True)
+    panel.pages.setCurrentIndex(panel.pages.indexOf(panel.compare_page))
     historical_calls = []
     monkeypatch.setattr(
         panel.historical, "start_job", lambda: historical_calls.append(True)
@@ -232,80 +234,42 @@ def test_plan_tab_calculate_ignores_persisted_historical_mode(
 
     assert historical_calls == []
     assert len(panel.routing.started) == 1
+    assert "Set a route" not in panel.status.text()
 
 
-def test_compare_tab_calculate_with_historical_mode_starts_the_job(
-    qtbot, monkeypatch, tmp_path
-):
+def test_calculate_with_historical_unchecked_is_unchanged(qtbot, monkeypatch, tmp_path):
     panel = routing_panel(qtbot, monkeypatch, tmp_path)
-    panel.compare_mode.setCurrentIndex(panel.compare_mode.findData("historical"))
+    assert not panel.historical_enabled.isChecked()
     panel.pages.setCurrentIndex(panel.pages.indexOf(panel.compare_page))
-    historical_calls = []
-    monkeypatch.setattr(
-        panel.historical, "start_job", lambda: historical_calls.append(True)
-    )
-
-    panel._calculate()
-
-    assert historical_calls == [True]
-    assert panel.routing.started == []
-
-
-def test_restored_historical_mode_does_not_hijack_plan_calculate(
-    qtbot, monkeypatch, tmp_path
-):
-    panel = routing_panel(qtbot, monkeypatch, tmp_path)
-    saved = panel.saved_options()
-    saved["compare_mode"] = "historical"
-    panel.restore_options(saved)
-    assert panel.compare_mode.currentData() == "historical"
-    panel.pages.setCurrentIndex(0)
-    historical_calls = []
-    monkeypatch.setattr(
-        panel.historical, "start_job", lambda: historical_calls.append(True)
-    )
     monkeypatch.setattr(
         panel, "_request", lambda backend=None: (SimpleNamespace(roundings=()), ())
     )
 
     panel._calculate()
 
-    assert historical_calls == []
     assert len(panel.routing.started) == 1
 
 
-def test_missing_compare_page_falls_back_to_the_standard_path(
+def test_historical_run_with_a_missing_route_reports_the_real_reason(
     qtbot, monkeypatch, tmp_path
 ):
     panel = routing_panel(qtbot, monkeypatch, tmp_path)
-    panel.compare_mode.setCurrentIndex(panel.compare_mode.findData("historical"))
-    index = panel.pages.indexOf(panel.compare_page)
-    panel.pages.removeTab(index)
-    assert panel.pages.indexOf(panel.compare_page) == -1
-    historical_calls = []
+    panel.historical_enabled.setChecked(True)
     monkeypatch.setattr(
-        panel.historical, "start_job", lambda: historical_calls.append(True)
-    )
-    monkeypatch.setattr(
-        panel, "_request", lambda backend=None: (SimpleNamespace(roundings=()), ())
+        panel.historical,
+        "_base_request",
+        lambda: (_ for _ in ()).throw(
+            ValueError("Build a route request before starting historical routing.")
+        ),
     )
 
-    panel._calculate()
+    panel.historical.start_job()
 
-    assert historical_calls == []
-    assert len(panel.routing.started) == 1
-
-
-def test_compare_tab_calculate_reports_a_missing_route(qtbot, monkeypatch, tmp_path):
-    panel = routing_panel(qtbot, monkeypatch, tmp_path)
-    panel.compare_mode.setCurrentIndex(panel.compare_mode.findData("historical"))
-    panel.pages.setCurrentIndex(panel.pages.indexOf(panel.compare_page))
-    monkeypatch.setattr(panel.historical.options, "is_setup_ready", lambda: False)
-    monkeypatch.setattr(panel.historical, "start_job", lambda: None)
-
-    panel._calculate()
-
-    assert "Set a route" in panel.status.text()
+    assert panel.historical.options.run_button.isEnabled()
+    assert "Build a route request" in panel.historical.options.status.text()
+    assert "Set a route before starting historical routing." not in (
+        panel.historical.options.status.text()
+    )
 
 
 def test_show_historical_job_selects_compare_and_dispatches(
@@ -323,8 +287,8 @@ def test_show_historical_job_selects_compare_and_dispatches(
         if panel.pages.tabText(index) == "Compare"
     )
     assert panel.pages.currentIndex() == compare
-    assert panel.compare_mode.currentData() == "historical"
-    assert panel.compare_stack.currentIndex() == 1
+    assert panel.historical_enabled.isChecked()
+    assert not panel.historical.isHidden()
     assert calls == ["job-9"]
 
 
@@ -354,30 +318,13 @@ def test_scene_group_selection_emits_the_group_and_items_still_select(qtbot, tmp
     assert groups == ["historical-routing:job-1"]
 
 
-def test_complete_plan_route_enables_the_run_button(qtbot):
-    request = SimpleNamespace(
-        departure=datetime(2021, 6, 15, 12),
-        start=(1.0, 2.0),
-        destination=(3.0, 4.0),
-        waypoints=((5.0, 6.0),),
-        polar_file="/tmp/Elan 410.pol",
-        algorithm=type("LinearBestIsoRouter", (), {}),
-        use_currents=True,
-    )
-    panel = historical_panel(qtbot, request=request)
-    assert panel.options.run_button.isEnabled()
-    assert panel.options.run_button.toolTip() == ""
-
-
-def test_incomplete_plan_route_disables_the_run_button_with_hint(qtbot):
+def test_run_button_stays_enabled_regardless_of_route_readiness(qtbot):
     request = SimpleNamespace(start=(1.0, 2.0), destination=(3.0, 4.0))
     panel = historical_panel(qtbot, request=request)
-    assert not panel.options.run_button.isEnabled()
-    assert panel.options.run_button.toolTip() == "Set the route and boat in Plan first."
+    assert panel.options.run_button.isEnabled()
 
     panel = historical_panel(qtbot, request=None)
-    assert not panel.options.run_button.isEnabled()
-    assert panel.options.run_button.toolTip() == "Set the route and boat in Plan first."
+    assert panel.options.run_button.isEnabled()
 
 
 def test_show_job_loads_a_published_run(qtbot):
@@ -431,10 +378,11 @@ def test_saved_and_restored_options_include_mode_and_historical_values(
 ):
     panel = routing_panel(qtbot, monkeypatch, tmp_path)
     saved = panel.saved_options()
-    assert saved["compare_mode"] == "parameter"
+    assert saved["historical_enabled"] is False
+    assert "compare_mode" not in saved
     assert saved["historical"] == panel.historical.values()
 
-    saved["compare_mode"] = "historical"
+    saved["historical_enabled"] = True
     saved["historical"] = {
         "years": 4,
         "offset_days": 1,
@@ -444,8 +392,8 @@ def test_saved_and_restored_options_include_mode_and_historical_values(
         "current_priority": "newest",
     }
     panel.restore_options(saved)
-    assert panel.compare_mode.currentData() == "historical"
-    assert panel.compare_stack.currentIndex() == 1
+    assert panel.historical_enabled.isChecked()
+    assert not panel.historical.isHidden()
     assert panel.historical.values() == {
         "years": 4,
         "offset_days": 1,
@@ -453,8 +401,9 @@ def test_saved_and_restored_options_include_mode_and_historical_values(
         "use_currents": True,
     }
 
-    panel.restore_options({"compare_mode": "not-a-mode", "historical": "ignored"})
-    assert panel.compare_mode.currentData() == "parameter"
+    panel.restore_options({"compare_mode": "historical", "historical": "ignored"})
+    assert not panel.historical_enabled.isChecked()
+    assert panel.historical.isHidden()
 
 
 def test_spec_uses_the_departure_year_and_derives_the_region(qtbot):
@@ -952,7 +901,6 @@ def test_cancelling_a_recheck_leaves_the_panel_usable(qtbot, monkeypatch):
 
 def test_existing_compare_calculate_path_is_unchanged(qtbot, monkeypatch, tmp_path):
     panel = routing_panel(qtbot, monkeypatch, tmp_path)
-    assert panel.compare_mode.currentData() == "parameter"
 
     def refuse(backend=None):
         raise ValueError("boom")

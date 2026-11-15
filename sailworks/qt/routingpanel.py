@@ -10,7 +10,6 @@ import weatherrouting
 from PySide6.QtCore import QDateTime, QPoint, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDateTimeEdit,
     QLineEdit,
     QMessageBox,
@@ -19,7 +18,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
-    QStackedWidget,
     QTabWidget,
     QScrollArea,
     QFrame,
@@ -618,15 +616,6 @@ class RoutingPanel(QWidget):
     def _build_option_pages(self):
         compare_page = QWidget()
         compare = QVBoxLayout(compare_page)
-        self.compare_mode = QComboBox()
-        self.compare_mode.setAccessibleName("Compare mode")
-        self.compare_mode.addItem("Parameter variations", "parameter")
-        self.compare_mode.addItem("Historical years", "historical")
-        self.compare_mode.currentIndexChanged.connect(self._compare_mode_changed)
-        compare.addWidget(self.compare_mode)
-        self.compare_stack = QStackedWidget()
-        axes_page = QWidget()
-        axes = QVBoxLayout(axes_page)
         self.comparison_axes = {}
         for key, label, text, _ in AXES:
             enabled, values = QCheckBox(label), QLineEdit(text)
@@ -634,17 +623,23 @@ class RoutingPanel(QWidget):
             enabled.toggled.connect(values.setEnabled)
             enabled.toggled.connect(lambda *_: self.options_changed.emit())
             values.textChanged.connect(lambda *_: self.options_changed.emit())
-            axes.addWidget(enabled)
-            axes.addWidget(FieldRow("Values", values))
+            compare.addWidget(enabled)
+            compare.addWidget(FieldRow("Values", values))
             self.comparison_axes[key] = (enabled, values)
-        axes.addStretch()
-        self.compare_stack.addWidget(axes_page)
+        compare.addWidget(section_label("Historical years"))
+        self.historical_enabled = QCheckBox("Run historical years")
+        self.historical_enabled.setAccessibleName("Run historical years")
+        self.historical_enabled.setToolTip(
+            "Run a separate multi-year ensemble from the Download & run button below."
+        )
+        self.historical_enabled.toggled.connect(self._historical_enabled_changed)
+        compare.addWidget(self.historical_enabled)
         self.historical = HistoricalRoutingPanel(
             self.routing,
             request_provider=lambda: self._request("native")[0],
         )
-        self.compare_stack.addWidget(self.historical)
-        compare.addWidget(self.compare_stack, 1)
+        self.historical.setVisible(False)
+        compare.addWidget(self.historical, 1)
         self.compare_page = self._scroll_page(compare_page)
         self.pages.addTab(self.compare_page, "Compare")
         currents_page = QWidget()
@@ -669,26 +664,16 @@ class RoutingPanel(QWidget):
             1,
         )
         self.pages.setCurrentIndex(compare_index)
-        historical_index = self.compare_mode.findData("historical")
-        if historical_index >= 0:
-            self.compare_mode.setCurrentIndex(historical_index)
-        self._compare_mode_changed(self.compare_mode.currentIndex())
+        self.historical_enabled.setChecked(True)
+        self.historical.setVisible(True)
+        self.historical.refresh_route_summary()
         self.historical.show_job(job_id)
 
-    def _compare_mode_changed(self, _index):
-        historical = self.compare_mode.currentData() == "historical"
-        self.compare_stack.setCurrentIndex(1 if historical else 0)
-        if historical:
+    def _historical_enabled_changed(self, enabled):
+        self.historical.setVisible(bool(enabled))
+        if enabled:
             self.historical.refresh_route_summary()
         self.options_changed.emit()
-
-    def _on_compare_page(self):
-        """Whether the Compare tab owns the Calculate button right now."""
-        page = getattr(self, "compare_page", None)
-        if page is None:
-            return False
-        index = self.pages.indexOf(page)
-        return index >= 0 and self.pages.currentIndex() == index
 
     def _build_current_priority(self):
         self.parameters_box.layout().addWidget(section_label("Currents"))
@@ -868,7 +853,7 @@ class RoutingPanel(QWidget):
                 key: dict(enabled=enabled.isChecked(), values=values.text())
                 for key, (enabled, values) in self.comparison_axes.items()
             },
-            compare_mode=self.compare_mode.currentData(),
+            historical_enabled=self.historical_enabled.isChecked(),
             historical=self.historical.values(),
         )
 
@@ -966,9 +951,9 @@ class RoutingPanel(QWidget):
             if isinstance(text, str) and len(text) <= 4096:
                 values.setText(text)
             enabled.setChecked(axis.get("enabled") is True)
-        mode = saved.get("compare_mode")
-        index = self.compare_mode.findData(mode) if isinstance(mode, str) else -1
-        self.compare_mode.setCurrentIndex(index if index >= 0 else 0)
+        # Old workspaces stored a compare_mode; it is ignored so historical
+        # never re-enables itself on restore.
+        self.historical_enabled.setChecked(saved.get("historical_enabled") is True)
         self.historical.set_values(saved.get("historical"))
 
     def refresh_polars(self):
@@ -1061,11 +1046,6 @@ class RoutingPanel(QWidget):
             self.refresh()
 
     def _calculate(self):
-        if self.compare_mode.currentData() == "historical" and self._on_compare_page():
-            if not self.historical.options.is_setup_ready():
-                self.status.setText("Set a route before starting historical routing.")
-            self.historical.start_job()
-            return
         backend = self.backend.currentData() or "legacy"
         try:
             refusal = self._avoidance_refusal(backend, self.avoidance_shapes())
