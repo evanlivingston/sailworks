@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QSplitter, QVBoxLayout, QWidget
 
+from sailworks.core.arco import ArcoDownloadService
 from sailworks.core.historicalcoordinator import HistoricalRoutingCoordinator
 from sailworks.core.historicalrouting import HistoricalRoutingSpec, reference_year
 from sailworks.core.historicalroutingstore import HistoricalRoutingStore
@@ -74,7 +75,9 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         super().__init__(parent)
         self.routing_controller = routing_controller
         self.request_provider = request_provider
-        self._service_factory = service_factory
+        # Ensemble acquisitions use the ARCO transport by default; tests and
+        # callers may still inject a fake through ``service_factory``.
+        self._service_factory = service_factory or ArcoDownloadService
         self._cancel_event = threading.Event()
         self._thread = None
         self._record = None

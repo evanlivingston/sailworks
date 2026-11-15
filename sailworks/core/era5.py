@@ -360,6 +360,11 @@ class Era5DownloadService:
         self._completed_resumes = []
 
     _job_key = staticmethod(job_key)
+    # Publication identity is overridable so an alternate ERA5 reader can use
+    # the same atomic catalog without being labelled as a CDS download.
+    queued_stage = "Queued for CDS…"
+    catalog_dataset = DATASET
+    catalog_source = "CDS ERA5 hourly single levels reanalysis"
 
     def _matching_key(self, plan):
         key = self._job_key(plan)
@@ -391,7 +396,7 @@ class Era5DownloadService:
             self.progress[key] = {
                 "done": 0,
                 "total": 0,
-                "stage": "Queued for CDS…",
+                "stage": self.queued_stage,
             }
             thread = threading.Thread(
                 target=self._run_guarded, args=(key, plan, cancel, retry), daemon=True
@@ -450,34 +455,7 @@ class Era5DownloadService:
         try:
             self._run(plan, cancel, retry)
         except Exception as exc:
-            # CDS exceptions can contain request headers and credential material.
-            raw_message = str(exc)
-            lowered = raw_message.lower()
-            status = _http_status(exc)
-            if status in (401, 403) or any(
-                word in lowered for word in ("unauthor", "credential", "token")
-            ):
-                message = (
-                    "CDS API authentication failed. Check ~/.cdsapirc and accept "
-                    "the ERA5 dataset terms at cds.climate.copernicus.eu."
-                )
-            elif isinstance(exc, Era5Error):
-                message = raw_message
-            elif status in (400, 422):
-                message = f"ERA5 request rejected (HTTP {status}): {raw_message}"
-            else:
-                # Third-party errors may embed CDS request headers or tokens, so
-                # keep only the exception class and any HTTP status. A bare
-                # HTTPError is a transport/rate-limit failure, not a credentials
-                # one, and callers classify on the status.
-                kind = type(exc).__name__
-                if status is not None:
-                    kind = f"{kind} HTTP {status}"
-                message = (
-                    f"ERA5 download failed ({kind}); CDS may be rate limiting or "
-                    "temporarily unavailable, or the request was rejected. "
-                    "Retry shortly."
-                )
+            message = self._failure_message(exc)
             with self._lock:
                 self.errors[key] = message[:1000]
             self._set_progress(key, stage="Failed")
@@ -487,6 +465,36 @@ class Era5DownloadService:
                 if job and job[0] is threading.current_thread():
                     del self._jobs[key]
                 self._trim_finished()
+
+    def _failure_message(self, exc):
+        """Map a retrieval failure to an actionable message for the caller."""
+        # CDS exceptions can contain request headers and credential material.
+        raw_message = str(exc)
+        lowered = raw_message.lower()
+        status = _http_status(exc)
+        if status in (401, 403) or any(
+            word in lowered for word in ("unauthor", "credential", "token")
+        ):
+            return (
+                "CDS API authentication failed. Check ~/.cdsapirc and accept "
+                "the ERA5 dataset terms at cds.climate.copernicus.eu."
+            )
+        if isinstance(exc, Era5Error):
+            return raw_message
+        if status in (400, 422):
+            return f"ERA5 request rejected (HTTP {status}): {raw_message}"
+        # Third-party errors may embed CDS request headers or tokens, so
+        # keep only the exception class and any HTTP status. A bare
+        # HTTPError is a transport/rate-limit failure, not a credentials
+        # one, and callers classify on the status.
+        kind = type(exc).__name__
+        if status is not None:
+            kind = f"{kind} HTTP {status}"
+        return (
+            f"ERA5 download failed ({kind}); CDS may be rate limiting or "
+            "temporarily unavailable, or the request was rejected. "
+            "Retry shortly."
+        )
 
     def _run(self, plan, cancel, retry):
         key = self._job_key(plan)
@@ -816,8 +824,8 @@ class Era5DownloadService:
                 if created:
                     registered.append(artifact)
                 record = {
-                    "dataset": DATASET,
-                    "source": "CDS ERA5 hourly single levels reanalysis",
+                    "dataset": self.catalog_dataset,
+                    "source": self.catalog_source,
                     "artifact": artifact.path,
                     "sha256": artifact.sha256,
                     "size": artifact.size,

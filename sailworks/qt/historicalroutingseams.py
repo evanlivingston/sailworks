@@ -1,7 +1,9 @@
 """Blocking coordinator seams the historical routing panel supplies.
 
 The mixin expects the owning panel to provide ``routing_controller``,
-``options``, ``_service_factory`` and ``_cancel_event``.
+``options``, ``_service_factory`` and ``_cancel_event``. The panel's default
+factory downloads ERA5 wind through the ARCO transport; the manual ERA5
+download tab keeps using the CDS service directly.
 """
 
 from __future__ import annotations

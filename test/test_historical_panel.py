@@ -13,8 +13,10 @@ import pytest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QScrollArea, QTreeWidgetItem
 
+import sailworks.qt.era5download as era5download
 import sailworks.qt.historicalera5 as historicalera5
 import sailworks.qt.historicalrouting as historicalrouting
+from sailworks.core.arco import ArcoDownloadService
 from sailworks.core.geo.track import Track
 from sailworks.core.historicalroutingrecords import MemberRecord
 from sailworks.qt.historicalrouting import HistoricalRoutingPanel
@@ -623,6 +625,73 @@ def test_ensure_wind_raises_on_a_reported_error(qtbot, monkeypatch, tmp_path):
         raise AssertionError("ensure_wind did not report the ERA5 error")
     assert service.submitted
     assert service.cleared == ["key"]
+
+
+def test_historical_acquisition_defaults_to_the_arco_service(qtbot):
+    panel = historical_panel(qtbot)
+    assert panel._service_factory is ArcoDownloadService
+
+
+def test_historical_acquisition_keeps_an_injected_service_factory(qtbot):
+    service = _Service()
+    factory = lambda store: service  # noqa: E731 - the panel only calls it once
+    panel = historical_panel(qtbot, service_factory=factory)
+    assert panel._service_factory is factory
+
+
+def test_ensure_wind_uses_arco_without_a_cds_fallback(qtbot, monkeypatch, tmp_path):
+    monkeypatch.setattr(historicalera5, "read_era5_catalog", lambda root: [])
+    monkeypatch.setattr(
+        historicalera5,
+        "select_window_entries",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("missing")),
+    )
+    monkeypatch.setattr(historicalera5, "plan_request", lambda *a, **k: object())
+
+    def no_cds(store):
+        raise AssertionError("historical acquisition fell back to the CDS service")
+
+    monkeypatch.setattr(historicalera5, "Era5DownloadService", no_cds)
+    service = _Service(error="arco transport refused the transfer")
+    constructed = []
+
+    def factory(store):
+        constructed.append(store)
+        return service
+
+    monkeypatch.setattr(historicalrouting, "ArcoDownloadService", factory)
+    store = SimpleNamespace(root=str(tmp_path))
+    controller = SimpleNamespace(
+        core=None, analysis=SimpleNamespace(state=SimpleNamespace(store=store))
+    )
+    panel = historical_panel(qtbot, controller=controller)
+    with pytest.raises(RuntimeError) as error:
+        panel.ensure_wind([_unit()])
+    assert "arco transport refused the transfer" in str(error.value)
+    assert "CDS" not in str(error.value)
+    assert constructed == [store]
+
+
+def test_era5_download_tab_still_uses_the_cds_service(qtbot, monkeypatch):
+    sentinel = SimpleNamespace()
+    stores = []
+
+    def factory(store):
+        stores.append(store)
+        return sentinel
+
+    monkeypatch.setattr(era5download, "Era5DownloadService", factory)
+    monkeypatch.setattr(
+        era5download.Era5DownloadTab, "refresh_catalog", lambda self: None
+    )
+    store = SimpleNamespace(root=".")
+    controller = SimpleNamespace(
+        analysis=SimpleNamespace(state=SimpleNamespace(store=store))
+    )
+    tab = era5download.Era5DownloadTab(controller)
+    qtbot.addWidget(tab)
+    assert tab.service is sentinel
+    assert stores == [store]
 
 
 def test_run_bound_blocks_until_finished_and_returns_outcomes(qtbot):

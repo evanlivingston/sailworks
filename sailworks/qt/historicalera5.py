@@ -9,6 +9,11 @@ import time
 
 from sailworks.core.era5 import Era5DownloadService, plan_request
 from sailworks.core.historicaljob import JobProgress
+
+try:
+    from sailworks.core.arco import ArcoDownloadService
+except ImportError:  # pragma: no cover - the ARCO downloader is optional
+    ArcoDownloadService = None
 from sailworks.core.historicaltranche import read_era5_catalog, select_window_entries
 from sailworks.core.historicalweather import era5_area
 
@@ -100,6 +105,19 @@ def queue_limited(error):
     return any(marker in lowered for marker in _QUEUE_MARKERS)
 
 
+def service_source(service):
+    """The data source behind a download service: ``ARCO`` or ``CDS``.
+
+    The ARCO downloader subclasses the CDS one, so its concrete type wins over
+    any inherited label. An untyped service may declare ``source_label``; the
+    CDS service and the existing test doubles fall back to ``CDS``.
+    """
+    if ArcoDownloadService is not None and isinstance(service, ArcoDownloadService):
+        return "ARCO"
+    label = str(getattr(service, "source_label", "") or "").strip().upper()
+    return label or "CDS"
+
+
 def _sleep_seconds(seconds):
     """Sleep for ``seconds``; tests replace this to stay fast."""
     time.sleep(seconds)
@@ -147,10 +165,15 @@ class _Cancelled(Exception):
 class Era5Coverage:
     """Ensure every acquisition unit has stored ERA5 wind before routing.
 
-    Acquisition is deliberately sequential: CDS enforces a per-dataset limit on
-    queued requests and requires clients to submit requests one at a time. A
-    plan is submitted, waited for, and only then is the next plan submitted.
-    That is slower than a worker pool, but it respects the CDS queue limit.
+    CDS acquisition is deliberately sequential: CDS enforces a per-dataset
+    limit on queued requests and requires clients to submit requests one at a
+    time. A plan is submitted, waited for, and only then is the next plan
+    submitted. That is slower than a worker pool, but it respects the CDS queue
+    limit.
+
+    An ARCO downloader reads the same plans from cloud storage, so its errors
+    and progress are not described in CDS terms: no queue retry, no
+    credentials classification.
     """
 
     def __init__(self, store, *, service_factory=None, cancel_event=None):
@@ -159,20 +182,52 @@ class Era5Coverage:
         self.cancel_event = cancel_event
         factory = service_factory or Era5DownloadService
         self.service = factory(store)
+        self.source = service_source(self.service)
 
     def _cancelled(self):
         return self.cancel_event is not None and self.cancel_event.is_set()
 
+    def _error_text(self, error):
+        """Explain a failure without borrowing the other source's language.
+
+        CDS failures keep their credentials/rate-limit/request classification.
+        An ARCO failure is not a CDS failure, so the actionable text the
+        service reported is surfaced as it is instead of being reclassified.
+        """
+        if self.source == "CDS":
+            return error_message(error)
+        text = str(error or "").strip()
+        return text or "no error details were reported"
+
+    def _submitted_message(self, unit, index, total):
+        day = f"{unit.start_utc:%Y-%m-%d}"
+        if self.source == "CDS":
+            return f"queued {day} ({index + 1}/{total} submitted)"
+        return f"reading ARCO {day} ({index + 1}/{total} submitted)"
+
+    def _ready_message(self):
+        if self.source == "CDS":
+            return "ERA5 wind coverage ready"
+        return "ERA5 wind data ready from ARCO"
+
     def _key(self, plan, thread):
         return getattr(thread, "era5_key", None) or self.service.key_for(plan)
 
-    def _wait(self, plan, thread):
+    def _wait(self, plan, thread, *, progress=None, index=0, total=0):
         """Wait for a submitted plan and return ``(key, error)``.
 
         ``error`` is None once the thread has finished without reporting a
         failure; a reported failure returns as soon as it appears.
+
+        An ARCO service reports hour-level stages while it reads. Forward each
+        new stage at the unit's own count so a slow multi-hour unit shows real
+        work instead of a stuck counter. CDS progress is left as it was, and a
+        service without ``progress_for`` simply never reports a stage.
         """
         key = self._key(plan, thread)
+        lookup = getattr(self.service, "progress_for", None)
+        watch = self.source != "CDS" and callable(lookup)
+        last_stage = None
         while True:
             error = self.service.error_for(key)
             if error:
@@ -182,7 +237,27 @@ class Era5Coverage:
                 return key, self.service.error_for(key)
             if self._cancelled():
                 raise _Cancelled
+            if watch:
+                stage = self._reported_stage(lookup, plan)
+                if stage and stage != last_stage:
+                    last_stage = stage
+                    report_progress(progress, "acquiring", index, total, stage)
             _sleep_seconds(_POLL_SECONDS)
+
+    @staticmethod
+    def _reported_stage(lookup, plan):
+        """Return the service's current stage text, ignoring a stale entry."""
+        try:
+            entry = lookup(plan)
+        except Exception:
+            return None
+        if not isinstance(entry, dict):
+            return None
+        stage = entry.get("stage")
+        if not stage or stage == "Failed":
+            # A failure is reported through ``error_for`` with its own message.
+            return None
+        return str(stage)
 
     def ensure(self, units, progress=None):
         pending = []
@@ -211,7 +286,7 @@ class Era5Coverage:
                 raise RuntimeError(
                     f"ERA5 wind coverage is still missing for {unit.start_utc:%Y-%m-%d}."
                 )
-        report_progress(progress, "acquired", total, total, "ERA5 wind coverage ready")
+        report_progress(progress, "acquired", total, total, self._ready_message())
 
     def _acquire(self, unit, plan, index, total, submitted, progress):
         """Submit one plan at a time, retrying only when the CDS queue is full."""
@@ -225,9 +300,11 @@ class Era5Coverage:
                 "acquiring",
                 index,
                 total,
-                f"queued {unit.start_utc:%Y-%m-%d} ({index + 1}/{total} submitted)",
+                self._submitted_message(unit, index, total),
             )
-            key, error = self._wait(plan, thread)
+            key, error = self._wait(
+                plan, thread, progress=progress, index=index, total=total
+            )
             if not error:
                 report_progress(
                     progress,
@@ -238,12 +315,13 @@ class Era5Coverage:
                 )
                 return
             self.service.clear_error(key)
-            if not queue_limited(error):
+            if self.source != "CDS" or not queue_limited(error):
                 # Credentials/licence, transient and request errors stay final
-                # for this plan with their existing classifications.
+                # for this plan with their existing classifications; an ARCO
+                # failure never carries a CDS classification or queue retry.
                 raise RuntimeError(
                     f"ERA5 download failed for {unit.start_utc:%Y-%m-%d}: "
-                    f"{error_message(error)}"
+                    f"{self._error_text(error)}"
                 )
             if attempt >= _QUEUE_ATTEMPTS:
                 raise RuntimeError(
