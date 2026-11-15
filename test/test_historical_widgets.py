@@ -419,16 +419,22 @@ def test_weather_phase_shows_units_and_hides_the_route_row(qtbot):
     qtbot.addWidget(widget)
     widget.set_weather_phase(2, 10, "Downloading ERA5 wind")
 
-    assert widget.overall_bar.value() == 20
-    assert widget.overall_label.text() == "2 / 10 weather units"
+    # Counts are drawn inside the bar so a narrow panel cannot clip them.
+    assert widget.overall_bar.maximum() == 10
+    assert widget.overall_bar.value() == 2
+    assert widget.overall_bar.format() == "%v / %m"
+    assert widget.overall_bar.isTextVisible()
+    assert widget.overall_label.isHidden()
     assert widget.route_bar.isHidden()
     assert widget.route_caption.isHidden()
     assert widget.route_label.isHidden()
     assert widget.eta_label.text() == "estimating…"
     # The bars carry the detail; the prose line stays out of the panel.
     assert widget.counters_label.isHidden()
-    assert widget.request_bar.isHidden()
-    assert widget.hour_bar.isHidden()
+    # The finer rows stay on screen for the whole phase; toggling them made
+    # the layout jump on every update.
+    assert not widget.request_bar.isHidden()
+    assert not widget.hour_bar.isHidden()
 
 
 def test_weather_detail_draws_request_and_hour_bars(qtbot):
@@ -448,13 +454,14 @@ def test_weather_detail_draws_request_and_hour_bars(qtbot):
     )
 
     assert not widget.request_bar.isHidden()
-    assert widget.request_label.text() == "2 / 17"
-    assert widget.request_bar.value() == 12
+    assert widget.request_bar.maximum() == 17
+    assert widget.request_bar.value() == 2
     assert not widget.hour_bar.isHidden()
-    assert widget.hour_label.text() == "3 / 24"
-    assert widget.hour_bar.value() == 12
+    assert widget.hour_bar.maximum() == 24
+    assert widget.hour_bar.value() == 3
     # The batch bar stays on spans, not on the finer tiers.
-    assert widget.overall_label.text() == "2 / 9 weather units"
+    assert widget.overall_bar.maximum() == 9
+    assert widget.overall_bar.value() == 2
 
 
 def test_weather_phase_survives_a_probe_refresh_while_acquiring(qtbot):
@@ -480,14 +487,16 @@ def test_weather_phase_survives_a_probe_refresh_while_acquiring(qtbot):
     )
     widget.refresh_from_probe()
 
-    assert widget.overall_label.text() == "0 / 12 weather units"
+    assert widget.overall_bar.maximum() == 12
     assert widget.route_bar.isHidden()
     assert widget.route_caption.isHidden()
     assert widget.route_label.isHidden()
     assert widget.counters_label.isHidden()
     # A probe refresh keeps the finer bars live during acquisition.
-    assert widget.request_label.text() == "1 / 17"
-    assert widget.hour_label.text() == "5 / 24"
+    assert widget.request_bar.maximum() == 17
+    assert widget.request_bar.value() == 1
+    assert widget.hour_bar.maximum() == 24
+    assert widget.hour_bar.value() == 5
 
 
 def test_weather_phase_hands_over_when_routing_starts(qtbot):
@@ -535,3 +544,27 @@ def test_options_embed_progress_and_follow_running_state(qtbot):
 
     widget.set_running(False)
     assert widget.progress_widget.isHidden()
+
+
+def test_weather_detail_shows_downloaded_size_and_time_left(qtbot):
+    widget = HistoricalProgress()
+    qtbot.addWidget(widget)
+    widget.set_weather_phase(0, 3, "")
+
+    widget.set_weather_detail(
+        {
+            "span_done": 0,
+            "span_total": 3,
+            "chunk_done": 1,
+            "chunk_total": 2,
+            "hour_done": 6,
+            "hour_total": 12,
+            "bytes_done": 1.2e9,
+            "bytes_total": 17.2e9,
+            "eta_seconds": 720,
+        }
+    )
+
+    text = widget.eta_label.text()
+    assert "1.2 GB / ~17.2 GB" in text
+    assert "left" in text

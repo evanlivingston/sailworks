@@ -36,14 +36,9 @@ class HistoricalRoutingActions:
             owner._tranche_store()
             preflight = getattr(owner.coordinator, "preflight", None)
             if callable(preflight):
-                prepared = preflight(spec, base)
-                west, south, east, north = spec.region
-                owner.options.set_estimate(
-                    f"{prepared.effective_years} years · "
-                    f"{prepared.estimated_bytes / 1e9:.1f} GB wind data · "
-                    f"region {south:.0f}°–{north:.0f} lat, "
-                    f"{west:.0f}°–{east:.0f} lon"
-                )
+                # The run reports downloaded size and remaining time live, so
+                # the panel does not need a static years/region summary first.
+                preflight(spec, base)
         except Exception as error:
             owner.options.set_status(str(error))
             return

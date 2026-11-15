@@ -139,6 +139,7 @@ class _ChunkReader:
     def __init__(self, url, *, timeout=_HTTP_TIMEOUT):
         self.base = _https_url(url).rstrip("/")
         self.timeout = timeout
+        self.bytes_read = 0
         self._arrays = {}
         self._lock = threading.Lock()
 
@@ -171,6 +172,8 @@ class _ChunkReader:
             raise ArcoError("ARCO ERA5 is no longer chunked by time only")
         key = f"{int(position)}.0.0"
         raw = self._get(f"{name}/{key}")
+        with self._lock:
+            self.bytes_read += len(raw)
         values = self._decode(raw, meta, chunks)
         selected = values[0][lat_index][:, lon_index]
         if not np.isfinite(selected).any():

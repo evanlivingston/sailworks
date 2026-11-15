@@ -25,6 +25,9 @@ from sailworks.core.historicalweather import era5_area
 MAX_CONCURRENT = 1
 
 _POLL_SECONDS = 0.25
+# Dirty size of one 0.25 degree global wind hour (two 3.3 MB chunks), used only
+# to estimate the total download size shown next to the measured amount.
+_BYTES_PER_HOUR = 2 * 3_330_534
 # A queued-request rejection means the account's other jobs are still queued,
 # so the same plan is retried after a bounded wait before it fails.
 _QUEUE_ATTEMPTS = 3
@@ -221,6 +224,24 @@ class Era5Coverage:
         self._span_index = 0
         self._span_total = 0
         self._service_progress = None
+        self._started = None
+        self._span_hours = ()
+        self._hours_before = 0
+
+    def _hours_done(self):
+        """Hours fetched so far, from real chunk and hour counts."""
+        entry = (
+            self._service_progress if isinstance(self._service_progress, dict) else {}
+        )
+        inner = entry.get("detail") if isinstance(entry.get("detail"), dict) else {}
+
+        def number(source, name):
+            try:
+                return max(0, int(source.get(name) or 0))
+            except (AttributeError, TypeError, ValueError):
+                return 0
+
+        return self._hours_before + number(entry, "done") * 24 + number(inner, "done")
 
     def detail(self):
         """Real acquisition counts for the progress bars.
@@ -244,6 +265,19 @@ class Era5Coverage:
                     return value
             return 0
 
+        reader = getattr(self.service, "_reader", None)
+        hours_total = sum(self._span_hours)
+        bytes_done = int(getattr(reader, "bytes_read", 0) or 0)
+        # A measured 0.25 degree global hour is two ~3.3 MB chunks; the byte bar
+        # is an estimate, the downloaded amount is not.
+        bytes_total = hours_total * _BYTES_PER_HOUR if reader is not None else 0
+        eta = None
+        if self._started is not None and hours_total and bytes_done:
+            elapsed = time.monotonic() - self._started
+            hours_done = min(self._hours_done(), hours_total)
+            rate = hours_done / elapsed if elapsed > 0 and hours_done else 0
+            if rate > 0 and hours_done < hours_total:
+                eta = (hours_total - hours_done) / rate
         return {
             "span_done": self._span_index,
             "span_total": self._span_total,
@@ -251,6 +285,9 @@ class Era5Coverage:
             "chunk_total": count((entry, "total")),
             "hour_done": count((inner, "done")),
             "hour_total": count((inner, "total")),
+            "bytes_done": bytes_done,
+            "bytes_total": bytes_total,
+            "eta_seconds": eta,
         }
 
     def _cancelled(self):
@@ -337,6 +374,7 @@ class Era5Coverage:
     def ensure(self, units, progress=None):
         wanted = [unit for unit in tuple(units or ()) if not covered(self.root, unit)]
         pending = []
+        hours = []
         for area, start, stop in merge_windows(wanted):
             plan = plan_request(
                 start,
@@ -344,6 +382,7 @@ class Era5Coverage:
                 area,
                 fields=("wind",),
             )
+            hours.append(int((stop - start).total_seconds() // 3600) + 1)
             last = stop - timedelta(hours=1)
             label = (
                 f"{start:%Y-%m-%d}"
@@ -352,6 +391,9 @@ class Era5Coverage:
             )
             pending.append((label, plan))
         total = len(pending)
+        self._span_hours = tuple(hours)
+        self._started = time.monotonic()
+        self._hours_before = 0
         report_progress(progress, "acquiring", 0, total, "ERA5 wind coverage")
         submitted = []
         try:
@@ -372,6 +414,7 @@ class Era5Coverage:
         """Submit one plan at a time, retrying only when the CDS queue is full."""
         self._span_index = index
         self._span_total = total
+        self._hours_before = sum(self._span_hours[:index])
         self._service_progress = None
         for attempt in range(1, _QUEUE_ATTEMPTS + 1):
             if self._cancelled():

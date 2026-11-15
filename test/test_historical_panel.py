@@ -1171,7 +1171,8 @@ def test_acquiring_stage_updates_the_status_text(qtbot):
     # Counts live in the bars; the status line stays a short phase label.
     assert panel.options.status.text() == "Acquiring weather"
     widget = panel.options.progress_widget
-    assert widget.overall_label.text() == "3 / 12 weather units"
+    assert widget.overall_bar.maximum() == 12
+    assert widget.overall_bar.value() == 3
 
 
 def test_weather_progress_events_drive_the_progress_widget(qtbot):
@@ -1179,8 +1180,8 @@ def test_weather_progress_events_drive_the_progress_widget(qtbot):
     panel._progress("acquiring", 2, 10, "Downloading ERA5 wind")
 
     widget = panel.options.progress_widget
-    assert widget.overall_label.text() == "2 / 10 weather units"
-    assert widget.overall_bar.value() == 20
+    assert widget.overall_bar.maximum() == 10
+    assert widget.overall_bar.value() == 2
     assert widget.route_bar.isHidden()
     # Acquisition owns the widget and replaces the stale start-up status.
     assert panel.options.status.text() == "Acquiring weather"

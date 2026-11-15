@@ -38,6 +38,40 @@ def format_eta(seconds):
     return f"~{hours} h {minutes:02d} min"
 
 
+def format_bytes(value):
+    """``148 MB`` style sizes, or ``""`` when the value is unknown."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if value <= 0:
+        return ""
+    for unit, scale in (("GB", 1e9), ("MB", 1e6), ("kB", 1e3)):
+        if value >= scale:
+            return (
+                f"{value / scale:.0f} {unit}"
+                if scale == 1e3
+                else f"{value / scale:.1f} {unit}"
+            )
+    return f"{value:.0f} B"
+
+
+def _data_line(detail):
+    """``1.2 GB / ~17 GB · ~12 min left`` for the acquisition line."""
+    done = format_bytes(detail.get("bytes_done"))
+    total = format_bytes(detail.get("bytes_total"))
+    if done and total:
+        text = f"{done} / ~{total}"
+    elif total:
+        text = f"~{total}"
+    else:
+        return ""
+    eta = format_eta(detail.get("eta_seconds"))
+    if eta:
+        text = f"{text} · {eta} left"
+    return text
+
+
 def _caption(text):
     label = QLabel(text)
     font = label.font()
@@ -131,20 +165,19 @@ class HistoricalProgress(QWidget):
 
         # Acquisition has two finer tiers than the batch: the request being
         # fetched and the hour inside it. Both are real counts, not estimates.
+        # The counts are drawn inside the bar so a narrow panel cannot clip
+        # them, and the rows stay put for the whole phase: showing and hiding
+        # bars made the layout jump on every update.
         self.request_caption = _caption("Request")
         self.request_bar = self._detail_bar("Current weather request progress")
-        self.request_label = self._detail_label("Completed requests")
 
         self.hour_caption = _caption("Hour")
         self.hour_bar = self._detail_bar("Current weather hour progress")
-        self.hour_label = self._detail_label("Completed hours")
 
         layout.addWidget(self.request_caption, 2, 0)
-        layout.addWidget(self.request_bar, 2, 1)
-        layout.addWidget(self.request_label, 2, 2, 1, 2)
+        layout.addWidget(self.request_bar, 2, 1, 1, 3)
         layout.addWidget(self.hour_caption, 3, 0)
-        layout.addWidget(self.hour_bar, 3, 1)
-        layout.addWidget(self.hour_label, 3, 2, 1, 2)
+        layout.addWidget(self.hour_bar, 3, 1, 1, 3)
 
         self.counters_label = QLabel()
         self.counters_label.setWordWrap(True)
@@ -158,19 +191,27 @@ class HistoricalProgress(QWidget):
         bar = QProgressBar()
         bar.setRange(0, 100)
         bar.setValue(0)
-        bar.setTextVisible(False)
-        bar.setFixedHeight(10)
+        bar.setTextVisible(True)
+        bar.setFormat("")
+        bar.setFixedHeight(16)
         bar.setMinimumWidth(60)
         bar.setAccessibleName(name)
         bar.setVisible(False)
         return bar
 
-    def _detail_label(self, name):
-        label = QLabel()
-        label.setAccessibleName(name)
-        label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        label.setVisible(False)
-        return label
+    @staticmethod
+    def _count_bar(bar, done, total):
+        """Draw ``done / total`` in the bar itself, or spin when unknown."""
+        done = max(0, int(done or 0))
+        total = max(0, int(total or 0))
+        bar.setTextVisible(True)
+        if total <= 0:
+            bar.setRange(0, 0)
+            bar.setFormat("")
+        else:
+            bar.setRange(0, total)
+            bar.setValue(min(done, total))
+            bar.setFormat("%v / %m")
 
     # -- probe plumbing --------------------------------------------------
     def set_probe(self, probe):
@@ -232,7 +273,7 @@ class HistoricalProgress(QWidget):
                 self.set_weather_detail(snapshot.get("weather_detail"))
                 return
             self._weather_phase = False
-            self._set_detail_visible(False, False)
+            self._set_weather_visible(False)
 
         if total > 0 and completed >= total:
             fraction = 1.0
@@ -257,6 +298,8 @@ class HistoricalProgress(QWidget):
         self.eta_label.setVisible(bool(eta))
 
         self._set_route_visible(True)
+        self.overall_bar.setTextVisible(False)
+        self.overall_bar.setFormat("")
         if indeterminate:
             self.route_bar.setRange(0, 0)
             self.route_label.setText(f"working · {stage}" if stage else "working")
@@ -276,66 +319,49 @@ class HistoricalProgress(QWidget):
 
     # -- special phases --------------------------------------------------
     def set_weather_phase(self, completed, total, message=""):
-        """Show CDS acquisition as whole units; there is no route percent yet."""
+        """Show acquisition as counts in bars; there is no route percent yet."""
         self._weather_phase = True
         self._finished = False
-        completed = max(0, int(completed or 0))
-        total = max(0, int(total or 0))
-        fraction = (completed / total) if total > 0 else 0.0
-        fraction = min(max(fraction, 0.0), 1.0)
         self.setVisible(True)
-        self.overall_bar.setRange(0, 100)
-        self.overall_bar.setValue(int(round(fraction * 100)))
-        self.overall_label.setText(f"{completed} / {total} weather units")
-        self.overall_label.setVisible(True)
-        self.eta_label.setText("estimating…")
-        self.eta_label.setVisible(True)
+        self._set_weather_visible(True)
         self._set_route_visible(False)
-        # The bars carry the detail; long acquisition prose is not repeated.
+        self._count_bar(self.overall_bar, completed, total)
+        self.overall_label.setVisible(False)
+        if not self.eta_label.text():
+            self.eta_label.setText("estimating…")
+        self.eta_label.setVisible(True)
+        # The bars carry the detail; acquisition prose is not repeated.
         self.counters_label.setText("")
         self.counters_label.setVisible(False)
-        self._set_detail_visible(False, False)
 
     def set_weather_detail(self, detail):
-        """Fill the request and hour bars from a real acquisition snapshot."""
+        """Fill the three bars and the data/time line from real counts."""
         if not isinstance(detail, dict):
             return
         self._weather_phase = True
-        chunks = self._pair(detail.get("chunk_done"), detail.get("chunk_total"))
-        hours = self._pair(detail.get("hour_done"), detail.get("hour_total"))
-        self._apply_detail_bar(self.request_bar, self.request_label, chunks)
-        self._apply_detail_bar(self.hour_bar, self.hour_label, hours)
-        self._set_detail_visible(chunks is not None, hours is not None)
+        self._set_weather_visible(True)
+        self._count_bar(
+            self.overall_bar, detail.get("span_done"), detail.get("span_total")
+        )
+        self._count_bar(
+            self.request_bar, detail.get("chunk_done"), detail.get("chunk_total")
+        )
+        self._count_bar(
+            self.hour_bar, detail.get("hour_done"), detail.get("hour_total")
+        )
+        line = _data_line(detail)
+        if line:
+            self.eta_label.setText(line)
+            self.eta_label.setVisible(True)
 
-    @staticmethod
-    def _pair(done, total):
-        try:
-            done = int(done or 0)
-            total = int(total or 0)
-        except (TypeError, ValueError):
-            return None
-        if total <= 0:
-            return None
-        return max(0, min(done, total)), total
-
-    @staticmethod
-    def _apply_detail_bar(bar, label, pair):
-        if pair is None:
-            bar.setValue(0)
-            label.setText("")
-            return
-        done, total = pair
-        bar.setRange(0, 100)
-        bar.setValue(int(round(100.0 * done / total)))
-        label.setText(f"{done} / {total}")
-
-    def _set_detail_visible(self, request, hour):
-        self.request_caption.setVisible(request)
-        self.request_bar.setVisible(request)
-        self.request_label.setVisible(request)
-        self.hour_caption.setVisible(hour)
-        self.hour_bar.setVisible(hour)
-        self.hour_label.setVisible(hour)
+    def _set_weather_visible(self, visible):
+        for widget in (
+            self.request_caption,
+            self.request_bar,
+            self.hour_caption,
+            self.hour_bar,
+        ):
+            widget.setVisible(visible)
 
     def set_finished(self, ok, message=""):
         """Stop sampling and leave the final state on screen."""
@@ -351,7 +377,7 @@ class HistoricalProgress(QWidget):
         self.eta_label.setText("")
         self.eta_label.setVisible(False)
         self.counters_label.setVisible(False)
-        self._set_detail_visible(False, False)
+        self._set_weather_visible(False)
         self._set_route_visible(False)
 
     def reset(self):
@@ -371,11 +397,10 @@ class HistoricalProgress(QWidget):
         ):
             label.setText("")
             label.setVisible(False)
-        self._set_detail_visible(False, False)
-        self.request_label.setText("")
-        self.hour_label.setText("")
-        self.request_bar.setValue(0)
-        self.hour_bar.setValue(0)
+        self._set_weather_visible(False)
+        for bar in (self.request_bar, self.hour_bar):
+            bar.setRange(0, 100)
+            bar.setValue(0)
         self._set_route_visible(True)
         self.setVisible(False)
 
