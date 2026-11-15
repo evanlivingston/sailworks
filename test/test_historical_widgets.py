@@ -568,3 +568,24 @@ def test_weather_detail_shows_downloaded_size_and_time_left(qtbot):
     text = widget.eta_label.text()
     assert "1.2 GB / ~17.2 GB" in text
     assert "left" in text
+
+
+def test_weather_bars_fit_the_counts_drawn_inside_them(qtbot):
+    widget = HistoricalProgress()
+    qtbot.addWidget(widget)
+    widget.set_weather_phase(2, 3, "")
+    widget.set_weather_detail(
+        {
+            "span_done": 2,
+            "span_total": 3,
+            "chunk_done": 5,
+            "chunk_total": 17,
+            "hour_done": 3,
+            "hour_total": 24,
+        }
+    )
+
+    # A 10 px bar clipped the digits it now contains.
+    for bar in (widget.overall_bar, widget.request_bar, widget.hour_bar):
+        assert bar.height() >= 16
+        assert bar.isTextVisible()

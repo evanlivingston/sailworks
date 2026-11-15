@@ -124,7 +124,8 @@ class HistoricalProgress(QWidget):
         self.overall_bar.setRange(0, 100)
         self.overall_bar.setValue(0)
         self.overall_bar.setTextVisible(False)
-        self.overall_bar.setFixedHeight(10)
+        # Tall enough for the count drawn inside it, like the finer bars.
+        self.overall_bar.setFixedHeight(16)
         self.overall_bar.setMinimumWidth(60)
         self.overall_bar.setAccessibleName("Overall historical progress")
 

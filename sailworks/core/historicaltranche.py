@@ -125,14 +125,8 @@ def select_window_entries(
         )
     contained.sort(key=lambda item: item[0][0])
 
-    distinct_areas: list[tuple[float, ...]] = []
-    for _, entry in contained:
-        entry_area = _validate_area(entry.get("area"), "catalog entry area")
-        if not any(_areas_match(entry_area, known) for known in distinct_areas):
-            distinct_areas.append(entry_area)
-    if len(distinct_areas) > 1:
-        raise HistoricalTrancheError("ERA5 window spans more than one area")
-
+    # Only this window's area is relevant. Another route's region can store the
+    # same days, and its chunks must not make this window look ambiguous.
     matching = [
         (span, entry)
         for span, entry in contained

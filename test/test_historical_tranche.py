@@ -156,13 +156,14 @@ def test_rejects_a_duplicate_hour(tmp_path):
         select_window_entries(entries, at(0), at(2), CATALOG_AREA)
 
 
-def test_rejects_two_distinct_areas(tmp_path):
+def test_another_area_does_not_count_as_coverage(tmp_path):
+    """Chunks stored for a different region leave this window uncovered."""
     store = make_store(tmp_path)
     entries = [
         chunk(store.root, "a.grib", at(0)),
         chunk(store.root, "b.grib", at(1), area=(30.0, -10.0, 20.0, 5.0)),
     ]
-    with pytest.raises(HistoricalTrancheError, match="more than one area"):
+    with pytest.raises(HistoricalTrancheError, match="not covered"):
         select_window_entries(entries, at(0), at(2), CATALOG_AREA)
 
 
@@ -278,3 +279,30 @@ def test_accepts_a_window_that_starts_mid_day(tmp_path):
     # Only the chunks that overlap the window are used, and they are enough to
     # cover every hour in it exactly once.
     assert len(selected) <= 2
+
+
+def test_another_area_storing_the_same_days_does_not_block_the_window(tmp_path):
+    """A second route's region must not make this window look ambiguous."""
+    store = make_store(tmp_path)
+    other_area = (55.0, -20.0, 30.0, 10.0)
+    entries = [
+        chunk(store.root, "a1.grib", at(0), at(23)),
+        chunk(
+            store.root, "a2.grib", at(0) + timedelta(days=1), at(23) + timedelta(days=1)
+        ),
+        chunk(store.root, "b1.grib", at(0), at(23), area=other_area),
+        chunk(
+            store.root,
+            "b2.grib",
+            at(0) + timedelta(days=1),
+            at(23) + timedelta(days=1),
+            area=other_area,
+        ),
+    ]
+    start = datetime(2025, 1, 1, 20, tzinfo=UTC)
+
+    selected = select_window_entries(
+        entries, start, start + timedelta(hours=4), CATALOG_AREA
+    )
+
+    assert [entry["artifact"] for entry in selected] == ["a1.grib"]
