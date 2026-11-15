@@ -193,15 +193,10 @@ class HistoricalRoutingActions:
     def progress(self, stage, completed, total, message):
         owner = self.owner
         if str(stage).startswith("acquir"):
+            # The progress bars carry the counts and the current hour, so the
+            # status line stays a short phase label instead of duplicating it.
             owner.options.set_weather_progress(completed, total, message)
-            text = (
-                f"Acquiring weather {completed}/{total}"
-                if total
-                else "Acquiring weather"
-            )
-            if message:
-                text = f"{text} · {message}"
-            owner.options.set_status(text)
+            owner.options.set_status("Acquiring weather")
             return
         suffix = f" {completed}/{total}" if total else ""
         owner.options.set_status(

@@ -8,9 +8,12 @@ reading the public Zarr store anonymously instead of submitting CDS jobs.
 
 from __future__ import annotations
 
+import json
 import tempfile
 import threading
+import urllib.request
 import weakref
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -32,6 +35,9 @@ V_VARIABLE = WIND_VARIABLES[1]
 DATASET_LABEL = "arco-era5"
 SOURCE_LABEL = "ARCO ERA5 hourly single levels reanalysis"
 GRID_SPACING = 0.25
+# Concurrent hourly chunk reads. Each hour is two independent GETs, so a small
+# pool turns sequential latency into throughput without flooding the bucket.
+READ_WORKERS = 4
 _MISSING = 9999.0
 _EPSILON = 1e-6
 
@@ -108,6 +114,88 @@ def open_store(url=STORE_URL, *, storage_options=None):
             f"({type(failure).__name__}); check network access to Google Cloud "
             "Storage and retry"
         ) from failure
+
+
+_HTTP_TIMEOUT = 120
+_STORE_HTTP = "https://storage.googleapis.com/"
+
+
+def _https_url(url):
+    """Map a ``gs://bucket/key`` URL onto its anonymous HTTPS equivalent."""
+    if url.startswith("gs://"):
+        return _STORE_HTTP + url[len("gs://") :]
+    return url
+
+
+class _ChunkReader:
+    """Read ARCO chunks with one GET each, bypassing the Zarr/xarray stack.
+
+    Reading the same 3.3 MB chunk through ``xr.open_zarr`` cost ~30 s per hour
+    here, while a plain GET of that object takes under a second. The store's
+    arrays are plain blosc-compressed float32 with no filters, so the fast path
+    only needs the baked-in ``.zarray`` metadata.
+    """
+
+    def __init__(self, url, *, timeout=_HTTP_TIMEOUT):
+        self.base = _https_url(url).rstrip("/")
+        self.timeout = timeout
+        self._arrays = {}
+        self._lock = threading.Lock()
+
+    def _get(self, path):
+        with urllib.request.urlopen(
+            f"{self.base}/{path}", timeout=self.timeout
+        ) as reply:
+            return reply.read()
+
+    def array_meta(self, name):
+        with self._lock:
+            cached = self._arrays.get(name)
+        if cached is not None:
+            return cached
+        meta = json.loads(self._get(f"{name}/.zarray"))
+        if meta.get("filters"):
+            raise ArcoError("ARCO ERA5 chunk filters are unsupported")
+        with self._lock:
+            self._arrays[name] = meta
+        return meta
+
+    def read(self, name, position, lat_index, lon_index):
+        """Return ``name`` at one time position for the selected grid cells."""
+        meta = self.array_meta(name)
+        chunks = tuple(int(value) for value in meta["chunks"])
+        shape = tuple(int(value) for value in meta["shape"])
+        if len(chunks) != 3 or chunks[0] != 1:
+            raise ArcoError("ARCO ERA5 chunk layout changed; cannot read directly")
+        if chunks[1] != shape[1] or chunks[2] != shape[2]:
+            raise ArcoError("ARCO ERA5 is no longer chunked by time only")
+        key = f"{int(position)}.0.0"
+        raw = self._get(f"{name}/{key}")
+        values = self._decode(raw, meta, chunks)
+        selected = values[0][lat_index][:, lon_index]
+        if not np.isfinite(selected).any():
+            raise ArcoError(
+                f"ARCO ERA5 {name} has no finite values for the requested "
+                "grid and hour"
+            )
+        return selected
+
+    @staticmethod
+    def _decode(raw, meta, chunks):
+        import numcodecs
+
+        compressor = meta.get("compressor")
+        if not compressor:
+            buffer = raw
+        else:
+            buffer = numcodecs.get_codec(compressor).decode(raw)
+        values = np.frombuffer(buffer, dtype=np.dtype(meta["dtype"]))
+        expected = chunks[0] * chunks[1] * chunks[2]
+        if values.size != expected:
+            raise ArcoError(
+                f"ARCO ERA5 chunk decoded to {values.size} values, expected {expected}"
+            )
+        return values.reshape(chunks)
 
 
 def _parse_time(value):
@@ -430,17 +518,21 @@ class ArcoDownloadService(Era5DownloadService):
         encoder=None,
         validator=validate_grib,
         store_url=STORE_URL,
+        workers=READ_WORKERS,
     ):
         super().__init__(store, client_factory=_no_cds, validator=validator)
         self.opener = opener
         self.encoder = encoder
         self.store_url = store_url
+        self.workers = max(1, int(workers))
         # Opening the store costs tens of seconds, so acquisition units share
         # one handle. The finalizer gives process-exit cleanup without Qt
         # callers having to know about it.
         self._handle = _StoreHandle()
         self._lock = threading.Lock()
         self._finalizer = weakref.finalize(self, self._handle.close)
+        # Only the real store has the plain blosc layout the fast path expects.
+        self._reader = _ChunkReader(store_url) if opener is open_store else None
 
     # --- CDS bookkeeping is inert: ARCO has no requests to queue or resume ---
 
@@ -475,6 +567,22 @@ class ArcoDownloadService(Era5DownloadService):
             f"ARCO ERA5 read failed ({type(exc).__name__}); check anonymous "
             f"access to {self.store_url} and retry."
         )
+
+    def _read_pair(self, dataset, position, lat_index, lon_index):
+        """Read the u and v field for one hour, for use in a worker thread.
+
+        The direct chunk reader is used only with the real anonymous store;
+        injected openers keep the xarray path so fakes stay simple.
+        """
+        reader = self._reader
+        if reader is not None:
+            return (
+                reader.read(U_VARIABLE, position, lat_index, lon_index),
+                reader.read(V_VARIABLE, position, lat_index, lon_index),
+            )
+        u = _read_field(dataset, U_VARIABLE, position, lat_index, lon_index)
+        v = _read_field(dataset, V_VARIABLE, position, lat_index, lon_index)
+        return u, v
 
     def _open(self):
         """Return the cached store handle, opening it on first use."""
@@ -577,29 +685,44 @@ class ArcoDownloadService(Era5DownloadService):
                     piece_hours = tuple(_hours(piece))
                     hour_total = len(piece_hours)
                     with path.open("wb") as handle:
-                        for hour_number, valid in enumerate(piece_hours, start=1):
-                            if cancel.is_set():
-                                raise ArcoError("ARCO ERA5 download canceled")
-                            position = by_hour[valid]
-                            u = _read_field(
-                                dataset, U_VARIABLE, position, lat_index, lon_index
-                            )
-                            v = _read_field(
-                                dataset, V_VARIABLE, position, lat_index, lon_index
-                            )
-                            _write_message(eccodes, handle, "10u", valid, lats, lons, u)
-                            _write_message(eccodes, handle, "10v", valid, lats, lons, v)
-                            # One ARCO hour can take minutes on a cold read, so
-                            # surface the hour that just finished. Chunk
-                            # done/total semantics stay unchanged.
-                            self._set_progress(
-                                key,
-                                stage=(
-                                    f"Chunk {n + 1}/{total}: ARCO wind hour "
-                                    f"{hour_number}/{hour_total} · "
-                                    f"{valid:%Y-%m-%d %H:%M} UTC"
-                                ),
-                            )
+                        # Each hour is an independent pair of chunk reads, so
+                        # fetch them a few at a time and encode in order.
+                        # Encoding stays on this thread: eccodes is not
+                        # thread-safe.
+                        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                            for first in range(0, hour_total, self.workers):
+                                if cancel.is_set():
+                                    raise ArcoError("ARCO ERA5 download canceled")
+                                batch = piece_hours[first : first + self.workers]
+                                fields = list(
+                                    pool.map(
+                                        lambda hour: self._read_pair(
+                                            dataset, by_hour[hour], lat_index, lon_index
+                                        ),
+                                        batch,
+                                    )
+                                )
+                                for offset, (valid, (u, v)) in enumerate(
+                                    zip(batch, fields), start=first + 1
+                                ):
+                                    _write_message(
+                                        eccodes, handle, "10u", valid, lats, lons, u
+                                    )
+                                    _write_message(
+                                        eccodes, handle, "10v", valid, lats, lons, v
+                                    )
+                                    # Chunk done/total keeps its meaning; the
+                                    # hour tier is reported separately so the
+                                    # panel can draw a second, finer bar.
+                                    self._set_progress(
+                                        key,
+                                        stage=(
+                                            f"Chunk {n + 1}/{total}: ARCO wind hour "
+                                            f"{offset}/{hour_total} · "
+                                            f"{valid:%Y-%m-%d %H:%M} UTC"
+                                        ),
+                                        detail=(offset, hour_total),
+                                    )
                     if cancel.is_set():
                         raise ArcoError("ARCO ERA5 download canceled")
                     if self.validator is None:

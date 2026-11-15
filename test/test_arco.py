@@ -248,8 +248,8 @@ def test_arco_progress_reports_each_completed_hour(tmp_path):
     seen = []
     original = service._set_progress
 
-    def record(key, *, done=None, total=None, stage=None):
-        original(key, done=done, total=total, stage=stage)
+    def record(key, *, done=None, total=None, stage=None, detail=None):
+        original(key, done=done, total=total, stage=stage, detail=detail)
         if stage and "ARCO wind hour" in stage:
             entry = service.progress_for(plan)
             seen.append((stage, entry["done"], entry["total"]))
@@ -266,6 +266,8 @@ def test_arco_progress_reports_each_completed_hour(tmp_path):
     assert {(done, total) for _stage, done, total in seen} == {(0, 1)}
     final = service.progress_for(plan)
     assert final["done"] == final["total"] == 1
+    # The finer hour tier is reported separately for the second bar.
+    assert final["detail"] == {"done": 3, "total": 3}
 
 
 def test_arco_greenwich_crossing_is_monotonic_and_padded(tmp_path):
@@ -454,7 +456,11 @@ def test_arco_cancel_between_hours_never_publishes_or_touches_cds(tmp_path):
     fake = FakeDataset(times, make_data(times), on_read=on_read)
     eccodes = FakeEccodes()
     service = ArcoDownloadService(
-        store, opener=lambda url: fake, encoder=eccodes, validator=accepting_validator
+        store,
+        opener=lambda url: fake,
+        encoder=eccodes,
+        validator=accepting_validator,
+        workers=1,
     )
     plan = planned("2025-01-01T00:00", "2025-01-01T02:00")
 
@@ -715,3 +721,73 @@ def test_arco_close_failure_does_not_mask_acquisition_error(tmp_path):
             threading.Event(),
             False,
         )
+
+
+def test_direct_chunk_reader_decodes_a_blosc_chunk(monkeypatch):
+    import json
+
+    import numcodecs
+    import numpy as np
+
+    import sailworks.core.arco as arco
+
+    compressor = {
+        "id": "blosc",
+        "cname": "lz4",
+        "clevel": 5,
+        "shuffle": 1,
+        "blocksize": 0,
+    }
+    data = np.arange(1 * 4 * 5, dtype="<f4").reshape(1, 4, 5)
+    raw = numcodecs.get_codec(compressor).encode(data)
+    meta = {
+        "chunks": [1, 4, 5],
+        "shape": [10, 4, 5],
+        "dtype": "<f4",
+        "filters": None,
+        "compressor": compressor,
+    }
+    reader = arco._ChunkReader("gs://bucket/store")
+    paths = []
+
+    def fake_get(path):
+        paths.append(path)
+        if path.endswith(".zarray"):
+            return json.dumps(meta).encode()
+        return raw
+
+    monkeypatch.setattr(reader, "_get", fake_get)
+
+    out = reader.read("u10", 7, np.array([1, 3]), np.array([0, 4]))
+
+    assert reader.base == "https://storage.googleapis.com/bucket/store"
+    assert out.shape == (2, 2)
+    assert (out[0, 0], out[1, 1]) == (data[0, 1, 0], data[0, 3, 4])
+    assert "u10/7.0.0" in paths
+
+
+def test_direct_chunk_reader_rejects_a_changed_layout(monkeypatch):
+    import json
+
+    import numpy as np
+    import pytest
+
+    import sailworks.core.arco as arco
+
+    reader = arco._ChunkReader("gs://bucket/store")
+    monkeypatch.setattr(
+        reader,
+        "_get",
+        lambda path: json.dumps(
+            {
+                "chunks": [2, 4, 5],
+                "shape": [10, 4, 5],
+                "dtype": "<f4",
+                "filters": None,
+                "compressor": None,
+            }
+        ).encode(),
+    )
+
+    with pytest.raises(arco.ArcoError, match="layout changed"):
+        reader.read("u10", 0, np.array([0, 1]), np.array([0, 1]))

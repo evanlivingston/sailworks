@@ -218,6 +218,40 @@ class Era5Coverage:
         factory = service_factory or Era5DownloadService
         self.service = factory(store)
         self.source = service_source(self.service)
+        self._span_index = 0
+        self._span_total = 0
+        self._service_progress = None
+
+    def detail(self):
+        """Real acquisition counts for the progress bars.
+
+        ``span`` is the batch tier, ``chunk`` the request being fetched and
+        ``hour`` the field hour inside it. Missing tiers report a zero total so
+        the widget can hide a bar it has no data for.
+        """
+        entry = (
+            self._service_progress if isinstance(self._service_progress, dict) else {}
+        )
+        inner = entry.get("detail") if isinstance(entry.get("detail"), dict) else {}
+
+        def count(*pairs):
+            for source, name in pairs:
+                try:
+                    value = int(source.get(name) or 0)
+                except (TypeError, ValueError):
+                    value = 0
+                if value:
+                    return value
+            return 0
+
+        return {
+            "span_done": self._span_index,
+            "span_total": self._span_total,
+            "chunk_done": count((entry, "done")),
+            "chunk_total": count((entry, "total")),
+            "hour_done": count((inner, "done")),
+            "hour_total": count((inner, "total")),
+        }
 
     def _cancelled(self):
         return self.cancel_event is not None and self.cancel_event.is_set()
@@ -273,18 +307,25 @@ class Era5Coverage:
                 raise _Cancelled
             if watch:
                 stage = self._reported_stage(lookup, plan)
+                self._service_progress = self._progress_entry(lookup, plan)
                 if stage and stage != last_stage:
                     last_stage = stage
                     report_progress(progress, "acquiring", index, total, stage)
             _sleep_seconds(_POLL_SECONDS)
 
     @staticmethod
-    def _reported_stage(lookup, plan):
-        """Return the service's current stage text, ignoring a stale entry."""
+    def _progress_entry(lookup, plan):
+        """The service's current progress dict, or ``None`` if unavailable."""
         try:
             entry = lookup(plan)
         except Exception:
             return None
+        return entry if isinstance(entry, dict) else None
+
+    @staticmethod
+    def _reported_stage(lookup, plan):
+        """Return the service's current stage text, ignoring a stale entry."""
+        entry = Era5Coverage._progress_entry(lookup, plan)
         if not isinstance(entry, dict):
             return None
         stage = entry.get("stage")
@@ -329,6 +370,9 @@ class Era5Coverage:
 
     def _acquire(self, label, plan, index, total, submitted, progress):
         """Submit one plan at a time, retrying only when the CDS queue is full."""
+        self._span_index = index
+        self._span_total = total
+        self._service_progress = None
         for attempt in range(1, _QUEUE_ATTEMPTS + 1):
             if self._cancelled():
                 raise _Cancelled

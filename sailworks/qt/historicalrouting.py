@@ -78,6 +78,9 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         # Ensemble acquisitions use the ARCO transport by default; tests and
         # callers may still inject a fake through ``service_factory``.
         self._service_factory = service_factory or ArcoDownloadService
+        # Set while weather acquisition is running, so the progress probe can
+        # read its real span/request/hour counts.
+        self._coverage = None
         self._cancel_event = threading.Event()
         self._thread = None
         self._record = None
@@ -246,7 +249,15 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
             completed = 0
             route_percent = None
             route_indeterminate = True
+        coverage = self._coverage
+        detail = None
+        if coverage is not None and hasattr(coverage, "detail"):
+            try:
+                detail = coverage.detail()
+            except Exception:
+                detail = None
         return {
+            "weather_detail": detail,
             "running": bool(getattr(rc, "busy", False))
             or (self._thread is not None and self._thread.is_alive()),
             "completed": completed,

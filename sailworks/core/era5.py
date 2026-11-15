@@ -441,7 +441,7 @@ class Era5DownloadService:
             ):
                 del self._job_plans[key]
 
-    def _set_progress(self, key, *, done=None, total=None, stage=None):
+    def _set_progress(self, key, *, done=None, total=None, stage=None, detail=None):
         with self._lock:
             entry = self.progress.setdefault(key, {"done": 0, "total": 0, "stage": ""})
             if done is not None:
@@ -450,6 +450,9 @@ class Era5DownloadService:
                 entry["total"] = total
             if stage is not None:
                 entry["stage"] = stage
+            if detail is not None:
+                # A finer tier inside the current chunk, e.g. hours of a day.
+                entry["detail"] = {"done": int(detail[0]), "total": int(detail[1])}
 
     def _run_guarded(self, key, plan, cancel, retry):
         try:

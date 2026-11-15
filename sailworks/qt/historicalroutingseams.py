@@ -43,7 +43,12 @@ class HistoricalRoutingSeams:
             service_factory=self._service_factory,
             cancel_event=self._cancel_event,
         )
-        coverage.ensure(units, progress)
+        # The progress probe samples live acquisition counts for its bars.
+        self._coverage = coverage
+        try:
+            coverage.ensure(units, progress)
+        finally:
+            self._coverage = None
 
     def _marine_manager(self):
         manager = getattr(

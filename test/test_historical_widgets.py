@@ -425,7 +425,36 @@ def test_weather_phase_shows_units_and_hides_the_route_row(qtbot):
     assert widget.route_caption.isHidden()
     assert widget.route_label.isHidden()
     assert widget.eta_label.text() == "estimating…"
-    assert widget.counters_label.text() == "Downloading ERA5 wind"
+    # The bars carry the detail; the prose line stays out of the panel.
+    assert widget.counters_label.isHidden()
+    assert widget.request_bar.isHidden()
+    assert widget.hour_bar.isHidden()
+
+
+def test_weather_detail_draws_request_and_hour_bars(qtbot):
+    widget = HistoricalProgress()
+    qtbot.addWidget(widget)
+    widget.set_weather_phase(2, 9, "")
+
+    widget.set_weather_detail(
+        {
+            "span_done": 2,
+            "span_total": 9,
+            "chunk_done": 2,
+            "chunk_total": 17,
+            "hour_done": 3,
+            "hour_total": 24,
+        }
+    )
+
+    assert not widget.request_bar.isHidden()
+    assert widget.request_label.text() == "2 / 17"
+    assert widget.request_bar.value() == 12
+    assert not widget.hour_bar.isHidden()
+    assert widget.hour_label.text() == "3 / 24"
+    assert widget.hour_bar.value() == 12
+    # The batch bar stays on spans, not on the finer tiers.
+    assert widget.overall_label.text() == "2 / 9 weather units"
 
 
 def test_weather_phase_survives_a_probe_refresh_while_acquiring(qtbot):
@@ -439,6 +468,14 @@ def test_weather_phase_survives_a_probe_refresh_while_acquiring(qtbot):
             route_percent=None,
             route_indeterminate=True,
             routing=False,
+            weather_detail={
+                "span_done": 0,
+                "span_total": 12,
+                "chunk_done": 1,
+                "chunk_total": 17,
+                "hour_done": 5,
+                "hour_total": 24,
+            },
         )
     )
     widget.refresh_from_probe()
@@ -447,7 +484,10 @@ def test_weather_phase_survives_a_probe_refresh_while_acquiring(qtbot):
     assert widget.route_bar.isHidden()
     assert widget.route_caption.isHidden()
     assert widget.route_label.isHidden()
-    assert widget.counters_label.text() == "ERA5 wind coverage"
+    assert widget.counters_label.isHidden()
+    # A probe refresh keeps the finer bars live during acquisition.
+    assert widget.request_label.text() == "1 / 17"
+    assert widget.hour_label.text() == "5 / 24"
 
 
 def test_weather_phase_hands_over_when_routing_starts(qtbot):
