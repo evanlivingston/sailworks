@@ -90,6 +90,7 @@ class RoutingController(QObject):
     _message = Signal(int, str)
     _finished = Signal(int, object, object)
     _bound_finished = Signal(int, object, object)
+    _bound_progress = Signal(int, int, int)
 
     def __init__(self, session_controller):
         super().__init__(session_controller)
@@ -122,11 +123,16 @@ class RoutingController(QObject):
         self._parallel_progress = {}
         self._bound_member_callback = None
         self._bound_finish_callback = None
+        # Live per-member progress for the bound-run path; the panel reads
+        # these directly to show completion and an ETA.
+        self.bound_completed = 0
+        self.bound_total = 0
         self._progress.connect(self._apply_progress)
         self._native_progress.connect(self._apply_native_progress)
         self._message.connect(self._apply_message)
         self._finished.connect(self._finish)
         self._bound_finished.connect(self._finish_bound)
+        self._bound_progress.connect(self._apply_bound_progress)
         self.confirm = lambda report: False
 
     def start(self, request, scenarios=(), backend="legacy"):
@@ -244,6 +250,8 @@ class RoutingController(QObject):
             len(executions),
             0,
         )
+        self.bound_completed = 0
+        self.bound_total = len(executions)
         self.busy, self.error, self.percent = True, "", 0.0
         self.progress_indeterminate = True
         self.native_started_at = time.monotonic()
@@ -464,6 +472,9 @@ class RoutingController(QObject):
                 marine_directory=marine_directory,
                 providers=providers,
                 on_progress=lambda update: self._native_progress.emit(token, update),
+                on_member_complete=lambda index, outcome: self._bound_progress.emit(
+                    token, index + 1, len(executions)
+                ),
                 check_cancel=lambda: self._check(token),
             )
         except BoundRunCancelled as exc:
@@ -995,6 +1006,15 @@ class RoutingController(QObject):
             self.message += f" · {self.saved_count}/{self.scenario_count} scenarios saved"
         self.changed.emit()
 
+    @Slot(int, int, int)
+    def _apply_bound_progress(self, token, completed, total):
+        """Fold one live member completion into the bound-run counters."""
+        if self.closed or token != self.generation:
+            return
+        self.bound_completed = max(self.bound_completed, int(completed))
+        self.bound_total = int(total)
+        self.changed.emit()
+
     @Slot(int, object, object)
     def _finish_bound(self, token, outcomes, error):
         """Reset the bound-run state and hand its outcomes back on the GUI thread."""
@@ -1010,6 +1030,8 @@ class RoutingController(QObject):
         )
         self._bound_member_callback = self._bound_finish_callback = None
         outcomes = list(outcomes or ())
+        self.bound_completed = len(outcomes)
+        self.bound_total = max(self.bound_total, len(outcomes))
         for outcome in outcomes:
             if member_callback is not None:
                 member_callback(outcome)

@@ -311,6 +311,7 @@ def run_bound_members(
     marine_directory,
     providers=(),
     on_progress=None,
+    on_member_complete=None,
     check_cancel=None,
     convert=None,
 ) -> list[MemberOutcome]:
@@ -335,6 +336,14 @@ def run_bound_members(
     callers must make it thread-safe (the Qt controller's ``_ui_call`` already
     marshals to the GUI thread). ``check_cancel`` must be safe to call from
     several threads and should raise to stop the batch.
+
+    ``on_member_complete(index, outcome)`` fires from the worker thread as soon
+    as one member reaches a terminal outcome, including ``failed`` and
+    ``no_finish`` members, so callers can report live progress. With more than
+    one slot it runs concurrently on several threads and must be thread-safe.
+    A member skipped because the batch was cancelled before it started is not
+    reported. Exceptions raised by the callback are swallowed: progress
+    reporting can never abort a run.
     """
     if (worker is None) == (worker_factory is None):
         raise ValueError("Provide exactly one of worker or worker_factory.")
@@ -345,25 +354,33 @@ def run_bound_members(
     cancel = check_cancel or _no_cancel
     progress = on_progress or _no_progress
 
+    def notify_complete(index: int, outcome: MemberOutcome) -> None:
+        if on_member_complete is None:
+            return
+        try:
+            on_member_complete(index, outcome)
+        except Exception:  # noqa: BLE001 - progress reporting must not kill a run
+            pass
+
     if worker is not None:
         outcomes: list[MemberOutcome] = []
         for index, execution in enumerate(executions):
             try:
-                outcomes.append(
-                    _run_one_member(
-                        worker,
-                        cancel,
-                        progress,
-                        index=index,
-                        execution=execution,
-                        save=save,
-                        marine_directory=marine_directory,
-                        providers=providers,
-                        convert=convert,
-                    )
+                outcome = _run_one_member(
+                    worker,
+                    cancel,
+                    progress,
+                    index=index,
+                    execution=execution,
+                    save=save,
+                    marine_directory=marine_directory,
+                    providers=providers,
+                    convert=convert,
                 )
             except BoundRunCancelled:
                 raise BoundRunCancelled(outcomes=outcomes) from None
+            outcomes.append(outcome)
+            notify_complete(index, outcome)
         return outcomes
 
     slots = [worker_factory() for _ in range(concurrency)]
@@ -404,6 +421,7 @@ def run_bound_members(
                     providers=providers,
                     convert=convert,
                 )
+                notify_complete(index, results[index])
         except BoundRunCancelled as exc:
             stop.set()
             with report_lock:

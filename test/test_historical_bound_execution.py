@@ -461,6 +461,115 @@ def test_progress_from_parallel_slots_is_complete(monkeypatch):
     assert sorted(seen, key=lambda item: (item["member"], item["n"])) == expected
 
 
+def test_member_completion_reports_serial_indices_in_order(monkeypatch):
+    _patch_requests(monkeypatch)
+    names = ["a", "b", "c"]
+    worker = FakeWorker(
+        [
+            FakeStatus("completed", payload={"member": "a"}),
+            FakeStatus("failed", message="engine exploded"),
+            FakeStatus("completed", payload={"member": "c"}),
+        ]
+    )
+    reported = []
+
+    outcomes = run_bound_members(
+        [_execution(name) for name in names],
+        worker=worker,
+        save=lambda execution, result: ("uid", 1.0),
+        marine_directory=MARINE_DIRECTORY,
+        convert=_echo,
+        on_member_complete=lambda index, outcome: reported.append((index, outcome)),
+    )
+
+    assert [index for index, _ in reported] == [0, 1, 2]
+    assert [outcome for _, outcome in reported] == outcomes
+    assert [outcome.outcome for _, outcome in reported] == ["finished", "failed", "finished"]
+    assert [outcome.member_id for _, outcome in reported] == names
+
+
+def test_member_completion_reports_each_parallel_member_once(monkeypatch):
+    _patch_requests(monkeypatch)
+    names = ["a", "b", "c", "d"]
+    created = []
+    reported = {}
+    guard = threading.Lock()
+
+    def complete(index, outcome):
+        with guard:
+            reported.setdefault(index, []).append(outcome)
+
+    outcomes = run_bound_members(
+        [_execution(name) for name in names],
+        worker_factory=_factory_of(
+            created, delays={name: 0.05 * (len(names) - index) for index, name in enumerate(names)}
+        ),
+        concurrency=2,
+        save=lambda execution, result: ("uid", 1.0),
+        marine_directory=MARINE_DIRECTORY,
+        convert=_echo,
+        on_member_complete=complete,
+    )
+
+    assert sorted(reported) == [0, 1, 2, 3]
+    assert all(len(items) == 1 for items in reported.values())
+    for index, items in reported.items():
+        assert items[0].member_id == names[index]
+        assert items[0] == outcomes[index]
+
+
+def test_member_completion_callback_failure_does_not_abort_batch(monkeypatch):
+    _patch_requests(monkeypatch)
+    names = ["a", "b", "c"]
+    worker = FakeWorker([FakeStatus("completed", payload={"member": name}) for name in names])
+
+    def complete(index, outcome):
+        raise RuntimeError("progress sink exploded")
+
+    outcomes = run_bound_members(
+        [_execution(name) for name in names],
+        worker=worker,
+        save=lambda execution, result: ("uid", 1.0),
+        marine_directory=MARINE_DIRECTORY,
+        convert=_echo,
+        on_member_complete=complete,
+    )
+
+    assert [item.member_id for item in outcomes] == names
+    assert [item.outcome for item in outcomes] == ["finished"] * len(names)
+    assert len(worker.submitted) == len(names)
+
+
+def test_cancelled_run_does_not_report_members_that_never_started(monkeypatch):
+    _patch_requests(monkeypatch)
+    names = ["a", "b", "c"]
+    worker = FakeWorker([FakeStatus("completed", payload={"member": name}) for name in names])
+    saved = []
+    reported = []
+
+    class Cancelled(Exception):
+        pass
+
+    def check_cancel():
+        if saved:
+            raise Cancelled("stop")
+
+    with pytest.raises(Cancelled):
+        run_bound_members(
+            [_execution(name) for name in names],
+            worker=worker,
+            save=lambda execution, result: (saved.append(execution.member_id) or ("uid", 1.0)),
+            marine_directory=MARINE_DIRECTORY,
+            convert=_echo,
+            check_cancel=check_cancel,
+            on_member_complete=lambda index, outcome: reported.append(index),
+        )
+
+    assert saved == ["a"]
+    assert len(worker.submitted) == 1
+    assert reported == [0]
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
