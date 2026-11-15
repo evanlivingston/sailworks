@@ -1,8 +1,8 @@
 """Controls for the Historical years ensemble routing mode.
 
 The panel owns no routing state: it collects the requested member grid, the
-acquisition region and the shared target-date current policy, then hands them
-to the controller through ``run_requested``. Validation mirrors the pure
+acquisition region and the shared target-date current policy for Calculate
+route to run. Validation mirrors the pure
 rules in :mod:`sailworks.core.historicalrouting` so the panel rejects a
 specification the engine would reject anyway.
 """
@@ -47,7 +47,6 @@ def _caption(text):
 class HistoricalRoutingOptions(QWidget):
     """Inputs for historical-year ensemble routing."""
 
-    run_requested = Signal(dict)
     cancel_requested = Signal()
     values_changed = Signal()
 
@@ -108,11 +107,6 @@ class HistoricalRoutingOptions(QWidget):
         self.use_currents.toggled.connect(lambda *_: self.values_changed.emit())
         layout.addWidget(self.use_currents)
 
-        source = QLabel("ERA5 hourly wind")
-        source.setAccessibleName("Wind source")
-        source.setToolTip("Historical members always sample ERA5 hourly 10 m wind.")
-        layout.addWidget(source)
-
         self.estimate = QLabel()
         self.estimate.setWordWrap(True)
         self.estimate.setAccessibleName("Estimate")
@@ -139,10 +133,6 @@ class HistoricalRoutingOptions(QWidget):
 
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
-        self.run_button = QPushButton("Download & run")
-        self.run_button.setAccessibleName("Download and run")
-        self.run_button.clicked.connect(self._request_run)
-        buttons.addWidget(self.run_button)
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.setAccessibleName("Cancel historical run")
         self.cancel_button.setEnabled(False)
@@ -205,9 +195,7 @@ class HistoricalRoutingOptions(QWidget):
         self._sync_buttons()
 
     def _sync_buttons(self):
-        self.run_button.setEnabled(self._available and not self._running)
-        self.run_button.setToolTip(self._available_reason)
-        self.run_button.setAccessibleDescription(self._available_reason)
+        # Starting belongs to Calculate route; only a running job can be cancelled.
         self.cancel_button.setEnabled(self._running)
 
     # -- validation ------------------------------------------------------
@@ -230,6 +218,3 @@ class HistoricalRoutingOptions(QWidget):
             self.max_duration.setValue(snapped)
             self.max_duration.blockSignals(False)
         self.values_changed.emit()
-
-    def _request_run(self):
-        self.run_requested.emit(self.values())

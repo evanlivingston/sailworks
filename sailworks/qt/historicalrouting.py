@@ -110,7 +110,6 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         # opens its results. There is no separate job selector here.
         self.job_selector = None
 
-        self.options.run_requested.connect(lambda *_: self.start_job())
         self.options.cancel_requested.connect(self.cancel_job)
         self.options.values_changed.connect(self._values_changed)
         self.results.member_selected.connect(self._member_selected)
@@ -163,7 +162,7 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         """Compatibility hook: run availability no longer depends on readiness.
 
         An incomplete Plan route is reported when the user actually presses
-        Download & run, not by disabling the button on a stale snapshot.
+        Calculate route, not by gating on a stale snapshot.
         """
         return
 

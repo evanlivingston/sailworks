@@ -630,7 +630,8 @@ class RoutingPanel(QWidget):
         self.historical_enabled = QCheckBox("Run historical years")
         self.historical_enabled.setAccessibleName("Run historical years")
         self.historical_enabled.setToolTip(
-            "Run a separate multi-year ensemble from the Download & run button below."
+            "When enabled, Calculate route runs the historical ensemble instead "
+            "of the normal route and parameter variations."
         )
         self.historical_enabled.toggled.connect(self._historical_enabled_changed)
         compare.addWidget(self.historical_enabled)
@@ -671,9 +672,21 @@ class RoutingPanel(QWidget):
 
     def _historical_enabled_changed(self, enabled):
         self.historical.setVisible(bool(enabled))
+        self._lock_parameter_axes(bool(enabled))
         if enabled:
             self.historical.refresh_route_summary()
         self.options_changed.emit()
+
+    def _lock_parameter_axes(self, locked):
+        """Disable the parameter axes while historical members run instead.
+
+        The axes are not crossed with historical members, so they are switched
+        off rather than left configurable. Unlocking restores each values field
+        to its own checkbox's state.
+        """
+        for checkbox, values in self.comparison_axes.values():
+            checkbox.setEnabled(not locked)
+            values.setEnabled(not locked and checkbox.isChecked())
 
     def _build_current_priority(self):
         self.parameters_box.layout().addWidget(section_label("Currents"))
@@ -1046,6 +1059,10 @@ class RoutingPanel(QWidget):
             self.refresh()
 
     def _calculate(self):
+        if self.historical_enabled.isChecked():
+            self.pages.setCurrentIndex(self.pages.indexOf(self.compare_page))
+            self.historical.start_job()
+            return
         backend = self.backend.currentData() or "legacy"
         try:
             refusal = self._avoidance_refusal(backend, self.avoidance_shapes())

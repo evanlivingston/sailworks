@@ -216,12 +216,11 @@ def test_compare_page_shows_axes_and_toggles_the_historical_section(
     assert panel.historical.isHidden()
 
 
-def test_calculate_with_historical_checked_runs_the_standard_route(
+def test_calculate_with_historical_checked_runs_the_ensemble(
     qtbot, monkeypatch, tmp_path
 ):
     panel = routing_panel(qtbot, monkeypatch, tmp_path)
     panel.historical_enabled.setChecked(True)
-    panel.pages.setCurrentIndex(panel.pages.indexOf(panel.compare_page))
     historical_calls = []
     monkeypatch.setattr(
         panel.historical, "start_job", lambda: historical_calls.append(True)
@@ -232,8 +231,14 @@ def test_calculate_with_historical_checked_runs_the_standard_route(
 
     panel._calculate()
 
-    assert historical_calls == []
-    assert len(panel.routing.started) == 1
+    compare = next(
+        index
+        for index in range(panel.pages.count())
+        if panel.pages.tabText(index) == "Compare"
+    )
+    assert panel.pages.currentIndex() == compare
+    assert historical_calls == [True]
+    assert panel.routing.started == []
     assert "Set a route" not in panel.status.text()
 
 
@@ -265,7 +270,6 @@ def test_historical_run_with_a_missing_route_reports_the_real_reason(
 
     panel.historical.start_job()
 
-    assert panel.historical.options.run_button.isEnabled()
     assert "Build a route request" in panel.historical.options.status.text()
     assert "Set a route before starting historical routing." not in (
         panel.historical.options.status.text()
@@ -318,13 +322,29 @@ def test_scene_group_selection_emits_the_group_and_items_still_select(qtbot, tmp
     assert groups == ["historical-routing:job-1"]
 
 
-def test_run_button_stays_enabled_regardless_of_route_readiness(qtbot):
-    request = SimpleNamespace(start=(1.0, 2.0), destination=(3.0, 4.0))
-    panel = historical_panel(qtbot, request=request)
-    assert panel.options.run_button.isEnabled()
+def test_historical_section_locks_and_restores_the_parameter_axes(
+    qtbot, monkeypatch, tmp_path
+):
+    panel = routing_panel(qtbot, monkeypatch, tmp_path)
+    axes = list(panel.comparison_axes.values())
+    first, second = axes[0], axes[1]
+    first[0].setChecked(True)
+    second[0].setChecked(False)
 
+    panel.historical_enabled.setChecked(True)
+    assert all(not enabled.isEnabled() for enabled, _ in axes)
+    assert all(not values.isEnabled() for _, values in axes)
+
+    panel.historical_enabled.setChecked(False)
+    assert all(enabled.isEnabled() for enabled, _ in axes)
+    assert first[1].isEnabled()
+    assert not second[1].isEnabled()
+
+
+def test_historical_options_have_no_run_button(qtbot):
     panel = historical_panel(qtbot, request=None)
-    assert panel.options.run_button.isEnabled()
+    assert not hasattr(panel.options, "run_button")
+    assert not panel.options.cancel_button.isEnabled()
 
 
 def test_show_job_loads_a_published_run(qtbot):

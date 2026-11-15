@@ -143,39 +143,41 @@ def test_numeric_inputs_use_the_standard_slider(qtbot):
         assert control.accessibleName()
 
 
-def test_run_button_never_gates_on_route_readiness(qtbot):
+def test_options_have_no_run_button(qtbot):
     widget = options(qtbot)
+    assert not hasattr(widget, "run_button")
     assert not hasattr(widget, "set_setup_ready")
-    assert widget.run_button.isEnabled()
-    assert widget.run_button.toolTip() == ""
-
-    widget.set_running(True)
-    assert not widget.run_button.isEnabled()
-    widget.set_running(False)
-    assert widget.run_button.isEnabled()
+    assert not widget.cancel_button.isEnabled()
 
 
-def test_running_state_switches_buttons(qtbot):
+def test_running_state_only_switches_cancel(qtbot):
     widget = options(qtbot)
+    cancelled = []
+    widget.cancel_requested.connect(lambda: cancelled.append(True))
+
     widget.set_running(True)
-    assert not widget.run_button.isEnabled()
     assert widget.cancel_button.isEnabled()
+    widget.cancel_button.click()
+    assert cancelled == [True]
+
     widget.set_running(False)
-    assert widget.run_button.isEnabled()
     assert not widget.cancel_button.isEnabled()
     widget.set_available(False, "Native backend capability missing: bound runs")
-    assert not widget.run_button.isEnabled()
-    assert (
-        widget.run_button.toolTip() == "Native backend capability missing: bound runs"
-    )
+    assert not widget.cancel_button.isEnabled()
 
 
-def test_run_button_emits_the_current_values(qtbot):
+def test_values_follow_the_current_controls(qtbot):
     widget = options(qtbot)
-    captured = []
-    widget.run_requested.connect(captured.append)
-    widget.run_button.click()
-    assert captured == [widget.values()]
+    widget.years.setValue(5)
+    widget.offset_days.setValue(2)
+    widget.max_duration.setValue(120)
+    widget.use_currents.setChecked(True)
+    assert widget.values() == {
+        "years": 5,
+        "offset_days": 2,
+        "max_duration_hours": 120,
+        "use_currents": True,
+    }
 
 
 def test_preflight_panel_hides_when_empty(qtbot):

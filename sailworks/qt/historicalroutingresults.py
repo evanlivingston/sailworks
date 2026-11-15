@@ -237,7 +237,7 @@ class HistoricalRoutingResults(QWidget):
         layout.setSpacing(6)
 
         self.empty_label = QLabel(
-            "No historical run yet — configure the years above and press Download & run."
+            "No historical run yet — configure the years above and press Calculate route."
         )
         self.empty_label.setWordWrap(True)
         self.empty_label.setAccessibleName("No historical run")
