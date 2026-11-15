@@ -176,13 +176,10 @@ def test_chart_split_does_not_double_draw_enc_or_mbtiles():
     charts._mbtiles_renderer.draw.assert_called_once()
 
 
-def test_panning_keeps_the_retained_chart_while_zoom_or_time_clear_it():
+def test_a_zoom_or_time_change_marks_the_retained_chart_stale_never_withdraws_it():
     from datetime import datetime as _datetime
 
-    from sailworks.qt.gribviewport import (
-        ViewportCamera,
-        chart_withdrawn_on_camera_change,
-    )
+    from sailworks.qt.gribviewport import ViewportCamera, chart_preview_is_stale
 
     clock = _datetime(2026, 10, 21, 9)
 
@@ -190,12 +187,13 @@ def test_panning_keeps_the_retained_chart_while_zoom_or_time_clear_it():
         return ViewportCamera(48.45, lon, zoom, 710, 743, time, "very_dense", False)
 
     base = view()
-    assert not chart_withdrawn_on_camera_change(base, view(lon=-124.1), True)
-    assert chart_withdrawn_on_camera_change(base, view(zoom=10.0), True)
-    assert chart_withdrawn_on_camera_change(
-        base, view(time=_datetime(2026, 10, 21, 10)), True
-    )
-    assert not chart_withdrawn_on_camera_change(base, view(zoom=10.0), False)
+    # A pan is the same chart at a shifted position: current content.
+    assert not chart_preview_is_stale(base, view(lon=-124.1))
+    # A zoom or forecast-time change is a preview of an old frame, reported as
+    # loading by the chart status and by the ENC source until it is replaced.
+    assert chart_preview_is_stale(base, view(zoom=10.0))
+    assert chart_preview_is_stale(base, view(time=_datetime(2026, 10, 21, 10)))
+    assert not chart_preview_is_stale(None, view(zoom=10.0))
 
 
 def test_chart_placement_scales_the_retained_zoom_preview_about_its_center():
