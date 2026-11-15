@@ -10,7 +10,6 @@ specification the engine would reject anyway.
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
@@ -35,7 +34,6 @@ from sailworks.core.historicalrouting import (
 
 from .dropdown import Dropdown, FieldRow
 from .slider import Slider
-from .theme import section_label
 
 # The routing panel already exposes these two policies for overlapping
 # current models; historical mode reuses the same values verbatim.
@@ -67,7 +65,6 @@ class HistoricalRoutingOptions(QWidget):
         self._region = None
         self._available = True
         self._running = False
-        self._summary = {}
         self._build()
         self._sync_buttons()
         self._update_region_label()
@@ -78,49 +75,25 @@ class HistoricalRoutingOptions(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        # Route configuration is owned by the Plan tab; this read-only summary
-        # shows exactly what historical mode will reuse.
-        layout.addWidget(section_label("Route setup"))
-        self.route_form = QFormLayout()
-        self.route_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
-        self._route_labels = {}
-        for title in (
-            "Departure (local)",
-            "From → To",
-            "Waypoints",
-            "Boat / polar",
-            "Algorithm",
-            "Safety",
-            "Currents",
-        ):
-            value = QLabel("not set")
-            value.setWordWrap(True)
-            value.setAccessibleName(title)
-            self._route_labels[title] = value
-            # FieldRow sizes inputs to a fixed fraction of the row, which is
-            # wrong for prose: a wrapped label alone keeps the minimum width
-            # at the longest word.
-            self.route_form.addRow(_caption(title), value)
-        layout.addLayout(self.route_form)
-
-        self.route_missing = QLabel("Set the route and boat in Plan first.")
-        self.route_missing.setWordWrap(True)
-        self.route_missing.setVisible(False)
-        layout.addWidget(self.route_missing)
-
-        edit_row = QHBoxLayout()
-        edit_row.setSpacing(8)
+        # The Plan tab owns route configuration. Show one compact hint only
+        # when it is incomplete, then leave the form to the ensemble inputs.
+        self.setup_hint = QWidget()
+        hint_row = QHBoxLayout(self.setup_hint)
+        hint_row.setContentsMargins(0, 0, 0, 0)
+        hint_row.setSpacing(8)
+        self.setup_label = QLabel("Set the route and boat in Plan.")
+        self.setup_label.setWordWrap(True)
+        self.setup_label.setAccessibleName("Route setup hint")
+        hint_row.addWidget(self.setup_label, 1)
         self.edit_plan = QPushButton("Edit in Plan")
         self.edit_plan.setAccessibleName("Edit in Plan")
         self.edit_plan.setToolTip(
             "Change the route, boat and safety settings in the Plan tab."
         )
         self.edit_plan.clicked.connect(lambda *_: self.edit_plan_requested.emit())
-        edit_row.addWidget(self.edit_plan)
-        edit_row.addStretch(1)
-        layout.addLayout(edit_row)
-
-        layout.addWidget(_caption("Requested years"))
+        hint_row.addWidget(self.edit_plan)
+        self.setup_hint.setVisible(False)
+        layout.addWidget(self.setup_hint)
 
         self.years = Slider()
         self.years.setDecimals(0)
@@ -233,46 +206,12 @@ class HistoricalRoutingOptions(QWidget):
         layout.addLayout(buttons)
         layout.addStretch(1)
 
-    # -- route summary ---------------------------------------------------
-    def set_route_summary(self, summary):
-        """Render the read-only copy of the Plan tab's route configuration.
-
-        ``summary`` is a mapping with the keys ``departure``, ``start``,
-        ``destination``, ``waypoints``, ``polar``, ``algorithm``, ``safety``
-        and ``currents``. Missing or ``None`` values fall back to "not set".
-        """
-        self._summary = dict(summary or {})
-        self.route_missing.setVisible(not self._summary)
-        values = {
-            "Departure (local)": self._summary.get("departure"),
-            "From → To": self._route_span(),
-            "Waypoints": self._summary.get("waypoints"),
-            "Boat / polar": self._summary.get("polar"),
-            "Algorithm": self._summary.get("algorithm"),
-            "Safety": self._summary.get("safety"),
-            "Currents": self._summary.get("currents"),
-        }
-        for title, value in values.items():
-            self._route_labels[title].setText(self._display(value))
-
-    @staticmethod
-    def _display(value):
-        if value is None or value == "":
-            return "not set"
-        if isinstance(value, bool):
-            return "on" if value else "off"
-        return str(value)
-
-    def _route_span(self):
-        start = self._summary.get("start") or "not set"
-        destination = self._summary.get("destination") or "not set"
-        return f"{start} → {destination}"
-
-    def summary_text(self):
-        """Flat text of the rendered summary, for tests and tooltips."""
-        return "\n".join(
-            f"{title}: {label.text()}" for title, label in self._route_labels.items()
-        )
+    # -- route readiness -------------------------------------------------
+    def set_setup_ready(self, ready, detail=""):
+        """Show or hide the one-line prompt to configure the route in Plan."""
+        self.setup_hint.setVisible(not ready)
+        if not ready:
+            self.setup_label.setText(detail or "Set the route and boat in Plan.")
 
     # -- values ----------------------------------------------------------
     def values(self):

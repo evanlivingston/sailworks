@@ -197,7 +197,7 @@ def test_scene_group_selection_emits_the_group_and_items_still_select(qtbot, tmp
     assert groups == ["historical-routing:job-1"]
 
 
-def test_historical_summary_reflects_the_plan_request(qtbot):
+def test_historical_hint_hides_when_the_plan_route_is_complete(qtbot):
     request = SimpleNamespace(
         departure=datetime(2021, 6, 15, 12),
         start=(1.0, 2.0),
@@ -205,27 +205,23 @@ def test_historical_summary_reflects_the_plan_request(qtbot):
         waypoints=((5.0, 6.0),),
         polar_file="/tmp/Elan 410.pol",
         algorithm=type("LinearBestIsoRouter", (), {}),
-        tws_max_kn=30.0,
-        min_sailing_speed_kn=4.0,
-        motor_speed_kn=6.0,
         use_currents=True,
     )
     panel = historical_panel(qtbot, request=request)
-    text = panel.options.summary_text()
-    assert "2021-06-15 12:00" in text
-    assert "1.000, 2.000 → 3.000, 4.000" in text
-    assert "Waypoints: 1" in text
-    assert "Elan 410" in text
-    assert "Isochrone" in text
-    assert "max wind 30 kn" in text
-    assert "min sailing 4.0 kn" in text
-    assert "Currents: on" in text
-    assert panel.options.route_missing.isHidden()
+    assert panel.options.setup_hint.isHidden()
+    assert panel.options.edit_plan.isEnabled()
 
 
-def test_historical_summary_without_a_request_shows_guidance(qtbot):
+def test_historical_hint_names_what_the_plan_route_is_missing(qtbot):
+    request = SimpleNamespace(start=(1.0, 2.0), destination=(3.0, 4.0))
+    panel = historical_panel(qtbot, request=request)
+    assert not panel.options.setup_hint.isHidden()
+    assert "missing boat / polar" in panel.options.setup_label.text()
+    assert panel.options.edit_plan.isEnabled()
+
     panel = historical_panel(qtbot, request=None)
-    assert not panel.options.route_missing.isHidden()
+    assert not panel.options.setup_hint.isHidden()
+    assert panel.options.setup_label.text() == "Set the route and boat in Plan."
     assert panel.options.edit_plan.isEnabled()
 
 

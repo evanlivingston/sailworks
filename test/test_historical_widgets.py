@@ -141,46 +141,32 @@ def test_numeric_inputs_use_the_standard_slider(qtbot):
         assert control.accessibleName()
 
 
-def test_route_summary_renders_the_inherited_setup(qtbot):
+def test_setup_hint_is_hidden_when_the_route_is_configured(qtbot):
     widget = options(qtbot)
-    widget.set_route_summary({})
-    assert not widget.route_missing.isHidden()
-    assert widget.route_missing.text() == "Set the route and boat in Plan first."
-    assert widget.edit_plan.isEnabled()
+    assert widget.setup_hint.isHidden()
 
-    widget.set_route_summary(
-        {
-            "departure": "2026-06-15 12:00",
-            "start": "51.500, -0.120",
-            "destination": "48.400, -5.100",
-            "waypoints": 3,
-            "polar": "Elan 410",
-            "algorithm": "Isochrone",
-            "safety": "max wind 30 kn · min sailing 4.0 kn · motor 6.0 kn",
-            "currents": True,
-        }
+    widget.set_setup_ready(False)
+    assert not widget.setup_hint.isHidden()
+    assert widget.setup_label.text() == "Set the route and boat in Plan."
+
+    widget.set_setup_ready(
+        False, "Set the route and boat in Plan: missing boat / polar."
     )
-    text = widget.summary_text()
-    assert "2026-06-15 12:00" in text
-    assert "51.500, -0.120 → 48.400, -5.100" in text
-    assert "Waypoints: 3" in text
-    assert "Elan 410" in text
-    assert "Isochrone" in text
-    assert "max wind 30 kn" in text
-    assert "Currents: on" in text
-    assert widget.route_missing.isHidden()
+    assert widget.setup_label.text().endswith("missing boat / polar.")
 
-    widget.set_route_summary({"departure": None, "waypoints": 0, "currents": False})
-    assert "Departure (local): not set" in widget.summary_text()
-    assert "Currents: off" in widget.summary_text()
+    widget.set_setup_ready(True)
+    assert widget.setup_hint.isHidden()
 
 
-def test_edit_in_plan_button_emits_the_signal(qtbot):
+def test_edit_in_plan_button_emits_the_signal_in_both_states(qtbot):
     widget = options(qtbot)
     captured = []
     widget.edit_plan_requested.connect(lambda: captured.append(True))
+    widget.set_setup_ready(False)
     widget.edit_plan.click()
-    assert captured == [True]
+    widget.set_setup_ready(True)
+    widget.edit_plan.click()
+    assert captured == [True, True]
 
 
 def test_running_state_switches_buttons(qtbot):

@@ -171,48 +171,28 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
             return departure
         return departure.astimezone(zone).replace(tzinfo=None)
 
-    # -- inherited route setup -------------------------------------------
+    # -- inherited route readiness ---------------------------------------
     def refresh_route_summary(self):
-        """Show the Plan tab's current route configuration, read-only."""
+        """Tell the form whether the inherited Plan route is complete."""
         try:
-            summary = self._route_summary()
+            request = self._base_request()
         except Exception:
-            summary = {}
-        self.options.set_route_summary(summary)
-
-    def _route_summary(self):
-        request = self._base_request()
-        departure = self._departure_local(request.departure)
-        safety = []
-        if request.tws_max_kn is not None:
-            safety.append(f"max wind {float(request.tws_max_kn):.0f} kn")
-        if request.min_sailing_speed_kn is not None:
-            safety.append(f"min sailing {float(request.min_sailing_speed_kn):.1f} kn")
-            safety.append(f"motor {float(request.motor_speed_kn):.1f} kn")
-        algorithm = getattr(request.algorithm, "__name__", None)
-        if not algorithm:
-            algorithm = getattr(request.algorithm, "name", None) or str(
-                request.algorithm
+            self.options.set_setup_ready(False)
+            return
+        missing = []
+        if getattr(request, "start", None) is None:
+            missing.append("start")
+        if getattr(request, "destination", None) is None:
+            missing.append("destination")
+        if not getattr(request, "polar_file", ""):
+            missing.append("boat / polar")
+        if missing:
+            detail = (
+                "Set the route and boat in Plan: missing " + ", ".join(missing) + "."
             )
-        if algorithm == "LinearBestIsoRouter":
-            algorithm = "Isochrone"
-        polar_file = request.polar_file or ""
-        return {
-            "departure": departure.strftime("%Y-%m-%d %H:%M"),
-            "start": self._format_point(request.start),
-            "destination": self._format_point(request.destination),
-            "waypoints": len(request.waypoints),
-            "polar": Path(polar_file).stem if polar_file else None,
-            "algorithm": algorithm,
-            "safety": " · ".join(safety),
-            "currents": bool(request.use_currents),
-        }
-
-    @staticmethod
-    def _format_point(point):
-        if point is None:
-            return None
-        return f"{float(point[0]):.3f}, {float(point[1]):.3f}"
+            self.options.set_setup_ready(False, detail)
+            return
+        self.options.set_setup_ready(True)
 
     @staticmethod
     def _region_from_request(request):
