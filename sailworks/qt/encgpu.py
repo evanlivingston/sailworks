@@ -414,6 +414,13 @@ def apply_colored_mesh(
     positions = np.ascontiguousarray(projected, dtype=np.float32)
     pieces = getattr(mesh, "parts", ())
     colors = vertex_colours(pieces, positions.shape[0], default_color)
+    # Qt Quick's vertex colours are premultiplied.  Straight RGBA makes every
+    # translucent fill additive, and a chart's overlapping areas then saturate
+    # to white.
+    colors = colors.copy()
+    colors[:, :3] = (
+        colors[:, :3].astype(np.uint16) * colors[:, 3:4].astype(np.uint16) // 255
+    ).astype(np.uint8)
     vertices = np.empty(positions.shape[0], dtype=VERTEX_DTYPE)
     vertices["x"] = positions[:, 0]
     vertices["y"] = positions[:, 1]

@@ -152,7 +152,12 @@ def test_area_outline_strokes_the_inner_ring():
     assert near_hole.any()
 
 
-def test_parts_follow_cell_scene_record_order():
+def test_parts_group_areas_before_lines_like_the_cairo_drawer():
+    """Areas first (in AREA_ORDER), then lines, then points.
+
+    The drawer paints every area before any line.  Emitted in encounter order,
+    a water fill that arrives last paints over the detail it contains.
+    """
     mesh = build_scene_mesh(
         _scene(
             (0, "DEPARE", box(0, 0, 1, 1)),
@@ -165,10 +170,10 @@ def test_parts_follow_cell_scene_record_order():
     observed = [(part.layer_index, part.source_class, part.kind) for part in mesh.parts]
     assert observed == [
         (0, "DEPARE", AREA_FILL),
-        (1, "COALNE", LINE),
         (0, "DEPARE", AREA_FILL),
+        (1, "COALNE", LINE),
     ]
-    assert [part.sequence for part in mesh.parts] == [0, 1, 2]
+    assert [part.sequence for part in mesh.parts] == [0, 2, 1]
     assert mesh.parts[1].first_vertex == mesh.parts[0].vertex_count
 
 
@@ -183,26 +188,27 @@ def test_point_feature_emits_a_marker_run():
 def test_mixed_collection_keeps_both_polygonal_and_lineal_parts():
     mixed = GeometryCollection([box(0, 0, 2, 2), LineString([(5, 5), (6, 6)])])
     mesh = build_scene_mesh(
-        _scene((0, "MIXED", mixed)), stroke_width=0.1, area_outlines=False
+        _scene((0, "DEPARE", mixed)), stroke_width=0.1, area_outlines=False
     )
     assert [part.kind for part in mesh.parts] == [AREA_FILL, LINE]
     assert mesh.unsupported == ()
     assert mesh.is_complete
 
 
-def test_mixed_collection_with_line_first_keeps_source_order():
+def test_mixed_collection_groups_the_area_before_the_line():
     mixed = GeometryCollection([LineString([(5, 5), (6, 6)]), box(0, 0, 2, 2)])
     mesh = build_scene_mesh(
-        _scene((0, "MIXED", mixed)), stroke_width=0.1, area_outlines=False
+        _scene((0, "DEPARE", mixed)), stroke_width=0.1, area_outlines=False
     )
-    assert [part.kind for part in mesh.parts] == [LINE, AREA_FILL]
+    # The drawer paints every area before any line, whatever the source order.
+    assert [part.kind for part in mesh.parts] == [AREA_FILL, LINE]
     assert mesh.parts[0].first_vertex == 0
 
 
 def test_mixed_collection_draws_area_then_the_point_marker():
     mixed = GeometryCollection([box(0, 0, 2, 2), Point(9, 9)])
     mesh = build_scene_mesh(
-        _scene((0, "MIXED", mixed)), stroke_width=0.1, area_outlines=False
+        _scene((0, "DEPARE", mixed)), stroke_width=0.1, area_outlines=False
     )
     assert [part.kind for part in mesh.parts] == [AREA_FILL, MARKER]
     assert mesh.unsupported == ()
@@ -254,7 +260,7 @@ def test_screen_unit_stroke_uses_the_projection_scale():
     assert np.ptp(positions[:, 1]) == pytest.approx(4.0)
 
 
-def test_palette_colours_parts_in_encounter_order():
+def test_palette_colours_parts_in_draw_order():
     mesh = build_scene_mesh(
         _scene(
             (0, "DEPARE", box(0, 0, 2, 2)),
@@ -264,20 +270,21 @@ def test_palette_colours_parts_in_encounter_order():
         stroke_width=0.1,
         palette="cm93",
     )
+    # AREA_ORDER puts the depth area before land; lines come last.
     assert [part.kind for part in mesh.parts] == [
         AREA_FILL,
         AREA_OUTLINE,
-        LINE,
         AREA_FILL,
         AREA_OUTLINE,
+        LINE,
     ]
     # cm93: absent DRVAL1 reads as 0, so the DEPARE fill is the shallow band.
     assert mesh.parts[0].colour == (0x73, 0xB6, 0xEF, 255)
     assert mesh.parts[1].colour == (128, 153, 178, 153)  # contour stroke
-    assert mesh.parts[2].colour == (0x52, 0x5A, 0x5C, 255)  # land stroke
-    assert mesh.parts[3].colour == (0xC9, 0xB9, 0x7A, 255)  # land fill
+    assert mesh.parts[2].colour == (0xC9, 0xB9, 0x7A, 255)  # land fill
+    assert mesh.parts[3].colour == (0x52, 0x5A, 0x5C, 255)  # land stroke
     assert mesh.parts[4].colour == (0x52, 0x5A, 0x5C, 255)
-    assert [part.sequence for part in mesh.parts] == [0, 0, 1, 2, 2]
+    assert [part.sequence for part in mesh.parts] == [0, 0, 2, 2, 1]
     for part in mesh.parts:
         assert part.vertex_count > 0
         assert part.first_vertex + part.vertex_count <= mesh.vertex_count

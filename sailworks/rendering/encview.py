@@ -656,6 +656,25 @@ class _CellOutcome:
     timings: dict | None = None
 
 
+def _same_extent(left, right):
+    """Whether two regions cover the same extent, to source precision.
+
+    The cache-safe case for a per-cell mesh: a cell wholly inside the view has
+    the same clip as coverage, so its mesh does not depend on the view.
+    """
+    try:
+        lx0, ly0, lx1, ly1 = left.bounds
+        rx0, ry0, rx1, ry1 = right.bounds
+    except (AttributeError, TypeError):
+        return False
+    return (
+        abs(lx0 - rx0) <= 1e-9
+        and abs(ly0 - ry0) <= 1e-9
+        and abs(lx1 - rx1) <= 1e-9
+        and abs(ly1 - ry1) <= 1e-9
+    )
+
+
 def _prepare_cell(
     cell,
     index,
@@ -670,10 +689,21 @@ def _prepare_cell(
     known = bool(cell.coverage_known)
     own = cell.coverage if known else None
     if known and own is not None:
-        # View-independent: the cell's own authoritative coverage.
-        clip_region = own
-        query_region = own
-        cacheable = owner is not None
+        # Mesh the region the view can see, not the whole cell.  Clipping to
+        # ``cell.coverage`` makes the mesh view-independent, but at harbour
+        # zoom the coverage is orders of magnitude larger than the view
+        # (measured: 14 degrees of source meshed for a 0.08 degree view,
+        # 122,757 vertices and 1.7 s for one cell), and every one of those
+        # triangles is uploaded to draw nothing.  The plan already carries the
+        # visible region, so use it and keep the mesh reusable only where the
+        # cell lies wholly inside the view and the two regions coincide.
+        clip_region = cell.clip if cell.clip is not None else own
+        query_region = clip_region
+        cacheable = (
+            owner is not None
+            and cell.clip is not None
+            and _same_extent(own, cell.clip)
+        )
     elif known:
         # A hand-built plan without its own coverage: only the view clip is
         # available, so this mesh is view-dependent and is not reused.
@@ -734,6 +764,35 @@ def _prepare_cell(
     )
 
 
+def _marker_scale(task, region):
+    """Source degrees per template pixel, for marker geometry.
+
+    Marker templates are in pixels; a caller that omits this gives every
+    symbol a one-degree radius, which covers the whole chart.  Probed from the
+    same projected span as the tolerance, so a symbol keeps its pixel size.
+    """
+    bounds = _bounds(region)
+    if bounds is None:
+        return None
+    min_x, min_y, max_x, max_y = bounds
+    probe = np.array([[min_x, min_y], [max_x, max_y]], dtype=np.float64)
+    try:
+        projected = np.asarray(task.projection(probe), dtype=np.float64)
+    except Exception:  # noqa: BLE001 - an unprobeable projection has no scale
+        return None
+    if projected.shape != (2, 2):
+        return None
+    width_pixels = abs(float(projected[1, 0] - projected[0, 0]))
+    height_pixels = abs(float(projected[1, 1] - projected[0, 1]))
+    per_pixel = []
+    for span, pixels in ((max_x - min_x, width_pixels), (max_y - min_y, height_pixels)):
+        if pixels > 0.0 and np.isfinite(pixels) and span > 0.0:
+            per_pixel.append(span / pixels)
+    if not per_pixel:
+        return None
+    return float(min(per_pixel))
+
+
 def _mesh_cell(
     task,
     scene,
@@ -766,6 +825,9 @@ def _mesh_cell(
         _stage(timings, "query", started)
         if records is None or _cancelled(cancelled):
             return _CellOutcome(cancelled=True)
+        marker_scale = _marker_scale(task, task.clip_region or task.query_region)
+        if marker_scale is None:
+            marker_scale = 2.0 * task.tolerance if task.tolerance else 1e-9
         mesh = encmesh.build_scene_mesh(
             _ScopedRecords(records),
             coverage=task.clip_region if task.known else None,
@@ -773,6 +835,7 @@ def _mesh_cell(
             stroke_pixels=stroke_pixels,
             projection=task.projection,
             palette=palette,
+            marker_scale=marker_scale,
             simplify=task.tolerance,
             timings=timings,
         )

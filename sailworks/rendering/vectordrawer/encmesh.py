@@ -280,6 +280,51 @@ def _ordered_parts(geometry) -> tuple:
     return (("other", geometry),)
 
 
+#: Area paint order, mirroring ``S57ChartDrawer.AREA_ORDER``: depth areas
+#: first, then dredged areas, then land, then every other area class.
+AREA_ORDER = {"DEPARE": 0, "DRGARE": 1, "LNDARE": 2}
+
+#: The polygon classes the Cairo drawer fills, mirroring
+#: ``S57ChartDrawer.AREA_LAYERS``.  Every other polygon record is administrative
+#: or meta geometry (``ADMARE``, ``SEAARE``, ``MAGVAR``, ``M_NPUB``) and must not
+#: be filled: an ``ADMARE`` covers the whole cell and paints over the chart.
+AREA_LAYERS = {
+    "LNDARE",
+    "DEPARE",
+    "DRGARE",
+    "BUAARE",
+    "BUISGL",
+    "LAKARE",
+    "RIVERS",
+    "ACHARE",
+    "ANCBRT",
+    "RESARE",
+    "CTNARE",
+}
+
+
+def _geometry_group(geometry) -> int:
+    """0 for an area record, 1 for a line record, 2 for everything else.
+
+    The Cairo drawer paints every area, then every line, then every point, so a
+    mesh must group the same way.  Emitted in encounter order, a large water
+    fill painted after the detail it contains reads as a flat wash.  The group
+    comes from the parsed geometry type, which simplification preserves.
+    """
+    kind = geometry.geom_type
+    if kind in ("Polygon", "MultiPolygon"):
+        return 0
+    if kind in ("LineString", "MultiLineString", "LinearRing"):
+        return 1
+    if kind == "GeometryCollection":
+        kinds = {part.geom_type for part in geometry.geoms}
+        if kinds & {"Polygon", "MultiPolygon"}:
+            return 0
+        if kinds & {"LineString", "MultiLineString"}:
+            return 1
+    return 2
+
+
 def _ccw(points: np.ndarray) -> np.ndarray:
     """Return the three points counter-clockwise, so winding is deterministic."""
     ax, ay = points[0]
@@ -746,7 +791,8 @@ def build_scene_mesh(
             runs.append(template + anchor)
         return np.concatenate(runs).reshape(-1, 2)
 
-    for record in records:
+    parsed: list[tuple[int, object, object, int, tuple]] = []
+    for index, record in enumerate(records):
         started = time.perf_counter()
         try:
             geometry = shapely.from_wkb(record.wkb)
@@ -758,6 +804,18 @@ def build_scene_mesh(
         if geometry is None or geometry.is_empty:
             unsupported.append(_unsupported(record, "empty geometry"))
             continue
+        parsed.append((index, record, geometry, _geometry_group(geometry)))
+
+    ordered_records = sorted(
+        parsed,
+        key=lambda item: (
+            item[3],
+            AREA_ORDER.get(item[1].source_class, 3) if item[3] == 0 else 0,
+            item[0],
+        ),
+    )
+
+    for _index, record, geometry, _group in ordered_records:
 
         if simplify:
             started = time.perf_counter()
@@ -774,14 +832,16 @@ def build_scene_mesh(
         started = time.perf_counter()
         ordered = _ordered_parts(geometry)
         polygonal = tuple(part for kind, part in ordered if kind == "area")
+        if polygonal and record.source_class not in AREA_LAYERS:
+            # The drawer fills only its area whitelist; administrative and sea
+            # areas cover the cell and would paint over the chart.
+            polygonal = ()
         lineal = tuple(part for kind, part in ordered if kind == "line")
         other = tuple(part for kind, part in ordered if kind == "other")
         points = tuple(part for part in other if part.geom_type == "Point")
         if clip_geometry is not None:
             points = tuple(point for point in points if clip_geometry.covers(point))
         other = tuple(part for part in other if part.geom_type != "Point")
-        lineal_first = bool(ordered) and ordered[0][0] == "line"
-        points_first = bool(ordered) and ordered[0][0] == "other"
         _stage(timings, "ordered", started)
 
         # Fill is clipped by exact intersection before triangulation; strokes
@@ -844,18 +904,12 @@ def build_scene_mesh(
             else None
         )
 
-        if points_first:
-            emit(record, MARKER, marker_run, marker_colour_value)
-        if lineal_first:
-            emit(record, LINE, line_vertices)
-            emit(record, AREA_FILL, fill_vertices)
-            emit(record, AREA_OUTLINE, outline_vertices)
-        else:
-            emit(record, AREA_FILL, fill_vertices)
-            emit(record, AREA_OUTLINE, outline_vertices)
-            emit(record, LINE, line_vertices)
-        if not points_first:
-            emit(record, MARKER, marker_run, marker_colour_value)
+        # The drawer paints each area before the lines and points of the same
+        # feature, whatever order the source geometry lists them in.
+        emit(record, AREA_FILL, fill_vertices)
+        emit(record, AREA_OUTLINE, outline_vertices)
+        emit(record, LINE, line_vertices)
+        emit(record, MARKER, marker_run, marker_colour_value)
 
         if points and marker_kind is None:
             unsupported.append(

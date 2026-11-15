@@ -291,7 +291,8 @@ def test_colored_vertex_layout_is_twelve_bytes(qt_app):
     np.testing.assert_allclose(vertices["y"], [0, 0, 10, 0, 0, 10])
     # Parts keep their encounter order: fill run first, line run second.
     np.testing.assert_array_equal(vertices["rgba"][:3], [[1, 2, 3, 255]] * 3)
-    np.testing.assert_array_equal(vertices["rgba"][3:], [[4, 5, 6, 128]] * 3)
+    # Qt vertex colours are premultiplied: 4/5/6 at alpha 128.
+    np.testing.assert_array_equal(vertices["rgba"][3:], [[2, 2, 3, 128]] * 3)
 
 
 def test_colored_item_uses_blended_vertex_color_material(qt_app):
@@ -310,7 +311,7 @@ def test_colored_item_uses_blended_vertex_color_material(qt_app):
 
     vertices = _read_colored(item._geometry)
     np.testing.assert_array_equal(vertices["rgba"][0], [1, 2, 3, 255])
-    np.testing.assert_array_equal(vertices["rgba"][-1], [4, 5, 6, 128])
+    np.testing.assert_array_equal(vertices["rgba"][-1], [2, 2, 3, 128])
 
     # An unchanged coloured frame does no projection, copy or reorder.
     for _ in range(3):
@@ -483,7 +484,14 @@ def test_large_colored_upload_copies_full_capacity(qt_app):
     xs = np.arange(count, dtype=np.float32)
     assert np.array_equal(vertices["x"], xs)
     assert np.array_equal(vertices["y"], -xs)
-    rgba = np.tile(np.array(color, np.uint8), (count, 1))
+    # Qt vertex colours are premultiplied before the copy.
+    premultiplied = (
+        color[0] * color[3] // 255,
+        color[1] * color[3] // 255,
+        color[2] * color[3] // 255,
+        color[3],
+    )
+    rgba = np.tile(np.array(premultiplied, np.uint8), (count, 1))
     assert np.array_equal(vertices["rgba"], rgba)
 
 

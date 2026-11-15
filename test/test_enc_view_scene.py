@@ -161,14 +161,16 @@ def test_assembles_cells_in_plan_order_and_matches_per_cell_meshes(tmp_path):
     assert assembled.skipped == ()
     assert assembled.is_complete
 
-    # Each mesh is clipped to the cell's own coverage, not the view clip.
+    # Each mesh is clipped to the viewed part of the cell, not its whole
+    # coverage: a cell meshed over its whole coverage uploads triangles the
+    # view can never show.
     expected_positions = []
     expected_parts = []
     offset = 0
     for scene, cell in zip((second, first), reversed(plan)):
         mesh = encmesh.build_scene_mesh(
             scene,
-            coverage=cell.coverage,
+            coverage=cell.clip,
             clip=True,
             stroke_pixels=1.5,
             projection=_projection,
@@ -187,7 +189,8 @@ def test_assembles_cells_in_plan_order_and_matches_per_cell_meshes(tmp_path):
         part.first_vertex for part in assembled.parts
     )
     assert assembled.accounted_bytes == first.nbytes + second.nbytes
-    assert assembled.mesh_hits == 0 and assembled.mesh_misses == 2
+    # A mesh clipped to the view depends on the view, so it is not cached.
+    assert assembled.mesh_hits == 0 and assembled.mesh_misses == 0
 
     first_span = assembled.cells[0]
     assert first_span.first_vertex == 0

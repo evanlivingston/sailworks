@@ -153,12 +153,12 @@ def test_point_marker_is_translated_to_the_anchor_in_source_order():
     assert port == pytest.approx(_template(encmarkers.BUOY_PORT) + (30.0, 40.0))
 
 
-def test_point_first_collection_emits_the_marker_before_the_area():
+def test_point_first_collection_draws_the_area_then_the_marker():
     mixed = GeometryCollection([Point(9, 9), box(0, 0, 2, 2)])
     mesh = build_scene_mesh(
-        _scene(("MIXED", mixed)), stroke_width=0.1, area_outlines=False
+        _scene(("DEPARE", mixed)), stroke_width=0.1, area_outlines=False
     )
-    assert [part.kind for part in mesh.parts] == [MARKER, AREA_FILL]
+    assert [part.kind for part in mesh.parts] == [AREA_FILL, MARKER]
 
 
 def test_multipoint_is_one_contiguous_run():
