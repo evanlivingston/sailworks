@@ -9,11 +9,13 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QScrollArea, QTreeWidgetItem
 
 import sailworks.qt.historicalera5 as historicalera5
 import sailworks.qt.historicalrouting as historicalrouting
+from sailworks.core.geo.track import Track
 from sailworks.core.historicalroutingrecords import MemberRecord
 from sailworks.qt.historicalrouting import HistoricalRoutingPanel
 from sailworks.qt.routingpanel import RoutingPanel
@@ -427,6 +429,46 @@ def test_saved_and_restored_options_include_mode_and_historical_values(
     assert panel.historical.isHidden()
 
 
+def test_restore_selects_a_saved_track_destination_by_name(
+    qtbot, monkeypatch, tmp_path
+):
+    panel = routing_panel(qtbot, monkeypatch, tmp_path)
+    track = Track("The Pacific NW Offshore Race 2026 - Course", [(48.4, -123.4)])
+    panel._fake_controller.core.trackManager = [track]
+    panel.refresh_destinations()
+
+    panel.restore_options({"destination": {"type": "track", "name": track.name}})
+
+    assert panel.destination.currentData() is track
+    assert panel.destination.currentText() == "Track: " + track.name
+
+
+def test_restore_accepts_a_legacy_track_value_shape(qtbot, monkeypatch, tmp_path):
+    panel = routing_panel(qtbot, monkeypatch, tmp_path)
+    track = Track("The Pacific NW Offshore Race 2026 - Course", [(48.4, -123.4)])
+    panel._fake_controller.core.trackManager = [track]
+    panel.refresh_destinations()
+
+    panel.restore_options({"destination": {"type": "track", "value": track.name}})
+
+    assert panel.destination.currentData() is track
+
+
+def test_restored_track_destination_enables_calculate(qtbot, monkeypatch, tmp_path):
+    panel = routing_panel(qtbot, monkeypatch, tmp_path)
+    panel._fake_controller.core.polar_manager.polars = ["boat.pol"]
+    track = Track("The Pacific NW Offshore Race 2026 - Course", [(48.4, -123.4)])
+    panel._fake_controller.core.trackManager = [track]
+    panel.refresh_polars()
+    panel.refresh_destinations()
+
+    panel.restore_options({"destination": {"type": "track", "name": track.name}})
+    panel.refresh()
+
+    assert panel.destination.currentData() is track
+    assert panel.calculate.isEnabled()
+
+
 def test_spec_uses_the_departure_year_and_derives_the_region(qtbot):
     request = SimpleNamespace(
         departure=datetime(2021, 6, 15, 12),
@@ -460,12 +502,49 @@ def test_spec_uses_the_departure_year_and_derives_the_region(qtbot):
 def test_derived_region_clips_to_the_globe(qtbot):
     request = SimpleNamespace(
         departure=datetime(2021, 6, 15, 12),
-        start=(178.0, -88.0),
-        destination=(-179.0, 89.0),
+        start=(88.0, 176.0),
+        destination=(89.0, 177.0),
         waypoints=(),
     )
     panel = historical_panel(qtbot, request=request)
-    assert panel._region_from_request(request) == (-180.0, -90.0, 180.0, 90.0)
+    assert panel._region_from_request(request) == (171.0, 83.0, 180.0, 90.0)
+
+
+def test_region_from_request_reads_points_as_lat_lon(qtbot):
+    request = SimpleNamespace(
+        departure=datetime(2021, 6, 15, 12),
+        start=(48.4, -123.4),
+        destination=(47.0, -125.0),
+        waypoints=(),
+    )
+    panel = historical_panel(qtbot, request=request)
+    west, south, east, north = panel._region_from_request(request)
+    assert (west, south, east, north) == (-130.0, 42.0, -118.4, 53.4)
+    assert west < east
+    assert south < north
+
+
+def test_region_from_request_rejects_a_longitude_span_over_180_degrees(qtbot):
+    request = SimpleNamespace(
+        departure=datetime(2021, 6, 15, 12),
+        start=(10.0, 170.0),
+        destination=(20.0, -170.0),
+        waypoints=(),
+    )
+    panel = historical_panel(qtbot, request=request)
+    with pytest.raises(ValueError, match="180 degrees of longitude"):
+        panel._region_from_request(request)
+
+
+def test_region_from_request_without_points_returns_none(qtbot):
+    request = SimpleNamespace(
+        departure=datetime(2021, 6, 15, 12),
+        start=None,
+        destination=None,
+        waypoints=(),
+    )
+    panel = historical_panel(qtbot, request=request)
+    assert panel._region_from_request(request) is None
 
 
 class _Service:

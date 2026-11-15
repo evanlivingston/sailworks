@@ -178,11 +178,20 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         ]
         if not points:
             return None
+        # Route points are (latitude, longitude), matching RouteRequest.
+        latitudes = [float(point[0]) for point in points]
+        longitudes = [float(point[1]) for point in points]
         padding = 5.0
-        west = max(-180.0, min(float(point[0]) for point in points) - padding)
-        east = min(180.0, max(float(point[0]) for point in points) + padding)
-        south = max(-90.0, min(float(point[1]) for point in points) - padding)
-        north = min(90.0, max(float(point[1]) for point in points) + padding)
+        lon_span = max(longitudes) - min(longitudes)
+        if lon_span + 2.0 * padding > 180.0:
+            raise ValueError(
+                "The route spans more than 180 degrees of longitude; "
+                "choose a narrower route or a smaller historical region."
+            )
+        west = max(-180.0, min(longitudes) - padding)
+        east = min(180.0, max(longitudes) + padding)
+        south = max(-90.0, min(latitudes) - padding)
+        north = min(90.0, max(latitudes) + padding)
         return (west, south, east, north)
 
     def spec(self):

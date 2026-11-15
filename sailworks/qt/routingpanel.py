@@ -816,11 +816,18 @@ class RoutingPanel(QWidget):
             return False
         kind = saved.get("type")
         value = saved.get("value")
+        # Track selections are saved by name; older saves stored the name under
+        # "value", so accept either key here without changing the schema.
+        track_names = tuple(
+            name for name in (saved.get("name"), value) if isinstance(name, str)
+        )
         for index in range(combo.count()):
             data = combo.itemData(index)
-            if kind == "track" and isinstance(data, Track) and data.name == value:
-                combo.setCurrentIndex(index)
-                return True
+            if kind == "track":
+                name = getattr(data, "name", None)
+                if isinstance(name, str) and name in track_names:
+                    combo.setCurrentIndex(index)
+                    return True
             if (
                 kind == "position"
                 and isinstance(data, (list, tuple))
