@@ -1195,3 +1195,16 @@ def test_finished_marks_the_progress_widget(qtbot):
 
     panel._finished("", "")
     assert panel.options.progress_widget.overall_label.text() == "done"
+
+
+def test_is_running_tracks_the_worker_thread(qtbot):
+    """A live worker is busy even while the routing controller is idle."""
+    panel = historical_panel(qtbot)
+    assert panel.is_running() is False
+
+    thread = SimpleNamespace(is_alive=lambda: True, alive_flag=True)
+    panel._thread = thread
+    assert panel.is_running() is True
+
+    thread.is_alive = lambda: False
+    assert panel.is_running() is False

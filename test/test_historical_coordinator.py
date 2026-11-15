@@ -958,3 +958,23 @@ def test_rechecked_members_start_at_one_attempt_and_are_logged(monkeypatch, tmp_
     assert entries[0]["year"] == 2018
     assert entries[0]["previous_reason"]
     assert set(entries[0]["members"]) == new_ids
+
+
+def test_freezing_reads_the_wind_store_not_the_job_store(tmp_path):
+    """The ERA5 catalog lives in the analysis store, not the job store."""
+    from types import SimpleNamespace
+
+    job_store = HistoricalRoutingStore(tmp_path / "jobs")
+    wind_store = SimpleNamespace(root=tmp_path / "analysis")
+
+    coordinator = HistoricalRoutingCoordinator(
+        store=job_store, tranche_store_provider=lambda: wind_store
+    )
+    assert coordinator._wind_store() is wind_store
+
+    coordinator.tranche_store_provider = None
+    coordinator.tranche_store = wind_store
+    assert coordinator._wind_store() is wind_store
+
+    coordinator.tranche_store = None
+    assert coordinator._wind_store() is job_store

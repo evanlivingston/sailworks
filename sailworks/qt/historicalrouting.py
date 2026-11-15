@@ -93,6 +93,9 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         self.coordinator = HistoricalRoutingCoordinator(
             store=self.store,
             scene=scene_provider() if scene_provider is not None else None,
+            # Wind tranches and the ERA5 catalog live in the forecast analysis
+            # store, not in the job store.
+            tranche_store_provider=self._tranche_store,
         )
         self.actions = HistoricalRoutingActions(self)
 
@@ -159,6 +162,10 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
                 "Build a route request before starting historical routing."
             )
         return request
+
+    def is_running(self):
+        """Whether a historical run, including weather acquisition, is alive."""
+        return self._thread is not None and self._thread.is_alive()
 
     def _departure_local(self, departure):
         zone = ZoneInfo(local_timezone_id())

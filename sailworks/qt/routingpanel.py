@@ -1301,7 +1301,9 @@ class RoutingPanel(QWidget):
         self.status.setText(self._display_status())
 
     def refresh(self):
-        busy = self.routing.busy
+        # A historical run owns its own thread, so it is busy even though
+        # the routing controller behind Calculate route is idle.
+        busy = self.routing.busy or self.historical.is_running()
         self._refresh_safety()
         for control in (
             *self.inputs,
