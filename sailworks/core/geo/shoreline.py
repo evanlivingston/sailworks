@@ -34,6 +34,7 @@ class ShorelineValidity:
         self._routing_clips: OrderedDict[tuple, tuple] = OrderedDict()
         self._routing_sources: OrderedDict[tuple, ogr.Geometry] = OrderedDict()
         self._routing_native_clips: OrderedDict = OrderedDict()
+        self._routing_native_envelopes: OrderedDict = OrderedDict()
         self._land_mask = None
         self._land_mask_meta = None
         self._distance_cache: OrderedDict[tuple, float] = OrderedDict()
@@ -159,19 +160,44 @@ class ShorelineValidity:
 
     def _native_routing_land(self, land):
         """Convert each immutable clipped polygon once for batch predicates."""
+        clips = getattr(self, "_routing_native_clips", None)
+        if clips is None:
+            clips = self._routing_native_clips = OrderedDict()
         key = id(land)
-        if key not in self._routing_native_clips:
+        if key not in clips:
             polygons = []
             for geometry, _ in land:
                 native = shapely.from_wkb(bytes(geometry.ExportToWkb()))
                 shapely.prepare(native)
                 polygons.append((*geometry.GetEnvelope(), native))
             # Retain land itself so its identity cannot be reused while cached.
-            self._routing_native_clips[key] = (land, tuple(polygons))
-            if len(self._routing_native_clips) > 64:
-                self._routing_native_clips.popitem(last=False)
-        self._routing_native_clips.move_to_end(key)
-        return self._routing_native_clips[key][1]
+            clips[key] = (land, tuple(polygons))
+            if len(clips) > 64:
+                clips.popitem(last=False)
+        clips.move_to_end(key)
+        return clips[key][1]
+
+    def _native_routing_envelopes(self, land):
+        """Numpy envelope table and native polygons for one clipped tile."""
+        envelopes = getattr(self, "_routing_native_envelopes", None)
+        if envelopes is None:
+            envelopes = self._routing_native_envelopes = OrderedDict()
+        key = id(land)
+        cached = envelopes.get(key)
+        if cached is not None:
+            envelopes.move_to_end(key)
+            return cached[1:]
+        polygons = self._native_routing_land(land)
+        west = np.asarray([polygon[0] for polygon in polygons], dtype=float)
+        east = np.asarray([polygon[1] for polygon in polygons], dtype=float)
+        south = np.asarray([polygon[2] for polygon in polygons], dtype=float)
+        north = np.asarray([polygon[3] for polygon in polygons], dtype=float)
+        natives = np.asarray([polygon[4] for polygon in polygons], dtype=object)
+        result = (land, west, east, south, north, natives)
+        envelopes[key] = result
+        if len(envelopes) > 64:
+            envelopes.popitem(last=False)
+        return result[1:]
 
     def points_validity(self, latlons):
         """Screen polygon envelopes in arrays, then use exact containment."""
@@ -243,20 +269,21 @@ class ShorelineValidity:
             and shapely is not None
             and getattr(self, "use_native_geometry", True)
         ):
-            segments = None
-            for west, east, south, north, native in self._native_routing_land(land):
-                possible = np.flatnonzero(
-                    valid
-                    & (right >= west)
-                    & (left <= east)
-                    & (top >= south)
-                    & (bottom <= north)
-                )
-                if not len(possible):
-                    continue
-                if segments is None:
-                    segments = shapely.linestrings(lines.reshape(-1, 2, 2)[:, :, ::-1])
-                valid[possible] &= ~shapely.intersects(native, segments[possible])
+            west, east, south, north, natives = self._native_routing_envelopes(land)
+            possible = (
+                (right[:, None] >= west[None, :])
+                & (left[:, None] <= east[None, :])
+                & (top[:, None] >= south[None, :])
+                & (bottom[:, None] <= north[None, :])
+            )
+            segments = shapely.linestrings(lines.reshape(-1, 2, 2)[:, :, ::-1])
+            for i in np.flatnonzero(valid):
+                candidates = np.flatnonzero(possible[i])
+                if (
+                    len(candidates)
+                    and shapely.intersects(natives[candidates], segments[i]).any()
+                ):
+                    valid[i] = False
             return valid.tolist()
         for geometry, prepared in land:
             west, east, south, north = geometry.GetEnvelope()
