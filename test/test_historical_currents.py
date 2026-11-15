@@ -16,7 +16,7 @@ from sailworks.core.historicalcurrents import (
     validate_current_coverage,
 )
 from sailworks.core.marine.chs import DownloadCancelledError
-from sailworks.core.marine.fields import CurrentField, FieldSelection
+from sailworks.core.marine.fields import Area, CurrentField, FieldSelection
 from sailworks.core.marine.models import canonical_json
 
 T = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
@@ -64,6 +64,7 @@ class FakePlanner:
         self.calls = []
 
     def download(self, area, start, end, cancel, report):
+        # Records the Area object the acquisition built from the request tuple.
         self.calls.append((area, start, end))
         return list(self.fields)
 
@@ -103,7 +104,38 @@ def test_happy_path_persists_fields_and_binding():
     assert acquisition.provider == "test"
     assert len(manager.fields.added) == 3
     assert set(manager.fields.fields) == set(binding.field_ids)
-    assert manager.coverage_planner.calls == [((-1.0, -1.0, 1.0, 1.0), T, T + timedelta(hours=2))]
+    ((area, start, end),) = manager.coverage_planner.calls
+    assert start == T
+    assert end == T + timedelta(hours=2)
+    assert isinstance(area, Area)
+    assert not isinstance(area, tuple)
+    assert (area.west, area.south, area.east, area.north) == (-1.0, -1.0, 1.0, 1.0)
+    assert area.parts() == (area,)
+
+
+def test_planner_receives_named_area_not_tuple():
+    manager = FakeManager([current_field(offsets=(0, 1))])
+
+    acquire_target_currents(manager, request(horizon=1, area=(-130.0, 41.0, -118.4, 53.0)))
+
+    ((area, _, _),) = manager.coverage_planner.calls
+    # A tuple would only satisfy the planner by accident; the providers need
+    # named bounds and ``parts()``.
+    assert not isinstance(area, tuple)
+    assert isinstance(area, Area)
+    assert (area.west, area.south, area.east, area.north) == (-130.0, 41.0, -118.4, 53.0)
+    assert area.parts() == (area,)
+    assert area.to_json() == {"west": -130.0, "south": 41.0, "east": -118.4, "north": 53.0}
+
+
+def test_invalid_area_surfaces_as_current_data_error():
+    manager = FakeManager([current_field(offsets=(0, 1))])
+
+    with pytest.raises(CurrentDataError) as raised:
+        acquire_target_currents(manager, request(horizon=1, area=(-200.0, -1.0, 1.0, 1.0)))
+
+    assert str(raised.value) == "Invalid geographic area"
+    assert manager.coverage_planner.calls == []
 
 
 def test_horizon_beyond_coverage_reports_hold_seconds():
@@ -286,3 +318,25 @@ def test_binding_round_trip_preserves_coverage_and_ids():
     assert restored.coverage_end_utc == T + timedelta(hours=2)
     assert restored.field_ids == acquisition.field_ids
     assert restored.artifact_hashes == acquisition.field_hashes
+
+
+def test_marine_providers_take_named_area_bounds():
+    """Marine providers read named bounds, so they impose no positional order."""
+    area = Area(west=-130.0, south=41.0, east=-118.4, north=53.0)
+
+    assert area.to_json() == {
+        "west": -130.0,
+        "south": 41.0,
+        "east": -118.4,
+        "north": 53.0,
+    }
+
+
+def test_acquisition_forwards_our_region_order_unchanged():
+    """Our (west, south, east, north) tuple reaches the planner in the same order."""
+    manager = FakeManager([current_field(offsets=(0, 2))])
+
+    acquire_target_currents(manager, request(horizon=2, area=(-130.0, 41.0, -118.4, 53.0)))
+
+    area = manager.coverage_planner.calls[0][0]
+    assert (area.west, area.south, area.east, area.north) == (-130.0, 41.0, -118.4, 53.0)

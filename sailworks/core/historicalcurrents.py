@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 from sailworks.core.historicalbinding import CurrentBinding
 from sailworks.core.marine.chs import DownloadCancelledError
-from sailworks.core.marine.fields import CurrentField
+from sailworks.core.marine.fields import Area, CurrentField
 
 MAX_CURRENT_HORIZON_HOURS = 720
 # Spans must touch or overlap; any positive gap is unsamplable.
@@ -151,8 +151,15 @@ def acquire_target_currents(
 
     start = request.target_departure_utc
     end = start + timedelta(hours=request.horizon_hours)
+    # The public request carries a plain tuple; the planner and providers take
+    # a named Area.  Area's own bounds check is the validation, so its message
+    # is preserved as a CurrentDataError.
     try:
-        downloaded = manager.coverage_planner.download(request.area, start, end, cancel, progress)
+        area = Area(*request.area)
+    except ValueError as error:
+        raise CurrentDataError(str(error)) from error
+    try:
+        downloaded = manager.coverage_planner.download(area, start, end, cancel, progress)
     except DownloadCancelledError:
         raise
     except Exception as error:
