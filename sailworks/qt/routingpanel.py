@@ -36,6 +36,7 @@ from sailworks.core.routingoptions import (
     scenario_request,
     parameter_values,
 )
+from .historicalrouting import HistoricalRoutingPanel
 from .scrollchrome import style_scrollarea
 from .dropdown import Dropdown, FieldRow
 from .slider import Slider
@@ -255,6 +256,9 @@ class RoutingPanel(QWidget):
         self.start_mode.addItem("First waypoint", "first-track-point")
         self.start_mode.addItem("Boat position", "boat-position")
         self.destination.currentIndexChanged.connect(self._plan_changed)
+        self.destination.currentIndexChanged.connect(
+            self._seed_departure_from_destination
+        )
         self.start_mode.currentIndexChanged.connect(self._plan_changed)
         form.addRow(self.destination)
         form.addRow(self.start_mode)
@@ -625,8 +629,23 @@ class RoutingPanel(QWidget):
             compare.addWidget(enabled)
             compare.addWidget(FieldRow("Values", values))
             self.comparison_axes[key] = (enabled, values)
-        compare.addStretch()
-        self.pages.addTab(self._scroll_page(compare_page), "Compare")
+        compare.addWidget(section_label("Historical years"))
+        self.historical_enabled = QCheckBox("Run historical years")
+        self.historical_enabled.setAccessibleName("Run historical years")
+        self.historical_enabled.setToolTip(
+            "When enabled, Calculate route runs the historical ensemble instead "
+            "of the normal route and parameter variations."
+        )
+        self.historical_enabled.toggled.connect(self._historical_enabled_changed)
+        compare.addWidget(self.historical_enabled)
+        self.historical = HistoricalRoutingPanel(
+            self.routing,
+            request_provider=lambda: self._request("native")[0],
+        )
+        self.historical.setVisible(False)
+        compare.addWidget(self.historical, 1)
+        self.compare_page = self._scroll_page(compare_page)
+        self.pages.addTab(self.compare_page, "Compare")
         currents_page = QWidget()
         currents = QVBoxLayout(currents_page)
         self.use_currents = QCheckBox("Include currents")
@@ -637,6 +656,40 @@ class RoutingPanel(QWidget):
         self.pages.addTab(self._scroll_page(currents_page), "Currents")
         self.wind_algorithm_name = self.algorithm.currentText()
         self.preflight_dialog = None
+
+    def show_historical_job(self, job_id):
+        """Open a published historical run's results from the scene tree."""
+        compare_index = next(
+            (
+                index
+                for index in range(self.pages.count())
+                if self.pages.tabText(index) == "Compare"
+            ),
+            1,
+        )
+        self.pages.setCurrentIndex(compare_index)
+        self.historical_enabled.setChecked(True)
+        self.historical.setVisible(True)
+        self.historical.refresh_route_summary()
+        self.historical.show_job(job_id)
+
+    def _historical_enabled_changed(self, enabled):
+        self.historical.setVisible(bool(enabled))
+        self._lock_parameter_axes(bool(enabled))
+        if enabled:
+            self.historical.refresh_route_summary()
+        self.options_changed.emit()
+
+    def _lock_parameter_axes(self, locked):
+        """Disable the parameter axes while historical members run instead.
+
+        The axes are not crossed with historical members, so they are switched
+        off rather than left configurable. Unlocking restores each values field
+        to its own checkbox's state.
+        """
+        for checkbox, values in self.comparison_axes.values():
+            checkbox.setEnabled(not locked)
+            values.setEnabled(not locked and checkbox.isChecked())
 
     def _build_current_priority(self):
         self.parameters_box.layout().addWidget(section_label("Currents"))
@@ -766,11 +819,18 @@ class RoutingPanel(QWidget):
             return False
         kind = saved.get("type")
         value = saved.get("value")
+        # Track selections are saved by name; older saves stored the name under
+        # "value", so accept either key here without changing the schema.
+        track_names = tuple(
+            name for name in (saved.get("name"), value) if isinstance(name, str)
+        )
         for index in range(combo.count()):
             data = combo.itemData(index)
-            if kind == "track" and isinstance(data, Track) and data.name == value:
-                combo.setCurrentIndex(index)
-                return True
+            if kind == "track":
+                name = getattr(data, "name", None)
+                if isinstance(name, str) and name in track_names:
+                    combo.setCurrentIndex(index)
+                    return True
             if (
                 kind == "position"
                 and isinstance(data, (list, tuple))
@@ -816,7 +876,21 @@ class RoutingPanel(QWidget):
                 key: dict(enabled=enabled.isChecked(), values=values.text())
                 for key, (enabled, values) in self.comparison_axes.items()
             },
+            historical_enabled=self.historical_enabled.isChecked(),
+            historical=self.historical.values(),
         )
+
+    def apply_track_default(self, track):
+        """Seed the departure field from a track's saved default, if any."""
+        default = getattr(track, "default_departure", None)
+        if not default:
+            return False
+        try:
+            stamp = datetime.fromisoformat(str(default))
+        except ValueError:
+            return False
+        self.departure.setDateTime(QDateTime(stamp))
+        return True
 
     def restore_options(self, saved):
         from sailworks.core.workspacestate import mapping
@@ -912,6 +986,10 @@ class RoutingPanel(QWidget):
             if isinstance(text, str) and len(text) <= 4096:
                 values.setText(text)
             enabled.setChecked(axis.get("enabled") is True)
+        # Old workspaces stored a compare_mode; it is ignored so historical
+        # never re-enables itself on restore.
+        self.historical_enabled.setChecked(saved.get("historical_enabled") is True)
+        self.historical.set_values(saved.get("historical"))
 
     def refresh_polars(self):
         names = list(self.controller.core.polar_manager.polars)
@@ -955,6 +1033,12 @@ class RoutingPanel(QWidget):
         self.destination.blockSignals(False)
         self._plan_changed()
         self.refresh()
+
+    def _seed_departure_from_destination(self, *_):
+        """Take the chosen track's saved departure unless the field was edited."""
+        target = self.destination.currentData()
+        if isinstance(target, Track):
+            self.apply_track_default(target)
 
     def _plan_changed(self, *_):
         target = self.destination.currentData()
@@ -1003,6 +1087,10 @@ class RoutingPanel(QWidget):
             self.refresh()
 
     def _calculate(self):
+        if self.historical_enabled.isChecked():
+            self.pages.setCurrentIndex(self.pages.indexOf(self.compare_page))
+            self.historical.start_job()
+            return
         backend = self.backend.currentData() or "legacy"
         try:
             refusal = self._avoidance_refusal(backend, self.avoidance_shapes())
@@ -1195,6 +1283,18 @@ class RoutingPanel(QWidget):
             and not (cancel is not None and cancel.is_set())
         )
 
+    def _sync_run_visibility(self, historical_running):
+        """One progress display and one Cancel at a time.
+
+        The historical panel owns progress while a historical run is alive.
+        This panel's Cancel is the one tied to the routing engine, so it stays
+        visible only while the engine is actually running; during acquisition
+        the historical panel's Cancel is the one that works.
+        """
+        for widget in (self.progress, self.status):
+            widget.setVisible(not historical_running)
+        self.cancel_button.setVisible(not historical_running or self.routing.busy)
+
     def _display_status(self):
         message = self.routing.message
         if not self._native_heartbeat_active():
@@ -1213,7 +1313,13 @@ class RoutingPanel(QWidget):
         self.status.setText(self._display_status())
 
     def refresh(self):
-        busy = self.routing.busy
+        # A historical run owns its own thread, so it is busy even though
+        # the routing controller behind Calculate route is idle.
+        historical_running = self.historical.is_running()
+        busy = self.routing.busy or historical_running
+        # The historical panel shows its own progress, status and Cancel while
+        # it runs; a second copy here only competes for attention.
+        self._sync_run_visibility(historical_running)
         self._refresh_safety()
         for control in (
             *self.inputs,

@@ -268,13 +268,25 @@ class PreviewWindow(QMainWindow):
         self.scene_panel.routing_visibility_changed.connect(
             self._routing_visibility_changed
         )
+        # The historical panel is built with the routing panel, before the
+        # scene exists, so hand it the live scene here. Its own item-visibility
+        # actions then persist through the scene and repaint the same way a
+        # scene-tree checkbox does.
+        historical = self.routing_panel.historical
+        historical.set_scene(self.scene_panel.scene)
+        historical.visibility_changed.connect(self.scene_panel.refresh)
+        historical.visibility_changed.connect(self._routing_visibility_changed)
         self.scene_panel.selected.connect(self._scene_selected)
+        self.scene_panel.group_selected.connect(self._scene_group_selected)
         self.scene_panel.open_requested.connect(self._scene_open)
         self.scene_panel.fit_requested.connect(self._scene_fit)
         self.scene_panel.delete_requested.connect(self._scene_delete)
         self.scene_panel.move_point_requested.connect(self._move_scene_point)
         controller.log_library_changed.connect(self.scene_panel.refresh)
         self.scene_panel.edit_track_requested.connect(self._scene_edit_track)
+        self.scene_panel.edit_track_properties_requested.connect(
+            self._scene_edit_track_properties
+        )
         self.scene_panel.shape_edit_requested.connect(self._scene_edit_shape_vertices)
         # The canvas republishes shapes after a create or a geometry edit, so
         # both the map and the log map keep their Scene rows in step. The
@@ -1289,6 +1301,22 @@ class PreviewWindow(QMainWindow):
         if hasattr(self, "workspace"):
             self.workspace.changed()
 
+    def _scene_group_selected(self, group_id):
+        """Show a historical job's results when its scene group is selected.
+
+        The scene tree is the run-history surface: a published historical run
+        is a group there, so no separate job selector is needed.
+        """
+        from sailworks.core.historicalpublication import GROUP_PREFIX
+
+        if not str(group_id).startswith(GROUP_PREFIX):
+            return
+        job_id = str(group_id)[len(GROUP_PREFIX) :]
+        if not job_id:
+            return
+        self.routing_panel.show_historical_job(job_id)
+        self._show_panel("routing")
+
     def _scene_selected(self, kind, key):
         if kind == KIND_TRACK:
             if key.startswith("race:"):
@@ -1406,6 +1434,34 @@ class PreviewWindow(QMainWindow):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def _scene_edit_track_properties(self, key):
+        """Edit a waypoint track's departure default and colour.
+
+        The track is the input to route planning, so its departure seeds the
+        routing panel; the panel field still overrides it per run.
+        """
+        track = next(
+            (item for item in self.controller.core.trackManager if item.uid == key),
+            None,
+        )
+        if track is None:
+            return
+        from sailworks.qt.trackpropertiesdialog import TrackPropertiesDialog
+
+        dialog = TrackPropertiesDialog(
+            self,
+            departure=getattr(track, "default_departure", None),
+            colour=getattr(track, "color", None),
+        )
+        if dialog.exec() != TrackPropertiesDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        track.default_departure = values.get("default_departure")
+        track.color = values.get("color")
+        self.controller.core.trackManager.save()
+        self.routing_panel.apply_track_default(track)
+        self.scene_panel.refresh()
 
     def _scene_edit_track(self, key):
         """Activate a Scene Collection track and enter its edit mode."""

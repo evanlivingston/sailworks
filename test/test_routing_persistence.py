@@ -521,3 +521,32 @@ def test_artifact_mismatched_generation_is_rejected(tmp_path, monkeypatch):
 
     assert reloaded.isochrones == ()
     assert "generation" in (reloaded.contour_error or "")
+
+
+def test_route_default_departure_and_colour_round_trip():
+    route = Routing(
+        "plan",
+        [[1.0, 2.0]],
+        default_departure="2026-05-01T08:30:00",
+        color="#1e88e5",
+    )
+
+    payload = route.to_json()
+    restored = Routing.from_json(payload)
+
+    assert payload["default_departure"] == "2026-05-01T08:30:00"
+    assert payload["color"] == "#1e88e5"
+    assert restored.default_departure == "2026-05-01T08:30:00"
+    assert restored.color == "#1e88e5"
+
+
+def test_route_rejects_a_malformed_default_departure():
+    with pytest.raises(SchemaError, match="default_departure"):
+        Routing("plan", [[1.0, 2.0]], default_departure="not-a-date")
+
+
+def test_route_without_defaults_keeps_the_old_payload_shape():
+    payload = Routing("plan", [[1.0, 2.0]]).to_json()
+
+    assert "default_departure" not in payload
+    assert "color" not in payload

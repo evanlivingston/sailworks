@@ -875,11 +875,13 @@ class ScenePanel(QWidget):
 
     changed = Signal()
     selected = Signal(str, str)
+    group_selected = Signal(str)
     open_requested = Signal(str, str)
     fit_requested = Signal(object)
     delete_requested = Signal(object)
     move_point_requested = Signal(object, int)
     edit_track_requested = Signal(str)
+    edit_track_properties_requested = Signal(str)
     # The chosen polygon shape's uid: the window routes it to the live
     # viewport's vertex edit mode.
     shape_edit_requested = Signal(str)
@@ -2098,8 +2100,12 @@ class ScenePanel(QWidget):
         if self.syncing:
             return
         nodes = self._selected_nodes()
-        if len(nodes) == 1 and nodes[0][0] == "item":
+        if len(nodes) != 1:
+            return
+        if nodes[0][0] == "item":
             self.selected.emit(nodes[0][1], nodes[0][2])
+        elif nodes[0][0] == "group":
+            self.group_selected.emit(nodes[0][1])
 
     def _double_clicked(self, row, _column):
         if _column != NAME_COLUMN:
@@ -2240,6 +2246,12 @@ class ScenePanel(QWidget):
             and node[1] == KIND_TRACK
             and not node[2].startswith("race:")
         )
+        edit_track_properties = (
+            node is not None
+            and node[0] == "item"
+            and node[1] == KIND_TRACK
+            and not node[2].startswith("race:")
+        )
 
         builder.add("New Collection", self._new_collection, key="N")
         if keys:
@@ -2305,6 +2317,12 @@ class ScenePanel(QWidget):
                 builder.add(
                     "Edit Track",
                     lambda: self.edit_track_requested.emit(node[2]),
+                    key="E",
+                )
+            if edit_track_properties:
+                builder.add(
+                    "Track Properties…",
+                    lambda: self.edit_track_properties_requested.emit(node[2]),
                     key="E",
                 )
             if point_element is not None:

@@ -9,7 +9,11 @@ from sailworks.core.forecastboundrouting import BoundRoutingWind, BoundRoutingWa
 from sailworks.core.marine.fields import FieldSelection, FieldStore
 
 from .nativerequest import NativeRequest
-from .routingnative import current_callable_from_selection
+from .routingnative import (
+    clamped_current_callable,
+    current_callable_from_selection,
+    shifted_current_fields,
+)
 
 
 def _attach_rounding_names(run, job):
@@ -107,8 +111,7 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
             ) from None
         if recorded_digest != job.avoid_zones_digest:
             raise ValueError(
-                "zone digest mismatch: frozen avoid zones do not match "
-                "avoid_zones_digest"
+                "zone digest mismatch: frozen avoid zones do not match " "avoid_zones_digest"
             )
     if job.coastline_checks and not job.provider_descriptors:
         raise ValueError("Native coastline checks require a selected shoreline")
@@ -135,8 +138,7 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
         end_epoch_s=int(max(wind_times).timestamp()),
     )
     polar = [
-        {"true_wind_speed_knots": tws, "points": list(points)}
-        for tws, points in job.polar_rows
+        {"true_wind_speed_knots": tws, "points": list(points)} for tws, points in job.polar_rows
     ]
     settings = dict(
         start=job.start,
@@ -152,8 +154,7 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
         coastline_checks=job.coastline_checks,
         waypoints=list(job.waypoints),
         roundings=[
-            None if rounding is None else rounding.to_native()
-            for rounding in job.roundings
+            None if rounding is None else rounding.to_native() for rounding in job.roundings
         ],
         # The keep-off control is disabled with coastline checks off; the
         # legacy path ignores it then, so native does not apply it either. The
@@ -183,14 +184,15 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
             raise ValueError("Selected local current store is missing")
         store = FieldStore(field_directory)
         missing = [
-            identifier
-            for identifier in job.current_field_ids
-            if identifier not in store.fields
+            identifier for identifier in job.current_field_ids if identifier not in store.fields
         ]
         if missing:
             raise ValueError("Selected local current fields changed or are missing")
         selection = FieldSelection(
-            tuple(store.fields[identifier] for identifier in job.current_field_ids),
+            shifted_current_fields(
+                tuple(store.fields[identifier] for identifier in job.current_field_ids),
+                job.current_time_shift_s,
+            ),
             priority=job.current_priority,
         )
 
@@ -224,7 +226,10 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
             return sample if sample is not None else (0.0, 0.0, 0.0, False)
 
         current = (
-            current_callable_from_selection(selection, include_provenance=True)
+            clamped_current_callable(
+                current_callable_from_selection(selection, include_provenance=True),
+                job.current_hold_epoch_s,
+            )
             if selection is not None
             else lambda latitude, longitude, epoch_s: (0.0, 0.0, False)
         )
@@ -269,12 +274,20 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
             destination=job.destination,
             current_field_ids=list(job.current_field_ids),
             current_priority=job.current_priority if job.use_currents else None,
+            # Historical members retime currents onto the target departure
+            # timeline. Only an active current selection carries a shift or a
+            # hold, so a wind-only fingerprint keeps its exact previous bytes.
+            **(
+                {
+                    "current_time_shift_s": job.current_time_shift_s,
+                    "current_hold_epoch_s": job.current_hold_epoch_s,
+                }
+                if job.use_currents
+                else {}
+            ),
             auto_download=job.auto_download,
             shoreline=(
-                [
-                    dict(kind=item.kind, path=item.path)
-                    for item in job.provider_descriptors
-                ]
+                [dict(kind=item.kind, path=item.path) for item in job.provider_descriptors]
                 if job.coastline_checks
                 else None
             ),

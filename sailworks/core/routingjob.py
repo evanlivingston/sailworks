@@ -15,13 +15,9 @@ from weatherrouting.routers.linearbestisorouter import LinearBestIsoRouter
 _original_linear_route = LinearBestIsoRouter._route
 
 
-def _linear_route_with_missing_destination_wind(
-    self, lastlog, time, timedelta, start, end, iso_f
-):
+def _linear_route_with_missing_destination_wind(self, lastlog, time, timedelta, start, end, iso_f):
     try:
-        result = _original_linear_route(
-            self, lastlog, time, timedelta, start, end, iso_f
-        )
+        result = _original_linear_route(self, lastlog, time, timedelta, start, end, iso_f)
         if result.path:
             candidate = result.path[-1]
             from sailworks.core.marine.routing import GEOD
@@ -137,8 +133,7 @@ def _integrate_wind_terminal_leg(router, candidate, end):
             end_speed = router.polar.get_speed(
                 wind[1] / KNOT,
                 abs(
-                    (math.radians(final[5]) - math.radians(wind[0]) + math.pi)
-                    % (2 * math.pi)
+                    (math.radians(final[5]) - math.radians(wind[0]) + math.pi) % (2 * math.pi)
                     - math.pi
                 ),
             )
@@ -214,8 +209,7 @@ def _integrate_wind_terminal_leg(router, candidate, end):
                     )
                 end_tws = end_wind[1] / KNOT
                 end_twa = abs(
-                    (math.radians(middle[5]) - math.radians(end_wind[0]) + math.pi)
-                    % (2 * math.pi)
+                    (math.radians(middle[5]) - math.radians(end_wind[0]) + math.pi) % (2 * math.pi)
                     - math.pi
                 )
                 end_speed = router.polar.get_speed(end_tws, end_twa)
@@ -244,11 +238,7 @@ def _integrate_wind_terminal_leg(router, candidate, end):
             return None
         arrival = instant + TimeDelta(seconds=duration)
         end_wind = router.grib.get_wind_at(arrival, *destination)
-        if (
-            end_wind is None
-            or len(end_wind) < 2
-            or not all(math.isfinite(v) for v in end_wind[:2])
-        ):
+        if end_wind is None or len(end_wind) < 2 or not all(math.isfinite(v) for v in end_wind[:2]):
             raise RoutingNoWindError(
                 "Load a wind forecast covering the final route segment and arrival time."
             )
@@ -415,6 +405,51 @@ def _frozen_map_shapes(value):
     return tuple(shapes)
 
 
+MIN_PASSAGE_HOURS = 6
+MAX_PASSAGE_HOURS = 720
+PASSAGE_STEP_HOURS = 6
+
+
+class HorizonExceeded(Exception):
+    """Raised when a passage horizon expires before the route finishes."""
+
+    def __init__(self, member_id: str | None = None, elapsed_hours: float = 0.0):
+        self.member_id = member_id
+        self.elapsed_hours = elapsed_hours
+        detail = f" after {elapsed_hours:.1f}h" if elapsed_hours else ""
+        label = f"{member_id}: " if member_id else ""
+        super().__init__(f"{label}no finish within horizon{detail}")
+
+
+def horizon_deadline(request) -> datetime | None:
+    """Return the instant a bounded passage must finish by, or None.
+
+    ``max_duration_hours`` of None means unbounded, preserving the existing
+    behaviour. Any other value must be a multiple of six hours between six and
+    seven hundred and twenty inclusive.
+    """
+    hours = getattr(request, "max_duration_hours", None)
+    if hours is None:
+        return None
+    if (
+        not isinstance(hours, int)
+        or isinstance(hours, bool)
+        or hours < MIN_PASSAGE_HOURS
+        or hours > MAX_PASSAGE_HOURS
+        or hours % PASSAGE_STEP_HOURS
+    ):
+        raise ValueError(
+            f"max_duration_hours must be {MIN_PASSAGE_HOURS}..{MAX_PASSAGE_HOURS} "
+            f"in steps of {PASSAGE_STEP_HOURS}, got {hours!r}"
+        )
+    return request.departure + TimeDelta(hours=hours)
+
+
+def exceeds_horizon(deadline: datetime | None, current: datetime) -> bool:
+    """True when a bounded deadline exists and current time is past it."""
+    return deadline is not None and current > deadline
+
+
 @dataclass(frozen=True)
 class RouteRequest:
     name: str
@@ -448,6 +483,10 @@ class RouteRequest:
     # polygons constrain native planning independently of coastline checks;
     # note-only or disabled shapes carry no planning meaning.
     map_shapes: tuple = ()
+    # Bounded passage horizon in whole hours, 6..720 in 6h steps. None means
+    # unbounded and preserves the pre-horizon behaviour exactly; historical
+    # jobs always set it.
+    max_duration_hours: Optional[int] = None
 
     def __post_init__(self):
         if (
@@ -518,9 +557,7 @@ def calculate_route(
     wind = RoutingWind(sources, cancel)
     routing = None
     try:
-        routing = create_requested_routing(
-            core, request, providers, wind, current_selection
-        )
+        routing = create_requested_routing(core, request, providers, wind, current_selection)
         from sailworks.core.routingcoverage import prepare_coverage
 
         prepare_coverage(
@@ -531,9 +568,7 @@ def calculate_route(
             report,
             confirm,
         )
-        result = run_requested_routing(
-            core, routing, request, wind, progress, report, save_fields
-        )
+        result = run_requested_routing(core, routing, request, wind, progress, report, save_fields)
         return result
     finally:
         close_requested_routing(routing)
@@ -582,9 +617,7 @@ def create_requested_routing(core, request, providers, wind, current_selection):
             current_priority=priority,
         )
         # FrozenRoutingWind applies scenario modifiers to its own newest-run selection.
-        options["grib_override"] = (
-            override if isinstance(override, ModifiedGribManager) else None
-        )
+        options["grib_override"] = override if isinstance(override, ModifiedGribManager) else None
     routing = core.create_routing(
         algorithm,
         request.polar_file,
@@ -613,20 +646,20 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
         not request.use_currents
         and routing.grib.get_wind_at(routing.time, *routing.position) is None
     ):
-        raise RoutingNoWindError(
-            "Load a wind forecast covering the departure and start position."
-        )
+        raise RoutingNoWindError("Load a wind forecast covering the departure and start position.")
     if request.use_currents:
-        routing.current_environment.progress = (
-            lambda distance, checked, total: progress(
-                routing_completion(routing, distance), None
-            )
+        routing.current_environment.progress = lambda distance, checked, total: progress(
+            routing_completion(routing, distance), None
         )
     progress(0, RoutingPreview())
     snapshot = IsochroneSnapshot()
     result = None
+    # Bare None keeps unbounded requests on the pre-horizon code path.
+    deadline = horizon_deadline(request)
     while not routing.end:
         wind.check_cancelled()
+        if deadline is not None and exceeds_horizon(deadline, routing.time):
+            raise HorizonExceeded(None, (routing.time - request.departure).total_seconds() / 3600)
         result = (
             step_with_coverage(
                 routing, core.marine_manager, request.auto_download, report, save_fields
@@ -637,9 +670,7 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
         path = result.path or routing.get_current_best_path()
         progress(
             routing_completion(routing),
-            RoutingPreview(
-                tuple(tuple(p.pos) for p in path), snapshot.capture(result.isochrones)
-            ),
+            RoutingPreview(tuple(tuple(p.pos) for p in path), snapshot.capture(result.isochrones)),
         )
     wind.check_cancelled()
     if result is None or not result.path:
@@ -689,11 +720,7 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
             min_sailing_speed_kn=request.min_sailing_speed_kn,
             motor_speed_kn=request.motor_speed_kn,
             wave_correct=request.wave_correct,
-            wave_note=(
-                "TWS-proxy reduction pending wave GRIBs"
-                if request.wave_correct
-                else None
-            ),
+            wave_note=("TWS-proxy reduction pending wave GRIBs" if request.wave_correct else None),
             factors=provenance["factors"],
             active_factors=provenance["active_factors"],
         )

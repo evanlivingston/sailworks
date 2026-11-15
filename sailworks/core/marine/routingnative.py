@@ -8,10 +8,11 @@ are passed through exactly as the engine emitted them.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from datetime import datetime, timezone
 from collections.abc import Mapping, Sequence
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from .routingrecord import (
     Capabilities,
@@ -28,6 +29,9 @@ from .routingrecord import (
     Validation,
 )
 from .routingresult import RoutingResult, canonical_utc
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, keeps the module pure
+    from .fields import CurrentField
 
 # Statuses that cannot carry a reliable validation verdict. Their outcome stays
 # unknown rather than being reported as a failure of the searched route.
@@ -61,6 +65,74 @@ def polar_rows_from_polar(polar: Any) -> list[dict]:
         ]
         rows.append({"true_wind_speed_knots": float(tws_ms) * factor, "points": points})
     return rows
+
+
+def _checked_shift(shift_seconds: float) -> float:
+    """Return a finite float shift, refusing values that cannot be a time axis."""
+
+    shift = float(shift_seconds)
+    if not math.isfinite(shift):
+        raise ValueError("Current time shift must be a finite number of seconds")
+    return shift
+
+
+def shifted_current_fields(
+    fields: Sequence["CurrentField"], shift_seconds: float
+) -> tuple["CurrentField", ...]:
+    """Move a current field set onto the target departure timeline.
+
+    Convention: ``shift = member_departure - target_departure``. The shifted
+    field's time axis *is* the target timeline, so a lookup at member time ``t``
+    samples the current valid at ``target + (t - member_departure)``. A zero
+    shift returns the input fields unchanged (same objects). Only the time axis
+    moves: the field is still the same selected dataset, so its order and its
+    content id are preserved, keeping sample provenance (``dataset_id``) aligned
+    with the frozen ``current_field_ids`` entry.
+
+    The result is a read-only retimed *view*: never add it to a ``FieldStore``,
+    because ``content_key`` is recomputed over the retimed arrays while ``id``
+    is preserved, and ``manifest()`` reports the original dataset id with the
+    retimed validity window.
+    """
+
+    shift = _checked_shift(shift_seconds)
+    fields = tuple(fields)
+    if shift == 0.0:
+        return fields
+    shifted = []
+    for field in fields:
+        moved = dataclasses.replace(field, times=field.times + shift)
+        # ``CurrentField.id`` is a content hash that includes the time axis.
+        # Retiming is a view change, not a new dataset, so carry the cached id
+        # of the source field instead of advertising an id nothing else knows.
+        object.__setattr__(moved, "id", field.id)
+        shifted.append(moved)
+    return tuple(shifted)
+
+
+def clamped_current_callable(sample: Any, hold_epoch_s: float | None):
+    """Cap the instant passed to a current sampler at a hold epoch.
+
+    Applied after the member-to-target time shift: every lookup at or past
+    ``hold_epoch_s`` reuses the last valid instant instead of running off the
+    end of the member's current coverage. ``None`` returns ``sample`` itself, so
+    a request without a hold keeps today's callback. The sampler's return value
+    — including the optional provenance element — is passed through untouched.
+    """
+
+    if hold_epoch_s is None:
+        return sample
+    hold = float(hold_epoch_s)
+    if not math.isfinite(hold):
+        raise ValueError("Current hold epoch must be a finite number of seconds")
+    hold_s = int(hold)
+
+    def clamped(latitude: float, longitude: float, epoch_s: int):
+        # Integer seconds: the engine may hand us a fractional epoch, and the
+        # hold must be an exact instant, not a rounded-up one.
+        return sample(latitude, longitude, min(int(epoch_s), hold_s))
+
+    return clamped
 
 
 def current_callable_from_selection(selection: Any, *, include_provenance=False):
@@ -225,9 +297,7 @@ def _engine_identity(identity: Mapping[str, Any]) -> EngineIdentity:
     )
 
 
-def _feature_states(
-    identity: Mapping[str, Any], run: Mapping[str, Any]
-) -> Mapping[str, str]:
+def _feature_states(identity: Mapping[str, Any], run: Mapping[str, Any]) -> Mapping[str, str]:
     """Explicit per-feature state so absent services are never implied."""
 
     inspection = run.get("inspection_geometry")
@@ -262,9 +332,7 @@ def _capabilities(
         and not isinstance(cadence, bool)
         and cadence >= 1
     )
-    trace_times = (
-        "per_position" if any(trace.times is not None for trace in traces) else "absent"
-    )
+    trace_times = "per_position" if any(trace.times is not None for trace in traces) else "absent"
     return Capabilities(
         producer=_text(run.get("engine", "unknown"), "native engine"),
         trace_times=trace_times,
@@ -292,9 +360,7 @@ def _leg(value: Any, label: str) -> Leg:
     )
 
 
-def _leg_environment(
-    leg: Mapping[str, Any], label: str
-) -> Optional[Mapping[str, Observation]]:
+def _leg_environment(leg: Mapping[str, Any], label: str) -> Optional[Mapping[str, Observation]]:
     environment: dict[str, Observation] = {}
     for prefix in ("wind", "current"):
         east = _optional_number(leg.get(f"{prefix}_east_knots"))
@@ -326,9 +392,7 @@ def _leg_environment(
             )
         elif "waves_available" in leg:
             environment[key] = Observation(None, unit, "unknown")
-    if not any(
-        observation.availability == "reported" for observation in environment.values()
-    ):
+    if not any(observation.availability == "reported" for observation in environment.values()):
         # No recorded value at all: the leg has no route environment rather than
         # a set of unknown observations that could be misread as recorded data.
         return None
@@ -398,9 +462,7 @@ def _layer(value: Any, label: str) -> Layer:
     layer_id = _text(data.get("id", label), f"{label}.id")
     contours = tuple(
         _contour(item, f"{label}.contours[{index}]", layer_id, index)
-        for index, item in enumerate(
-            _sequence(data.get("contours", ()), f"{label}.contours")
-        )
+        for index, item in enumerate(_sequence(data.get("contours", ()), f"{label}.contours"))
     )
     return Layer(
         layer_id=layer_id,
@@ -415,9 +477,7 @@ def _contour(value: Any, label: str, layer_id: str, index: int) -> Contour:
     data = _mapping(value, label)
     points = tuple(
         _point(item, f"{label}.points[{position}]")
-        for position, item in enumerate(
-            _sequence(data.get("points", ()), f"{label}.points")
-        )
+        for position, item in enumerate(_sequence(data.get("points", ()), f"{label}.points"))
     )
     contour_id = _text(data.get("id", f"{layer_id}-contour-{index}"), f"{label}.id")
     return Contour(contour_id, _bool(data.get("closed"), f"{label}.closed"), points)
@@ -440,19 +500,13 @@ def _layer_traces(value: Any, label: str) -> tuple[Trace, ...]:
         if times is not None:
             times = tuple(
                 _epoch(item, f"{trace_label}.times[{position}]")
-                for position, item in enumerate(
-                    _sequence(times, f"{trace_label}.times")
-                )
+                for position, item in enumerate(_sequence(times, f"{trace_label}.times"))
             )
             if len(times) != len(route):
-                raise SchemaError(
-                    f"{trace_label}.times must align with the route positions"
-                )
+                raise SchemaError(f"{trace_label}.times must align with the route positions")
         traces.append(
             Trace(
-                _text(
-                    trace.get("id", f"{layer_id}-trace-{index}"), f"{trace_label}.id"
-                ),
+                _text(trace.get("id", f"{layer_id}-trace-{index}"), f"{trace_label}.id"),
                 _point(trace.get("endpoint"), f"{trace_label}.endpoint"),
                 route,
                 times,
