@@ -276,7 +276,7 @@ class HistoricalRoutingStore:
     def _pins_lock(self):
         """Serialize the ``pins.json`` read-modify-write across processes."""
         self.root.mkdir(parents=True, exist_ok=True)
-        handle = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        handle = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
             if fcntl is not None:  # pragma: no branch - POSIX path is the norm
                 fcntl.flock(handle, fcntl.LOCK_EX)
