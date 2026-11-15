@@ -8,9 +8,12 @@ reading the public Zarr store anonymously instead of submitting CDS jobs.
 
 from __future__ import annotations
 
+import http.client
 import json
 import tempfile
 import threading
+import time
+import urllib.error
 import urllib.request
 import weakref
 from concurrent.futures import ThreadPoolExecutor
@@ -117,6 +120,9 @@ def open_store(url=STORE_URL, *, storage_options=None):
 
 
 _HTTP_TIMEOUT = 120
+_HTTP_ATTEMPTS = 4
+# Retry statuses: throttling and server-side failures, never a missing object.
+_RETRY_STATUS = (408, 429, 500, 502, 503, 504)
 _STORE_HTTP = "https://storage.googleapis.com/"
 
 
@@ -144,10 +150,38 @@ class _ChunkReader:
         self._lock = threading.Lock()
 
     def _get(self, path):
-        with urllib.request.urlopen(
-            f"{self.base}/{path}", timeout=self.timeout
-        ) as reply:
-            return reply.read()
+        """Fetch one object, retrying transient transport failures.
+
+        A single dropped connection used to fail the whole acquisition with a
+        bare URLError. Chunk reads are idempotent, so retry with backoff and
+        report the real cause only once the attempts are exhausted.
+        """
+        url = f"{self.base}/{path}"
+        last = None
+        for attempt in range(_HTTP_ATTEMPTS):
+            try:
+                with urllib.request.urlopen(url, timeout=self.timeout) as reply:
+                    return reply.read()
+            except urllib.error.HTTPError as exc:
+                if exc.code not in _RETRY_STATUS:
+                    raise ArcoError(
+                        f"ARCO ERA5 store returned HTTP {exc.code} for {path}"
+                    ) from exc
+                last = exc
+            except (
+                urllib.error.URLError,
+                TimeoutError,
+                ConnectionError,
+                http.client.IncompleteRead,
+            ) as exc:
+                last = exc
+            if attempt + 1 < _HTTP_ATTEMPTS:
+                time.sleep(min(2**attempt, 8))
+        detail = getattr(last, "reason", None) or last or "unknown error"
+        raise ArcoError(
+            f"cannot read the ARCO ERA5 store after {_HTTP_ATTEMPTS} attempts "
+            f"({type(last).__name__}: {detail}); check network access and retry"
+        ) from last
 
     def array_meta(self, name):
         with self._lock:

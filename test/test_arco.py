@@ -791,3 +791,89 @@ def test_direct_chunk_reader_rejects_a_changed_layout(monkeypatch):
 
     with pytest.raises(arco.ArcoError, match="layout changed"):
         reader.read("u10", 0, np.array([0, 1]), np.array([0, 1]))
+
+
+def _reader_with_flaky_urlopen(monkeypatch, failures, data, meta, compressor):
+    import json
+    import urllib.error
+
+    import numcodecs
+    import sailworks.core.arco as arco
+
+    raw = numcodecs.get_codec(compressor).encode(data)
+    state = {"calls": 0}
+
+    class Reply:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return self.payload
+
+    def urlopen(url, timeout=None):
+        if url.endswith(".zarray"):
+            return Reply(json.dumps(meta).encode())
+        state["calls"] += 1
+        if state["calls"] <= failures:
+            raise urllib.error.URLError(ConnectionResetError("reset by peer"))
+        return Reply(raw)
+
+    monkeypatch.setattr(arco.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(arco.time, "sleep", lambda seconds: None)
+    return arco._ChunkReader("gs://bucket/store"), state
+
+
+_ARCO_META = {
+    "chunks": [1, 2, 2],
+    "shape": [5, 2, 2],
+    "dtype": "<f4",
+    "filters": None,
+    "compressor": {
+        "id": "blosc",
+        "cname": "lz4",
+        "clevel": 5,
+        "shuffle": 1,
+        "blocksize": 0,
+    },
+}
+
+
+def test_direct_chunk_reader_retries_a_dropped_connection(monkeypatch):
+    import numpy as np
+
+    data = np.arange(4, dtype="<f4").reshape(1, 2, 2)
+    reader, state = _reader_with_flaky_urlopen(
+        monkeypatch, 2, data, _ARCO_META, _ARCO_META["compressor"]
+    )
+
+    out = reader.read("u10", 0, np.array([0, 1]), np.array([0, 1]))
+
+    assert state["calls"] == 3  # two failures, then success
+    assert (out[0, 0], out[1, 1]) == (data[0, 0, 0], data[0, 1, 1])
+
+
+def test_direct_chunk_reader_reports_the_real_cause_when_retries_run_out(
+    monkeypatch,
+):
+    import numpy as np
+    import pytest
+
+    import sailworks.core.arco as arco
+
+    data = np.arange(4, dtype="<f4").reshape(1, 2, 2)
+    reader, state = _reader_with_flaky_urlopen(
+        monkeypatch, 99, data, _ARCO_META, _ARCO_META["compressor"]
+    )
+
+    with pytest.raises(arco.ArcoError, match="after 4 attempts") as error:
+        reader.read("u10", 0, np.array([0, 1]), np.array([0, 1]))
+
+    # The message names the transport failure instead of blaming credentials.
+    assert "URLError" in str(error.value)
+    assert state["calls"] == 4

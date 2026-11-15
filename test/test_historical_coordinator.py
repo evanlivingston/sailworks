@@ -317,6 +317,27 @@ def test_publish_routes_is_grouped_and_idempotent(monkeypatch, tmp_path):
     assert scene.count("save") == 1
 
 
+def test_published_routes_hide_isochrones_until_the_user_asks(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    scene = FakeScene()
+    spec = _spec()
+    coordinator, job_id = _start(
+        monkeypatch, store, spec, scene=scene, outcomes=_outcomes(spec)
+    )[:2]
+    routes = [FakeRoute("uid-a"), FakeRoute("uid-b")]
+
+    coordinator.publish_routes(job_id, routes)
+
+    # An ensemble publishes many routes at once: the lines stay on, the
+    # contours do not, so the map is readable until the user opts in.
+    assert [route.isochrones_visible for route in routes] == [False, False]
+
+    # A later republish must not undo a manual toggle.
+    routes[0].isochrones_visible = True
+    coordinator.publish_routes(job_id, routes)
+    assert routes[0].isochrones_visible is True
+
+
 def test_delete_job_removes_routes_releases_pins_and_archives(monkeypatch, tmp_path):
     store = HistoricalRoutingStore(tmp_path / "store")
     spec = _spec()
