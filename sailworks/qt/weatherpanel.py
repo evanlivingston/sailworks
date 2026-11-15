@@ -324,7 +324,7 @@ class WeatherPanel(QWidget):
         form.addRow(self.labels)
         controls.addWidget(self.isobar_options)
         self.isobar_options.setEnabled(self.isobars.isChecked())
-        self.manage_forecasts = QPushButton("Manage / download forecasts…")
+        self.manage_forecasts = QPushButton("Manage / download forecasts")
         self.manage_forecasts.clicked.connect(manage_forecasts)
         controls.addWidget(self.manage_forecasts)
         controls.addStretch()

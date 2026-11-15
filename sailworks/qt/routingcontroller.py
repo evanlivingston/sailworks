@@ -181,7 +181,9 @@ class RoutingController(QObject):
         self.progress_indeterminate = backend == "native"
         self.native_started_at = time.monotonic() if backend == "native" else None
         self.native_counters = {}
-        self.message = "Native calculation queued…" if backend == "native" else "Calculating…"
+        self.message = (
+            "Native calculation queued" if backend == "native" else "Calculating"
+        )
         self.scenario_index, self.scenario_count, self.saved_count = (
             0,
             len(scenarios) or 1,
@@ -370,7 +372,7 @@ class RoutingController(QObject):
                 self._ui_call(token, self._begin_native_scenario, index, len(jobs))
                 self._message.emit(
                     token,
-                    f"Native calculation running ({index + 1}/{len(jobs)})…",
+                    f"Native calculation running ({index + 1}/{len(jobs)})",
                 )
                 worker.submit(job)
                 status = None
@@ -505,9 +507,9 @@ class RoutingController(QObject):
         self.progress_indeterminate = True
         self.native_counters = {}
         self.message = (
-            "Native calculation queued…"
+            "Native calculation queued"
             if count == 1
-            else f"Native scenario {index + 1}/{count}: queued…"
+            else f"Native scenario {index + 1}/{count}: queued"
         )
         self.preview_changed.emit(())
         self.isochrones_changed.emit(())
@@ -618,7 +620,7 @@ class RoutingController(QObject):
         infrastructure_error = None
         self._parallel_mode = True
         self._parallel_progress = {}
-        self._message.emit(token, f"Calculating {len(jobs)} scenarios…")
+        self._message.emit(token, f"Calculating {len(jobs)} scenarios")
         try:
             ctx = multiprocessing.get_context("spawn")
             manager = ctx.Manager()
@@ -774,9 +776,9 @@ class RoutingController(QObject):
     def _begin_scenario(self, index):
         self.scenario_index = index
         self.message = (
-            "Calculating…"
+            "Calculating"
             if self.scenario_count == 1
-            else f"Scenario {index + 1}/{self.scenario_count}: calculating…"
+            else f"Scenario {index + 1}/{self.scenario_count}: calculating"
         )
         self.preview_changed.emit(())
         self.isochrones_changed.emit(())
@@ -880,7 +882,7 @@ class RoutingController(QObject):
             self.progress_indeterminate = False
             self.native_started_at = None
             self.native_counters = {}
-            self.message = "Cancelling…"
+            self.message = "Cancelling"
             self.changed.emit()
 
     @Slot(int, str)

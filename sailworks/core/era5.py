@@ -506,7 +506,7 @@ class Era5DownloadService:
         pieces = list(split_request(plan))
         total = len(pieces)
         self._set_progress(
-            key, done=0, total=total, stage=f"Planning {total} CDS chunk(s)…"
+            key, done=0, total=total, stage=f"Planning {total} CDS chunk(s)"
         )
         entries = self._catalog_entries(catalog)
         published = 0
@@ -538,22 +538,21 @@ class Era5DownloadService:
                     )
                     continue
                 if self._pending_entry(self._load_pending(), piece) is not None:
-                    stage = f"Chunk {n + 1}/{total}: resuming queued CDS request…"
+                    stage = f"Chunk {n + 1}/{total}: resuming queued CDS request"
                 else:
-                    stage = f"Chunk {n + 1}/{total}: submitting to CDS…"
+                    stage = f"Chunk {n + 1}/{total}: submitting to CDS"
                 self._set_progress(key, stage=stage)
                 # Waits out CDS queue-limit rejections with the existing backoff.
                 self._submit_with_backoff(piece, cancel)
                 if cancel.is_set():
                     raise Era5Error("ERA5 download canceled")
                 self._set_progress(
-                    key, stage=f"Chunk {n + 1}/{total}: waiting for CDS results…"
+                    key, stage=f"Chunk {n + 1}/{total}: waiting for CDS results"
                 )
                 staged = self._stage_chunk(staging, n, piece, cancel, retry)
-                # Publish each validated day immediately. A run that is
-                # cancelled, or an app that restarts, then keeps every finished
-                # day and the next run skips it instead of downloading again.
-                self._set_progress(key, stage=f"Chunk {n + 1}/{total}: publishing…")
+                # Publish each validated day immediately, so a cancelled run or
+                # an app restart keeps every finished day and skips it next time.
+                self._set_progress(key, stage=f"Chunk {n + 1}/{total}: publishing")
                 self._publish_chunks(root, catalog, [staged], cancel)
                 published_chunks.append(staged)
                 published += 1

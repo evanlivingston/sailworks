@@ -60,7 +60,7 @@ class IcoadsState(QObject):
         self._generation += 1
         generation = self._generation
         self.loading = True
-        self.status = "Loading recent ship observations…"
+        self.status = "Loading recent ship observations"
         self.error = ""
         thread = _FetchThread(generation, self.days, self)
         self._threads.add(thread)

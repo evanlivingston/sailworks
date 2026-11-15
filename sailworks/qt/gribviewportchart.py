@@ -886,9 +886,9 @@ class ViewportChartLayer:
             published = self._enc_metadata or {}
             if self._enc_state == "loading":
                 return (
-                    "ENC updating…"
+                    "ENC updating"
                     if published.get("state") == "ready"
-                    else "ENC loading…"
+                    else "ENC loading"
                 )
             if self._enc_state == "coverage_miss":
                 return published.get("reason") or "No ENC coverage here"

@@ -3,7 +3,7 @@ Charts and weather
 
 The chart is the main working surface in Sailworks. It draws the base map, the chart
 layers you enable, your tracks and routes, and the weather fields you select. Forecasts
-and chart downloads are managed from **File → Data Library…**.
+and chart downloads are managed from **File → Data Library**.
 
 ```{image} ../_static/images/manual/chart-pnwo.png
 :alt: Chart with the satellite basemap over the Pacific Northwest coast
@@ -39,7 +39,7 @@ Base maps and chart downloads
 Sailworks opens an empty chart on first run and does not prompt for downloads. To
 install the base maps:
 
-1. Open **File → Data Library…**.
+1. Open **File → Data Library**.
 2. Keep the **Charts** tab and select the **Downloads & base maps** section.
 3. Press **Download World Coastlines**, then **Download OpenSeaMap** for lighthouses,
    buoys and other seamarks from the
@@ -65,8 +65,8 @@ planning.
 Weather forecasts
 -----------------
 
-1. Open **File → Data Library…** and switch to the **Forecasts** tab, or pick
-   **Open forecast…** from the File menu for a forecast file you already have.
+1. Open **File → Data Library** and switch to the **Forecasts** tab, or pick
+   **Open forecast** from the File menu for a forecast file you already have.
 2. Choose the weather model, the region and the time range, then start the download.
 3. The forecast is loaded into the chart when the download finishes. Step through it
    with the time controls in the toolbar, and use the **Weather** panel to choose the

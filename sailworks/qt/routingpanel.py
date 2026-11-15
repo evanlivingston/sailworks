@@ -1010,7 +1010,7 @@ class RoutingPanel(QWidget):
         selected_start = self.start_mode.currentData()
         self.destination.blockSignals(True)
         self.destination.clear()
-        self.destination.addItem("Choose track or POI…", None)
+        self.destination.addItem("Choose track or POI", None)
         for track in self.controller.core.trackManager:
             self.destination.addItem("Track: " + track.name, track)
         for poi in self.controller.core.poiManager:

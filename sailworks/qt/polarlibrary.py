@@ -3,8 +3,7 @@
 import math
 from typing import cast
 
-from PySide6.QtCore import Qt, QSortFilterProxyModel
-from PySide6.QtGui import QStandardItem, QStandardItemModel
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -12,12 +11,10 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QProgressBar,
     QPushButton,
     QSplitter,
-    QTableView,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -25,8 +22,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sailworks.core.polarfiles import orc_filename
-from .theme import SURFACE, TEXT, MUTED, section_label
+from .polarcatalog import PolarCatalogDialog
+from .tables import PANEL_MARGINS, fit_columns, make_table
+from .theme import SURFACE, TEXT, MUTED, ThemedMenu
 
 
 class PolarPreview(QDialog):
@@ -72,6 +70,7 @@ class PolarPreview(QDialog):
             edgecolor=MUTED,
         )
         tabs.addTab(canvas, "Curves")
+        # Full speed matrix, not a list table, so it stays off tables.make_table().
         self.table = QTableWidget(len(polar.twa), len(polar.tws) + 1)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
@@ -88,88 +87,42 @@ class PolarPreview(QDialog):
         layout.addWidget(buttons)
 
 
-def make_table(headers):
-    table = QTableWidget(0, len(headers))
-    table.setHorizontalHeaderLabels(headers)
-    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-    table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-    table.setAlternatingRowColors(True)
-    table.horizontalHeader().setStretchLastSection(True)
-    table.verticalHeader().hide()
-    return table
-
-
 class PolarLibrary(QWidget):
+    polar_chosen = Signal(str)
+
     def __init__(self, controller, parent=None):
         super().__init__(parent)
         self.controller = controller
         self.polars = controller.polars
         self.manager = self.polars.manager
         self.preview_dialog = None
+        self.catalog_dialog = None
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(*PANEL_MARGINS)
+        layout.setSpacing(6)
         splitter = QSplitter(Qt.Orientation.Vertical)
         layout.addWidget(splitter)
         local = QWidget()
         local_layout = QVBoxLayout(local)
-        local_layout.addWidget(section_label("Local polars"))
-        self.local = make_table(["Enabled / file", "Boat", "Type"])
-        self.local.setColumnWidth(0, 270)
-        self.local.setColumnWidth(1, 200)
+        local_layout.setContentsMargins(0, 0, 0, 0)
+        self.local = make_table(["Enabled / file", "Sail", "Name", "Type"])
+        fit_columns(self.local, stretch=(0, 2), contents=(1, 3))
         self.local.itemChanged.connect(self.toggle)
         self.local.itemSelectionChanged.connect(self.selection_changed)
+        self.local.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.local.customContextMenuRequested.connect(self._local_menu)
+        self.local.itemDoubleClicked.connect(self._local_double_click)
         local_layout.addWidget(self.local)
         actions = QHBoxLayout()
-        self.import_button = QPushButton("Import .pol…")
-        self.preview_button = QPushButton("Preview…")
-        self.use_button = QPushButton("Use for routing")
-        self.remove_button = QPushButton("Remove copy…")
-        for button, callback in (
-            (self.import_button, self.import_file),
-            (self.preview_button, self.preview),
-            (self.use_button, self.use_for_routing),
-            (self.remove_button, self.remove),
-        ):
-            button.clicked.connect(callback)
-            actions.addWidget(button)
+        self.import_button = QPushButton("Import .pol")
+        self.import_button.clicked.connect(self.import_file)
+        actions.addWidget(self.import_button)
+        self.catalog_button = QPushButton("Add from ORC")
+        self.catalog_button.clicked.connect(self.open_catalog)
+        actions.addWidget(self.catalog_button)
+        actions.addStretch(1)
         local_layout.addLayout(actions)
         splitter.addWidget(local)
-        remote = QWidget()
-        remote_layout = QVBoxLayout(remote)
-        remote_layout.addWidget(section_label("ORC polars"))
-        search = QHBoxLayout()
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Search boat, type or sail number")
-        self.search.textChanged.connect(self.filter_catalog)
-        search.addWidget(self.search, 1)
-        self.fetch_button = QPushButton("Load catalog")
-        self.fetch_button.clicked.connect(self.polars.fetch_catalog)
-        search.addWidget(self.fetch_button)
-        self.download_button = QPushButton("Download selected")
-        self.download_button.clicked.connect(self.download)
-        search.addWidget(self.download_button)
-        remote_layout.addLayout(search)
-        self.remote = QTableView()
-        self.remote.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.remote.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.remote.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.remote.setAlternatingRowColors(True)
-        self.catalog_model = QStandardItemModel(self)
-        self.catalog_model.setHorizontalHeaderLabels(
-            ["Sail / identifier", "Boat", "Type", "Installed"]
-        )
-        self.catalog_filter = QSortFilterProxyModel(self)
-        self.catalog_filter.setSourceModel(self.catalog_model)
-        self.catalog_filter.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        self.catalog_filter.setFilterKeyColumn(-1)
-        self.remote.setModel(self.catalog_filter)
-        self.remote.horizontalHeader().setStretchLastSection(True)
-        self.remote.setColumnWidth(0, 150)
-        self.remote.setColumnWidth(1, 240)
-        self.remote.setColumnWidth(2, 180)
-        self.remote.selectionModel().selectionChanged.connect(self.refresh_buttons)
-        remote_layout.addWidget(self.remote)
-        splitter.addWidget(remote)
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         layout.addWidget(self.progress)
@@ -181,7 +134,6 @@ class PolarLibrary(QWidget):
         self.polars.preview_changed.connect(self.show_preview)
         controller.routing.changed.connect(self.refresh_buttons)
         controller.data.changed.connect(self.refresh_buttons)
-        self.catalog_version: list[tuple[str, str, str]] | None = None
         self.installed = set()
         self.names = []
         self.refresh()
@@ -189,6 +141,24 @@ class PolarLibrary(QWidget):
     def selected_name(self):
         row = self.local.currentRow()
         return self.names[row] if 0 <= row < len(self.names) else ""
+
+    def _local_menu(self, position):
+        index = self.local.indexAt(position)
+        if not index.isValid():
+            return
+        self.local.setCurrentCell(index.row(), 0)
+        if self.polars.blocked or not self.selected_name():
+            return
+        menu = ThemedMenu(self)
+        menu.addAction("Preview").triggered.connect(self.preview)
+        menu.addAction("Delete").triggered.connect(self.remove)
+        menu.exec(self.local.viewport().mapToGlobal(position))
+
+    def _local_double_click(self, item):
+        if item is None or item.column() == 0 or self.polars.blocked:
+            return
+        if self.selected_name():
+            self.preview()
 
     @staticmethod
     def populate(table, rows, checks=None, selected=0):
@@ -215,72 +185,42 @@ class PolarLibrary(QWidget):
         rows = []
         for name in self.names:
             metadata = self.manager.get_metadata(name)
-            rows.append((name, metadata.get("name", ""), metadata.get("type", "")))
+            rows.append(
+                (
+                    name,
+                    metadata.get("sail", ""),
+                    metadata.get("name", ""),
+                    metadata.get("type", ""),
+                )
+            )
         self.populate(
             self.local,
             rows,
             [self.manager.is_enabled(n) for n in self.names],
             self.names.index(selected) if selected in self.names else 0,
         )
-        self.update_catalog()
-        self.filter_catalog()
         self.progress.setVisible(self.polars.task.busy)
         self.status.setText(self.polars.task.message)
         self.refresh_buttons()
 
     def selection_changed(self):
-        self.polars.selected = self.selected_name()
+        name = self.selected_name()
+        self.polars.selected = name
         self.refresh_buttons()
+        if name:
+            self.polar_chosen.emit(name)
 
-    def update_catalog(self):
-        installed = set(self.names)
-        if id(self.catalog_version) != id(self.polars.catalog):
-            self.catalog_model.removeRows(0, self.catalog_model.rowCount())
-            self.catalog_filter.setDynamicSortFilter(False)
-            for row in self.polars.catalog:
-                items = [
-                    QStandardItem(value)
-                    for value in (
-                        *row,
-                        "Yes" if orc_filename(row[0]) in installed else "",
-                    )
-                ]
-                items[0].setData(row, Qt.ItemDataRole.UserRole)
-                self.catalog_model.appendRow(items)
-            self.catalog_filter.setDynamicSortFilter(True)
-            self.catalog_version = self.polars.catalog
-        elif installed != self.installed:
-            for index, row in enumerate(self.polars.catalog):
-                self.catalog_model.item(index, 3).setText(
-                    "Yes" if orc_filename(row[0]) in installed else ""
-                )
-        self.installed = installed
-
-    def filter_catalog(self, *_):
-        self.catalog_filter.setFilterFixedString(self.search.text().strip())
-        self.refresh_buttons()
-
-    def selected_remote(self):
-        index = self.remote.currentIndex()
-        if not index.isValid():
-            return None
-        source = self.catalog_filter.mapToSource(index)
-        return self.catalog_model.item(source.row(), 0).data(Qt.ItemDataRole.UserRole)
+    def open_catalog(self):
+        if self.catalog_dialog is not None:
+            self.catalog_dialog.close()
+        self.catalog_dialog = PolarCatalogDialog(self.polars, self)
+        self.catalog_dialog.show()
+        self.catalog_dialog.raise_()
 
     def refresh_buttons(self, *_):
         blocked = self.polars.blocked
-        name = self.selected_name()
         self.local.setEnabled(not blocked)
         self.import_button.setEnabled(not blocked)
-        self.preview_button.setEnabled(not blocked and bool(name))
-        self.remove_button.setEnabled(not blocked and bool(name))
-        self.use_button.setEnabled(
-            not blocked and bool(name) and self.manager.is_enabled(name)
-        )
-        self.fetch_button.setEnabled(not blocked)
-        row = self.selected_remote()
-        available = row is not None and orc_filename(row[0]) not in self.names
-        self.download_button.setEnabled(not blocked and available)
 
     def attempt(self, operation):
         try:
@@ -316,9 +256,6 @@ class PolarLibrary(QWidget):
         self.preview_dialog.show()
         self.preview_dialog.raise_()
 
-    def use_for_routing(self):
-        self.polars.use_for_routing(self.selected_name())
-
     def remove(self):
         name = self.selected_name()
         if (
@@ -329,8 +266,3 @@ class PolarLibrary(QWidget):
             == QMessageBox.StandardButton.Yes
         ):
             self.attempt(lambda: self.polars.remove(name))
-
-    def download(self):
-        row = self.selected_remote()
-        if row is not None:
-            self.polars.download(row[0])

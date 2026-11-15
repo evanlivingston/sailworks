@@ -125,7 +125,7 @@ def test_progress_report_exposes_current_model_and_percentage(tmp_path):
     controller._progress_token = "progress-token"
     controller._progress(controller._generation, "progress-token", ("HRRR", 42))
 
-    assert controller.status == f"Downloading {display_model_name('HRRR')}…"
+    assert controller.status == f"Downloading {display_model_name('HRRR')}"
     assert controller.progress == 42
     controller.close()
 
@@ -145,7 +145,7 @@ def test_progress_report_includes_bytes_downloaded(tmp_path):
         ("HRRR", (42, 3 * 1024 * 1024)),
     )
 
-    assert controller.status == (f"Downloading {display_model_name('HRRR')}… 3.0 MB")
+    assert controller.status == (f"Downloading {display_model_name('HRRR')} 3.0 MB")
     assert controller.progress == 42
     controller.close()
 

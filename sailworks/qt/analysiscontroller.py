@@ -45,7 +45,7 @@ class AnalysisController(QObject):
         self.loading = True
         self.progress = 0
         self.error = ""
-        self.status = "Loading published forecast…"
+        self.status = "Loading published forecast"
         self._finished.connect(self._finish)
         self._progressed.connect(self._progress)
         self._start(
@@ -120,9 +120,7 @@ class AnalysisController(QObject):
         self.progress = 0
         self.error = ""
         self.status = (
-            "Loading published forecast…"
-            if action == "startup"
-            else "Updating forecast…"
+            "Loading published forecast" if action == "startup" else "Updating forecast"
         )
         self.changed.emit()
 
@@ -191,7 +189,7 @@ class AnalysisController(QObject):
                 if model_id:
                     from sailworks.core.forecastcapabilities import display_model_name
 
-                    status = f"Downloading {display_model_name(model_id)}…"
+                    status = f"Downloading {display_model_name(model_id)}"
                     if downloaded > 0:
                         status += f" {_format_bytes(downloaded)}"
                     self.status = status
@@ -202,7 +200,7 @@ class AnalysisController(QObject):
                 if model_id:
                     from sailworks.core.forecastcapabilities import display_model_name
 
-                    self.status = f"Downloading {display_model_name(model_id)}…"
+                    self.status = f"Downloading {display_model_name(model_id)}"
                 self.changed.emit()
                 return
             if isinstance(detail, str):

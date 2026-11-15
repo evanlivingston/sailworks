@@ -7,11 +7,9 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
-    QHeaderView,
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
-    QTableWidget,
     QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
@@ -19,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 from .backgroundtask import BackgroundTask
 from .marinepanel import CurrentSources, text_label
+from .tables import fit_columns, make_table
 
 
 class CurrentsAccount(QWidget):
@@ -60,10 +59,10 @@ class CurrentsAccount(QWidget):
         layout.addStretch()
 
     def start(self, operation):
-        if self.task.start("Updating account…", operation):
+        if self.task.start("Updating account", operation):
             self.save.setEnabled(False)
             self.forget.setEnabled(False)
-            self.status.setText("Updating account…")
+            self.status.setText("Updating account")
         self.password.clear()
 
     def save_account(self):
@@ -127,15 +126,8 @@ class MarineSettings(QDialog):
         stations.addWidget(
             text_label("Downloaded sources · priority from top to bottom")
         )
-        self.sources = QTableWidget(0, 4)
-        self.sources.setHorizontalHeaderLabels(
-            ["Use", "Station", "Capability", "Interval (UTC)"]
-        )
-        self.sources.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.Stretch
-        )
-        self.sources.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.sources.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.sources = make_table(["Use", "Station", "Capability", "Interval (UTC)"])
+        fit_columns(self.sources, stretch=(1,))
         self.sources.itemChanged.connect(self.toggle)
         self.sources.itemSelectionChanged.connect(self.details)
         stations.addWidget(self.sources, 1)
@@ -154,8 +146,7 @@ class MarineSettings(QDialog):
         self.fallback = QCheckBox("Allow fallback to a lower priority source")
         self.fallback.toggled.connect(self.set_fallback)
         stations.addWidget(self.fallback)
-        self.samples = QTableWidget(0, 6)
-        self.samples.setHorizontalHeaderLabels(
+        self.samples = make_table(
             ["Time (UTC)", "Series", "Value", "Unit", "QC", "Qualifier"]
         )
         stations.addWidget(self.samples, 1)

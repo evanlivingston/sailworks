@@ -183,9 +183,9 @@ SCENES = (
         "Forecast selection and the displayed weather fields.",
     ),
     _panel_scene(
-        "polar-selector",
-        "Polar selector",
-        "Choose the polar used for routing and performance readouts.",
+        "polars",
+        "Polars",
+        "Choose the polar for routing and performance readouts, and enable, import or download polar files.",
     ),
     Scene(
         "data-library-charts",

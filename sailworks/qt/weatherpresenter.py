@@ -421,7 +421,7 @@ class WeatherPresenter(QObject):
                 if chart.state == "unavailable":
                     basemap = chart.error or basemap or "World basemap unavailable"
                 elif chart.state == "loading" and not basemap:
-                    basemap = "World basemap loading…"
+                    basemap = "World basemap loading"
         marine_status = ""
         if self.widget is not None and self.canvas.marine.visible:
             marine_status = "Viewport currents: " + self.widget._marine_layer.state

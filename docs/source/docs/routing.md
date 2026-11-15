@@ -12,8 +12,8 @@ Tracks and points of interest
 2. Right-click the chart and choose **Add POI here**, or press **P**.
 3. Drag a point to move it. Track edits and point removals can be undone.
 
-Tracks and navigation state are imported and exported with **File → Import GPX…** and
-**File → Export navigation…**. Points of interest appear on the chart like other
+Tracks and navigation state are imported and exported with **File → Import GPX** and
+**File → Export navigation**. Points of interest appear on the chart like other
 navigation objects. Received AIS targets can be shown with the **AIS targets** action in
 the **View** menu when an AIS input is connected.
 

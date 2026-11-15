@@ -159,11 +159,11 @@ layer; the bundled fallback and NOAA chart imports work without opening GTK.
 
 ## Polar management
 
-Open the top-level Polars tab or File → Polars to see the table and chart together. Polar selector changes the displayed enabled polar. Use the Polar manager toolbar button (also
-reachable from Routing → Manage polars) for imports, enable/remove controls and ORC downloads. It is a shared dock panel, matching GTK; `.pol` imports still use the native picker
-and removal asks confirmation. Imports validate axes/table shape and finite, nonnegative speeds before staging a copy. Duplicate filenames receive timestamp suffixes; source files
+Open the top-level Polars tab or File → Polars to see the table and chart together. One Polars panel lists the installed polars with an enable checkbox plus sail, name and type; selecting a row
+changes the displayed polar, and the checkboxes enable or disable entries. The same panel handles imports, removal and ORC downloads (also reachable from Routing → Manage polars). It is a shared
+dock panel, matching GTK; `.pol` imports still use the native picker and removal asks confirmation. Imports validate axes/table shape and finite, nonnegative speeds before staging a copy. Duplicate filenames receive timestamp suffixes; source files
 and existing installed copies are retained. The main table uses GTK’s row stride and colored wind headers. The optional manager Preview shows every stored wind-angle/speed value.
-Use for routing selects an enabled polar in the Routing plan without starting a calculation.
+The Routing panel's Polar dropdown is the single place to choose the routing polar; the Polars panel only manages, enables and previews files.
 
 Load catalog fetches the existing ORC data source on demand. Search filters sail identifier, boat name and type with Qt’s proxy model. Select an available boat and Download
 selected to convert/install it and retain its metadata. Network work runs in a worker; manager updates and Qt notifications run on the application thread. Already installed ORC

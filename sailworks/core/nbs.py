@@ -324,19 +324,19 @@ def build(state, plan, *, directory=None, progress=None, cancel=None):
         if progress is not None:
             progress(
                 round(10 * index / max(1, len(plan.days))),
-                f"Downloading NBS {day}…",
+                f"Downloading NBS {day}",
             )
         paths.append(download_day(day, working))
     if progress is not None:
-        progress(60, "Encoding NBS wind…")
+        progress(60, "Encoding NBS wind")
     destination = working / "nbs.grib2"
     encode_grib(plan, paths, destination)
     if progress is not None:
-        progress(85, "Validating NBS wind…")
+        progress(85, "Validating NBS wind")
     validate_grib(destination, plan)
     artifact = state.store.register_file(destination)
     if progress is not None:
-        progress(95, "Publishing NBS wind…")
+        progress(95, "Publishing NBS wind")
     tranche = publish(state, plan, artifact)
     if progress is not None:
         progress(100, "Complete")

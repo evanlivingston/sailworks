@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QTabWidget,
-    QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -30,6 +29,7 @@ from sailworks.core.race import (
 )
 from sailworks.core.geo.track import Track
 from sailworks.core.timecontrol import utc_to_wall, wall_to_utc
+from .tables import make_table
 
 from sailworks.qt.ybracedialog import YBRaceDialog
 from .text import qt_text
@@ -83,7 +83,7 @@ class RacesPanel(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
 
         buttons = QHBoxLayout()
-        self.import_button = QPushButton("Import race…")
+        self.import_button = QPushButton("Import race")
         self.import_button.clicked.connect(self.import_race)
         buttons.addWidget(self.import_button)
         self.review_button = QPushButton("Review from start")
@@ -109,8 +109,7 @@ class RacesPanel(QWidget):
         boats_page = QWidget()
         boats_layout = QVBoxLayout(boats_page)
         boats_layout.setContentsMargins(0, 0, 0, 0)
-        self.boat_table = QTableWidget(0, 9)
-        self.boat_table.setHorizontalHeaderLabels(
+        self.boat_table = make_table(
             [
                 "Boat",
                 "Sail",
@@ -121,19 +120,13 @@ class RacesPanel(QWidget):
                 "Colour",
                 "TCF",
                 "Status",
-            ]
+            ],
+            grid=False,
+            sortable=True,
         )
-        self.boat_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.boat_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        self.boat_table.setAlternatingRowColors(True)
-        self.boat_table.setShowGrid(False)
-        self.boat_table.verticalHeader().hide()
         self.boat_table.verticalHeader().setDefaultSectionSize(24)
         self.boat_table.setMinimumHeight(80)
-        self.boat_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.boat_table.setSortingEnabled(True)
         self.boat_table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
-        self.boat_table.horizontalHeader().setStretchLastSection(True)
         for column, width in enumerate((150, 60, 110, 80, 110, 50, 80, 60, 80)):
             self.boat_table.setColumnWidth(column, width)
         self.boat_table.itemChanged.connect(self._boat_visibility_changed)

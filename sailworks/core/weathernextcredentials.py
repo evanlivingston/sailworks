@@ -54,7 +54,7 @@ def describe_access_error(error) -> str:
     ):
         return API_DISABLED_HINT
     compact = " ".join(original.split())
-    return compact if len(compact) <= 300 else compact[:299] + "…"
+    return compact
 
 
 class WeatherNextCredentialsError(RuntimeError):
