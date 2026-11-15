@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import time
 
-from sailworks.core.era5 import Era5DownloadService, plan_request
+from sailworks.core.era5 import MAX_DAYS, Era5DownloadService, plan_request
 from sailworks.core.historicaljob import JobProgress
 
 try:
@@ -158,6 +158,41 @@ def covered(root, unit):
     return bool(chosen)
 
 
+def merge_windows(units):
+    """Merge unit windows into the fewest contiguous spans, grouped by region.
+
+    Historical ensemble members are the same trip on nearby dates across many
+    years, so their windows overlap heavily. Requesting the union per region
+    downloads each hour once instead of once per member, which turns a run of
+    dozens of near-duplicate requests into a few contiguous spans.
+
+    Spans never cross regions and are capped at ``MAX_DAYS`` so every span is a
+    valid request.
+    """
+    groups = {}
+    for unit in tuple(units or ()):
+        groups.setdefault(era5_area(unit.region), []).append(
+            (unit.start_utc, unit.end_utc)
+        )
+    spans = []
+    for area, windows in groups.items():
+        merged = []
+        for start, end in sorted(windows):
+            if merged and start <= merged[-1][1]:
+                # Overlapping or exactly adjacent windows share their hours.
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        for start, end in merged:
+            cursor = start
+            while cursor < end:
+                stop = min(end, cursor + timedelta(days=MAX_DAYS))
+                spans.append((area, cursor, stop))
+                cursor = stop
+    spans.sort(key=lambda item: item[1])
+    return spans
+
+
 class _Cancelled(Exception):
     """Internal signal: the cancel event fired during ERA5 acquisition."""
 
@@ -199,11 +234,10 @@ class Era5Coverage:
         text = str(error or "").strip()
         return text or "no error details were reported"
 
-    def _submitted_message(self, unit, index, total):
-        day = f"{unit.start_utc:%Y-%m-%d}"
+    def _submitted_message(self, label, index, total):
         if self.source == "CDS":
-            return f"queued {day} ({index + 1}/{total} submitted)"
-        return f"reading ARCO {day} ({index + 1}/{total} submitted)"
+            return f"queued {label} ({index + 1}/{total} submitted)"
+        return f"reading ARCO {label} ({index + 1}/{total} submitted)"
 
     def _ready_message(self):
         if self.source == "CDS":
@@ -260,47 +294,52 @@ class Era5Coverage:
         return str(stage)
 
     def ensure(self, units, progress=None):
+        wanted = [unit for unit in tuple(units or ()) if not covered(self.root, unit)]
         pending = []
-        for unit in tuple(units or ()):
-            if covered(self.root, unit):
-                continue
+        for area, start, stop in merge_windows(wanted):
             plan = plan_request(
-                unit.start_utc,
-                unit.end_utc - timedelta(hours=1),
-                era5_area(unit.region),
+                start,
+                stop - timedelta(hours=1),
+                area,
                 fields=("wind",),
             )
-            pending.append((unit, plan))
+            last = stop - timedelta(hours=1)
+            label = (
+                f"{start:%Y-%m-%d}"
+                if start.date() == last.date()
+                else f"{start:%Y-%m-%d}..{last:%Y-%m-%d}"
+            )
+            pending.append((label, plan))
         total = len(pending)
         report_progress(progress, "acquiring", 0, total, "ERA5 wind coverage")
         submitted = []
         try:
-            for index, (unit, plan) in enumerate(pending):
-                self._acquire(unit, plan, index, total, submitted, progress)
+            for index, (label, plan) in enumerate(pending):
+                self._acquire(label, plan, index, total, submitted, progress)
         except _Cancelled:
-            for _unit, cancelled_plan, _thread in submitted:
+            for _label, cancelled_plan, _thread in submitted:
                 self.service.cancel(cancelled_plan)
             raise RuntimeError("ERA5 acquisition cancelled.") from None
-        for unit, _plan, _thread in submitted:
+        for unit in wanted:
             if not covered(self.root, unit):
                 raise RuntimeError(
                     f"ERA5 wind coverage is still missing for {unit.start_utc:%Y-%m-%d}."
                 )
         report_progress(progress, "acquired", total, total, self._ready_message())
 
-    def _acquire(self, unit, plan, index, total, submitted, progress):
+    def _acquire(self, label, plan, index, total, submitted, progress):
         """Submit one plan at a time, retrying only when the CDS queue is full."""
         for attempt in range(1, _QUEUE_ATTEMPTS + 1):
             if self._cancelled():
                 raise _Cancelled
             thread = self.service.submit(plan, retry=True)
-            submitted.append((unit, plan, thread))
+            submitted.append((label, plan, thread))
             report_progress(
                 progress,
                 "acquiring",
                 index,
                 total,
-                self._submitted_message(unit, index, total),
+                self._submitted_message(label, index, total),
             )
             key, error = self._wait(
                 plan, thread, progress=progress, index=index, total=total
@@ -320,13 +359,12 @@ class Era5Coverage:
                 # for this plan with their existing classifications; an ARCO
                 # failure never carries a CDS classification or queue retry.
                 raise RuntimeError(
-                    f"ERA5 download failed for {unit.start_utc:%Y-%m-%d}: "
-                    f"{self._error_text(error)}"
+                    f"ERA5 download failed for {label}: {self._error_text(error)}"
                 )
             if attempt >= _QUEUE_ATTEMPTS:
                 raise RuntimeError(
-                    f"ERA5 download failed for {unit.start_utc:%Y-%m-%d}: the CDS "
-                    f"queue limit is still reached after {_QUEUE_ATTEMPTS} attempts "
+                    f"ERA5 download failed for {label}: the CDS queue limit is "
+                    f"still reached after {_QUEUE_ATTEMPTS} attempts "
                     f"({error_message(error)}). Retry the download later."
                 )
             delay = _QUEUE_BACKOFF_SECONDS[attempt - 1]

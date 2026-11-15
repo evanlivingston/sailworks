@@ -1073,3 +1073,94 @@ def test_era5_coverage_cancellation_raises_and_cancels_submitted(tmp_path, monke
     assert [id(plan) for plan in service.cancelled] == [
         id(plan) for plan in service.submitted
     ]
+
+
+def _window_units(windows, region=REGION):
+    from types import SimpleNamespace
+
+    return [
+        SimpleNamespace(
+            start_utc=start, end_utc=end, region=region, unit_id=f"{start:}"
+        )
+        for start, end in windows
+    ]
+
+
+def test_merged_windows_collapse_ensemble_members():
+    """Same trip on nearby dates across ten years is ten requests, not seventy."""
+    from sailworks.qt.historicalera5 import merge_windows
+
+    windows = []
+    for year in range(2015, 2025):
+        base = datetime(year, 11, 11, tzinfo=UTC)
+        for offset in range(-3, 4):
+            start = base + timedelta(days=offset)
+            windows.append((start, start + timedelta(days=5)))
+
+    spans = merge_windows(_window_units(windows))
+
+    assert len(spans) == 10
+    assert spans[0][1] == datetime(2015, 11, 8, tzinfo=UTC)
+    assert spans[0][2] == datetime(2015, 11, 19, tzinfo=UTC)
+    assert spans[-1][1] == datetime(2024, 11, 8, tzinfo=UTC)
+    assert spans[-1][2] == datetime(2024, 11, 19, tzinfo=UTC)
+
+
+def test_merged_windows_join_exactly_adjacent_windows():
+    from sailworks.qt.historicalera5 import merge_windows
+
+    start = datetime(2026, 5, 1, tzinfo=UTC)
+    spans = merge_windows(
+        _window_units(
+            [
+                (start, start + timedelta(days=2)),
+                (start + timedelta(days=2), start + timedelta(days=4)),
+            ]
+        )
+    )
+
+    assert len(spans) == 1
+    assert spans[0][1:] == (start, start + timedelta(days=4))
+
+
+def test_merged_windows_keep_real_gaps_apart():
+    from sailworks.qt.historicalera5 import merge_windows
+
+    start = datetime(2026, 5, 1, tzinfo=UTC)
+    spans = merge_windows(
+        _window_units(
+            [
+                (start, start + timedelta(days=1)),
+                (start + timedelta(days=3), start + timedelta(days=4)),
+            ]
+        )
+    )
+
+    assert len(spans) == 2
+
+
+def test_merged_windows_never_merge_across_regions():
+    from sailworks.qt.historicalera5 import merge_windows
+
+    start = datetime(2026, 5, 1, tzinfo=UTC)
+    other = (-5.0, 40.0, 5.0, 50.0)
+    units = _window_units([(start, start + timedelta(days=1))]) + _window_units(
+        [(start, start + timedelta(days=1))], region=other
+    )
+
+    assert len(merge_windows(units)) == 2
+
+
+def test_merged_windows_respect_the_request_length_limit():
+    from sailworks.core.era5 import MAX_DAYS
+    from sailworks.qt.historicalera5 import merge_windows
+
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    spans = merge_windows(
+        _window_units([(start, start + timedelta(days=MAX_DAYS + 10))])
+    )
+
+    assert len(spans) == 2
+    for _area, span_start, span_end in spans:
+        assert span_end - span_start <= timedelta(days=MAX_DAYS)
+    assert spans[1][1] == spans[0][2]
