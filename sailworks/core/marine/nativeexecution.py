@@ -51,10 +51,10 @@ class SelectedShoreline:
     ``lines_validity`` clearance check.
     """
 
-    def __init__(self, path):
+    def __init__(self, path, bounds=None):
         from sailworks.core.geo.shoreline import ShorelineValidity
 
-        self.provider = ShorelineValidity(path)
+        self.provider = ShorelineValidity(path, bounds=bounds)
 
     def point_forbidden(self, latitude, longitude):
         return not self.provider.points_validity([(latitude, longitude)])[0]
@@ -76,10 +76,32 @@ def _shoreline(job):
     (descriptor,) = job.provider_descriptors
     if descriptor.kind != "gshhs":
         raise ValueError("Unsupported native shoreline provider: " + descriptor.kind)
-    return SelectedShoreline(descriptor.path)
+    return SelectedShoreline(
+        descriptor.path, bounds=getattr(job.forecast.entry, "region", None)
+    )
 
 
-def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> dict:
+def _prepared_native_wind(job, wind):
+    """Build the optional native scalar field, falling back on any mismatch."""
+    if job.use_currents or job.wave_forecast is not None:
+        return None
+    builder = getattr(wind, "prepared_wind_field", None)
+    if builder is None:
+        return None
+    try:
+        field = builder()
+    except (ValueError, RuntimeError, TypeError, IndexError):
+        return None
+    if field is None:
+        return None
+    field["wind_dir_offset"] = float(job.wind_dir_offset)
+    field["wind_speed_factor"] = float(1.0 + job.wind_speed_pct / 100.0)
+    return field
+
+
+def run_native_request(
+    job: NativeRequest, progress=None, cancel_event=None, native_wind=None
+) -> dict:
     """Run only inputs the real bridge currently honors; reject all others.
 
     ``progress`` receives the engine's ``RoutingProgressUpdate`` dictionaries
@@ -111,7 +133,8 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
             ) from None
         if recorded_digest != job.avoid_zones_digest:
             raise ValueError(
-                "zone digest mismatch: frozen avoid zones do not match " "avoid_zones_digest"
+                "zone digest mismatch: frozen avoid zones do not match "
+                "avoid_zones_digest"
             )
     if job.coastline_checks and not job.provider_descriptors:
         raise ValueError("Native coastline checks require a selected shoreline")
@@ -138,7 +161,8 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
         end_epoch_s=int(max(wind_times).timestamp()),
     )
     polar = [
-        {"true_wind_speed_knots": tws, "points": list(points)} for tws, points in job.polar_rows
+        {"true_wind_speed_knots": tws, "points": list(points)}
+        for tws, points in job.polar_rows
     ]
     settings = dict(
         start=job.start,
@@ -154,7 +178,8 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
         coastline_checks=job.coastline_checks,
         waypoints=list(job.waypoints),
         roundings=[
-            None if rounding is None else rounding.to_native() for rounding in job.roundings
+            None if rounding is None else rounding.to_native()
+            for rounding in job.roundings
         ],
         # The keep-off control is disabled with coastline checks off; the
         # legacy path ignores it then, so native does not apply it either. The
@@ -184,7 +209,9 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
             raise ValueError("Selected local current store is missing")
         store = FieldStore(field_directory)
         missing = [
-            identifier for identifier in job.current_field_ids if identifier not in store.fields
+            identifier
+            for identifier in job.current_field_ids
+            if identifier not in store.fields
         ]
         if missing:
             raise ValueError("Selected local current fields changed or are missing")
@@ -199,6 +226,8 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
     from threading import Event
 
     wind = BoundRoutingWind(job.forecast, Event())
+    if native_wind is None:
+        native_wind = _prepared_native_wind(job, wind)
     waves = None
     try:
         if job.wave_forecast is not None:
@@ -233,6 +262,9 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
             if selection is not None
             else lambda latitude, longitude, epoch_s: (0.0, 0.0, False)
         )
+        native_options = {}
+        if native_wind is not None:
+            native_options["native_wind"] = native_wind
         run = bridge.route_user_request(
             selected_wind,
             current,
@@ -247,6 +279,7 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
             cancel_event=cancel_event,
             waves=selected_waves if waves is not None else None,
             wave_coverage=waves.coverage() if waves is not None else None,
+            **native_options,
         )
         _attach_rounding_names(run, job)
         if run.get("status") == "wave_data_required":
@@ -287,7 +320,10 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
             ),
             auto_download=job.auto_download,
             shoreline=(
-                [dict(kind=item.kind, path=item.path) for item in job.provider_descriptors]
+                [
+                    dict(kind=item.kind, path=item.path)
+                    for item in job.provider_descriptors
+                ]
                 if job.coastline_checks
                 else None
             ),

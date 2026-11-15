@@ -20,7 +20,11 @@ class ShorelineValidity:
     the chart drawer or any Qt object.
     """
 
-    def __init__(self, path):
+    _MASK_RESOLUTION_DEGREES = 0.005
+    _MASK_MARGIN_DEGREES = 0.5
+    _DISTANCE_CACHE_LIMIT = 1024
+
+    def __init__(self, path, bounds=None):
         self.path = path
         self.use_native_geometry = True
         driver = ogr.GetDriverByName("ESRI Shapefile")
@@ -30,6 +34,71 @@ class ShorelineValidity:
         self._routing_clips: OrderedDict[tuple, tuple] = OrderedDict()
         self._routing_sources: OrderedDict[tuple, ogr.Geometry] = OrderedDict()
         self._routing_native_clips: OrderedDict = OrderedDict()
+        self._land_mask = None
+        self._land_mask_meta = None
+        self._distance_cache: OrderedDict[tuple, float] = OrderedDict()
+        self._mask_bounds = tuple(bounds) if bounds is not None else None
+
+    def _routing_mask(self):
+        """Conservative touched-cell land mask for the selected region.
+
+        A cell is marked if any selected land polygon touches it. Validity may
+        therefore skip the exact predicate only when the whole segment bounding
+        box, expanded by one cell, is unmarked. Ambiguous or out-of-region
+        queries always fall back to the exact GSHHS predicate.
+        """
+        bounds = getattr(self, "_mask_bounds", None)
+        if bounds is None:
+            return None
+        if self._land_mask is not None:
+            return self._land_mask, self._land_mask_meta
+        south, west, north, east = bounds
+        margin = self._MASK_MARGIN_DEGREES
+        south, west = max(-90.0, south - margin), max(-180.0, west - margin)
+        north, east = min(90.0, north + margin), min(180.0, east + margin)
+        if not (west < east and south < north and east - west <= 180.0):
+            return None
+        resolution = self._MASK_RESOLUTION_DEGREES
+        width = max(1, int(math.ceil((east - west) / resolution)))
+        height = max(1, int(math.ceil((north - south) / resolution)))
+        dataset = gdal.GetDriverByName("MEM").Create(
+            "", width, height, 1, gdal.GDT_Byte
+        )
+        dataset.SetGeoTransform((west, resolution, 0, north, 0, -resolution))
+        projection = osr.SpatialReference()
+        projection.ImportFromEPSG(4326)
+        projection.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        dataset.SetProjection(projection.ExportToWkt())
+        layer = self.lpvFile.GetLayerByIndex(0)
+        layer.SetSpatialFilterRect(west, south, east, north)
+        try:
+            gdal.RasterizeLayer(
+                dataset, [1], layer, burn_values=[1], options=["ALL_TOUCHED=TRUE"]
+            )
+            mask = dataset.ReadAsArray() != 0
+        finally:
+            layer.SetSpatialFilter(None)
+            dataset = None
+        self._land_mask = mask
+        self._land_mask_meta = (south, west, north, east, resolution)
+        return mask, self._land_mask_meta
+
+    def _segments_are_water(self, left, bottom, right, top):
+        mask_result = self._routing_mask()
+        if mask_result is None:
+            return False
+        mask, (south, west, north, east, resolution) = mask_result
+        height, width = mask.shape
+        for index in range(len(left)):
+            x0 = math.floor((left[index] - west) / resolution) - 1
+            x1 = math.ceil((right[index] - west) / resolution) + 1
+            y0 = math.floor((north - top[index]) / resolution) - 1
+            y1 = math.ceil((north - bottom[index]) / resolution) + 1
+            if x0 < 0 or y0 < 0 or x1 >= width or y1 >= height:
+                return False
+            if mask[max(0, y0) : y1 + 1, max(0, x0) : x1 + 1].any():
+                return False
+        return True
 
     def _routing_source(self, layer_index, feature):
         key = (layer_index, feature.GetFID())
@@ -149,6 +218,8 @@ class ShorelineValidity:
         lon_margin = min(
             180.0, lat_margin / max(math.cos(math.radians(max_latitude)), 1e-6)
         )
+        if not distance and self._segments_are_water(left, bottom, right, top):
+            return [True] * len(lines)
         land = self._routing_land(
             left.min() - lon_margin,
             bottom.min() - lat_margin,
@@ -219,6 +290,22 @@ class ShorelineValidity:
         return valid.tolist()
 
     def distance_to_forbidden_nm(self, latitude, longitude):
+        """Return the exact metric distance, caching repeated coordinates."""
+        key = (float(latitude), float(longitude))
+        cache = getattr(self, "_distance_cache", None)
+        if cache is None:
+            cache = self._distance_cache = OrderedDict()
+        cached = cache.get(key)
+        if cached is not None:
+            cache.move_to_end(key)
+            return cached
+        value = self._distance_to_forbidden_nm(latitude, longitude)
+        cache[key] = value
+        if len(cache) > self._DISTANCE_CACHE_LIMIT:
+            cache.popitem(last=False)
+        return value
+
+    def _distance_to_forbidden_nm(self, latitude, longitude):
         """Metric distance to selected GSHHS land, using clearance geometry.
 
         The same local azimuthal equidistant projection and repaired polygons

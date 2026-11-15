@@ -58,6 +58,31 @@ def _forecast():
     )
 
 
+def test_prepared_native_wind_applies_scenario_and_requires_a_supported_field():
+    from sailworks.core.marine.nativeexecution import _prepared_native_wind
+
+    job = SimpleNamespace(
+        use_currents=False,
+        wave_forecast=None,
+        wind_dir_offset=12,
+        wind_speed_pct=-20,
+    )
+
+    class Wind:
+        def prepared_wind_field(self):
+            return {"u": 1.0}
+
+    field = _prepared_native_wind(job, Wind())
+    assert field["wind_dir_offset"] == 12.0
+    assert field["wind_speed_factor"] == pytest.approx(0.8)
+    assert _prepared_native_wind(job, SimpleNamespace()) is None
+    job.use_currents = True
+    assert _prepared_native_wind(job, Wind()) is None
+    job.use_currents = False
+    job.wave_forecast = object()
+    assert _prepared_native_wind(job, Wind()) is None
+
+
 def test_all_selected_inputs_survive_spawn_serialization(polar):
     request = _request(polar)
     scenario = scenario_request(

@@ -759,6 +759,70 @@ class TestGribSampling(unittest.TestCase):
             source.get_wind_at(START + timedelta(hours=hour), 0.5, 0.5)
         self.assertLessEqual(len(source.sampling.arrays), 6)
 
+    def test_scalar_flat_cache_matches_numpy_and_stays_bounded(self):
+        source = self.file(self.field(0))
+        index = source.sampling
+        record = next(item for item in index.records if item.element == "UGRD")
+        points = ((0, 0), (0, 0.5), (0.25, 0.75), (0.5, 0.5), (1, 1), (1.0, 0.0))
+        flat = [index.sample_at(record, lat, lon) for lat, lon in points]
+        self.assertTrue(index._scalar_arrays)
+        self.assertLessEqual(index._scalar_array_bytes, index._SCALAR_CACHE_BYTE_LIMIT)
+
+        index._scalar_arrays.clear()
+        index._scalar_array_bytes = 0
+        original_limit = index._SCALAR_CACHE_BYTE_LIMIT
+        index._SCALAR_CACHE_BYTE_LIMIT = 0
+        try:
+            numpy = [index.sample_at(record, lat, lon) for lat, lon in points]
+        finally:
+            index._SCALAR_CACHE_BYTE_LIMIT = original_limit
+        for expected, actual in zip(flat, numpy):
+            if math.isnan(expected):
+                self.assertTrue(math.isnan(actual))
+            else:
+                self.assertEqual(expected, actual)
+
+        index._SCALAR_CACHE_BYTE_LIMIT = 200
+        try:
+            for item in index.records[:3]:
+                index.sample_at(item, 0.25, 0.75)
+        finally:
+            index._SCALAR_CACHE_BYTE_LIMIT = original_limit
+        self.assertLessEqual(index._scalar_array_bytes, 200)
+        self.assertLessEqual(len(index._scalar_arrays), 1)
+
+    def test_native_wind_field_accepts_only_exact_single_source_selections(self):
+        source = self.file(self.field(0) + self.field(1))
+        sampler = source.sampler()
+        field = sampler.native_wind_field()
+        self.assertIsNotNone(field)
+        self.assertEqual(field["width"], 2)
+        self.assertEqual(field["height"], 2)
+        self.assertEqual(field["u"].shape, (2, 2, 2))
+        self.assertEqual(field["v"].shape, (2, 2, 2))
+        self.assertEqual(len(field["times"]), 2)
+        index = source.sampling
+        u_record = next(item for item in index.records if item.element == "UGRD")
+        np.testing.assert_array_equal(field["u"][0], index.array(u_record))
+
+        other = self.file(self.field(0))
+        self.assertIsNone(WeatherSampler([source, other]).native_wind_field())
+
+        sampler._NATIVE_WIND_BYTE_LIMIT = 0
+        try:
+            self.assertIsNone(sampler.native_wind_field())
+        finally:
+            sampler._NATIVE_WIND_BYTE_LIMIT = 64 * 1024 * 1024
+
+        from pyproj import CRS
+
+        projected = self.file(
+            [("UGRD", 0, [[0, 2], [4, 6]]), ("VGRD", 0, [[0, 0], [0, 0]])],
+            transform=(-500, 1000, 0, -500, 0, 1000),
+            projection=CRS("EPSG:3857").to_wkt(),
+        )
+        self.assertIsNone(projected.sampler().native_wind_field())
+
     def test_gust_is_interpolated_in_space_and_time_and_missing_gust_is_none(self):
         start_gust = np.array([[2, 4], [6, 8]], dtype=float)
         end_gust = np.array([[8, 10], [12, 14]], dtype=float)

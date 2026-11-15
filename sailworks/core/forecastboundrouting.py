@@ -232,6 +232,10 @@ class BoundRoutingWind:
             raise RoutingCancelledError()
         return value
 
+    def prepared_wind_field(self):
+        """Optional native scalar field; ``None`` keeps the Python callback."""
+        return self.manager.weather_sampler().native_wind_field()
+
     def check_cancelled(self):
         if self.cancel.is_set():
             raise RoutingCancelledError()

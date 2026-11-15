@@ -113,6 +113,14 @@ class Record:
 class GridIndex:
     """Metadata index and bounded decoded-band cache, private to each worker."""
 
+    # Scalar routing compares neighboring headings at exact coordinates, so it
+    # samples individual points far more often than it builds display arrays.
+    # A flat Python list avoids a NumPy scalar allocation per neighboring
+    # cell. The cache is byte-bounded so a large grid keeps using the NumPy
+    # path instead of multiplying its decoded memory.
+    _SCALAR_CACHE_BYTE_LIMIT = 16 * 1024 * 1024
+    _SCALAR_CELL_BYTES = 40
+
     def __init__(self, source):
         self.source = source
         self.dataset = source.dataset
@@ -137,6 +145,8 @@ class GridIndex:
             and abs(abs(self.transform[1]) * self.width - 360) < 1e-6
         )
         self.arrays = OrderedDict()
+        self._scalar_arrays: OrderedDict[int, list[float]] = OrderedDict()
+        self._scalar_array_bytes = 0
         self._stencil = lru_cache(maxsize=4096)(self._stencil_for)
         path = self.dataset.GetDescription()
         self.vector_flags = vector_flags(path) if path else []
@@ -459,12 +469,38 @@ class GridIndex:
             if w > 1e-12
         )
 
+    def _scalar_array(self, record):
+        """Flat float copies for small grids, or ``None`` above the budget."""
+        cached = self._scalar_arrays.get(record.band)
+        if cached is not None:
+            return cached
+        cells = self.width * self.height
+        size = cells * self._SCALAR_CELL_BYTES
+        if size > self._SCALAR_CACHE_BYTE_LIMIT:
+            return None
+        cached = self.array(record).ravel().tolist()
+        self._scalar_arrays[record.band] = cached
+        self._scalar_array_bytes += size
+        # FIFO is enough: entries are immutable and reconverting a decoded band
+        # is cheap compared with the per-sample NumPy indexing this avoids.
+        while (
+            self._scalar_array_bytes > self._SCALAR_CACHE_BYTE_LIMIT
+            and self._scalar_arrays
+        ):
+            _, evicted = self._scalar_arrays.popitem(last=False)
+            self._scalar_array_bytes -= len(evicted) * self._SCALAR_CELL_BYTES
+        return cached
+
     def sample_at(self, record, lat, lon):
         stencil = self._stencil(lat, lon)
         if not stencil:
             return math.nan
-        array = self.array(record)
-        return sum(float(array[y, x]) * weight for x, y, weight in stencil)
+        flat = self._scalar_array(record)
+        if flat is None:
+            array = self.array(record)
+            return sum(float(array[y, x]) * weight for x, y, weight in stencil)
+        width = self.width
+        return sum(flat[y * width + x] * weight for x, y, weight in stencil)
 
     def nodes(self, bounds):
         """Native grid nodes within a view; don't build a global Python tuple grid."""
@@ -516,6 +552,8 @@ class GridIndex:
 
     def close(self):
         self.arrays.clear()
+        self._scalar_arrays.clear()
+        self._scalar_array_bytes = 0
         self._stencil.cache_clear()
         self.dataset = None
 
@@ -529,6 +567,9 @@ class WeatherSampler:
     )
     _GRID_CACHE_ENTRY_LIMIT = 64
     _GRID_CACHE_BYTE_LIMIT = 64 * 1024 * 1024
+    # Prepared native wind copies both U and V bands. Keep the worker's extra
+    # memory bounded; larger or more complex selections use the Python path.
+    _NATIVE_WIND_BYTE_LIMIT = 64 * 1024 * 1024
 
     def __init__(self, sources):
         self.indices = []
@@ -594,6 +635,66 @@ class WeatherSampler:
             (identity, t): self._wind_pairs(records)
             for identity, group in self.groups.items()
             for t, records in group.items()
+        }
+
+    def native_wind_field(self):
+        """Prepared U/V arrays for the native scalar sampler, or ``None``.
+
+        This deliberately accepts only selections whose values the prepared
+        sampler can reproduce exactly: one geographic grid, one earth-relative
+        wind identity, one complete U/V pair per valid time, and a bounded
+        payload. Multiple sources, projected or grid-relative grids, split
+        components, currents and waves stay on the Python provider.
+        """
+        if len(self.indices) != 1:
+            return None
+        (index,) = self.indices
+        if index.forward is not None:
+            return None
+        wind_identities = [
+            identity for identity in self.order if self._times[identity, "wind"]
+        ]
+        if len(wind_identities) != 1:
+            return None
+        identity = wind_identities[0]
+        times = self._times[identity, "wind"]
+        cells = index.width * index.height
+        if not times or cells * len(times) * 2 * 8 > self._NATIVE_WIND_BYTE_LIMIT:
+            return None
+        u_rows, v_rows = [], []
+        for instant in times:
+            records = self.groups[identity].get(instant, {})
+            u_records = records.get("UGRD", ())
+            v_records = records.get("VGRD", ())
+            if len(u_records) != 1 or len(v_records) != 1:
+                return None
+            u_record, v_record = u_records[0], v_records[0]
+            if (
+                u_record.grid_relative
+                or v_record.grid_relative
+                or u_record.index is not index
+                or v_record.index is not index
+            ):
+                return None
+            u_array = index.array(u_record)
+            v_array = index.array(v_record)
+            if u_array.shape != (index.height, index.width) or v_array.shape != (
+                index.height,
+                index.width,
+            ):
+                return None
+            u_rows.append(np.asarray(u_array, dtype=np.float64))
+            v_rows.append(np.asarray(v_array, dtype=np.float64))
+        return {
+            "geographic": True,
+            "periodic": bool(index.periodic),
+            "width": int(index.width),
+            "height": int(index.height),
+            "transform": [float(value) for value in index.transform],
+            "inverse": [float(value) for value in index.inverse],
+            "times": np.asarray(times, dtype=np.float64),
+            "u": np.stack(u_rows),
+            "v": np.stack(v_rows),
         }
 
     @staticmethod
