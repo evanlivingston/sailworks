@@ -259,7 +259,7 @@ class BoundDisplayForecastSelection(QObject):
             items.append((entry, path, artifact))
         self.loading = True
         self._scan_pending = True
-        self.status = "Inspecting published forecast…"
+        self.status = "Inspecting published forecast"
         self.changed.emit()
 
         def scan():

@@ -60,7 +60,7 @@ class MapDataController(QObject):
             return False
         self.cancel_event = Event()
         cancel = self.cancel_event
-        self.message = "Preparing download…"
+        self.message = "Preparing download"
         return self.task.start(
             self.message,
             lambda _: install_map_data(
@@ -98,7 +98,7 @@ class MapDataController(QObject):
     def cancel(self):
         if self.task.busy:
             self.cancel_event.set()
-            self.message = "Cancelling…"
+            self.message = "Cancelling"
             self.changed.emit()
 
     def close(self):

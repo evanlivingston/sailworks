@@ -233,7 +233,7 @@ class ChartCollection:
                 and state.frame is None
                 and state.requested is not None
             ):
-                return "World basemap loading…"
+                return "World basemap loading"
         return ""
 
     def reload_base_chart(self):

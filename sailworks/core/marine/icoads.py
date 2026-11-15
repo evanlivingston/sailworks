@@ -158,7 +158,7 @@ def fetch_recent(days=3, today=None, timeout=20, progress=None):
     for offset in range(days):
         day = date.fromordinal(today.toordinal() - offset)
         if progress is not None:
-            progress(f"Checking NOAA archive for {day:%d %b} ({offset + 1}/{days})…")
+            progress(f"Checking NOAA archive for {day:%d %b} ({offset + 1}/{days})")
         folder = f"{BASE}/{day:%Y/%m}/"
         with urlopen(folder, timeout=timeout) as response:
             listing = response.read(1_000_001).decode("utf-8", "replace")
@@ -174,7 +174,7 @@ def fetch_recent(days=3, today=None, timeout=20, progress=None):
         if name is None:
             continue
         if progress is not None:
-            progress(f"Downloading ship reports for {day:%d %b}…")
+            progress(f"Downloading ship reports for {day:%d %b}")
         with urlopen(folder + name, timeout=timeout) as response:
             payload = response.read(10_000_001)
         if len(payload) > 10_000_000:

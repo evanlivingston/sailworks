@@ -556,7 +556,7 @@ def test_clean_nmea_panel_is_scrub_only_and_keeps_production_chart_scrubbing(
         ):
             assert noise not in texts
         buttons = {button.text() for button in panel.findChildren(QPushButton)}
-        assert buttons == {"Instruments", "Log library…"}
+        assert buttons == {"Instruments", "Log library"}
         assert panel.findChildren(QToolButton) == [window.record]
         assert window.record.isCheckable()
         assert window.record.isHidden()  # no recording control while replaying

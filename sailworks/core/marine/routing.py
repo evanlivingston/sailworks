@@ -756,7 +756,7 @@ def step_with_coverage(  # noqa: C901
             )
             report(
                 "Missing current data; downloading coverage and retrying this "
-                "routing step…"
+                "routing step"
             )
             started = monotonic()
             try:

@@ -195,7 +195,7 @@ def test_nmea_panel_has_library_not_direct_load_or_file_info(app, tmp_path):
     panel = PreviewWindow._nmea_panel(window)
     try:
         buttons = {button.text() for button in panel.findChildren(QPushButton)}
-        assert buttons == {"Instruments", "Log library…"}
+        assert buttons == {"Instruments", "Log library"}
         assert not hasattr(window, "streaming")
         assert not hasattr(window, "load_button")
         assert not hasattr(window, "file_info_button")

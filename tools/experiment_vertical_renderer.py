@@ -1254,7 +1254,7 @@ Rectangle {
             scheduler.close()
             raise ValueError("Destination did not miss coverage")
         viewport.unavailable.setProperty(
-            "statusText", "Loading map/weather for requested area..."
+            "statusText", "Loading map/weather for requested area"
         )
         loading_image = viewport.quick.grabFramebuffer()
         if (

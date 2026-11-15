@@ -70,7 +70,7 @@ def _row(label, widget):
 def _races_panel():
     page, layout = _page()
     actions = QHBoxLayout()
-    for text in ("Import race…", "Review from start", "Weather"):
+    for text in ("Import race", "Review from start", "Weather"):
         actions.addWidget(QPushButton(text))
     layout.addLayout(actions)
     races = QListWidget()

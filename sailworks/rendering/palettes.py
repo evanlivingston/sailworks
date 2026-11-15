@@ -435,7 +435,7 @@ def legend_for(metric_id, values=(), limit=None):
 
     Continuous metrics list every band. Categorical metrics list the values
     present in the route in first-appearance order, compacted to ``limit`` rows
-    with a ``"… N more"`` row when the recorded list is longer.
+    with a ``"N more"`` row when the recorded list is longer.
     """
     row = METRICS.get(metric_id)
     if row is None:
@@ -461,7 +461,7 @@ def legend_for(metric_id, values=(), limit=None):
     cap = row.legend_limit if limit is None else limit
     if cap and len(entries) > cap:
         omitted = len(entries) - (cap - 1)
-        entries = entries[: cap - 1] + [(f"… {omitted} more", row.unknown)]
+        entries = entries[: cap - 1] + [(f"{omitted} more", row.unknown)]
     return tuple(entries)
 
 

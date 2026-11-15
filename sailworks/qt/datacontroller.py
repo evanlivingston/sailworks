@@ -102,14 +102,14 @@ class DataController(QObject):
                 )
             return chart, settings
 
-        return self.run("chart", "Indexing chart…", prepare)
+        return self.run("chart", "Indexing chart", prepare)
 
     def list_charts(self, latitude, longitude):
         def listing(_):
             self.catalog.load()
             return [c for c in self.catalog.cells if c.contains(latitude, longitude)]
 
-        return self.run("chart-list", "Finding NOAA charts at this location…", listing)
+        return self.run("chart-list", "Finding NOAA charts at this location", listing)
 
     def download_chart(self, cell):
         palette = self.owner.settings.chartPalette
@@ -119,7 +119,7 @@ class DataController(QObject):
             settings = ChartSettings(palette)
             return GDALVectorChart(path, settings), settings
 
-        return self.run("chart", "Downloading NOAA chart…", download)
+        return self.run("chart", "Downloading NOAA chart", download)
 
     def _save_chart_entries(self, chart, enabled=None, remove=False):
         key = chart.ctype + "Charts"

@@ -297,7 +297,7 @@ def satellite_status_text(reason):
     lines = (reason or "").strip().splitlines()
     detail = lines[0] if lines else ""
     if len(detail) > 72:
-        detail = detail[:69] + "…"
+        detail = detail[:69].rsplit(" ", 1)[0]
     return f"Satellite unavailable — {detail}" if detail else "Satellite unavailable"
 
 
@@ -2448,7 +2448,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             # The native window cannot parent a QWidget; the status label stays
             # parentless and is never shown in this host.
             status_parent = None
-            self._status = QLabel("Wind loading…", status_parent)
+            self._status = QLabel("Wind loading", status_parent)
             self._status.setStyleSheet(
                 "background: rgba(0,0,0,190); color: white; padding: 6px"
             )
@@ -2540,7 +2540,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
 
         def _show_state(self, state, message=None):
             text = message or (
-                "Wind loading…"
+                "Wind loading"
                 if state == "loading"
                 else (self._model.error or self._native_error or "Wind unavailable")
             )

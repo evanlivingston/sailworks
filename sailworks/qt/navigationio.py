@@ -67,8 +67,8 @@ def import_path(window, path):
     task = _task(window)
     if task.busy:
         return None
-    _status(window, "Importing GPX…")
-    task.start("Importing GPX…", lambda _progress: _read(path))
+    _status(window, "Importing GPX")
+    task.start("Importing GPX", lambda _progress: _read(path))
     return path
 
 

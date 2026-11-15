@@ -227,8 +227,8 @@ class ConnectionDialog(QDialog):
                 else:
                     self._show_test("Already connected · no data yet", None)
                 return
-        self._show_test("Testing connection…", None)
-        self.test_task.start("Testing connection…", lambda _: probe_connection(config))
+        self._show_test("Testing connection", None)
+        self.test_task.start("Testing connection", lambda _: probe_connection(config))
 
     def _test_changed(self):
         self.test_button.setEnabled(not self.test_task.busy)
@@ -285,8 +285,8 @@ class SettingsDialog(QDialog):
         content.addWidget(self.connections)
         self.draft = [dict(c) for c in controller.connections.connections]
         row = QHBoxLayout()
-        self.add_button = QPushButton("Add…")
-        self.edit_button = QPushButton("Edit…")
+        self.add_button = QPushButton("Add")
+        self.edit_button = QPushButton("Edit")
         self.remove_button = QPushButton("Remove")
         self.apply_button = QPushButton("Apply connections")
         self.add_button.clicked.connect(lambda: self.edit_connection(False))
@@ -359,7 +359,7 @@ class SettingsDialog(QDialog):
         self.weathernext_path.setWordWrap(True)
         weathernext_form.addRow("Credentials file", self.weathernext_path)
         weathernext_buttons = QHBoxLayout()
-        self.weathernext_choose = QPushButton("Choose credentials JSON…")
+        self.weathernext_choose = QPushButton("Choose credentials JSON")
         self.weathernext_adc = QPushButton("Use ADC")
         self.weathernext_test = QPushButton("Test access")
         self.weathernext_choose.clicked.connect(self.choose_weathernext_credentials)
@@ -455,7 +455,7 @@ class SettingsDialog(QDialog):
     def apply_connections(self):
         configs = [dict(c) for c in self.draft]
         self.applying = self.task.start(
-            "Saving connections and reconnecting…",
+            "Saving connections and reconnecting",
             lambda _: self.controller.connections.replace_connections(configs),
         )
 
@@ -517,7 +517,7 @@ class SettingsDialog(QDialog):
         from sailworks.core.weathernext import BASE_URL
 
         self.weathernext_test.setEnabled(False)
-        self.weathernext_source.setText("Testing access…")
+        self.weathernext_source.setText("Testing access")
         QApplication.processEvents()
         try:
             filesystem = self.weathernext_credentials.gcs_filesystem()

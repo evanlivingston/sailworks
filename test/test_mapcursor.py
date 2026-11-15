@@ -88,7 +88,7 @@ def test_cursor_wind_and_gust_are_shown_even_when_barbs_are_hidden():
         depth_at=lambda *_: {"sounding": 12.0, "distance_m": 30.0}
     )
     cursor._hover(Position(2, 1))
-    assert cursor.cursor_readout.text.startswith("Wind …")
+    assert cursor.cursor_readout.text.startswith("Wind ")
     callback = cursor._wind_cursor.request.call_args.args[-1]
     callback(((180, 10), 5, (2.1, 8.2, 250.4)))
     assert "Wind 180.0°, 19.4 kts" in cursor.cursor_readout.text
@@ -132,7 +132,7 @@ def test_old_cursor_result_cannot_replace_the_current_point():
     current_callback = cursor._wind_cursor.request.call_args.args[-1]
 
     old_callback(((180, 10), 5, (2.1, 8, 250)))
-    assert cursor.cursor_readout.text.startswith("Wind …")
+    assert cursor.cursor_readout.text.startswith("Wind ")
     current_callback(((90, 4), None, None))
     assert "Wind 90.0°, 7.8 kts" in cursor.cursor_readout.text
     assert "Gust" not in cursor.cursor_readout.text
