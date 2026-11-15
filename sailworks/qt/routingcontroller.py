@@ -1,7 +1,6 @@
 """Qt lifecycle around the shared engines, scenarios and current-coverage workflow."""
 
 import math
-import multiprocessing
 import os
 import time
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
@@ -11,6 +10,7 @@ from threading import Event, Thread
 from PySide6.QtCore import QObject, Signal, Slot
 from weatherrouting import RoutingNoWindError
 
+from sailworks.core.workercontext import worker_context
 from sailworks.core import scenariopool
 from sailworks.core.geo.routing import Routing
 from sailworks.core.routingjob import (
@@ -141,7 +141,8 @@ class RoutingController(QObject):
         if backend not in ("legacy", "native"):
             return self.fail("Choose the Legacy or Native calculation backend.")
         if backend != "native" and any(
-            getattr(item, "wave_entry_id", None) for item in (request, *tuple(scenarios))
+            getattr(item, "wave_entry_id", None)
+            for item in (request, *tuple(scenarios))
         ):
             return self.fail(
                 "Real wave data is a Native calculation input. Set Wave data "
@@ -213,7 +214,9 @@ class RoutingController(QObject):
                     token, request, scenarios, sources, providers, cancel, selection
                 )
             else:
-                self._run_requests(token, request, scenarios, sources, providers, cancel, selection)
+                self._run_requests(
+                    token, request, scenarios, sources, providers, cancel, selection
+                )
 
         self.worker_thread = Thread(target=worker, name="qt-routing", daemon=True)
         self.worker_thread.start()
@@ -238,7 +241,11 @@ class RoutingController(QObject):
             return self.fail("No historical members were selected to run.")
         if concurrency is None:
             concurrency = min(4, max(1, (os.cpu_count() or 2) - 1))
-        if not isinstance(concurrency, int) or isinstance(concurrency, bool) or concurrency < 1:
+        if (
+            not isinstance(concurrency, int)
+            or isinstance(concurrency, bool)
+            or concurrency < 1
+        ):
             return self.fail("Historical concurrency must be at least 1.")
         self.clear_native_result()
         self._native_diagnostic_token = None
@@ -269,13 +276,17 @@ class RoutingController(QObject):
         else:
             providers = tuple(charts.get_line_point_validity_providers())
         marine_manager = getattr(self.core, "marine_manager", None)
-        marine_directory = str(marine_manager.directory) if marine_manager is not None else None
+        marine_directory = (
+            str(marine_manager.directory) if marine_manager is not None else None
+        )
         self.changed.emit()
         self.preview_changed.emit(())
         self.isochrones_changed.emit(())
 
         def worker():
-            self._run_bound_members(token, executions, providers, marine_directory, concurrency)
+            self._run_bound_members(
+                token, executions, providers, marine_directory, concurrency
+            )
 
         self.worker_thread = Thread(target=worker, name="qt-routing-bound", daemon=True)
         self.worker_thread.start()
@@ -297,9 +308,13 @@ class RoutingController(QObject):
             return unapplied_legacy_parameter_message(algorithm_name, changed)
         return ""
 
-    def _run_requests(self, token, request, scenarios, sources, providers, cancel, selection):
+    def _run_requests(
+        self, token, request, scenarios, sources, providers, cancel, selection
+    ):
         error = None
-        jobs, descriptors = self._scenario_jobs(request, scenarios, sources, providers, selection)
+        jobs, descriptors = self._scenario_jobs(
+            request, scenarios, sources, providers, selection
+        )
         try:
             if self._parallel_eligible(jobs, descriptors):
                 self._run_parallel(token, jobs, sources, providers, cancel, selection)
@@ -326,7 +341,9 @@ class RoutingController(QObject):
         )
         if entry is None:
             raise ValueError("Selected wave forecast is not in the active tranche")
-        resolved = store.resolve(AnalysisSelection(sources.tranche.tranche_id, entry_id))
+        resolved = store.resolve(
+            AnalysisSelection(sources.tranche.tranche_id, entry_id)
+        )
         if resolved.tranche.tranche_id != sources.tranche.tranche_id:
             raise ValueError("Selected wave forecast changed tranche")
         return resolved
@@ -389,11 +406,15 @@ class RoutingController(QObject):
                 if status.state == "cancelled":
                     raise RoutingCancelledError()
                 if status.state != "completed":
-                    raise RuntimeError(status.message or "native worker did not publish a result")
+                    raise RuntimeError(
+                        status.message or "native worker did not publish a result"
+                    )
                 run = status.payload
                 identity = run.get("engine_identity") if isinstance(run, dict) else None
                 if not isinstance(identity, dict):
-                    raise ValueError("Native routing result did not report its engine identity")
+                    raise ValueError(
+                        "Native routing result did not report its engine identity"
+                    )
                 result = to_routing_result(
                     run,
                     calculation_id=job.calculation_id,
@@ -433,7 +454,9 @@ class RoutingController(QObject):
         if not self.closed:
             self._finished.emit(token, None, error)
 
-    def _run_bound_members(self, token, executions, providers, marine_directory, concurrency=1):
+    def _run_bound_members(
+        self, token, executions, providers, marine_directory, concurrency=1
+    ):
         """Drive the bound-run engine on one native worker per slot, end to end.
 
         The engine converts and saves members one at a time; a member failure
@@ -463,7 +486,9 @@ class RoutingController(QObject):
                 # stored identity the coordinator links the member to. The
                 # engine reports no arrival time, so duration stays None and the
                 # coordinator derives it from the saved route.
-                route = self._ui_call(token, self._save_result, execution.request, result)
+                route = self._ui_call(
+                    token, self._save_result, execution.request, result
+                )
                 return getattr(route, "uid", None), None
 
             outcomes = run_bound_members(
@@ -495,7 +520,9 @@ class RoutingController(QObject):
             for worker in workers:
                 try:
                     worker.shutdown()
-                except Exception:  # noqa: BLE001 - one failed stop must not strand the rest
+                except (
+                    Exception
+                ):  # noqa: BLE001 - one failed stop must not strand the rest
                     pass
             if not self.closed:
                 self._bound_finished.emit(token, outcomes, error)
@@ -525,7 +552,9 @@ class RoutingController(QObject):
             else None
         )
         current_field_ids = (
-            tuple(field.id for field in selection.fields) if selection is not None else ()
+            tuple(field.id for field in selection.fields)
+            if selection is not None
+            else ()
         )
         priority = getattr(selection, "priority", None) or request.current_priority
         jobs = tuple(
@@ -580,7 +609,11 @@ class RoutingController(QObject):
                         token,
                         (index * 100 + percent) / self.scenario_count,
                         points,
-                        (getattr(points, "isochrones", ()) if points is not None else None),
+                        (
+                            getattr(points, "isochrones", ())
+                            if points is not None
+                            else None
+                        ),
                     )
 
             options = {}
@@ -588,7 +621,9 @@ class RoutingController(QObject):
                 options = dict(
                     report=lambda message: self._message.emit(token, message),
                     confirm=lambda report: self._ui_call(token, self.confirm, report),
-                    save_fields=lambda fields: self._ui_call(token, self._save_fields, fields),
+                    save_fields=lambda fields: self._ui_call(
+                        token, self._save_fields, fields
+                    ),
                     current_selection=selection,
                 )
             result = calculate_bound_route(
@@ -622,7 +657,7 @@ class RoutingController(QObject):
         self._parallel_progress = {}
         self._message.emit(token, f"Calculating {len(jobs)} scenarios")
         try:
-            ctx = multiprocessing.get_context("spawn")
+            ctx = worker_context()
             manager = ctx.Manager()
             progress_queue = manager.Queue()
             worker_cancel = manager.Event()
@@ -647,7 +682,9 @@ class RoutingController(QObject):
                         for future in pending:
                             future.cancel()
                         break
-                    done, pending = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
+                    done, pending = wait(
+                        pending, timeout=0.05, return_when=FIRST_COMPLETED
+                    )
                     for future in done:
                         job = futures[future]
                         if future.cancelled():
@@ -672,7 +709,9 @@ class RoutingController(QObject):
                                 worker_cancel.set()
                                 break
                             if failed_index is None or job.job_id < failed_index:
-                                first_error = scenariopool.error_from_failure(outcome.failure)
+                                first_error = scenariopool.error_from_failure(
+                                    outcome.failure
+                                )
                                 failed_index = job.job_id
                                 for other in pending:
                                     if futures[other].job_id > failed_index:
@@ -735,7 +774,9 @@ class RoutingController(QObject):
                 percent, points, isochrones = values
                 self._parallel_progress[job_id] = min(100.0, float(percent))
                 active = sum(self._parallel_progress.values()) / 100.0
-                overall = (self.saved_count + active) / max(1, self.scenario_count) * 100
+                overall = (
+                    (self.saved_count + active) / max(1, self.scenario_count) * 100
+                )
                 self._progress.emit(token, min(100.0, overall), points, isochrones)
             elif kind == "message":
                 self._message.emit(token, values[0])
@@ -898,7 +939,12 @@ class RoutingController(QObject):
 
     @Slot(int, float, object, object)
     def _apply_progress(self, token, percent, points, isochrones=None):
-        if self.closed or not self.busy or token != self.generation or self.cancel_event.is_set():
+        if (
+            self.closed
+            or not self.busy
+            or token != self.generation
+            or self.cancel_event.is_set()
+        ):
             return
         self.percent = percent
         prefix = (
@@ -935,7 +981,9 @@ class RoutingController(QObject):
             "closest_approach_nm",
         )
         self.native_counters = {
-            key: update[key] for key in counter_keys if key in update and update[key] is not None
+            key: update[key]
+            for key in counter_keys
+            if key in update and update[key] is not None
         }
         stage = _NATIVE_PROGRESS_STAGES.get(
             str(update.get("stage", "")), str(update.get("stage", "Engine"))
@@ -977,7 +1025,9 @@ class RoutingController(QObject):
             error, (RoutingCancelledError, DownloadCancelledError)
         ):
             self.message = (
-                "Native routing cancelled" if self.backend == "native" else "Routing cancelled"
+                "Native routing cancelled"
+                if self.backend == "native"
+                else "Routing cancelled"
             )
         elif error is not None:
             self.error = str(error) or (
@@ -986,7 +1036,9 @@ class RoutingController(QObject):
                 else type(error).__name__
             )
             self.message = (
-                "Native calculation failed: " if self.backend == "native" else "Routing failed: "
+                "Native calculation failed: "
+                if self.backend == "native"
+                else "Routing failed: "
             ) + self.error
         else:
             assert self.request is not None
@@ -1002,10 +1054,16 @@ class RoutingController(QObject):
                     f"{self.saved_count}/{self.scenario_count} scenarios complete"
                     if self.scenario_count > 1
                     else "Route calculated and saved · "
-                    + ("currents included" if self.request.use_currents else "wind only")
+                    + (
+                        "currents included"
+                        if self.request.use_currents
+                        else "wind only"
+                    )
                 )
         if self.scenario_count > 1 and error is not None:
-            self.message += f" · {self.saved_count}/{self.scenario_count} scenarios saved"
+            self.message += (
+                f" · {self.saved_count}/{self.scenario_count} scenarios saved"
+            )
         self.changed.emit()
 
     @Slot(int, int, int)

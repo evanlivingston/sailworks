@@ -15,9 +15,10 @@ cancelled generation is discarded.
 
 from __future__ import annotations
 
-import multiprocessing
 import time
 from dataclasses import dataclass
+
+from sailworks.core.workercontext import worker_context
 from typing import Any, Dict, Optional
 
 STATES = frozenset({"queued", "running", "completed", "cancelled", "failed"})
@@ -131,7 +132,7 @@ class NativeRoutingWorker:
         if max_workers != 1:
             raise ValueError("only one bounded native worker is supported")
         self.max_workers = max_workers
-        self._context = context or multiprocessing.get_context("spawn")
+        self._context = context or worker_context()
         self._process = None
         self._connection = None
         self._generation = 0
@@ -207,6 +208,19 @@ class NativeRoutingWorker:
         self._pending_progress = None
         return generation
 
+    def _exit_code(self):
+        """The child's exit status, waiting briefly if it is not reaped yet.
+
+        A terminated worker can close its pipe before the parent has collected
+        the status, which reported a failure with no code.
+        """
+        process = self._process
+        if process is None:
+            return None
+        if process.exitcode is None:
+            process.join(0.2)
+        return process.exitcode
+
     def poll(self, timeout: float = 0.0) -> Optional[NativeJobStatus]:
         """Return the terminal status once, or None while still running.
 
@@ -229,7 +243,7 @@ class NativeRoutingWorker:
                         generation,
                         "failed",
                         message="worker exited without publishing a result",
-                        exit_code=self._process.exitcode,
+                        exit_code=self._exit_code(),
                     )
                 )
             return None
@@ -241,7 +255,7 @@ class NativeRoutingWorker:
                     generation,
                     "failed",
                     message="worker exited without publishing a result",
-                    exit_code=None if self._process is None else self._process.exitcode,
+                    exit_code=self._exit_code(),
                 )
             )
         if message.get("kind") == "progress":

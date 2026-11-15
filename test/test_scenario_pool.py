@@ -247,8 +247,8 @@ class TestParallelController(unittest.TestCase):
             patch.object(scenariopool, "calculate_bound_route", calculate),
             patch("sailworks.qt.routingcontroller.ProcessPoolExecutor", FakeExecutor),
             patch(
-                "sailworks.qt.routingcontroller.multiprocessing.get_context",
-                lambda _name: FakeContext(),
+                "sailworks.qt.routingcontroller.worker_context",
+                lambda: FakeContext(),
             ),
         ):
             self.controller._run_parallel(
@@ -276,8 +276,8 @@ class TestParallelController(unittest.TestCase):
             patch.object(scenariopool, "calculate_bound_route", confirm),
             patch("sailworks.qt.routingcontroller.ProcessPoolExecutor", FakeExecutor),
             patch(
-                "sailworks.qt.routingcontroller.multiprocessing.get_context",
-                lambda _name: FakeContext(),
+                "sailworks.qt.routingcontroller.worker_context",
+                lambda: FakeContext(),
             ),
             patch("sailworks.core.forecastboundrouting.calculate_bound_route", serial),
             patch("sailworks.qt.routingcontroller.ResolvedForecast", FakeBinding),
@@ -306,8 +306,8 @@ class TestParallelController(unittest.TestCase):
             patch.object(scenariopool, "calculate_bound_route", calculate),
             patch("sailworks.qt.routingcontroller.ProcessPoolExecutor", FakeExecutor),
             patch(
-                "sailworks.qt.routingcontroller.multiprocessing.get_context",
-                lambda _name: FakeContext(),
+                "sailworks.qt.routingcontroller.worker_context",
+                lambda: FakeContext(),
             ),
         ):
             with self.assertRaisesRegex(ValueError, "scenario failed"):
