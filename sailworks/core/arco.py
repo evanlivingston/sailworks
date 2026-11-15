@@ -9,6 +9,8 @@ reading the public Zarr store anonymously instead of submitting CDS jobs.
 from __future__ import annotations
 
 import tempfile
+import threading
+import weakref
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -45,6 +47,30 @@ def _no_cds(*_args, **_kwargs):
     )
 
 
+_COORDINATE_NAMES = ("time", "latitude", "longitude", "number", "step", "valid_time")
+
+
+def _wind_only(url, options):
+    """Return ``drop_variables`` covering every array but the wind fields.
+
+    The full store materialises 273 variables through ``xr.open_zarr``; reading
+    the consolidated metadata with zarr first lets xarray build only what the
+    acquisition uses.
+    """
+    try:
+        import zarr
+    except ImportError:
+        return None
+    try:
+        group = zarr.open_consolidated(url, storage_options=options, mode="r")
+        names = list(group.array_keys())
+    except Exception:
+        return None
+    keep = set(WIND_VARIABLES) | set(_COORDINATE_NAMES)
+    drop = [name for name in names if name not in keep]
+    return drop or None
+
+
 def open_store(url=STORE_URL, *, storage_options=None):
     """Open the public ARCO ERA5 store with anonymous Google Cloud access."""
     try:
@@ -57,14 +83,31 @@ def open_store(url=STORE_URL, *, storage_options=None):
     options = (
         dict(storage_options) if storage_options is not None else dict(STORAGE_OPTIONS)
     )
+    drop = _wind_only(url, options)
     try:
+        if drop is not None:
+            return xr.open_zarr(
+                url,
+                storage_options=options,
+                consolidated=True,
+                drop_variables=drop,
+            )
         return xr.open_zarr(url, storage_options=options, consolidated=True)
     except Exception as exc:
+        if drop is not None:
+            # A store layout we did not anticipate: fall back to the full open
+            # rather than failing an acquisition that used to work.
+            try:
+                return xr.open_zarr(url, storage_options=options, consolidated=True)
+            except Exception as exc:
+                failure = exc
+        else:
+            failure = exc
         raise ArcoError(
             "cannot open the anonymous ARCO ERA5 store "
-            f"({type(exc).__name__}); check network access to Google Cloud "
+            f"({type(failure).__name__}); check network access to Google Cloud "
             "Storage and retry"
-        ) from exc
+        ) from failure
 
 
 def _parse_time(value):
@@ -347,6 +390,29 @@ def _write_message(eccodes, handle, short_name, valid, lat, lon, values):
         eccodes.codes_release(gid)
 
 
+def _close_quietly(dataset):
+    """Close a store handle without letting a close failure escape."""
+    close = getattr(dataset, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            # A close failure must not mask an acquisition error.
+            pass
+
+
+class _StoreHandle:
+    """Mutable holder so a finalizer can close the lazily opened store."""
+
+    def __init__(self):
+        self.dataset = None
+
+    def close(self):
+        dataset, self.dataset = self.dataset, None
+        if dataset is not None:
+            _close_quietly(dataset)
+
+
 class ArcoDownloadService(Era5DownloadService):
     """Read anonymous ARCO ERA5 winds into the existing ERA5 history catalog."""
 
@@ -369,6 +435,12 @@ class ArcoDownloadService(Era5DownloadService):
         self.opener = opener
         self.encoder = encoder
         self.store_url = store_url
+        # Opening the store costs tens of seconds, so acquisition units share
+        # one handle. The finalizer gives process-exit cleanup without Qt
+        # callers having to know about it.
+        self._handle = _StoreHandle()
+        self._lock = threading.Lock()
+        self._finalizer = weakref.finalize(self, self._handle.close)
 
     # --- CDS bookkeeping is inert: ARCO has no requests to queue or resume ---
 
@@ -405,16 +477,32 @@ class ArcoDownloadService(Era5DownloadService):
         )
 
     def _open(self):
-        try:
-            return self.opener(self.store_url)
-        except ArcoError:
-            raise
-        except Exception as exc:
-            raise ArcoError(
-                "cannot open the anonymous ARCO ERA5 store "
-                f"({type(exc).__name__}); check network access to Google Cloud "
-                "Storage and retry"
-            ) from exc
+        """Return the cached store handle, opening it on first use."""
+        with self._lock:
+            dataset = self._handle.dataset
+            if dataset is not None:
+                return dataset
+            try:
+                dataset = self.opener(self.store_url)
+            except ArcoError:
+                raise
+            except Exception as exc:
+                raise ArcoError(
+                    "cannot open the anonymous ARCO ERA5 store "
+                    f"({type(exc).__name__}); check network access to Google Cloud "
+                    "Storage and retry"
+                ) from exc
+            self._handle.dataset = dataset
+            return dataset
+
+    def _invalidate(self):
+        """Close and forget the cached handle, swallowing close failures."""
+        with self._lock:
+            self._handle.close()
+
+    def close(self):
+        """Close any cached store handle. Idempotent; a later plan reopens."""
+        self._invalidate()
 
     def _eccodes(self):
         if self.encoder is not None:
@@ -462,7 +550,7 @@ class ArcoDownloadService(Era5DownloadService):
             return
 
         staged = []
-        dataset = None
+        failed = True
         try:
             dataset = self._open()
             available = _availability(dataset)
@@ -548,12 +636,10 @@ class ArcoDownloadService(Era5DownloadService):
                     raise ArcoError("ARCO ERA5 download canceled")
                 self._set_progress(key, stage="Publishing ARCO ERA5 history…")
                 self._publish_chunks(root, catalog, staged, cancel)
+            failed = False
         finally:
-            close = getattr(dataset, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    # A close failure must not mask the acquisition error.
-                    pass
+            if failed:
+                # Drop a handle that failed mid-read so the next plan retries a
+                # fresh open; close errors never mask the acquisition error.
+                self._invalidate()
         self._set_progress(key, done=total, stage="Complete")

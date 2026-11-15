@@ -178,7 +178,10 @@ def test_arco_reads_every_hour_and_publishes_arco_labels(tmp_path):
     service._run(plan, threading.Event(), False)
 
     assert opened == [arco.STORE_URL]
-    assert fake.closed
+    # The handle stays cached for the next plan; an explicit close releases it.
+    assert fake.closed is False
+    service.close()
+    assert fake.closed is True
     assert eccodes.samples == ["regular_ll_sfc_grib2"] * 6
     assert [message["shortName"] for message in eccodes.messages] == [
         "10u",
@@ -631,3 +634,84 @@ def test_arco_rejects_non_uniform_grid(tmp_path):
 
     assert eccodes.messages == []
     assert not (tmp_path / "era5-history.json").exists()
+
+
+class ExplodingClose(FakeDataset):
+    def close(self):
+        raise RuntimeError("close failed")
+
+
+def test_arco_reuses_one_store_open_across_plans(tmp_path):
+    times = hourly(0, 1)
+    dataset = FakeDataset(times, make_data(times))
+    opened = []
+
+    def opener(url):
+        opened.append(url)
+        return dataset
+
+    service = ArcoDownloadService(
+        store_for(tmp_path),
+        opener=opener,
+        encoder=FakeEccodes(),
+        validator=accepting_validator,
+    )
+    service._run(
+        planned("2025-01-01T00:00", "2025-01-01T00:00"), threading.Event(), False
+    )
+    service._run(
+        planned("2025-01-01T01:00", "2025-01-01T01:00"), threading.Event(), False
+    )
+
+    assert opened == [service.store_url]
+    assert dataset.closed is False
+    service.close()
+
+
+def test_arco_close_is_idempotent_and_reopens_on_next_plan(tmp_path):
+    times = hourly(0, 1)
+    datasets = []
+
+    def opener(url):
+        dataset = FakeDataset(times, make_data(times))
+        datasets.append(dataset)
+        return dataset
+
+    service = ArcoDownloadService(
+        store_for(tmp_path),
+        opener=opener,
+        encoder=FakeEccodes(),
+        validator=accepting_validator,
+    )
+    service._run(
+        planned("2025-01-01T00:00", "2025-01-01T00:00"), threading.Event(), False
+    )
+    service.close()
+    service.close()
+    assert datasets[0].closed is True
+
+    service._run(
+        planned("2025-01-01T01:00", "2025-01-01T01:00"), threading.Event(), False
+    )
+    assert len(datasets) == 2
+    assert datasets[1].closed is False
+    service.close()
+
+
+def test_arco_close_failure_does_not_mask_acquisition_error(tmp_path):
+    times = hourly(0, 1)
+    data = make_data(times)
+    del data[arco.V_VARIABLE]
+    fake = ExplodingClose(times, data)
+    service = ArcoDownloadService(
+        store_for(tmp_path),
+        opener=lambda url: fake,
+        encoder=FakeEccodes(),
+        validator=accepting_validator,
+    )
+    with pytest.raises(ArcoError, match="missing the 10m_v_component_of_wind"):
+        service._run(
+            planned("2025-01-01T00:00", "2025-01-01T00:00"),
+            threading.Event(),
+            False,
+        )
