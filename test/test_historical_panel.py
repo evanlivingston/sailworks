@@ -1229,9 +1229,19 @@ def test_routing_panel_hides_its_duplicate_progress_while_historical_runs():
         cancel_button=widget("cancel"),
     )
 
+    panel.routing = SimpleNamespace(busy=False)
+
+    # Acquisition: only the historical panel's Cancel can stop it.
     RoutingPanel._sync_run_visibility(panel, True)
     assert seen == {"progress": False, "status": False, "cancel": False}
 
+    # Routing: the engine owns the Cancel.
+    panel.routing.busy = True
+    RoutingPanel._sync_run_visibility(panel, True)
+    assert seen == {"progress": False, "status": False, "cancel": True}
+
+    # Idle: the normal routing controls come back.
+    panel.routing.busy = False
     RoutingPanel._sync_run_visibility(panel, False)
     assert seen == {"progress": True, "status": True, "cancel": True}
 

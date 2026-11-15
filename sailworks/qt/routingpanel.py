@@ -1284,9 +1284,16 @@ class RoutingPanel(QWidget):
         )
 
     def _sync_run_visibility(self, historical_running):
-        """Hide this panel's run controls while the historical panel owns it."""
-        for widget in (self.progress, self.status, self.cancel_button):
+        """One progress display and one Cancel at a time.
+
+        The historical panel owns progress while a historical run is alive.
+        This panel's Cancel is the one tied to the routing engine, so it stays
+        visible only while the engine is actually running; during acquisition
+        the historical panel's Cancel is the one that works.
+        """
+        for widget in (self.progress, self.status):
             widget.setVisible(not historical_running)
+        self.cancel_button.setVisible(not historical_running or self.routing.busy)
 
     def _display_status(self):
         message = self.routing.message

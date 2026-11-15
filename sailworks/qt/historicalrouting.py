@@ -267,6 +267,9 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
             # Acquisition left its phase label behind; show what the engine is
             # actually doing now instead of a stale "Acquiring weather".
             self.options.set_status(getattr(rc, "message", "") or "Routing members")
+        # Only one Cancel is shown: the routing engine's while it runs, this
+        # panel's while acquisition is the thing that can be stopped.
+        self.options.cancel_button.setVisible(not routing)
         return {
             "weather_detail": detail,
             "running": bool(getattr(rc, "busy", False))
