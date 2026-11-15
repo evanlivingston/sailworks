@@ -151,13 +151,18 @@ def select_window_entries(
             )
         cursor = max(span[0], start)
         last = min(span[1], expected[-1])
+        used = False
         while cursor <= last:
-            if cursor in covered:
-                raise HistoricalTrancheError(
-                    f"window hour {cursor.isoformat()} is covered by more than one entry"
-                )
-            covered[cursor] = entry
+            # Overlapping chunks are legitimate: acquisition may store a
+            # partial final day in one run and the whole day in another. The
+            # first entry to supply an hour wins; every hour must still be
+            # supplied by something.
+            if cursor not in covered:
+                covered[cursor] = entry
+                used = True
             cursor += _HOUR
+        if not used:
+            continue
         selected.append(
             {
                 "artifact": str(entry["artifact"]),

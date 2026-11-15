@@ -136,23 +136,27 @@ def test_rejects_a_window_with_a_gap(tmp_path):
         select_window_entries(entries, at(0), at(4), CATALOG_AREA)
 
 
-def test_rejects_overlapping_entries(tmp_path):
+def test_overlapping_entries_are_deduplicated(tmp_path):
+    """Two runs may store the same hour; the window still resolves."""
     store = make_store(tmp_path)
     entries = [
         chunk(store.root, "a.grib", at(0), at(1)),
         chunk(store.root, "b.grib", at(1), at(2)),
     ]
-    with pytest.raises(HistoricalTrancheError, match="more than one entry"):
-        select_window_entries(entries, at(0), at(3), CATALOG_AREA)
+
+    selected = select_window_entries(entries, at(0), at(3), CATALOG_AREA)
+
+    assert [entry["artifact"] for entry in selected] == ["a.grib", "b.grib"]
+    assert all(entry["artifact"] for entry in selected)
 
 
-def test_rejects_a_duplicate_hour(tmp_path):
+def test_a_duplicate_hour_does_not_hide_a_gap(tmp_path):
     store = make_store(tmp_path)
     entries = [
         chunk(store.root, "a.grib", at(0)),
         chunk(store.root, "b.grib", at(0)),
     ]
-    with pytest.raises(HistoricalTrancheError, match="more than one entry"):
+    with pytest.raises(HistoricalTrancheError, match="not covered"):
         select_window_entries(entries, at(0), at(2), CATALOG_AREA)
 
 
