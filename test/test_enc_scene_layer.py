@@ -38,19 +38,45 @@ class _FakePoint:
 
 
 class _FakeViewport:
-    """A viewport-shaped object: linear projection and a lon/lat bbox."""
+    """A viewport-shaped object: linear projection and a lon/lat bbox.
 
-    def __init__(self, west=-1.0, south=-1.0, east=12.0, north=12.0):
+    The helpers keep ``MapViewport``'s conventions: ``_lon_to_x`` grows
+    eastward and ``_lat_to_y`` grows southward (Mercator world pixels), the
+    camera sits at the bbox centre, and the allocated size is the item's
+    logical size.
+    """
+
+    def __init__(
+        self, west=-1.0, south=-1.0, east=12.0, north=12.0, width=100, height=100
+    ):
         self._west = west
         self._south = south
         self._east = east
         self._north = north
+        self._width = float(width)
+        self._height = float(height)
+        self._center_lon = (west + east) / 2.0
+        self._center_lat = (south + north) / 2.0
 
     def _lon_to_x(self, lon):
-        return (lon - self._west) * 10.0
+        return (np.asarray(lon, dtype=np.float64) - self._west) * 10.0
 
     def _lat_to_y(self, lat):
-        return (self._north - lat) * 10.0
+        return (self._north - np.asarray(lat, dtype=np.float64)) * 10.0
+
+    def get_allocated_width(self):
+        return self._width
+
+    def get_allocated_height(self):
+        return self._height
+
+    def convert_geographic_to_screen_batch(self, lats, lons):
+        """``MapViewport``'s batch screen projection, over the fake's linear map."""
+        xs = self._lon_to_x(lons) - self._lon_to_x(self._center_lon) + self._width / 2.0
+        ys = (
+            self._lat_to_y(lats) - self._lat_to_y(self._center_lat) + self._height / 2.0
+        )
+        return xs, ys
 
     def get_bbox(self):
         return (
@@ -154,6 +180,9 @@ def test_projection_for_maps_degrees_to_logical_pixels():
     project = encscenelayer.projection_for(
         _FakeViewport(west=0.0, south=0.0, east=10.0, north=10.0)
     )
+    # Mesh positions are (lon, lat).  The 100x100 item is centred on (5, 5)
+    # and its bbox spans it exactly, so the north-west corner is (0, 0) and
+    # the south-east corner is the bottom-right pixel.
     assert project(np.array([[0.0, 10.0], [5.0, 5.0]])).tolist() == [
         [0.0, 0.0],
         [50.0, 50.0],

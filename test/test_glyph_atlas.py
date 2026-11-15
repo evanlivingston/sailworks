@@ -14,7 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtGui import QGuiApplication  # noqa: E402
+from PySide6.QtGui import QFontMetricsF, QGuiApplication  # noqa: E402
 
 from sailworks.qt.glyphatlas import GLYPHS, GlyphAtlas  # noqa: E402
 
@@ -98,7 +98,17 @@ def test_atlas_scales_image_for_device_pixel_ratio(qt_app):
     # Layout metrics stay logical so quads do not double in size.
     assert retina.ascent == pytest.approx(logical.ascent, abs=1.0)
     assert retina.cell_width == pytest.approx(logical.cell_width, abs=1.0)
-    assert retina.advance("12.3") == pytest.approx(logical.advance("12.3"), abs=1.0)
+    # Advances are measured on the font the image was rasterised with (22 px
+    # at dpr 2) and divided by the ratio, so they are logical pixels and match
+    # the glyphs actually in the texture.  Qt's advances are not exactly linear
+    # in pixel size, so the dpr=2 atlas lays text out a few percent narrower
+    # than a dpr=1 atlas rather than identically; what must never happen is the
+    # device-pixel advance leaking through undivided.
+    device_advance = sum(
+        QFontMetricsF(retina.font).horizontalAdvance(character) for character in "12.3"
+    )
+    assert retina.advance("12.3") == pytest.approx(device_advance / 2.0)
+    assert retina.advance("12.3") == pytest.approx(logical.advance("12.3"), rel=0.2)
 
 
 def test_atlas_rejects_non_positive_sizes(qt_app):
