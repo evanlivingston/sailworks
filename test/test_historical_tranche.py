@@ -19,7 +19,10 @@ from sailworks.core.historicaltranche import (
 from sailworks.core.tranchestore import ResolvedForecast, TrancheStore
 
 UTC = timezone.utc
-AREA = (50.0, -10.0, 40.0, 5.0)
+# Catalog chunks record ERA5's (north, west, south, east) order.
+CATALOG_AREA = (50.0, -10.0, 40.0, 5.0)
+# Callers pass our (west, south, east, north) convention.
+REGION = (-10.0, 40.0, 5.0, 50.0)
 WIND = era5.FIELD_VARIABLES["wind"]
 
 
@@ -35,7 +38,7 @@ def make_store(tmp_path):
     return TrancheStore(tmp_path / "store")
 
 
-def chunk(root, name, start, end=None, *, area=AREA, variables=WIND):
+def chunk(root, name, start, end=None, *, area=CATALOG_AREA, variables=WIND):
     (root / name).write_bytes(name.encode("ascii"))
     return {
         "artifact": name,
@@ -55,7 +58,7 @@ def hourly_chunks(root, hours):
 def test_window_builds_one_artifact_and_resolves(tmp_path):
     store = make_store(tmp_path)
     entries = hourly_chunks(store.root, range(4))
-    tranche = build_wind_tranche(store, at(0), at(4), AREA, catalog=entries)
+    tranche = build_wind_tranche(store, at(0), at(4), REGION, catalog=entries)
 
     assert len(tranche.entries) == 1
     entry = tranche.entries[0]
@@ -63,7 +66,7 @@ def test_window_builds_one_artifact_and_resolves(tmp_path):
     assert entry.fields == ("wind",)
     assert dict(entry.field_times)["wind"] == hourly_window(at(0), at(4))
 
-    resolved = wind_tranche_for_window(store, at(0), at(4), AREA, catalog=entries)
+    resolved = wind_tranche_for_window(store, at(0), at(4), REGION, catalog=entries)
     assert isinstance(resolved, ResolvedForecast)
     assert len(resolved.artifact_paths) == 1
     assert resolved.artifact_paths[0].read_bytes() == (b"h0.gribh1.gribh2.gribh3.grib")
@@ -73,14 +76,14 @@ def test_active_selection_is_never_touched(tmp_path):
     store = make_store(tmp_path)
     entries = hourly_chunks(store.root, range(4))
     assert store.active() is None
-    wind_tranche_for_window(store, at(0), at(4), AREA, catalog=entries)
+    wind_tranche_for_window(store, at(0), at(4), REGION, catalog=entries)
     assert store.active() is None
 
-    other = build_wind_tranche(store, at(0), at(2), AREA, catalog=entries[:2])
+    other = build_wind_tranche(store, at(0), at(2), REGION, catalog=entries[:2])
     store.activate(AnalysisSelection(other.tranche_id, other.entries[0].entry_id))
     selection = store.active_selection()
 
-    wind_tranche_for_window(store, at(0), at(4), AREA, catalog=entries)
+    wind_tranche_for_window(store, at(0), at(4), REGION, catalog=entries)
     assert store.active_selection() == selection
     assert store.active().tranche.tranche_id == other.tranche_id
 
@@ -98,7 +101,7 @@ def test_rejects_window_shorter_than_minimum(tmp_path):
     entries = hourly_chunks(store.root, range(2))
     assert MIN_WINDOW_HOURS == 2
     with pytest.raises(HistoricalTrancheError, match="at least 2 hours"):
-        select_window_entries(entries, at(0), at(1), AREA)
+        select_window_entries(entries, at(0), at(1), CATALOG_AREA)
 
 
 def test_rejects_window_longer_than_maximum(tmp_path):
@@ -106,29 +109,29 @@ def test_rejects_window_longer_than_maximum(tmp_path):
     entries = hourly_chunks(store.root, range(2))
     end = at(0) + timedelta(hours=MAX_WINDOW_HOURS + 1)
     with pytest.raises(HistoricalTrancheError, match="at most 384 hours"):
-        select_window_entries(entries, at(0), end, AREA)
+        select_window_entries(entries, at(0), end, CATALOG_AREA)
 
 
 def test_rejects_non_whole_hour_and_naive_bounds(tmp_path):
     entries = hourly_chunks(make_store(tmp_path).root, range(2))
     with pytest.raises(HistoricalTrancheError, match="whole hour"):
-        select_window_entries(entries, datetime(2025, 1, 1, 0, 30, tzinfo=UTC), at(3), AREA)
+        select_window_entries(entries, datetime(2025, 1, 1, 0, 30, tzinfo=UTC), at(3), CATALOG_AREA)
     with pytest.raises(HistoricalTrancheError, match="timezone-aware UTC"):
-        select_window_entries(entries, datetime(2025, 1, 1, 0), at(3), AREA)
+        select_window_entries(entries, datetime(2025, 1, 1, 0), at(3), CATALOG_AREA)
 
 
 def test_rejects_when_no_entries_fall_inside_window(tmp_path):
     store = make_store(tmp_path)
     entries = hourly_chunks(store.root, range(4, 6))
     with pytest.raises(HistoricalTrancheError, match="inside"):
-        select_window_entries(entries, at(0), at(2), AREA)
+        select_window_entries(entries, at(0), at(2), CATALOG_AREA)
 
 
 def test_rejects_a_window_with_a_gap(tmp_path):
     store = make_store(tmp_path)
     entries = hourly_chunks(store.root, (0, 1, 3))
     with pytest.raises(HistoricalTrancheError, match="2025-01-01T02:00:00"):
-        select_window_entries(entries, at(0), at(4), AREA)
+        select_window_entries(entries, at(0), at(4), CATALOG_AREA)
 
 
 def test_rejects_overlapping_entries(tmp_path):
@@ -138,7 +141,7 @@ def test_rejects_overlapping_entries(tmp_path):
         chunk(store.root, "b.grib", at(1), at(2)),
     ]
     with pytest.raises(HistoricalTrancheError, match="more than one entry"):
-        select_window_entries(entries, at(0), at(3), AREA)
+        select_window_entries(entries, at(0), at(3), CATALOG_AREA)
 
 
 def test_rejects_a_duplicate_hour(tmp_path):
@@ -148,7 +151,7 @@ def test_rejects_a_duplicate_hour(tmp_path):
         chunk(store.root, "b.grib", at(0)),
     ]
     with pytest.raises(HistoricalTrancheError, match="more than one entry"):
-        select_window_entries(entries, at(0), at(2), AREA)
+        select_window_entries(entries, at(0), at(2), CATALOG_AREA)
 
 
 def test_rejects_two_distinct_areas(tmp_path):
@@ -158,7 +161,7 @@ def test_rejects_two_distinct_areas(tmp_path):
         chunk(store.root, "b.grib", at(1), area=(30.0, -10.0, 20.0, 5.0)),
     ]
     with pytest.raises(HistoricalTrancheError, match="more than one area"):
-        select_window_entries(entries, at(0), at(2), AREA)
+        select_window_entries(entries, at(0), at(2), CATALOG_AREA)
 
 
 def test_missing_wind_component_names_the_hour(tmp_path):
@@ -169,37 +172,37 @@ def test_missing_wind_component_names_the_hour(tmp_path):
         chunk(store.root, "c.grib", at(2), variables=[WIND[0]]),
     ]
     with pytest.raises(HistoricalTrancheError) as error:
-        select_window_entries(entries, at(0), at(3), AREA)
+        select_window_entries(entries, at(0), at(3), CATALOG_AREA)
     assert "2025-01-01T02:00:00" in str(error.value)
     assert WIND[1] in str(error.value)
 
 
 def test_area_tolerance_accepts_near_and_rejects_far(tmp_path):
     store = make_store(tmp_path)
-    near = list(AREA)
+    near = list(CATALOG_AREA)
     near[0] += AREA_TOLERANCE_DEG / 2
     entries = [
         chunk(store.root, "a.grib", at(0), area=near),
         chunk(store.root, "b.grib", at(1), area=near),
     ]
-    selected = select_window_entries(entries, at(0), at(2), AREA)
+    selected = select_window_entries(entries, at(0), at(2), CATALOG_AREA)
     assert len(selected) == 2
 
-    far = list(AREA)
+    far = list(CATALOG_AREA)
     far[0] += 1e-3
     far_entries = [
         chunk(store.root, "c.grib", at(0), area=far),
         chunk(store.root, "d.grib", at(1), area=far),
     ]
     with pytest.raises(HistoricalTrancheError, match="match area"):
-        select_window_entries(far_entries, at(0), at(2), AREA)
+        select_window_entries(far_entries, at(0), at(2), CATALOG_AREA)
 
 
 def test_repeated_build_is_idempotent(tmp_path):
     store = make_store(tmp_path)
     entries = hourly_chunks(store.root, range(2))
-    first = wind_tranche_for_window(store, at(0), at(2), AREA, catalog=entries)
-    second = wind_tranche_for_window(store, at(0), at(2), AREA, catalog=entries)
+    first = wind_tranche_for_window(store, at(0), at(2), REGION, catalog=entries)
+    second = wind_tranche_for_window(store, at(0), at(2), REGION, catalog=entries)
     assert first.tranche.tranche_id == second.tranche.tranche_id
     assert len(list(store.manifests.glob("*.json"))) == 1
 
@@ -218,5 +221,34 @@ def test_catalog_entries_are_read_from_the_store(tmp_path):
     store = make_store(tmp_path)
     entries = hourly_chunks(store.root, range(2))
     (store.root / "era5-history.json").write_text(json.dumps(entries), encoding="utf8")
-    resolved = wind_tranche_for_window(store, at(0), at(2), AREA)
+    resolved = wind_tranche_for_window(store, at(0), at(2), REGION)
     assert len(resolved.entry.artifacts) == 1
+
+
+def test_region_is_converted_to_catalog_order(tmp_path, monkeypatch):
+    """A W,S,E,N caller region still matches N,W,S,E catalog entries."""
+    store = make_store(tmp_path)
+    entries = hourly_chunks(store.root, range(2))
+    captured = {}
+    real = era5.build_history_display
+
+    def record(carrier, selected, *, model_id="ERA5"):
+        captured["areas"] = [tuple(item["area"]) for item in selected]
+        return real(carrier, selected, model_id=model_id)
+
+    monkeypatch.setattr(era5, "build_history_display", record)
+    tranche = build_wind_tranche(store, at(0), at(2), REGION, catalog=entries)
+
+    assert len(tranche.entries) == 1
+    # The selected entries keep the catalog's ERA5-order area.
+    assert captured["areas"] == [CATALOG_AREA, CATALOG_AREA]
+    north, west, south, east = captured["areas"][0]
+    assert north > south and west < east
+
+
+def test_rejects_a_caller_region_in_catalog_order(tmp_path):
+    """Passing (north, west, south, east) where a region is expected fails."""
+    store = make_store(tmp_path)
+    entries = hourly_chunks(store.root, range(2))
+    with pytest.raises(HistoricalTrancheError, match="ordered"):
+        build_wind_tranche(store, at(0), at(2), CATALOG_AREA, catalog=entries)

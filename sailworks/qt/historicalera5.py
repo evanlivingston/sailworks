@@ -9,6 +9,7 @@ import time
 from sailworks.core.era5 import Era5DownloadService, plan_request
 from sailworks.core.historicaljob import JobProgress
 from sailworks.core.historicaltranche import read_era5_catalog, select_window_entries
+from sailworks.core.historicalweather import era5_area
 
 
 def report_progress(progress, stage, completed, total, message=""):
@@ -26,14 +27,19 @@ def report_progress(progress, stage, completed, total, message=""):
 
 
 def covered(root, unit):
-    """Whether the ERA5 catalog already supplies this unit's wind window."""
+    """Whether the ERA5 catalog already supplies this unit's wind window.
+
+    ``unit.region`` is our ``(west, south, east, north)`` box; catalog entries
+    and :func:`select_window_entries` use ERA5's ``(north, west, south,
+    east)`` order.
+    """
     try:
         entries = read_era5_catalog(Path(root))
         chosen = select_window_entries(
             entries,
             unit.start_utc,
             unit.end_utc,
-            unit.region,
+            era5_area(unit.region),
             fields=("wind",),
         )
     except Exception:
@@ -62,7 +68,7 @@ class Era5Coverage:
             plan = plan_request(
                 unit.start_utc,
                 unit.end_utc - timedelta(hours=1),
-                unit.region,
+                era5_area(unit.region),
                 fields=("wind",),
             )
             pending.append((unit, plan))

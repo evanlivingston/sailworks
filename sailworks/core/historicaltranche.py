@@ -22,6 +22,7 @@ from pathlib import Path
 
 from . import era5
 from .forecasttranche import AnalysisSelection, ForecastTranche
+from .historicalweather import era5_area
 from .tranchestore import ResolvedForecast
 
 MAX_WINDOW_HOURS = 384
@@ -79,6 +80,11 @@ def select_window_entries(
     fields=("wind",),
 ) -> list[dict]:
     """Pick the catalog chunks that exactly cover ``[start_utc, end_utc)``.
+
+    ``area`` is in ERA5's ``(north, west, south, east)`` order, matching the
+    catalog's stored entry areas; callers holding our ``(west, south, east,
+    north)`` convention convert first with
+    :func:`sailworks.core.historicalweather.era5_area`.
 
     Raises :class:`HistoricalTrancheError` when the window is shorter than
     ``MIN_WINDOW_HOURS`` or longer than ``MAX_WINDOW_HOURS``, when the bounds
@@ -173,12 +179,21 @@ def build_wind_tranche(
 ) -> ForecastTranche:
     """Build and publish one wind tranche for a half-open window.
 
+    ``area`` uses our ``(west, south, east, north)`` convention and is
+    converted with :func:`sailworks.core.historicalweather.era5_area` before
+    the catalog is searched, because catalog entry areas are stored in ERA5's
+    ``(north, west, south, east)`` order.
+
     The tranche is published but never activated.  A repeated call for the
     same window reuses the already published manifest, because the tranche id
     is derived from the concatenated bytes.
     """
     entries = read_era5_catalog(store.root) if catalog is None else list(catalog)
-    selected = select_window_entries(entries, start_utc, end_utc, area)
+    try:
+        search_area = era5_area(area)
+    except ValueError as exc:
+        raise HistoricalTrancheError(str(exc)) from exc
+    selected = select_window_entries(entries, start_utc, end_utc, search_area)
     tranche = era5.build_history_display(_StoreCarrier(store), selected, model_id=model_id)
     try:
         store.publish(tranche)
@@ -197,7 +212,11 @@ def wind_tranche_for_window(
     model_id="ERA5",
     catalog=None,
 ) -> ResolvedForecast:
-    """Publish a window tranche and resolve it without changing the active one."""
+    """Publish a window tranche and resolve it without changing the active one.
+
+    ``area`` is our ``(west, south, east, north)`` region; see
+    :func:`build_wind_tranche`.
+    """
     tranche = build_wind_tranche(
         store, start_utc, end_utc, area, model_id=model_id, catalog=catalog
     )

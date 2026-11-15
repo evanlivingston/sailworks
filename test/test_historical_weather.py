@@ -17,11 +17,13 @@ from sailworks.core.historicalweather import (
     AcquisitionUnit,
     CoverageWindow,
     availability_reason,
+    era5_area,
     estimate_decoded_bytes,
     merge_coverage,
     plan_acquisition_units,
     plan_member_availability,
     plan_year_exclusions,
+    region_from_era5_area,
     region_from_points,
     split_dateline,
     split_region_at_dateline,
@@ -449,3 +451,129 @@ def test_max_days_cap_landing_on_midnight_emits_no_empty_piece():
     )
     assert all(end > begin for begin, end in pieces)
     assert len(pieces) == len(set(pieces))
+
+
+def test_era5_area_converts_our_region_order():
+    # (west, south, east, north) -> ERA5's (north, west, south, east).
+    assert era5_area((-130.0, 41.0, -118.4, 53.0)) == (53.0, -130.0, 41.0, -118.4)
+    assert era5_area(REGION) == (50.0, -10.0, 40.0, 5.0)
+
+
+def test_region_from_era5_area_inverts_the_conversion():
+    assert region_from_era5_area((53.0, -130.0, 41.0, -118.4)) == (
+        -130.0,
+        41.0,
+        -118.4,
+        53.0,
+    )
+    assert region_from_era5_area(era5_area(REGION)) == REGION
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [(-1.0, 2.0), (-1.0, 2.0, 3.0, 4.0, 5.0), ("a", "b", "c", "d"), None],
+)
+def test_era5_area_rejects_malformed_regions(bad):
+    with pytest.raises(ValueError):
+        era5_area(bad)
+
+
+def test_era5_area_does_not_silently_reorder_catalog_order():
+    # Catalog order fed to a region helper is a caller bug, not a reorder.
+    with pytest.raises(ValueError, match="ordered"):
+        era5_area((50.0, -10.0, 40.0, 5.0))
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        (50.0, -10.0, 5.0),  # wrong length
+        (41.0, -130.0, 53.0, -118.4),  # our order, not ERA5's
+        (5.0, -10.0, 10.0, 50.0),  # north <= south
+    ],
+)
+def test_region_from_era5_area_rejects_out_of_order_areas(bad):
+    with pytest.raises(ValueError):
+        region_from_era5_area(bad)
+
+
+def _hourly_catalog(root, start, hours, area):
+    import json
+
+    entries = []
+    for offset in range(hours):
+        moment = start + timedelta(hours=offset)
+        name = f"h{offset}.grib"
+        (root / name).write_bytes(name.encode("ascii"))
+        entries.append(
+            {
+                "artifact": name,
+                "sha256": "0" * 64,
+                "size": len(name),
+                "start": moment.isoformat(),
+                "end": moment.isoformat(),
+                "area": list(area),
+                "variables": ["10m_u_component_of_wind", "10m_v_component_of_wind"],
+            }
+        )
+    return entries
+
+
+def test_era5_coverage_reads_the_catalog_in_era5_order(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import sailworks.qt.historicalera5 as adapter
+
+    start = datetime(2026, 5, 1, tzinfo=UTC)
+    unit = SimpleNamespace(start_utc=start, end_utc=start + timedelta(hours=2), region=REGION)
+    entries = _hourly_catalog(tmp_path, start, 2, (50.0, -10.0, 40.0, 5.0))
+    (tmp_path / "era5-history.json").write_text(json.dumps(entries), encoding="utf8")
+
+    assert adapter.covered(tmp_path, unit) is True
+
+
+def test_era5_coverage_plans_in_era5_order(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import sailworks.qt.historicalera5 as adapter
+
+    start = datetime(2026, 5, 1, tzinfo=UTC)
+    unit = SimpleNamespace(start_utc=start, end_utc=start + timedelta(hours=6), region=REGION)
+    plans = []
+
+    class Thread:
+        era5_key = "k"
+
+        def is_alive(self):
+            return False
+
+    class Service:
+        def submit(self, plan):
+            plans.append(plan)
+            return Thread()
+
+        def cancel(self, plan):
+            return None
+
+        def key_for(self, plan):
+            return "k"
+
+        def error_for(self, key):
+            return None
+
+        def clear_error(self, key):
+            return None
+
+    # The first coverage check misses; the post-download one succeeds.
+    answers = iter([False, True])
+    monkeypatch.setattr(adapter, "covered", lambda root, unit: next(answers))
+    coverage = adapter.Era5Coverage(
+        SimpleNamespace(root=tmp_path), service_factory=lambda store: Service()
+    )
+
+    coverage.ensure([unit])
+
+    assert len(plans) == 1
+    north, west, south, east = plans[0].area
+    assert (north, west, south, east) == (50.0, -10.0, 40.0, 5.0)
+    assert north > south and west < east

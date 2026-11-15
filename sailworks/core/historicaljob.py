@@ -201,6 +201,8 @@ def build_executions(
                 store,
                 member.coverage_start_utc,
                 member.coverage_end_utc,
+                # ``spec.region`` is our (west, south, east, north) convention;
+                # the tranche converts it for the ERA5 catalog itself.
                 spec.region,
             )
             if tranche_factory is None

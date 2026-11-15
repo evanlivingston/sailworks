@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import sailworks.core.historicaljob as historicaljob
 from sailworks.core.historicalbinding import CurrentBinding
 from sailworks.core.historicalexecution import MemberOutcome, member_route_name
 from sailworks.core.historicaljob import (
@@ -333,3 +334,24 @@ def test_job_progress_is_a_plain_frozen_record():
     progress = JobProgress(stage="planning", completed=0, total=63)
     assert progress.stage == "planning"
     assert progress.message == ""
+
+
+def test_build_executions_hands_the_planned_region_to_the_tranche(monkeypatch):
+    calls = []
+
+    def capture(store, start, end, region, **kwargs):
+        calls.append((start, end, region))
+        return object()
+
+    monkeypatch.setattr(historicaljob, "wind_tranche_for_window", capture)
+    prepared = prepare_job(make_spec(), now=NOW, availability=available)
+
+    executions = build_executions(
+        prepared, make_request(), store="unused", target_departure_utc=TARGET
+    )
+
+    assert len(calls) == len(executions) == len(prepared.members)
+    assert all(region == REGION for _start, _end, region in calls)
+    assert [start for start, _end, _region in calls] == [
+        member.coverage_start_utc for member in prepared.members
+    ]

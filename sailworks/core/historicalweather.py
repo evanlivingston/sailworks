@@ -56,6 +56,38 @@ def _check_region(region) -> tuple:
     return (west, south, east, north)
 
 
+def era5_area(region) -> tuple[float, float, float, float]:
+    """Convert our ``(west, south, east, north)`` region to ERA5's area order.
+
+    The CDS API takes ``(north, west, south, east)``; the rest of the routing
+    stack speaks ``(west, south, east, north)``.  This is the only conversion
+    point, so a caller that reaches ERA5 passes a region through it instead of
+    reordering by hand.  Malformed input is rejected rather than silently
+    reordered.
+    """
+    west, south, east, north = _check_region(region)
+    return (north, west, south, east)
+
+
+def region_from_era5_area(area) -> tuple[float, float, float, float]:
+    """Convert an ERA5 ``(north, west, south, east)`` area to our region order.
+
+    Inverse of :func:`era5_area`; the result uses ``(west, south, east,
+    north)`` and is validated like any other region.  Bounds that do not form
+    a north-over-south, west-before-east box raise instead of being reordered.
+    """
+    try:
+        values = tuple(float(value) for value in area)
+    except (TypeError, ValueError):
+        raise ValueError("area must be (north, west, south, east).") from None
+    if len(values) != 4:
+        raise ValueError("area must be (north, west, south, east).")
+    north, west, south, east = values
+    if not (-90.0 <= south < north <= 90.0 and -180.0 <= west < east <= 180.0):
+        raise ValueError("area must be ordered north > south and west < east within valid bounds.")
+    return (west, south, east, north)
+
+
 @dataclass(frozen=True)
 class CoverageWindow:
     """A half-open UTC coverage span: ``[start_utc, end_utc)``."""
