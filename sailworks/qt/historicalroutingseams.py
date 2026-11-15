@@ -52,12 +52,12 @@ class HistoricalRoutingSeams:
             selected.minute,
             spec.timezone_id,
         )
-        values = self.options.values()
+        base = self._base_request()
         request = CurrentRequest(
             target_departure_utc=target,
             horizon_hours=int(spec.max_duration_hours),
             area=tuple(spec.region),
-            priority=values.get("current_priority") or "finest",
+            priority=getattr(base, "current_priority", None) or "finest",
         )
         return acquire_target_currents(
             self._marine_manager(),

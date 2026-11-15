@@ -8,7 +8,7 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QGridLayout,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QPushButton,
@@ -215,9 +215,6 @@ class HistoricalRoutingResults(QWidget):
     """Per-member table, aggregate curve and job-level actions."""
 
     member_selected = Signal(str)
-    representatives_requested = Signal()
-    show_all_requested = Signal()
-    hide_all_requested = Signal()
     retry_failed_requested = Signal()
     recheck_requested = Signal()
     delete_requested = Signal()
@@ -225,9 +222,14 @@ class HistoricalRoutingResults(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._rows = []
+        # Kept for the "representatives" action even though its button is gone:
+        # visibility now lives in the scene tree.
         self._median_member_id = None
         self._build()
         self.set_actions_enabled(False, False, False)
+        # No results clutter before the first run: the whole widget stays
+        # hidden until a record is displayed.
+        self.setVisible(False)
 
     def _build(self):
         layout = QVBoxLayout(self)
@@ -278,54 +280,36 @@ class HistoricalRoutingResults(QWidget):
         self.table.cellClicked.connect(self._row_clicked)
         layout.addWidget(self.table, 1)
 
-        # A two-column grid keeps the action bar from imposing a minimum width
-        # wider than the Compare scroll page.
-        buttons = QGridLayout()
-        buttons.setSpacing(8)
-        self.median_button = self._button(
-            buttons, "Median route", self._median_clicked, 0, 0
-        )
-        self.representatives_button = self._button(
-            buttons, "Representatives", self.representatives_requested.emit, 0, 1
-        )
-        self.show_all_button = self._button(
-            buttons, "Show all", self.show_all_requested.emit, 1, 0
-        )
-        self.hide_all_button = self._button(
-            buttons, "Hide all", self.hide_all_requested.emit, 1, 1
-        )
+        # Visibility lives in the scene tree; only job maintenance remains.
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
         self.retry_button = self._button(
-            buttons, "Retry failed", self.retry_failed_requested.emit, 2, 0
+            buttons, "Retry failed", self.retry_failed_requested.emit
         )
         self.recheck_button = self._button(
-            buttons,
-            "Recheck excluded years",
-            self.recheck_requested.emit,
-            2,
-            1,
+            buttons, "Recheck excluded years", self.recheck_requested.emit
         )
         self.delete_button = self._button(
-            buttons,
-            "Delete job and routes",
-            self.delete_requested.emit,
-            3,
-            0,
-            1,
-            2,
+            buttons, "Delete job and routes", self.delete_requested.emit
         )
+        buttons.addStretch(1)
         layout.addLayout(buttons)
 
-    def _button(self, layout, text, slot, row, column, row_span=1, column_span=1):
+    def _button(self, layout, text, slot):
         button = QPushButton(text)
         button.setAccessibleName(text)
+        # Labels may clip rather than force a horizontal scrollbar on the
+        # narrow Compare page.
         button.setMinimumWidth(0)
+        button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         button.clicked.connect(lambda *_: slot())
-        layout.addWidget(button, row, column, row_span, column_span)
+        layout.addWidget(button)
         return button
 
     # -- run history -----------------------------------------------------
     def set_has_run(self, has_run):
         self.empty_label.setVisible(not has_run)
+        self.setVisible(bool(has_run))
 
     # -- data ------------------------------------------------------------
     def set_summary(self, text):
@@ -381,17 +365,7 @@ class HistoricalRoutingResults(QWidget):
     def set_actions_enabled(self, has_failures, has_excluded, has_job):
         self.retry_button.setEnabled(bool(has_failures))
         self.recheck_button.setEnabled(bool(has_excluded) and bool(has_job))
-        for button in (
-            self.delete_button,
-            self.median_button,
-            self.representatives_button,
-            self.show_all_button,
-            self.hide_all_button,
-        ):
-            button.setEnabled(bool(has_job))
-        self.median_button.setEnabled(
-            bool(has_job) and self._median_member_id is not None
-        )
+        self.delete_button.setEnabled(bool(has_job))
 
     def clear(self):
         self.summary.setText("")
@@ -401,7 +375,7 @@ class HistoricalRoutingResults(QWidget):
         self._rows = []
         self._median_member_id = None
         self.set_actions_enabled(False, False, False)
-        self.empty_label.setVisible(True)
+        self.set_has_run(False)
 
     # -- internals -------------------------------------------------------
     def _find_median(self):
@@ -423,7 +397,3 @@ class HistoricalRoutingResults(QWidget):
         member_id = item.data(Qt.ItemDataRole.UserRole)
         if member_id:
             self.member_selected.emit(str(member_id))
-
-    def _median_clicked(self):
-        if self._median_member_id:
-            self.member_selected.emit(self._median_member_id)

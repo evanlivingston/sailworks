@@ -54,9 +54,7 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
     progress_reported = Signal(str, int, int, str)
     job_finished = Signal(str, str)
     outcome_reported = Signal(object)
-    # Emitted when the user asks to change the inherited route settings; the
-    # owning panel switches to the Plan tab.
-    edit_plan_requested = Signal()
+
     # Emitted after the panel changes a route's item visibility, so the window
     # can repaint the map overlay and the scene tree exactly as the tree's own
     # checkbox does. There is no scene/panel reference held on purpose.
@@ -114,16 +112,11 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
 
         self.options.run_requested.connect(lambda *_: self.start_job())
         self.options.cancel_requested.connect(self.cancel_job)
-        self.options.edit_region_requested.connect(self.edit_region)
-        self.options.edit_plan_requested.connect(self.edit_plan_requested.emit)
         self.options.values_changed.connect(self._values_changed)
         self.results.member_selected.connect(self._member_selected)
         self.results.delete_requested.connect(self.delete_job)
         self.results.retry_failed_requested.connect(self.retry_failed)
         self.results.recheck_requested.connect(self.recheck_excluded)
-        self.results.representatives_requested.connect(self._representatives)
-        self.results.show_all_requested.connect(self._show_all)
-        self.results.hide_all_requested.connect(self._hide_all)
 
         self.progress_reported.connect(self._progress)
         self.job_finished.connect(self._finished)
@@ -137,12 +130,6 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
     def set_values(self, values):
         if isinstance(values, dict):
             self.options.set_values(values)
-
-    def set_region(self, region):
-        self.options.set_region(region)
-
-    def edit_region(self):
-        """Region capture belongs to the map; the window may connect to this."""
 
     def set_scene(self, scene):
         """Attach the live scene collection the window owns.
@@ -179,20 +166,12 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         except Exception:
             self.options.set_setup_ready(False)
             return
-        missing = []
-        if getattr(request, "start", None) is None:
-            missing.append("start")
-        if getattr(request, "destination", None) is None:
-            missing.append("destination")
-        if not getattr(request, "polar_file", ""):
-            missing.append("boat / polar")
-        if missing:
-            detail = (
-                "Set the route and boat in Plan: missing " + ", ".join(missing) + "."
-            )
-            self.options.set_setup_ready(False, detail)
-            return
-        self.options.set_setup_ready(True)
+        ready = (
+            getattr(request, "start", None) is not None
+            and getattr(request, "destination", None) is not None
+            and bool(getattr(request, "polar_file", ""))
+        )
+        self.options.set_setup_ready(ready)
 
     @staticmethod
     def _region_from_request(request):
@@ -203,10 +182,11 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         ]
         if not points:
             return None
-        west = min(float(point[0]) for point in points) - 1.0
-        east = max(float(point[0]) for point in points) + 1.0
-        south = min(float(point[1]) for point in points) - 1.0
-        north = max(float(point[1]) for point in points) + 1.0
+        padding = 5.0
+        west = max(-180.0, min(float(point[0]) for point in points) - padding)
+        east = min(180.0, max(float(point[0]) for point in points) + padding)
+        south = max(-90.0, min(float(point[1]) for point in points) - padding)
+        north = min(90.0, max(float(point[1]) for point in points) + padding)
         return (west, south, east, north)
 
     def spec(self):
@@ -215,12 +195,10 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         base = self._base_request()
         departure = self._departure_local(base.departure)
         zone_id = local_timezone_id()
-        region = values.get("region") or self._region_from_request(base)
+        region = self._region_from_request(base)
         if region is None:
-            raise ValueError("Select a region for the historical comparison.")
+            raise ValueError("Set a route before starting historical routing.")
         region = tuple(float(value) for value in region)
-        if values.get("region") != region:
-            self.options.set_region(region)
         return HistoricalRoutingSpec(
             job_id="",
             created_at_utc=datetime.now(timezone.utc),
@@ -237,6 +215,10 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
 
     # -- job lifecycle ---------------------------------------------------
     def start_job(self):
+        self.refresh_route_summary()
+        if not self.options.is_setup_ready():
+            return
+        self.results.set_has_run(True)
         self.actions.start_job()
 
     def _run_job(self, spec, base):

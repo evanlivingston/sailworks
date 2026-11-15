@@ -11,8 +11,6 @@ from sailworks.qt.historicalroutingoptions import HistoricalRoutingOptions
 from sailworks.qt.historicalroutingresults import HistoricalRoutingResults, _CurveCanvas
 from sailworks.qt.slider import Slider
 
-REGION = (-30.0, 30.0, -10.0, 40.0)
-
 ROWS = [
     {
         "member_id": "2023-000",
@@ -47,7 +45,6 @@ ROWS = [
 def options(qtbot):
     widget = HistoricalRoutingOptions()
     qtbot.addWidget(widget)
-    widget.set_region(REGION)
     return widget
 
 
@@ -59,19 +56,30 @@ def test_defaults_match_the_spec(qtbot):
         "years": 10,
         "offset_days": 3,
         "max_duration_hours": 240,
-        "region": None,
         "use_currents": False,
-        "current_priority": "finest",
     }
-    assert widget.validation_message() == "region must be set."
+    assert widget.validation_message() == ""
     for control in (
         widget.years,
         widget.offset_days,
         widget.max_duration,
         widget.use_currents,
-        widget.current_priority,
     ):
         assert control.accessibleName()
+
+
+def test_deleted_controls_are_gone(qtbot):
+    widget = options(qtbot)
+    for name in (
+        "edit_plan",
+        "edit_region",
+        "region_label",
+        "current_priority",
+        "setup_hint",
+    ):
+        assert not hasattr(widget, name)
+    assert not hasattr(widget, "edit_plan_requested")
+    assert not hasattr(widget, "edit_region_requested")
 
 
 def test_member_cap_is_reported_and_clears(qtbot):
@@ -105,20 +113,16 @@ def test_ranges_clamp_and_horizon_snaps_to_six_hours(qtbot):
     assert widget.validation_message() == ""
 
 
-def test_set_region_and_set_values_round_trip(qtbot):
+def test_set_values_round_trip_ignores_retired_keys(qtbot):
     widget = HistoricalRoutingOptions()
     qtbot.addWidget(widget)
-    widget.set_region(REGION)
-    assert widget.values()["region"] == REGION
-    assert "No region" not in widget.region_label.text()
-
     widget.set_values(
         {
             "years": 7,
             "offset_days": 2,
             "max_duration_hours": 120,
-            "region": (1.0, -2.0, 3.0, 4.0),
             "use_currents": True,
+            "region": (1.0, -2.0, 3.0, 4.0),
             "current_priority": "newest",
         }
     )
@@ -126,12 +130,8 @@ def test_set_region_and_set_values_round_trip(qtbot):
         "years": 7,
         "offset_days": 2,
         "max_duration_hours": 120,
-        "region": (1.0, -2.0, 3.0, 4.0),
         "use_currents": True,
-        "current_priority": "newest",
     }
-    widget.set_region(None)
-    assert widget.values()["region"] is None
 
 
 def test_numeric_inputs_use_the_standard_slider(qtbot):
@@ -141,32 +141,17 @@ def test_numeric_inputs_use_the_standard_slider(qtbot):
         assert control.accessibleName()
 
 
-def test_setup_hint_is_hidden_when_the_route_is_configured(qtbot):
+def test_incomplete_route_disables_the_run_button(qtbot):
     widget = options(qtbot)
-    assert widget.setup_hint.isHidden()
+    assert widget.run_button.isEnabled()
 
     widget.set_setup_ready(False)
-    assert not widget.setup_hint.isHidden()
-    assert widget.setup_label.text() == "Set the route and boat in Plan."
-
-    widget.set_setup_ready(
-        False, "Set the route and boat in Plan: missing boat / polar."
-    )
-    assert widget.setup_label.text().endswith("missing boat / polar.")
+    assert not widget.run_button.isEnabled()
+    assert widget.run_button.toolTip() == "Set the route and boat in Plan first."
 
     widget.set_setup_ready(True)
-    assert widget.setup_hint.isHidden()
-
-
-def test_edit_in_plan_button_emits_the_signal_in_both_states(qtbot):
-    widget = options(qtbot)
-    captured = []
-    widget.edit_plan_requested.connect(lambda: captured.append(True))
-    widget.set_setup_ready(False)
-    widget.edit_plan.click()
-    widget.set_setup_ready(True)
-    widget.edit_plan.click()
-    assert captured == [True, True]
+    assert widget.run_button.isEnabled()
+    assert widget.run_button.toolTip() == ""
 
 
 def test_running_state_switches_buttons(qtbot):
@@ -229,21 +214,50 @@ def test_rows_populate_table_with_outcome_prefixes_and_clicks(qtbot):
     )
     results.table.cellClicked.emit(row, 3)
     assert selected == ["2023-000"]
-    assert results._median_member_id == "2023-000"
 
 
-def test_empty_state_follows_whether_a_run_is_displayed(qtbot):
+def test_results_stay_hidden_until_a_run_is_displayed(qtbot):
     results = HistoricalRoutingResults()
     qtbot.addWidget(results)
     assert not hasattr(results, "history_selector")
     assert not hasattr(results, "run_selected")
+    assert results.isHidden()
     assert not results.empty_label.isHidden()
     assert "No historical run yet" in results.empty_label.text()
 
     results.set_has_run(True)
+    assert not results.isHidden()
     assert results.empty_label.isHidden()
     results.set_has_run(False)
+    assert results.isHidden()
     assert not results.empty_label.isHidden()
+
+
+def test_only_three_result_actions_remain_and_emit(qtbot):
+    results = HistoricalRoutingResults()
+    qtbot.addWidget(results)
+    for name in (
+        "median_button",
+        "representatives_button",
+        "show_all_button",
+        "hide_all_button",
+    ):
+        assert not hasattr(results, name)
+    assert results.findChildren(type(results.delete_button)) == [
+        results.retry_button,
+        results.recheck_button,
+        results.delete_button,
+    ]
+
+    results.set_actions_enabled(True, True, True)
+    calls = []
+    results.retry_failed_requested.connect(lambda: calls.append("retry"))
+    results.recheck_requested.connect(lambda: calls.append("recheck"))
+    results.delete_requested.connect(lambda: calls.append("delete"))
+    results.retry_button.click()
+    results.recheck_button.click()
+    results.delete_button.click()
+    assert calls == ["retry", "recheck", "delete"]
 
 
 def test_actions_follow_job_state(qtbot):
@@ -252,18 +266,15 @@ def test_actions_follow_job_state(qtbot):
     results.set_actions_enabled(True, True, True)
     for button in (results.retry_button, results.recheck_button, results.delete_button):
         assert button.isEnabled()
-    assert not results.median_button.isEnabled()
 
     results.set_actions_enabled(False, False, False)
     for button in (results.retry_button, results.recheck_button, results.delete_button):
         assert not button.isEnabled()
-    assert not results.median_button.isEnabled()
 
     results.set_rows(ROWS)
     results.set_actions_enabled(False, True, True)
     assert not results.retry_button.isEnabled()
     assert results.recheck_button.isEnabled()
-    assert results.median_button.isEnabled()
     results.clear()
     assert not results.delete_button.isEnabled()
     assert results.table.rowCount() == 0

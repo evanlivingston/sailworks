@@ -32,15 +32,8 @@ from sailworks.core.historicalrouting import (
     MIN_YEARS,
 )
 
-from .dropdown import Dropdown, FieldRow
+from .dropdown import FieldRow
 from .slider import Slider
-
-# The routing panel already exposes these two policies for overlapping
-# current models; historical mode reuses the same values verbatim.
-CURRENT_PRIORITIES = (
-    ("Finest detail", "finest"),
-    ("Newest run", "newest"),
-)
 
 
 def _caption(text):
@@ -56,44 +49,22 @@ class HistoricalRoutingOptions(QWidget):
 
     run_requested = Signal(dict)
     cancel_requested = Signal()
-    edit_region_requested = Signal()
-    edit_plan_requested = Signal()
     values_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._region = None
         self._available = True
+        self._available_reason = ""
+        self._setup_ready = True
         self._running = False
         self._build()
         self._sync_buttons()
-        self._update_region_label()
 
     # -- construction ----------------------------------------------------
     def _build(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-
-        # The Plan tab owns route configuration. Show one compact hint only
-        # when it is incomplete, then leave the form to the ensemble inputs.
-        self.setup_hint = QWidget()
-        hint_row = QHBoxLayout(self.setup_hint)
-        hint_row.setContentsMargins(0, 0, 0, 0)
-        hint_row.setSpacing(8)
-        self.setup_label = QLabel("Set the route and boat in Plan.")
-        self.setup_label.setWordWrap(True)
-        self.setup_label.setAccessibleName("Route setup hint")
-        hint_row.addWidget(self.setup_label, 1)
-        self.edit_plan = QPushButton("Edit in Plan")
-        self.edit_plan.setAccessibleName("Edit in Plan")
-        self.edit_plan.setToolTip(
-            "Change the route, boat and safety settings in the Plan tab."
-        )
-        self.edit_plan.clicked.connect(lambda *_: self.edit_plan_requested.emit())
-        hint_row.addWidget(self.edit_plan)
-        self.setup_hint.setVisible(False)
-        layout.addWidget(self.setup_hint)
 
         self.years = Slider()
         self.years.setDecimals(0)
@@ -130,19 +101,6 @@ class HistoricalRoutingOptions(QWidget):
         self.max_duration.valueChanged.connect(self._horizon_changed)
         layout.addWidget(FieldRow("Max passage", self.max_duration))
 
-        region_row = QHBoxLayout()
-        region_row.setSpacing(8)
-        self.region_label = QLabel()
-        self.region_label.setWordWrap(True)
-        self.region_label.setAccessibleName("Acquisition region")
-        region_row.addWidget(self.region_label, 1)
-        self.edit_region = QPushButton("Edit…")
-        self.edit_region.setAccessibleName("Edit acquisition region")
-        self.edit_region.setToolTip("Edit the weather download region.")
-        self.edit_region.clicked.connect(lambda *_: self.edit_region_requested.emit())
-        region_row.addWidget(self.edit_region)
-        layout.addLayout(region_row)
-
         self.use_currents = QCheckBox("Target-date currents (shared)")
         self.use_currents.setAccessibleName("Target-date currents (shared)")
         self.use_currents.setToolTip(
@@ -150,17 +108,6 @@ class HistoricalRoutingOptions(QWidget):
         )
         self.use_currents.toggled.connect(lambda *_: self.values_changed.emit())
         layout.addWidget(self.use_currents)
-
-        self.current_priority = Dropdown("Overlapping models")
-        for text, value in CURRENT_PRIORITIES:
-            self.current_priority.addItem(text, value)
-        self.current_priority.setToolTip(
-            "Which current model serves overlapping coverage."
-        )
-        self.current_priority.currentIndexChanged.connect(
-            lambda *_: self.values_changed.emit()
-        )
-        layout.addWidget(FieldRow("Current priority", self.current_priority))
 
         source = QLabel("ERA5 hourly wind")
         source.setAccessibleName("Wind source")
@@ -207,29 +154,28 @@ class HistoricalRoutingOptions(QWidget):
         layout.addStretch(1)
 
     # -- route readiness -------------------------------------------------
-    def set_setup_ready(self, ready, detail=""):
-        """Show or hide the one-line prompt to configure the route in Plan."""
-        self.setup_hint.setVisible(not ready)
-        if not ready:
-            self.setup_label.setText(detail or "Set the route and boat in Plan.")
+    def set_setup_ready(self, ready):
+        """Allow a run only when the inherited Plan route is complete."""
+        self._setup_ready = bool(ready)
+        self._sync_buttons()
+
+    def is_setup_ready(self):
+        return self._setup_ready
 
     # -- values ----------------------------------------------------------
     def values(self):
-        """Current inputs, or ``None`` region when no region has been chosen."""
+        """The ensemble inputs. Region and current priority come from Plan."""
         return {
             "years": int(self.years.value()),
             "offset_days": int(self.offset_days.value()),
             "max_duration_hours": int(self.max_duration.value()),
-            "region": self._region,
             "use_currents": self.use_currents.isChecked(),
-            "current_priority": self.current_priority.currentData(),
         }
 
     def set_values(self, values):
         widgets = (self.years, self.offset_days, self.max_duration, self.use_currents)
         for widget in widgets:
             widget.blockSignals(True)
-        self.current_priority.blockSignals(True)
         try:
             if "years" in values:
                 self.years.setValue(int(values["years"]))
@@ -239,37 +185,10 @@ class HistoricalRoutingOptions(QWidget):
                 self.max_duration.setValue(int(values["max_duration_hours"]))
             if "use_currents" in values:
                 self.use_currents.setChecked(bool(values["use_currents"]))
-            if "current_priority" in values:
-                index = self.current_priority.findData(values["current_priority"])
-                self.current_priority.setCurrentIndex(max(0, index))
         finally:
             for widget in widgets:
                 widget.blockSignals(False)
-            self.current_priority.blockSignals(False)
-        if "region" in values:
-            self.set_region(values["region"])
-        else:
-            self.values_changed.emit()
-
-    def set_region(self, region):
-        self._region = (
-            None if region is None else tuple(float(value) for value in region)
-        )
-        self._update_region_label()
         self.values_changed.emit()
-
-    def _update_region_label(self):
-        if self._region is None:
-            self.region_label.setText("No region selected")
-            return
-        try:
-            west, south, east, north = self._region
-        except (TypeError, ValueError):
-            self.region_label.setText(str(self._region))
-            return
-        self.region_label.setText(
-            f"{south:.1f}° to {north:.1f}° lat, {west:.1f}° to {east:.1f}° lon"
-        )
 
     # -- feedback --------------------------------------------------------
     def set_estimate(self, text):
@@ -292,12 +211,18 @@ class HistoricalRoutingOptions(QWidget):
 
     def set_available(self, available, reason=""):
         self._available = bool(available)
-        self.run_button.setToolTip(reason)
-        self.run_button.setAccessibleDescription(reason)
+        self._available_reason = reason or ""
         self._sync_buttons()
 
     def _sync_buttons(self):
-        self.run_button.setEnabled(self._available and not self._running)
+        enabled = self._available and self._setup_ready and not self._running
+        self.run_button.setEnabled(enabled)
+        if not self._setup_ready:
+            tooltip = "Set the route and boat in Plan first."
+        else:
+            tooltip = self._available_reason
+        self.run_button.setToolTip(tooltip)
+        self.run_button.setAccessibleDescription(tooltip)
         self.cancel_button.setEnabled(self._running)
 
     # -- validation ------------------------------------------------------
@@ -307,8 +232,6 @@ class HistoricalRoutingOptions(QWidget):
         count = values["years"] * (2 * values["offset_days"] + 1)
         if count > MAX_MEMBERS:
             return f"{count} members exceeds the {MAX_MEMBERS}-member limit."
-        if values["region"] is None:
-            return "region must be set."
         if values["max_duration_hours"] % HORIZON_STEP_HOURS:
             return f"max duration hours must be a multiple of {HORIZON_STEP_HOURS}."
         return ""

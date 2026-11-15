@@ -110,6 +110,7 @@ def historical_panel(qtbot, *, controller=None, request=None, service_factory=No
 def test_historical_panel_fits_a_narrow_compare_page(qtbot):
     controller = SimpleNamespace(core=None, analysis=None)
     panel = HistoricalRoutingPanel(controller, store_factory=FakeStore)
+    panel.results.set_has_run(True)
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setWidget(panel)
@@ -138,17 +139,6 @@ def test_mode_combo_switches_the_stack_and_dispatches(qtbot, monkeypatch, tmp_pa
     panel._calculate()
     assert calls == [True]
     assert panel.routing.started == []
-
-
-def test_edit_in_plan_switches_to_the_plan_tab(qtbot, monkeypatch, tmp_path):
-    panel = routing_panel(qtbot, monkeypatch, tmp_path)
-    for index in range(panel.pages.count()):
-        if panel.pages.tabText(index) == "Compare":
-            panel.pages.setCurrentIndex(index)
-    assert panel.pages.currentIndex() != 0
-    panel.historical.options.edit_plan.click()
-    assert panel.pages.currentIndex() == 0
-    assert panel.pages.tabText(0) == "Plan"
 
 
 def test_show_historical_job_selects_compare_and_dispatches(
@@ -197,7 +187,7 @@ def test_scene_group_selection_emits_the_group_and_items_still_select(qtbot, tmp
     assert groups == ["historical-routing:job-1"]
 
 
-def test_historical_hint_hides_when_the_plan_route_is_complete(qtbot):
+def test_complete_plan_route_enables_the_run_button(qtbot):
     request = SimpleNamespace(
         departure=datetime(2021, 6, 15, 12),
         start=(1.0, 2.0),
@@ -208,21 +198,19 @@ def test_historical_hint_hides_when_the_plan_route_is_complete(qtbot):
         use_currents=True,
     )
     panel = historical_panel(qtbot, request=request)
-    assert panel.options.setup_hint.isHidden()
-    assert panel.options.edit_plan.isEnabled()
+    assert panel.options.run_button.isEnabled()
+    assert panel.options.run_button.toolTip() == ""
 
 
-def test_historical_hint_names_what_the_plan_route_is_missing(qtbot):
+def test_incomplete_plan_route_disables_the_run_button_with_hint(qtbot):
     request = SimpleNamespace(start=(1.0, 2.0), destination=(3.0, 4.0))
     panel = historical_panel(qtbot, request=request)
-    assert not panel.options.setup_hint.isHidden()
-    assert "missing boat / polar" in panel.options.setup_label.text()
-    assert panel.options.edit_plan.isEnabled()
+    assert not panel.options.run_button.isEnabled()
+    assert panel.options.run_button.toolTip() == "Set the route and boat in Plan first."
 
     panel = historical_panel(qtbot, request=None)
-    assert not panel.options.setup_hint.isHidden()
-    assert panel.options.setup_label.text() == "Set the route and boat in Plan."
-    assert panel.options.edit_plan.isEnabled()
+    assert not panel.options.run_button.isEnabled()
+    assert panel.options.run_button.toolTip() == "Set the route and boat in Plan first."
 
 
 def test_show_job_loads_a_published_run(qtbot):
@@ -251,10 +239,12 @@ def test_show_job_loads_a_published_run(qtbot):
     )
     qtbot.addWidget(panel)
     assert panel.job_selector is None
+    assert panel.results.isHidden()
     assert not panel.results.empty_label.isHidden()
 
     panel.show_job("job-1")
     assert panel._record is record
+    assert not panel.results.isHidden()
     assert panel.results.empty_label.isHidden()
     assert panel.results.table.rowCount() == 1
     assert "1 complete years" in panel.results.summary.text()
@@ -265,6 +255,7 @@ def test_show_job_reports_a_missing_run_without_raising(qtbot):
     assert panel.job_selector is None
     panel.show_job("missing")
     assert "Could not load that run" in panel.options.status.text()
+    assert panel.results.isHidden()
     assert not panel.results.empty_label.isHidden()
 
 
@@ -281,8 +272,8 @@ def test_saved_and_restored_options_include_mode_and_historical_values(
         "years": 4,
         "offset_days": 1,
         "max_duration_hours": 120,
-        "region": list(REGION),
         "use_currents": True,
+        "region": list(REGION),
         "current_priority": "newest",
     }
     panel.restore_options(saved)
@@ -292,16 +283,14 @@ def test_saved_and_restored_options_include_mode_and_historical_values(
         "years": 4,
         "offset_days": 1,
         "max_duration_hours": 120,
-        "region": REGION,
         "use_currents": True,
-        "current_priority": "newest",
     }
 
     panel.restore_options({"compare_mode": "not-a-mode", "historical": "ignored"})
     assert panel.compare_mode.currentData() == "parameter"
 
 
-def test_spec_uses_the_departure_year_and_options_region(qtbot):
+def test_spec_uses_the_departure_year_and_derives_the_region(qtbot):
     request = SimpleNamespace(
         departure=datetime(2021, 6, 15, 12),
         start=(0.0, 0.0),
@@ -314,20 +303,32 @@ def test_spec_uses_the_departure_year_and_options_region(qtbot):
             "years": 5,
             "offset_days": 2,
             "max_duration_hours": 72,
-            "region": REGION,
             "use_currents": False,
+            "region": REGION,
             "current_priority": "finest",
         }
     )
     spec = panel.spec()
     assert spec.reference_year == 2021
     assert spec.selected_departure_local == datetime(2021, 6, 15, 12)
-    assert spec.region == REGION
+    # Route geometry padded by 5 degrees, ignoring any stored region value.
+    assert spec.region == (-5.0, -5.0, 6.0, 6.0)
     assert spec.years == 5
     assert spec.offset_days == 2
     assert spec.max_duration_hours == 72
     assert spec.backend == "native"
     assert spec.job_id == ""
+
+
+def test_derived_region_clips_to_the_globe(qtbot):
+    request = SimpleNamespace(
+        departure=datetime(2021, 6, 15, 12),
+        start=(178.0, -88.0),
+        destination=(-179.0, 89.0),
+        waypoints=(),
+    )
+    panel = historical_panel(qtbot, request=request)
+    assert panel._region_from_request(request) == (-180.0, -90.0, 180.0, 90.0)
 
 
 class _Service:
