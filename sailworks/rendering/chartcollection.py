@@ -153,6 +153,19 @@ class ChartCollection:
                 lpvp += [x]
         return lpvp
 
+    def ensure_line_point_validity_providers(self):
+        """Providers for coastline checks, loading base GSHHS if needed.
+
+        Routing must not depend on which basemap is displayed: the installed
+        coastline dataset is a routing prerequisite, not only a render layer.
+        """
+        providers = self.get_line_point_validity_providers()
+        if providers:
+            return providers
+        if getattr(self, "gshhsLayer", None) is None:
+            self._load_base_gshhs()
+        return self.get_line_point_validity_providers()
+
     def on_chart_palette_changed(self, v):
         self._palette = v
         self._chart_surfaces.clear()

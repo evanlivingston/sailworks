@@ -181,7 +181,14 @@ class RoutingController(QObject):
             len(scenarios) or 1,
             0,
         )
-        providers = tuple(self.session_controller.charts.get_line_point_validity_providers())
+        charts = self.session_controller.charts
+        # Coastline checks are a routing prerequisite, not a render layer: when
+        # they are requested, register the installed dataset even if another
+        # basemap is displayed.
+        if request.coastline_checks:
+            providers = tuple(charts.ensure_line_point_validity_providers())
+        else:
+            providers = tuple(charts.get_line_point_validity_providers())
         marine_manager = getattr(self.core, "marine_manager", None)
         selection = (
             marine_manager.fields.snapshot(request.current_priority)
@@ -244,7 +251,13 @@ class RoutingController(QObject):
         self.message = "Historical bound run queued…"
         self._bound_member_callback = on_member_outcome
         self._bound_finish_callback = on_finished
-        providers = tuple(self.session_controller.charts.get_line_point_validity_providers())
+        charts = self.session_controller.charts
+        # Same prerequisite as start(): a member that asks for coastline checks
+        # must not depend on the basemap the window happens to display.
+        if any(execution.request.coastline_checks for execution in executions):
+            providers = tuple(charts.ensure_line_point_validity_providers())
+        else:
+            providers = tuple(charts.get_line_point_validity_providers())
         marine_manager = getattr(self.core, "marine_manager", None)
         marine_directory = str(marine_manager.directory) if marine_manager is not None else None
         self.changed.emit()
