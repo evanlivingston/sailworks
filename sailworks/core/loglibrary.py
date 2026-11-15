@@ -1,7 +1,6 @@
 """Managed, byte-for-byte log originals with independently editable metadata."""
 
 import json
-import multiprocessing
 import os
 import re
 import shutil
@@ -13,6 +12,7 @@ from threading import RLock
 from uuid import uuid4
 
 from .storage import DATA_DIR
+from .workercontext import worker_context
 
 LOG_SUFFIXES = {".log", ".nmea", ".txt", ".ebl"}
 _EBL_SEGMENT = re.compile(r"^(\d+)_(\d+)\.ebl$", re.IGNORECASE)
@@ -618,7 +618,7 @@ class LogLibrary:
         """Decode independent EBL groups in spawned processes."""
         from concurrent.futures import FIRST_COMPLETED, wait
 
-        context = multiprocessing.get_context("spawn")
+        context = worker_context()
         total = sum(sum(path.stat().st_size for path in group) for _, group in prepared)
         results = []
         completed = 0

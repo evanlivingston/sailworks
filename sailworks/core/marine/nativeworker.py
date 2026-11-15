@@ -15,9 +15,10 @@ cancelled generation is discarded.
 
 from __future__ import annotations
 
-import multiprocessing
 import time
 from dataclasses import dataclass
+
+from sailworks.core.workercontext import worker_context
 from typing import Any, Dict, Optional
 
 STATES = frozenset({"queued", "running", "completed", "cancelled", "failed"})
@@ -131,7 +132,7 @@ class NativeRoutingWorker:
         if max_workers != 1:
             raise ValueError("only one bounded native worker is supported")
         self.max_workers = max_workers
-        self._context = context or multiprocessing.get_context("spawn")
+        self._context = context or worker_context()
         self._process = None
         self._connection = None
         self._generation = 0
