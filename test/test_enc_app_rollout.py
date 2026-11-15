@@ -196,6 +196,44 @@ def test_a_zoom_or_time_change_marks_the_retained_chart_stale_never_withdraws_it
     assert not chart_preview_is_stale(None, view(zoom=10.0))
 
 
+def test_reuse_follows_the_composed_extent_not_half_the_margin():
+    from datetime import datetime as _datetime
+
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.qt.gribviewport import ViewportCamera
+    from sailworks.qt.gribviewportchart import ChartCamera, ViewportChartLayer
+    from sailworks.rendering.overlayrenderer import MARGIN
+
+    clock = _datetime(2026, 11, 15, 18)
+    composed = ViewportCamera(
+        48.1125, -122.7375, 13.0, 710, 743, clock, "very_dense", False
+    )
+    viewport = MapViewport(ChartCamera(composed, 2), MARGIN, lambda: None)
+    layer = object.__new__(ViewportChartLayer)
+    layer._dpr = 2
+    layer._published = (
+        1,
+        object(),
+        {
+            "preview": False,
+            "time": composed.stamp(),
+            "factor": 2,
+            "viewport": viewport,
+        },
+    )
+
+    def panned(pixels):
+        camera = ChartCamera(composed, 2)
+        lon = camera._x_to_lon(camera._lon_to_x(composed.center_lon) + pixels)
+        return ViewportCamera(48.1125, lon, 13.0, 710, 743, clock, "very_dense", False)
+
+    # The composed image holds the view plus MARGIN on each side, so a pan of
+    # up to MARGIN device pixels is still enclosed by pixels already drawn.
+    assert layer._reusable(composed)
+    assert layer._reusable(panned(MARGIN * 0.75))
+    assert not layer._reusable(panned(MARGIN * 1.5))
+
+
 def test_chart_placement_scales_the_retained_zoom_preview_about_its_center():
     from datetime import datetime as _datetime
 
