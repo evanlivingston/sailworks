@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 import threading
+import time
 from zoneinfo import ZoneInfo
 
 from PySide6.QtCore import Qt, Signal
@@ -117,6 +118,8 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         self.results.retry_failed_requested.connect(self.retry_failed)
         self.results.recheck_requested.connect(self.recheck_excluded)
 
+        self.options.set_progress_probe(self._progress_snapshot)
+
         self.progress_reported.connect(self._progress)
         self.job_finished.connect(self._finished)
         self.outcome_reported.connect(self._outcome)
@@ -209,6 +212,49 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         )
 
     # -- job lifecycle ---------------------------------------------------
+    def _progress_snapshot(self):
+        """The progress probe the options panel's widget samples."""
+        rc = self.routing_controller
+        started = getattr(rc, "native_started_at", None)
+        return {
+            "running": bool(getattr(rc, "busy", False))
+            or (self._thread is not None and self._thread.is_alive()),
+            "completed": int(getattr(rc, "bound_completed", 0) or 0),
+            "total": int(getattr(rc, "bound_total", 0) or 0),
+            "route_percent": (
+                None
+                if getattr(rc, "progress_indeterminate", True)
+                else float(getattr(rc, "percent", 0.0) or 0.0)
+            ),
+            "route_indeterminate": bool(getattr(rc, "progress_indeterminate", True)),
+            "stage": getattr(rc, "message", "") or "",
+            "counters": self._counter_text(getattr(rc, "native_counters", None)),
+            "elapsed_seconds": (time.monotonic() - started) if started else 0.0,
+        }
+
+    @staticmethod
+    def _counter_text(counters):
+        """``182k/4.1k/903`` for the native engine's state counters."""
+        if not isinstance(counters, dict):
+            return ""
+
+        def compact(value):
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return ""
+            if value >= 1_000_000:
+                return f"{value / 1_000_000:.1f}m".replace(".0m", "m")
+            if value >= 1_000:
+                return f"{value / 1_000:.1f}k".replace(".0k", "k")
+            return f"{value:.0f}"
+
+        parts = [
+            compact(counters.get(key))
+            for key in ("generated_states", "retained_states", "land_checks")
+        ]
+        return "/".join(part for part in parts if part)
+
     def start_job(self):
         self.results.set_has_run(True)
         self.actions.start_job()

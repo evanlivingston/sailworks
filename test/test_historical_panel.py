@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 import threading
+import time
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -929,3 +930,53 @@ def test_existing_compare_calculate_path_is_unchanged(qtbot, monkeypatch, tmp_pa
     panel._calculate()
     assert panel.status.text() == "boom"
     assert panel.routing.started == []
+
+
+def test_progress_snapshot_reads_the_routing_controller(qtbot):
+    panel = historical_panel(qtbot)
+    started = time.monotonic() - 45
+    panel.routing_controller = SimpleNamespace(
+        busy=True,
+        bound_completed=12,
+        bound_total=70,
+        percent=41.0,
+        progress_indeterminate=False,
+        message="forward isochrone",
+        native_counters={
+            "generated_states": 182000,
+            "retained_states": 4100,
+            "land_checks": 903,
+        },
+        native_started_at=started,
+    )
+
+    snapshot = panel._progress_snapshot()
+    assert snapshot["running"] is True
+    assert snapshot["completed"] == 12
+    assert snapshot["total"] == 70
+    assert snapshot["route_percent"] == 41.0
+    assert snapshot["route_indeterminate"] is False
+    assert snapshot["stage"] == "forward isochrone"
+    assert snapshot["counters"] == "182k/4.1k/903"
+    assert snapshot["elapsed_seconds"] >= 40
+
+
+def test_weather_progress_events_drive_the_progress_widget(qtbot):
+    panel = historical_panel(qtbot)
+    panel._progress("acquiring", 2, 10, "Downloading ERA5 wind")
+
+    widget = panel.options.progress_widget
+    assert widget.overall_label.text() == "2 / 10 weather units"
+    assert widget.overall_bar.value() == 20
+    assert widget.route_bar.isHidden()
+    # Acquisition owns the widget; the status line keeps its old text.
+    assert panel.options.status.isHidden()
+
+
+def test_finished_marks_the_progress_widget(qtbot):
+    panel = historical_panel(qtbot)
+    panel._finished("", "boom")
+    assert panel.options.progress_widget.overall_label.text() == "boom"
+
+    panel._finished("", "")
+    assert panel.options.progress_widget.overall_label.text() == "done"

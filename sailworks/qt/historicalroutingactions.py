@@ -192,6 +192,11 @@ class HistoricalRoutingActions:
     # -- UI thread slots -------------------------------------------------
     def progress(self, stage, completed, total, message):
         owner = self.owner
+        if str(stage).startswith("acquir"):
+            owner.options.set_weather_progress(completed, total, message)
+            if not total and message:
+                owner.options.set_status(message)
+            return
         suffix = f" {completed}/{total}" if total else ""
         owner.options.set_status(
             f"{stage.replace('_', ' ').title()}{suffix} {message}".strip()
@@ -205,6 +210,7 @@ class HistoricalRoutingActions:
     def finished(self, job_id, error):
         owner = self.owner
         owner.options.set_running(False)
+        owner.options.progress_widget.set_finished(not error, error or "")
         retried = owner._retrying
         owner._retrying = False
         if error:

@@ -33,6 +33,7 @@ from sailworks.core.historicalrouting import (
 )
 
 from .dropdown import FieldRow
+from .historicalroutingprogress import HistoricalProgress
 from .slider import Slider
 
 
@@ -131,6 +132,10 @@ class HistoricalRoutingOptions(QWidget):
         self.status.setVisible(False)
         layout.addWidget(self.status)
 
+        self.progress_widget = HistoricalProgress()
+        self.progress_widget.setAccessibleName("Historical routing progress")
+        layout.addWidget(self.progress_widget)
+
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
         self.cancel_button = QPushButton("Cancel")
@@ -185,8 +190,20 @@ class HistoricalRoutingOptions(QWidget):
         self.status.setText(text or "")
         self.status.setVisible(bool(text))
 
+    def set_progress_probe(self, probe):
+        """Install the snapshot callable the progress widget samples."""
+        self.progress_widget.set_probe(probe)
+
+    def set_weather_progress(self, completed, total, message=""):
+        """Show acquisition progress as weather units."""
+        self.progress_widget.set_weather_phase(completed, total, message)
+
     def set_running(self, running):
         self._running = bool(running)
+        if self._running:
+            self.progress_widget.start()
+        else:
+            self.progress_widget.stop()
         self._sync_buttons()
 
     def set_available(self, available, reason=""):

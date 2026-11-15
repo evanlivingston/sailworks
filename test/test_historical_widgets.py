@@ -8,6 +8,7 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QPixmap
 
 from sailworks.qt.historicalroutingoptions import HistoricalRoutingOptions
+from sailworks.qt.historicalroutingprogress import HistoricalProgress, format_eta
 from sailworks.qt.historicalroutingresults import HistoricalRoutingResults, _CurveCanvas
 from sailworks.qt.slider import Slider
 
@@ -330,3 +331,133 @@ def test_curve_canvas_paints_empty_and_populated_data(qtbot):
     results.set_curve([(0.0, 0.0), (120.0, 0.8)])
     results.set_strip(canvas._strip)
     results.render(QPixmap(results.size()))
+
+
+# -- historical progress -------------------------------------------------
+
+
+def _snapshot(**overrides):
+    snapshot = {
+        "running": True,
+        "completed": 12,
+        "total": 70,
+        "route_percent": 41.0,
+        "route_indeterminate": False,
+        "stage": "forward isochrone",
+        "counters": "182k/4.1k/903",
+        "elapsed_seconds": 600.0,
+    }
+    snapshot.update(overrides)
+    return snapshot
+
+
+def test_format_eta_formats_minutes_hours_and_unknowns():
+    assert format_eta(120) == "~2 min"
+    assert format_eta(5400) == "~1 h 30 min"
+    assert format_eta(None) == ""
+    assert format_eta(0) == ""
+    assert format_eta(-30) == ""
+
+
+def test_refresh_from_probe_updates_both_real_tiers(qtbot):
+    widget = HistoricalProgress()
+    qtbot.addWidget(widget)
+    widget.set_probe(lambda: _snapshot())
+    widget.refresh_from_probe()
+
+    # (12 + 0.41) / 70 = 17.7%, rounded to 18.
+    assert widget.overall_bar.value() == 18
+    assert widget.overall_label.text() == "12 / 70 routes"
+    assert widget.route_bar.value() == 41
+    assert widget.route_bar.maximum() == 100
+    assert widget.route_label.text() == "41% · forward isochrone"
+    assert widget.counters_label.text() == "182k/4.1k/903"
+    assert not widget.counters_label.isHidden()
+    assert widget.eta_label.text().startswith("~")
+    assert widget.eta_label.text().endswith("min")
+
+
+def test_eta_waits_for_ten_percent_and_thirty_seconds(qtbot):
+    widget = HistoricalProgress()
+    qtbot.addWidget(widget)
+    widget.set_probe(lambda: _snapshot(completed=1, route_percent=None))
+    widget.refresh_from_probe()
+    assert widget.eta_label.text() == "estimating…"
+
+    widget.set_probe(lambda: _snapshot(elapsed_seconds=10.0))
+    widget.refresh_from_probe()
+    assert widget.eta_label.text() == "estimating…"
+
+
+def test_indeterminate_route_uses_a_busy_range(qtbot):
+    widget = HistoricalProgress()
+    qtbot.addWidget(widget)
+    widget.set_probe(lambda: _snapshot(route_percent=None, route_indeterminate=True))
+    widget.refresh_from_probe()
+
+    assert widget.route_bar.minimum() == 0
+    assert widget.route_bar.maximum() == 0
+    assert widget.route_label.text() == "working · forward isochrone"
+    # The in-flight route contributes nothing while indeterminate.
+    assert widget.overall_bar.value() == round(12 / 70 * 100)
+
+
+def test_completed_batch_shows_one_hundred_and_no_eta(qtbot):
+    widget = HistoricalProgress()
+    qtbot.addWidget(widget)
+    widget.set_probe(lambda: _snapshot(completed=70, total=70, route_percent=None))
+    widget.refresh_from_probe()
+
+    assert widget.overall_bar.value() == 100
+    assert widget.overall_label.text() == "70 / 70 routes"
+    assert widget.eta_label.text() == ""
+    assert widget.eta_label.isHidden()
+
+
+def test_weather_phase_shows_units_and_hides_the_route_row(qtbot):
+    widget = HistoricalProgress()
+    qtbot.addWidget(widget)
+    widget.set_weather_phase(2, 10, "Downloading ERA5 wind")
+
+    assert widget.overall_bar.value() == 20
+    assert widget.overall_label.text() == "2 / 10 weather units"
+    assert widget.route_bar.isHidden()
+    assert widget.route_caption.isHidden()
+    assert widget.route_label.isHidden()
+    assert widget.eta_label.text() == "estimating…"
+    assert widget.counters_label.text() == "Downloading ERA5 wind"
+
+
+def test_reset_is_idle_and_finished_leaves_the_outcome(qtbot):
+    widget = HistoricalProgress()
+    qtbot.addWidget(widget)
+    widget.set_weather_phase(2, 10, "Downloading ERA5 wind")
+    widget.reset()
+
+    assert widget.isHidden()
+    assert widget.overall_bar.value() == 0
+    assert widget.overall_label.text() == ""
+    assert widget.eta_label.isHidden()
+
+    widget.set_finished(True)
+    assert widget.overall_bar.value() == 100
+    assert widget.overall_label.text() == "done"
+    assert widget.eta_label.isHidden()
+
+    widget.reset()
+    widget.set_finished(False, "boom")
+    assert widget.overall_label.text() == "boom"
+    assert widget.overall_bar.value() == 0
+
+
+def test_options_embed_progress_and_follow_running_state(qtbot):
+    widget = options(qtbot)
+    widget.set_progress_probe(lambda: _snapshot())
+    assert widget.progress_widget.isHidden()
+
+    widget.set_running(True)
+    assert not widget.progress_widget.isHidden()
+    assert widget.progress_widget.overall_label.text() == "12 / 70 routes"
+
+    widget.set_running(False)
+    assert widget.progress_widget.isHidden()
