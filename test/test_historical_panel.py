@@ -1208,3 +1208,48 @@ def test_is_running_tracks_the_worker_thread(qtbot):
 
     thread.is_alive = lambda: False
     assert panel.is_running() is False
+
+
+def test_routing_panel_hides_its_duplicate_progress_while_historical_runs():
+    """One progress display and one Cancel, not two of each."""
+    from types import SimpleNamespace
+
+    from sailworks.qt.routingpanel import RoutingPanel
+
+    seen = {}
+
+    def widget(name):
+        return SimpleNamespace(
+            setVisible=lambda visible, n=name: seen.__setitem__(n, visible)
+        )
+
+    panel = SimpleNamespace(
+        progress=widget("progress"),
+        status=widget("status"),
+        cancel_button=widget("cancel"),
+    )
+
+    RoutingPanel._sync_run_visibility(panel, True)
+    assert seen == {"progress": False, "status": False, "cancel": False}
+
+    RoutingPanel._sync_run_visibility(panel, False)
+    assert seen == {"progress": True, "status": True, "cancel": True}
+
+
+def test_snapshot_replaces_the_stale_acquisition_status(qtbot):
+    panel = historical_panel(qtbot)
+    panel.routing_controller = SimpleNamespace(
+        busy=True,
+        message="Native scenario 2/63 · effort 40%",
+        bound_total=63,
+        bound_completed=1,
+        progress_indeterminate=False,
+        percent=40.0,
+        native_started_at=None,
+        native_counters=None,
+    )
+    panel.options.set_status("Acquiring weather")
+
+    panel._progress_snapshot()
+
+    assert panel.options.status.text() == "Native scenario 2/63 · effort 40%"

@@ -263,6 +263,10 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
                 detail = coverage.detail()
             except Exception:
                 detail = None
+        if routing:
+            # Acquisition left its phase label behind; show what the engine is
+            # actually doing now instead of a stale "Acquiring weather".
+            self.options.set_status(getattr(rc, "message", "") or "Routing members")
         return {
             "weather_detail": detail,
             "running": bool(getattr(rc, "busy", False))

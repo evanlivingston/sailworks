@@ -1283,6 +1283,11 @@ class RoutingPanel(QWidget):
             and not (cancel is not None and cancel.is_set())
         )
 
+    def _sync_run_visibility(self, historical_running):
+        """Hide this panel's run controls while the historical panel owns it."""
+        for widget in (self.progress, self.status, self.cancel_button):
+            widget.setVisible(not historical_running)
+
     def _display_status(self):
         message = self.routing.message
         if not self._native_heartbeat_active():
@@ -1303,7 +1308,11 @@ class RoutingPanel(QWidget):
     def refresh(self):
         # A historical run owns its own thread, so it is busy even though
         # the routing controller behind Calculate route is idle.
-        busy = self.routing.busy or self.historical.is_running()
+        historical_running = self.historical.is_running()
+        busy = self.routing.busy or historical_running
+        # The historical panel shows its own progress, status and Cancel while
+        # it runs; a second copy here only competes for attention.
+        self._sync_run_visibility(historical_running)
         self._refresh_safety()
         for control in (
             *self.inputs,
