@@ -48,7 +48,7 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from sailworks.core.mapviewport import MercatorProjection
-from sailworks.rendering.overlayrenderer import MARGIN, RenderJob, fits
+from sailworks.rendering.overlayrenderer import MARGIN, RenderJob, covers
 
 if TYPE_CHECKING:
     from sailworks.rendering.weathercache import DisplayWeatherSource
@@ -740,7 +740,14 @@ class ViewportChartLayer:
         return None
 
     def _reusable(self, camera, preview=False):
-        """Whether the retained composition still serves this camera."""
+        """Whether the retained composition still serves this camera.
+
+        The composed image covers the camera window plus ``MARGIN`` on each
+        side, so a pan is served from it until the new view leaves that extent
+        and only then is the view composed again.  ``fits()`` would give up at
+        half the margin and redraw every cell for a pan the retained pixels
+        already contain.
+        """
         _generation, _image, metadata = cast(tuple, self._published)
         if metadata.get("preview", False) != preview:
             return False
@@ -752,7 +759,7 @@ class ViewportChartLayer:
             # The composition was made at another device pixel ratio: it is
             # not current, and it may not be resampled into this one.
             return False
-        return fits(metadata["viewport"], ChartCamera(camera, self._dpr))
+        return covers(metadata["viewport"], ChartCamera(camera, self._dpr))
 
     def set_device_pixel_ratio(self, dpr):
         """Adopt the GUI's device pixel ratio (GUI thread).
