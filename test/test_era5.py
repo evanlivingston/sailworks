@@ -1362,3 +1362,64 @@ def test_build_history_display_defers_publish_and_activate(tmp_path):
     publish_history_tranche(state, tranche)
     assert list(store.manifests.glob("*.json"))
     assert store.active_path.exists()
+
+
+def test_three_chunk_plan_submits_chunks_sequentially(tmp_path):
+    """CDS caps queued requests per dataset, so chunks must not overlap."""
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+    submitted = []
+    staged = []
+    outstanding = []
+    peak = []
+    lock = threading.Lock()
+
+    class Remote:
+        def __init__(self, request_id):
+            self.request_id = request_id
+            self.status = "successful"
+
+        def download(self, target):
+            with lock:
+                outstanding.remove(self.request_id)
+                staged.append(self.request_id)
+            Path(target).write_bytes(b"grib")
+
+    class Inner:
+        def __init__(self):
+            self.count = 0
+
+        def submit(self, _dataset, _request):
+            with lock:
+                self.count += 1
+                request_id = f"rid-{self.count}"
+                outstanding.append(request_id)
+                submitted.append(request_id)
+                peak.append(len(outstanding))
+            return SimpleNamespace(request_id=request_id)
+
+        def get_remote(self, request_id):
+            return Remote(request_id)
+
+    class Client:
+        def __init__(self):
+            self.client = Inner()
+
+    client = Client()
+    service = Era5DownloadService(
+        store,
+        client_factory=lambda: client,
+        validator=lambda _p, _piece: {"reader": "test"},
+    )
+
+    planned = plan("2025-01-01T00:00", "2025-01-03T23:00")
+    chunks = split_request(planned)
+    assert len(chunks) == 3
+
+    service._run(planned, threading.Event(), False)
+
+    assert submitted == ["rid-1", "rid-2", "rid-3"]
+    assert max(peak) == 1, "a chunk was submitted while another was still active"
+    assert staged == submitted
+    assert (tmp_path / "era5-history.json").exists()

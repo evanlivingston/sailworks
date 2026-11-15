@@ -499,12 +499,11 @@ class Era5DownloadService:
         )
         entries = self._catalog_entries(catalog)
         staged_chunks = []
-        queued = []
-        deferred = []
         done = 0
         with tempfile.TemporaryDirectory(prefix="era5-") as staging:
-            # Submit every missing chunk first so they queue at CDS in parallel
-            # instead of waiting for one chunk to finish before submitting the next.
+            # CDS caps the number of queued requests per dataset and asks scripts
+            # to request data sequentially, so each chunk is submitted, staged
+            # and validated before the next chunk is submitted.
             for n, piece in enumerate(pieces):
                 if cancel.is_set():
                     raise Era5Error("ERA5 download canceled")
@@ -531,39 +530,13 @@ class Era5DownloadService:
                 else:
                     stage = f"Chunk {n + 1}/{total}: submitting to CDS…"
                 self._set_progress(key, stage=stage)
-                try:
-                    self._ensure_chunk_request(piece)
-                except Exception as exc:
-                    if not _is_queue_limit_error(exc):
-                        raise
-                    # CDS refuses more queued requests than its dataset limit
-                    # allows; retry once the other chunks have freed their slot.
-                    deferred.append((n, piece))
-                    continue
-                queued.append((n, piece))
-            for n, piece in queued:
+                # Waits out CDS queue-limit rejections with the existing backoff.
+                self._submit_with_backoff(piece, cancel)
                 if cancel.is_set():
                     raise Era5Error("ERA5 download canceled")
                 self._set_progress(
                     key, stage=f"Chunk {n + 1}/{total}: waiting for CDS results…"
                 )
-                staged_chunks.append(
-                    self._stage_chunk(staging, n, piece, cancel, retry)
-                )
-                done += 1
-                self._set_progress(
-                    key,
-                    done=done,
-                    stage=f"Chunk {n + 1}/{total}: downloaded and validated",
-                )
-            for n, piece in deferred:
-                if cancel.is_set():
-                    raise Era5Error("ERA5 download canceled")
-                self._set_progress(
-                    key,
-                    stage=f"Chunk {n + 1}/{total}: waiting for a CDS queue slot…",
-                )
-                self._submit_with_backoff(piece, cancel)
                 staged_chunks.append(
                     self._stage_chunk(staging, n, piece, cancel, retry)
                 )
