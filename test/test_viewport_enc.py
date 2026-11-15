@@ -749,6 +749,33 @@ def test_the_viewport_never_enables_the_enc_layer_by_itself():
     assert "--enc-chart-layer" in flags
 
 
+def test_the_enc_scene_layer_is_given_a_catalog_it_can_refresh(tmp_path):
+    """The scene layer's catalog is the viewport's own catalog, not the raster source."""
+    catalog = gribviewport.enc_scene_catalog(tmp_path, "dark")
+    assert isinstance(catalog, viewportenc.EncCatalog)
+    # The three reads ``EncSceneLayer._compose`` makes.
+    assert catalog.refresh() is catalog
+    assert hasattr(catalog.manifest, "class_enabled")
+    assert catalog.sources == ()
+    # The raster source is what the layer used to be handed: it has no
+    # ``refresh()``, so the layer became unavailable at runtime.
+    assert not hasattr(viewportenc.ViewportEncSource, "refresh")
+
+
+def test_the_enc_scene_layer_is_wired_to_the_catalog():
+    """The injection site names the catalog factory, so it cannot regress."""
+    tree = ast.parse(inspect.getsource(gribviewport))
+    factories = [
+        ast.unparse(keyword.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", "") == "EncSceneLayer"
+        for keyword in node.keywords
+        if keyword.arg == "catalog_factory"
+    ]
+    assert factories == ["enc_scene_catalog"]
+
+
 def test_the_chart_palette_is_the_users_own(tmp_path):
     """The palette is the user's own, and an unknown name falls back."""
     from sailworks.rendering.style import Style
