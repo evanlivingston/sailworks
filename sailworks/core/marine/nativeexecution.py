@@ -62,6 +62,10 @@ class SelectedShoreline:
     def segment_forbidden(self, start_lat, start_lon, end_lat, end_lon, margin_nm):
         if margin_nm < 0:
             raise ValueError("Shoreline margin must be non-negative")
+        if margin_nm == 0:
+            return not self.provider.segment_allowed(
+                start_lat, start_lon, end_lat, end_lon
+            )
         return not self.provider.lines_validity(
             [(start_lat, start_lon, end_lat, end_lon)], margin_nm * 1852.0
         )[0]

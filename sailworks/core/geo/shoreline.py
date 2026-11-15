@@ -83,22 +83,33 @@ class ShorelineValidity:
         self._land_mask_meta = (south, west, north, east, resolution)
         return mask, self._land_mask_meta
 
-    def _segments_are_water(self, left, bottom, right, top):
+    def _segment_is_water(self, left, bottom, right, top):
         mask_result = self._routing_mask()
         if mask_result is None:
             return False
         mask, (south, west, north, east, resolution) = mask_result
         height, width = mask.shape
-        for index in range(len(left)):
-            x0 = math.floor((left[index] - west) / resolution) - 1
-            x1 = math.ceil((right[index] - west) / resolution) + 1
-            y0 = math.floor((north - top[index]) / resolution) - 1
-            y1 = math.ceil((north - bottom[index]) / resolution) + 1
-            if x0 < 0 or y0 < 0 or x1 >= width or y1 >= height:
-                return False
-            if mask[max(0, y0) : y1 + 1, max(0, x0) : x1 + 1].any():
-                return False
-        return True
+        x0 = math.floor((left - west) / resolution) - 1
+        x1 = math.ceil((right - west) / resolution) + 1
+        y0 = math.floor((north - top) / resolution) - 1
+        y1 = math.ceil((north - bottom) / resolution) + 1
+        if x0 < 0 or y0 < 0 or x1 >= width or y1 >= height:
+            return False
+        return not mask[max(0, y0) : y1 + 1, max(0, x0) : x1 + 1].any()
+
+    def _segments_are_water(self, left, bottom, right, top):
+        return all(
+            self._segment_is_water(left[index], bottom[index], right[index], top[index])
+            for index in range(len(left))
+        )
+
+    def segment_allowed(self, start_lat, start_lon, end_lat, end_lon):
+        """Zero-clearance scalar fast path; ambiguous segments stay exact."""
+        left, right = min(start_lon, end_lon), max(start_lon, end_lon)
+        bottom, top = min(start_lat, end_lat), max(start_lat, end_lat)
+        if self._segment_is_water(left, bottom, right, top):
+            return True
+        return self.lines_validity([(start_lat, start_lon, end_lat, end_lon)])[0]
 
     def _routing_source(self, layer_index, feature):
         key = (layer_index, feature.GetFID())
