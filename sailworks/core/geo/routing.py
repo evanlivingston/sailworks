@@ -15,7 +15,6 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
 from copy import deepcopy
-from datetime import datetime
 
 import gpxpy
 from weatherrouting import IsoPoint

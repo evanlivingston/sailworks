@@ -14,7 +14,7 @@ Use it anywhere a determinate count is shown:
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QTimer, QVariantAnimation, Qt
+from PySide6.QtCore import QPointF, QTimer, QVariantAnimation
 from PySide6.QtGui import QColor, QLinearGradient, QPainter
 from PySide6.QtWidgets import QProgressBar, QSizePolicy
 

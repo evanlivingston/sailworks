@@ -30,7 +30,6 @@ from sailworks.core.historicalrouting import (
     YearPlan,
     YearState,
     effective_plans,
-    plan_members,
     plan_years,
     summarize_years,
     validate_spec,
