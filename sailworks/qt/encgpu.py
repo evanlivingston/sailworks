@@ -462,7 +462,7 @@ class EncMeshItem(QQuickItem):
         colored=False,
         glyph_pixel_size=11.0,
         texture_factory=None,
-        text_enabled=False,
+        text_enabled=True,
     ):
         super().__init__(parent)
         self.setFlag(QQuickItem.Flag.ItemHasContents, True)
@@ -509,10 +509,11 @@ class EncMeshItem(QQuickItem):
         self._text_size = None
         self._text_upload_count = 0
         self._texture_upload_count = 0
-        #: Sounding labels are opt-in until the textured-node teardown is
-        #: proven stable.  With this off the item draws triangles and markers
-        #: only and never builds a ``QSGTextureMaterial``; the glyph atlas and
-        #: the Qt-free sounding collection remain available and tested.
+        #: Sounding labels are on by default: the textured child is detached
+        #: with ``removeChildNode`` and its texture owned by exactly one
+        #: material, which survives the build/present/teardown cycles the
+        #: earlier teardown crash needed (see ``_detach_text_node``).  Turning
+        #: it off draws triangles and markers only.
         self._text_enabled = bool(text_enabled)
 
     @property

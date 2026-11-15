@@ -17,16 +17,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6")
 
-# The textured label node is opt-in and currently unsafe to exercise: building
-# and tearing down a ``QSGTextureMaterial`` child from Python without a live
-# render pass segfaults intermittently (exit 139/133, order dependent).  The
-# item therefore ships with labels disabled; the Qt-free glyph atlas and
-# sounding collection are covered by test_glyph_atlas.py and
-# test_enc_sounding.py.  Re-enable these once the node teardown is proven.
-pytestmark = pytest.mark.skip(
-    reason="textured QSG label node teardown is intermittently unsafe; "
-    "labels are disabled by default (see issue #213)"
-)
+# The textured label node is proven across build/present/teardown cycles: the
+# child is detached with ``removeChildNode`` and its texture owned by exactly
+# one material, so these run on the default item again.
 
 from PySide6.QtGui import QGuiApplication  # noqa: E402
 from PySide6.QtQuick import (  # noqa: E402
