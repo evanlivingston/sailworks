@@ -114,16 +114,23 @@ def test_split_unit_days_splits_at_midnight_without_empty_pieces():
 
     # Starts exactly at midnight, ends exactly at midnight: one whole-day piece.
     midnight_start = moment(2019, 6, 1)
-    pieces = split_unit_days([window(midnight_start, midnight_start + timedelta(days=1))])
+    pieces = split_unit_days(
+        [window(midnight_start, midnight_start + timedelta(days=1))]
+    )
     assert pieces == ((midnight_start, moment(2019, 6, 2)),)
 
     # Ends exactly at midnight: the final piece ends there and nothing empty follows.
     pieces = split_unit_days([window(moment(2019, 6, 1, 20), moment(2019, 6, 2))])
     assert pieces == ((moment(2019, 6, 1, 20), moment(2019, 6, 2)),)
     assert all(end > begin for begin, end in pieces)
-    assert all(begin.date() == (end - timedelta(microseconds=1)).date() for begin, end in pieces)
+    assert all(
+        begin.date() == (end - timedelta(microseconds=1)).date()
+        for begin, end in pieces
+    )
 
-    daily = split_unit_days([window(moment(2019, 1, 1), moment(2019, 1, 4))], max_days=1)
+    daily = split_unit_days(
+        [window(moment(2019, 1, 1), moment(2019, 1, 4))], max_days=1
+    )
     assert daily == (
         (moment(2019, 1, 1), moment(2019, 1, 2)),
         (moment(2019, 1, 2), moment(2019, 1, 3)),
@@ -155,9 +162,13 @@ def test_acquisition_units_are_deterministic_and_deduplicated():
     assert ordered.unit_id != first.unit_id
 
     # A different region or span changes the id.
-    moved = AcquisitionUnit.create(start_utc=start, end_utc=end, region=(-9.0, 40.0, 5.0, 50.0))
+    moved = AcquisitionUnit.create(
+        start_utc=start, end_utc=end, region=(-9.0, 40.0, 5.0, 50.0)
+    )
     assert moved.unit_id != first.unit_id
-    longer = AcquisitionUnit.create(start_utc=start, end_utc=end + timedelta(days=1), region=REGION)
+    longer = AcquisitionUnit.create(
+        start_utc=start, end_utc=end + timedelta(days=1), region=REGION
+    )
     assert longer.unit_id != first.unit_id
 
     payload = AcquisitionUnit.canonical_payload(start, end, REGION, ("wind",))
@@ -176,7 +187,9 @@ def test_acquisition_units_are_deterministic_and_deduplicated():
 
     units = plan_acquisition_units([window(start, end), window(start, end)], REGION)
     assert len(units) == 2  # one unit per UTC day, not per window
-    assert [unit.start_utc for unit in units] == sorted(unit.start_utc for unit in units)
+    assert [unit.start_utc for unit in units] == sorted(
+        unit.start_utc for unit in units
+    )
     assert {unit.unit_id for unit in units} == {
         AcquisitionUnit.create(
             start_utc=start, end_utc=start + timedelta(days=1), region=REGION
@@ -195,12 +208,16 @@ def test_availability_boundaries_are_exact():
         is None
     )
 
-    before = window(ERA5_EARLIEST_UTC - timedelta(hours=1), ERA5_EARLIEST_UTC + timedelta(hours=5))
+    before = window(
+        ERA5_EARLIEST_UTC - timedelta(hours=1), ERA5_EARLIEST_UTC + timedelta(hours=5)
+    )
     reason = availability_reason(before, now=NOW)
     assert "before ERA5 begins" in reason
     assert "1940-01-01" in reason
 
-    assert availability_reason(window(CUTOFF - timedelta(days=2), CUTOFF), now=NOW) is None
+    assert (
+        availability_reason(window(CUTOFF - timedelta(days=2), CUTOFF), now=NOW) is None
+    )
     late = availability_reason(
         window(CUTOFF - timedelta(days=2), CUTOFF + timedelta(hours=1)), now=NOW
     )
@@ -241,7 +258,9 @@ def test_region_from_points_pads_and_clips():
     assert region == (-10.0, 40.0, 15.0, 55.0)
     assert region_from_points([(50.0, 0.0)], padding_deg=1.0) == (-1.0, 49.0, 1.0, 51.0)
 
-    clipped = region_from_points([(89.0, 179.0)], padding_deg=DEFAULT_REGION_PADDING_DEG)
+    clipped = region_from_points(
+        [(89.0, 179.0)], padding_deg=DEFAULT_REGION_PADDING_DEG
+    )
     assert clipped == (174.0, 84.0, 180.0, 90.0)
     assert region_from_points([(-89.0, -179.0)]) == (-180.0, -90.0, -174.0, -84.0)
 
@@ -270,8 +289,12 @@ def test_dateline_handling_is_explicit():
 
     boxes = split_region_at_dateline(170.0, -10.0, -170.0, 10.0)
     assert boxes == ((170.0, -10.0, 180.0, 10.0), (-180.0, -10.0, -170.0, 10.0))
-    assert split_region_at_dateline(0.0, -10.0, 20.0, 10.0) == ((0.0, -10.0, 20.0, 10.0),)
-    assert split_region_at_dateline(-180.0, -10.0, -170.0, 10.0) == ((-180.0, -10.0, -170.0, 10.0),)
+    assert split_region_at_dateline(0.0, -10.0, 20.0, 10.0) == (
+        (0.0, -10.0, 20.0, 10.0),
+    )
+    assert split_region_at_dateline(-180.0, -10.0, -170.0, 10.0) == (
+        (-180.0, -10.0, -170.0, 10.0),
+    )
     with pytest.raises(ValueError):
         split_region_at_dateline(0.0, 10.0, 10.0, -10.0)
     # A non-wrapping span over half the globe is refused, like split_dateline.
@@ -321,7 +344,9 @@ def test_decoded_byte_estimate_and_binding_digest():
     assert len(units) == 1
     assert estimate_decoded_bytes(units, (0.0, 0.0, 10.0, 10.0)) == 24 * 40 * 40 * 2 * 4
     assert (
-        estimate_decoded_bytes(units, (0.0, 0.0, 10.0, 10.0), components=1, bytes_per_value=2)
+        estimate_decoded_bytes(
+            units, (0.0, 0.0, 10.0, 10.0), components=1, bytes_per_value=2
+        )
         == 24 * 40 * 40 * 1 * 2
     )
 
@@ -333,7 +358,9 @@ def test_decoded_byte_estimate_and_binding_digest():
         wind_coverage_end_utc=start + timedelta(days=10),
         wind_region=REGION,
         member_departure_utc=start + timedelta(hours=12),
-        currents=CurrentBinding(enabled=False, target_departure_utc=None, coverage_end_utc=None),
+        currents=CurrentBinding(
+            enabled=False, target_departure_utc=None, coverage_end_utc=None
+        ),
         max_duration_hours=240,
     )
     twin = WeatherBindingDescriptor.from_dict(json.loads(json.dumps(binding.to_dict())))
@@ -416,11 +443,15 @@ def test_binding_parsers_reject_naive_and_normalize_offsets():
 def test_generator_fields_are_coerced_once():
     start = moment(2019, 6, 1)
     fields = (name for name in ("wind", "currents"))
-    units = plan_acquisition_units([window(start, start + timedelta(days=2))], REGION, fields)
+    units = plan_acquisition_units(
+        [window(start, start + timedelta(days=2))], REGION, fields
+    )
 
     assert len(units) == 2
     assert all(unit.fields == ("wind", "currents") for unit in units)
-    assert all(unit.region == tuple(round(value, 6) for value in REGION) for unit in units)
+    assert all(
+        unit.region == tuple(round(value, 6) for value in REGION) for unit in units
+    )
     ids = {unit.unit_id for unit in units}
 
     again = plan_acquisition_units(
@@ -432,7 +463,9 @@ def test_generator_fields_are_coerced_once():
 
     member = make_member(2019, 0, start, hours=24)
     mapping = units_for_members([member], REGION, (name for name in ("wind",)))
-    expected = plan_acquisition_units([window(start, start + timedelta(days=1))], REGION, ("wind",))
+    expected = plan_acquisition_units(
+        [window(start, start + timedelta(days=1))], REGION, ("wind",)
+    )
     assert mapping["2019-+00"] == tuple(unit.unit_id for unit in expected)
 
 
@@ -525,7 +558,9 @@ def test_era5_coverage_reads_the_catalog_in_era5_order(tmp_path, monkeypatch):
     import sailworks.qt.historicalera5 as adapter
 
     start = datetime(2026, 5, 1, tzinfo=UTC)
-    unit = SimpleNamespace(start_utc=start, end_utc=start + timedelta(hours=2), region=REGION)
+    unit = SimpleNamespace(
+        start_utc=start, end_utc=start + timedelta(hours=2), region=REGION
+    )
     entries = _hourly_catalog(tmp_path, start, 2, (50.0, -10.0, 40.0, 5.0))
     (tmp_path / "era5-history.json").write_text(json.dumps(entries), encoding="utf8")
 
@@ -538,7 +573,9 @@ def test_era5_coverage_plans_in_era5_order(tmp_path, monkeypatch):
     import sailworks.qt.historicalera5 as adapter
 
     start = datetime(2026, 5, 1, tzinfo=UTC)
-    unit = SimpleNamespace(start_utc=start, end_utc=start + timedelta(hours=6), region=REGION)
+    unit = SimpleNamespace(
+        start_utc=start, end_utc=start + timedelta(hours=6), region=REGION
+    )
     plans = []
 
     class Thread:
@@ -548,7 +585,7 @@ def test_era5_coverage_plans_in_era5_order(tmp_path, monkeypatch):
             return False
 
     class Service:
-        def submit(self, plan):
+        def submit(self, plan, *, retry=False):
             plans.append(plan)
             return Thread()
 
@@ -577,3 +614,205 @@ def test_era5_coverage_plans_in_era5_order(tmp_path, monkeypatch):
     north, west, south, east = plans[0].area
     assert (north, west, south, east) == (50.0, -10.0, 40.0, 5.0)
     assert north > south and west < east
+
+
+class _FakeEra5Thread:
+    """A service thread stub that finishes after ``alive_polls`` checks."""
+
+    def __init__(self, service, key, alive_polls=2):
+        self.service = service
+        self.era5_key = key
+        self.alive_polls = alive_polls
+        self.polls = 0
+        self.finished = False
+
+    def is_alive(self):
+        self.polls += 1
+        alive = self.polls < self.alive_polls
+        if not alive and not self.finished:
+            self.finished = True
+            self.service.inflight -= 1
+        return alive
+
+
+class _TrackingEra5Service:
+    """Records submission order, concurrency and flags for adapter tests."""
+
+    def __init__(self, *, errors=None, alive_polls=2):
+        self.errors = dict(errors or {})
+        self.alive_polls = alive_polls
+        self.submitted = []
+        self.retry_flags = []
+        self.cancelled = []
+        self.inflight = 0
+        self.peak = 0
+
+    def submit(self, plan, *, retry=False):
+        self.submitted.append(plan)
+        self.retry_flags.append(retry)
+        self.inflight += 1
+        self.peak = max(self.peak, self.inflight)
+        return _FakeEra5Thread(self, f"k{len(self.submitted)}", self.alive_polls)
+
+    def cancel(self, plan):
+        self.cancelled.append(plan)
+
+    def key_for(self, plan):
+        return None
+
+    def error_for(self, key):
+        return self.errors.get(key)
+
+    def clear_error(self, key):
+        return self.errors.pop(key, None)
+
+
+def _era5_units(count):
+    from types import SimpleNamespace
+
+    start = datetime(2026, 5, 1, tzinfo=UTC)
+    return [
+        SimpleNamespace(
+            start_utc=start + timedelta(days=day),
+            end_utc=start + timedelta(days=day, hours=6),
+            region=REGION,
+        )
+        for day in range(count)
+    ]
+
+
+def _cover_after_first_check(monkeypatch):
+    """Patch ``covered`` so the pre-check misses and the post-run check passes."""
+    import sailworks.qt.historicalera5 as adapter
+
+    seen = {}
+
+    def fake_covered(root, unit):
+        count = seen.get(unit.start_utc, 0)
+        seen[unit.start_utc] = count + 1
+        return count > 0
+
+    monkeypatch.setattr(adapter, "covered", fake_covered)
+    return adapter
+
+
+def test_era5_coverage_caps_concurrent_submissions(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    adapter = _cover_after_first_check(monkeypatch)
+    units = _era5_units(9)
+    service = _TrackingEra5Service()
+    reports = []
+
+    def progress(stage, completed, total, message=""):
+        reports.append((stage, completed, total, message))
+
+    coverage = adapter.Era5Coverage(
+        SimpleNamespace(root=tmp_path), service_factory=lambda store: service
+    )
+
+    coverage.ensure(units, progress=progress)
+
+    assert service.peak == adapter.MAX_CONCURRENT == 4
+    assert len(service.submitted) == len(units)
+    assert len({id(plan) for plan in service.submitted}) == len(units)
+    assert service.retry_flags == [True] * len(units)
+    assert reports[-1] == ("acquired", 9, 9, "ERA5 wind coverage ready")
+    completed = [entry[1] for entry in reports]
+    assert completed == sorted(completed)
+    assert max(completed) == 9
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "ERA5 download failed (HTTPError). Check CDS API credentials and dataset terms, then retry.",
+        "ERA5 download failed (HTTPError HTTP 429); CDS may be rate limiting.",
+        "ERA5 download failed (HTTPError HTTP 503); CDS may be unavailable.",
+        "429 Client Error: Too Many Requests",
+    ],
+)
+def test_era5_error_message_reports_rate_limits_as_temporary(error):
+    import sailworks.qt.historicalera5 as adapter
+
+    message = adapter.error_message(error)
+
+    assert "temporarily refused" in message
+    assert "rate limit" in message
+    assert "credentials" not in message
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "ERA5 download failed (HTTPError HTTP 403); forbidden",
+        "CDS API authentication failed. Check ~/.cdsapirc and accept the ERA5 dataset terms.",
+        "the licence for this dataset has not been accepted",
+    ],
+)
+def test_era5_error_message_reports_credentials_or_licence(error):
+    import sailworks.qt.historicalera5 as adapter
+
+    message = adapter.error_message(error)
+
+    assert "credentials or dataset licence" in message
+    assert "temporarily refused" not in message
+
+
+def test_era5_error_message_includes_request_rejection_text():
+    import sailworks.qt.historicalera5 as adapter
+
+    message = adapter.error_message("ERA5 request rejected (HTTP 422): invalid area")
+
+    assert "CDS rejected the request" in message
+    assert "invalid area" in message
+
+
+def test_era5_coverage_failure_names_rate_limit_not_credentials(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    adapter = _cover_after_first_check(monkeypatch)
+    service = _TrackingEra5Service(
+        errors={
+            "k1": (
+                "ERA5 download failed (HTTPError). Check CDS API credentials and "
+                "dataset terms, then retry."
+            )
+        }
+    )
+    coverage = adapter.Era5Coverage(
+        SimpleNamespace(root=tmp_path), service_factory=lambda store: service
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        coverage.ensure(_era5_units(1))
+
+    message = str(caught.value)
+    assert "ERA5 download failed for 2026-05-01" in message
+    assert "temporarily refused" in message
+    assert "credentials" not in message
+
+
+def test_era5_coverage_cancellation_raises_and_cancels_submitted(tmp_path, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+
+    import sailworks.qt.historicalera5 as adapter
+
+    monkeypatch.setattr(adapter, "covered", lambda root, unit: False)
+    service = _TrackingEra5Service(alive_polls=10**6)
+    cancel = threading.Event()
+    cancel.set()
+    coverage = adapter.Era5Coverage(
+        SimpleNamespace(root=tmp_path),
+        service_factory=lambda store: service,
+        cancel_event=cancel,
+    )
+
+    with pytest.raises(RuntimeError, match="cancelled"):
+        coverage.ensure(_era5_units(9))
+
+    assert len(service.submitted) == adapter.MAX_CONCURRENT
+    assert [id(plan) for plan in service.cancelled] == [
+        id(plan) for plan in service.submitted
+    ]

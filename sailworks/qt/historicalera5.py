@@ -4,12 +4,76 @@ from __future__ import annotations
 
 from datetime import timedelta
 from pathlib import Path
+import re
 import time
 
 from sailworks.core.era5 import Era5DownloadService, plan_request
 from sailworks.core.historicaljob import JobProgress
 from sailworks.core.historicaltranche import read_era5_catalog, select_window_entries
 from sailworks.core.historicalweather import era5_area
+
+# CDS queues every submitted request, so a long job that submits all of its
+# plans at once trips its per-user request limit and fails with HTTP errors.
+MAX_CONCURRENT = 4
+
+_CREDENTIAL_STATUS = (401, 403)
+_TRANSIENT_STATUS = (429, 500, 502, 503, 504)
+_BAD_REQUEST_STATUS = (400, 422)
+_TRANSIENT_MARKERS = (
+    "httperror",
+    "rate limit",
+    "too many requests",
+    "service unavailable",
+    "temporarily",
+    "timed out",
+    "timeout",
+    "connection reset",
+    "bad gateway",
+)
+_CREDENTIAL_MARKERS = (
+    "unauthor",
+    "forbidden",
+    "credential",
+    "api key",
+    "token",
+    "licence",
+    "license",
+    "dataset terms",
+)
+
+
+def http_status(error):
+    """The HTTP status embedded in a CDS error string, if one is present."""
+    for status in _CREDENTIAL_STATUS + _TRANSIENT_STATUS + _BAD_REQUEST_STATUS:
+        if re.search(rf"(?<!\d){status}(?!\d)", str(error or "")):
+            return status
+    return None
+
+
+def error_message(error):
+    """Explain an ERA5 failure honestly instead of blaming the credentials."""
+    text = str(error or "").strip()
+    status = http_status(text)
+    if status in _CREDENTIAL_STATUS:
+        return f"CDS credentials or dataset licence (HTTP {status}): {text}"
+    if status in _TRANSIENT_STATUS:
+        # Do not repeat the raw text: older service messages blamed the
+        # credentials for what was actually a rate limit or an outage.
+        return (
+            f"CDS temporarily refused the request (HTTP {status}: rate limit or "
+            "service error); retry shortly."
+        )
+    if status in _BAD_REQUEST_STATUS:
+        return f"CDS rejected the request (HTTP {status}): {text}"
+    lowered = text.lower()
+    if any(marker in lowered for marker in _TRANSIENT_MARKERS):
+        return (
+            "CDS temporarily refused the request (rate limit or service error); "
+            "retry shortly."
+        )
+    if any(marker in lowered for marker in _CREDENTIAL_MARKERS):
+        return f"CDS credentials or dataset licence: {text}"
+    return text
 
 
 def report_progress(progress, stage, completed, total, message=""):
@@ -74,33 +138,51 @@ class Era5Coverage:
             pending.append((unit, plan))
         total = len(pending)
         report_progress(progress, "acquiring", 0, total, "ERA5 wind coverage")
-        threads = []
-        for index, (unit, plan) in enumerate(pending):
-            thread = self.service.submit(plan)
-            threads.append((unit, plan, thread))
+        remaining = list(pending)
+        active = []
+        submitted = []
+
+        def fill():
+            # Keep only MAX_CONCURRENT plans queued at CDS; each new plan starts
+            # as an earlier one finishes.
+            while remaining and len(active) < MAX_CONCURRENT:
+                unit, plan = remaining.pop(0)
+                thread = self.service.submit(plan, retry=True)
+                active.append((unit, plan, thread))
+                submitted.append((unit, plan, thread))
+                report_progress(
+                    progress,
+                    "acquiring",
+                    total - len(remaining) - len(active),
+                    total,
+                    f"queued {unit.start_utc:%Y-%m-%d} "
+                    f"({len(submitted)}/{total} submitted)",
+                )
+
+        fill()
+        while active:
+            if self._cancelled():
+                for _unit, plan, _thread in submitted:
+                    self.service.cancel(plan)
+                raise RuntimeError("ERA5 acquisition cancelled.")
+            for entry in tuple(active):
+                unit, plan, thread = entry
+                self._raise_error(unit, plan, thread)
+                if not thread.is_alive():
+                    active.remove(entry)
+            completed = total - len(remaining) - len(active)
             report_progress(
                 progress,
                 "acquiring",
-                index + 1,
+                completed,
                 total,
-                f"queued {unit.start_utc:%Y-%m-%d}",
+                f"{len(submitted)}/{total} submitted, "
+                f"{completed}/{total} finished; downloading ERA5 wind data",
             )
-        while True:
-            alive = [thread for _unit, _plan, thread in threads if thread.is_alive()]
-            if not alive:
-                break
-            if self._cancelled():
-                for _unit, plan, _thread in threads:
-                    self.service.cancel(plan)
-                raise RuntimeError("ERA5 acquisition cancelled.")
-            for unit, plan, thread in threads:
-                self._raise_error(unit, plan, thread)
-            done = total - len(alive)
-            report_progress(
-                progress, "acquiring", done, total, "downloading ERA5 wind data"
-            )
-            time.sleep(0.25)
-        for unit, plan, thread in threads:
+            fill()
+            if active:
+                time.sleep(0.25)
+        for unit, plan, thread in submitted:
             self._raise_error(unit, plan, thread)
             if not covered(self.root, unit):
                 raise RuntimeError(
@@ -114,5 +196,6 @@ class Era5Coverage:
         if error:
             self.service.clear_error(key)
             raise RuntimeError(
-                f"ERA5 download failed for {unit.start_utc:%Y-%m-%d}: {error}"
+                f"ERA5 download failed for {unit.start_utc:%Y-%m-%d}: "
+                f"{error_message(error)}"
             )

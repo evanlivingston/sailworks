@@ -70,6 +70,22 @@ def _is_queue_limit_error(exc):
     return "maximum number queued" in text or "queued requests for this dataset" in text
 
 
+def _http_status(exc):
+    """The HTTP status carried by a CDS/requests exception, if any.
+
+    Only the status is read; the response object itself is never stringified,
+    because CDS errors can embed request headers and credential material.
+    """
+    response = getattr(exc, "response", None)
+    for candidate in (
+        getattr(response, "status_code", None),
+        getattr(exc, "status_code", None),
+    ):
+        if isinstance(candidate, int) and 100 <= candidate <= 599:
+            return candidate
+    return None
+
+
 @dataclass(frozen=True)
 class Era5Request:
     start: datetime
@@ -436,9 +452,10 @@ class Era5DownloadService:
         except Exception as exc:
             # CDS exceptions can contain request headers and credential material.
             raw_message = str(exc)
-            if any(
-                word in raw_message.lower()
-                for word in ("401", "403", "unauthor", "credential", "token")
+            lowered = raw_message.lower()
+            status = _http_status(exc)
+            if status in (401, 403) or any(
+                word in lowered for word in ("unauthor", "credential", "token")
             ):
                 message = (
                     "CDS API authentication failed. Check ~/.cdsapirc and accept "
@@ -446,11 +463,20 @@ class Era5DownloadService:
                 )
             elif isinstance(exc, Era5Error):
                 message = raw_message
+            elif status in (400, 422):
+                message = f"ERA5 request rejected (HTTP {status}): {raw_message}"
             else:
-                # Third-party errors may embed CDS request headers or tokens.
+                # Third-party errors may embed CDS request headers or tokens, so
+                # keep only the exception class and any HTTP status. A bare
+                # HTTPError is a transport/rate-limit failure, not a credentials
+                # one, and callers classify on the status.
+                kind = type(exc).__name__
+                if status is not None:
+                    kind = f"{kind} HTTP {status}"
                 message = (
-                    f"ERA5 download failed ({type(exc).__name__}). Check CDS API "
-                    "credentials and dataset terms, then retry."
+                    f"ERA5 download failed ({kind}); CDS may be rate limiting or "
+                    "temporarily unavailable, or the request was rejected. "
+                    "Retry shortly."
                 )
             with self._lock:
                 self.errors[key] = message[:1000]
