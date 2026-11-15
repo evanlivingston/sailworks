@@ -77,7 +77,7 @@ class MarineJobs(QObject):
     def cancel_download(self):
         if self.busy:
             self.cancel.set()
-            self.message = "Cancelling request…"
+            self.message = "Cancelling request"
             self.changed.emit()
 
     def close(self):

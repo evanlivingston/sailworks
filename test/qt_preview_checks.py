@@ -2119,13 +2119,12 @@ class QtPreviewChecks(unittest.TestCase):
         self.controller.polars.changed.connect(
             self.window.polar_workspace.refresh_selector
         )
-        self.controller.polars.use_requested.connect(self.window._use_polar)
         self.window.routing_panel.refresh_polars()
         from sailworks.qt.polarlibrary import PolarLibrary
 
         self.window.polar_manager_panel = PolarLibrary(self.controller, self.window)
-        self.window.panels["polar-manager"].set_content(self.window.polar_manager_panel)
-        self.window.show_polars()
+        self.window.panels["polars"].set_content(self.window.polar_manager_panel)
+        self.window.show_polar_workspace()
         panel = self.window.polar_manager_panel
         return root, panel
 
@@ -2169,7 +2168,7 @@ class QtPreviewChecks(unittest.TestCase):
                     for i in range(self.window.routing_panel.polar.count())
                 ],
             )
-            panel.preview_button.click()
+            panel.preview()
             self.wait_for_polars()
             preview = panel.preview_dialog
             self.assertIsNotNone(preview)
@@ -2189,12 +2188,6 @@ class QtPreviewChecks(unittest.TestCase):
                 list(line.get_ydata()), [row[wind_index] for row in polar.speed_table]
             )
             preview.close()
-            panel.use_button.click()
-            self.assertEqual(
-                self.window.routing_panel.polar.currentText(), "custom.pol"
-            )
-            self.assertIs(self.window.views.currentWidget(), self.window.map)
-            self.assertTrue(self.window.routing_panel.isVisible())
             panel.local.item(panel.names.index("custom.pol"), 0).setCheckState(
                 Qt.CheckState.Unchecked
             )
@@ -2216,27 +2209,45 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertTrue(source.exists())
             self.assertEqual((root / "custom.pol").read_bytes(), source.read_bytes())
 
-    def test_polar_orc_filter_download_metadata_failure_and_installed_selection(self):
+    def test_polar_orc_catalog_is_updated_in_data_library_and_added_from_panel(
+        self,
+    ):
         from test.test_polarmanager import ORC_DATA, response
 
         root, panel = self.polar_library()
+        self.window.library_dialog = None
+        self.window._ensure_library()
+        library = self.window.library_dialog
+        library.tabs.setCurrentIndex(library.tabs.count() - 1)
         entries = [
             ["USA/123", "Test yacht", "First 31.7"],
             ["CAN/456", "Other yacht", "J/120"],
         ]
+        self.controller.polars.identities = {
+            "USA/123": ("Test yacht", "First 31.7"),
+            "CAN/456": ("Other yacht", "J/120"),
+        }
+        cache = patch(
+            "sailworks.qt.polarcontroller.save_orc_catalog",
+            lambda rows, updated=None: updated,
+        )
+        cache.start()
+        self.addCleanup(cache.stop)
         with patch(
-            "sailworks.core.polarfiles.requests.get",
-            return_value=response(entries),
+            "sailworks.qt.polarcontroller.orc_catalog_merged",
+            return_value=entries,
         ):
-            panel.fetch_button.click()
+            library.catalog_button.click()
             self.wait_for_polars()
-        self.assertEqual(panel.catalog_filter.rowCount(), 2)
-        panel.search.setText("first")
+        self.assertEqual(library.polar_model.rowCount(), 2)
+        self.assertIn("2 boats", library.catalog_count.text())
+        self.assertTrue(panel.catalog_button.isEnabled())
+        library.polar_search.setText("first")
         self.drain()
-        self.assertEqual(panel.catalog_filter.rowCount(), 1)
-        panel.remote.selectRow(0)
+        self.assertEqual(library.polar_filter.rowCount(), 1)
+        library.polar_table.selectRow(0)
         self.drain()
-        self.assertTrue(panel.download_button.isEnabled())
+        self.assertTrue(library.add_polar_button.isEnabled())
         with (
             patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
             patch(
@@ -2244,16 +2255,16 @@ class QtPreviewChecks(unittest.TestCase):
                 return_value=response(ORC_DATA),
             ),
         ):
-            panel.download_button.click()
+            library.add_polar_button.click()
             self.wait_for_polars()
         self.assertTrue((root / "USA_123.pol").exists())
         self.assertEqual(
             self.controller.core.polar_manager.get_metadata("USA_123.pol")["name"],
             "Test yacht",
         )
-        self.assertFalse(panel.download_button.isEnabled())
-        panel.search.setText("other")
-        panel.remote.selectRow(0)
+        self.assertFalse(library.add_polar_button.isEnabled())
+        library.polar_search.setText("other")
+        library.polar_table.selectRow(0)
         self.drain()
         import requests
 
@@ -2262,7 +2273,7 @@ class QtPreviewChecks(unittest.TestCase):
             "sailworks.core.polarfiles.requests.get",
             side_effect=requests.ConnectionError("offline"),
         ):
-            panel.download_button.click()
+            library.add_polar_button.click()
             self.wait_for_polars(error=True)
         self.assertIn("offline", self.controller.polars.error)
         self.assertEqual(self.controller.core.polar_manager.polars, previous)
@@ -2287,7 +2298,7 @@ class QtPreviewChecks(unittest.TestCase):
             return_value=QMessageBox.StandardButton.Yes,
         ):
             panel.local.selectRow(panel.names.index(selected))
-            panel.remove_button.click()
+            panel.remove()
         self.assertNotIn(selected, manager.polars)
         self.assertNotIn(selected, manager.polars_files)
         self.assertFalse((root / selected).exists())
@@ -2878,7 +2889,7 @@ class QtPreviewChecks(unittest.TestCase):
             patch.object(canvas._wind_cursor, "request") as request,
         ):
             canvas._hover(QPointF(100, 100))
-            self.assertIn("Wind …", self.window.cursor_status.text())
+            self.assertIn("Wind ", self.window.cursor_status.text())
             request.call_args.args[-1](((180, 10), 5.0, None))
             text = self.window.cursor_status.text()
             self.assertIn("Wind 180.0°, 19.4 kts", text)

@@ -129,7 +129,7 @@ def test_legend_compacts_many_plans_and_keeps_present_entries():
 
     assert len(entries) == palettes.DEFAULT_LEGEND_LIMIT
     assert labels[:7] == values[:7]
-    assert labels[-1] == "… 4 more"
+    assert labels[-1] == "4 more"
     assert labels[-1] not in values
     # Present plans keep the colour the route draws them with.
     colours = dict(entries)

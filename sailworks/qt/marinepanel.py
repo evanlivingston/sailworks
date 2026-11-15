@@ -405,7 +405,7 @@ class MarinePanel(QWidget):
             controls.addWidget(
                 text_label("Water level at stations · metres above source datum")
             )
-        self.manage = QPushButton("Manage downloads…")
+        self.manage = QPushButton("Manage downloads")
         self.manage.setToolTip("Download data and manage saved sources")
         self.manage.clicked.connect(self.open_library)
         controls.addWidget(self.manage)

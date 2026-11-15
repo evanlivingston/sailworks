@@ -596,7 +596,7 @@ pathlib.Path(report).write_text(json.dumps(data))
             if result.get("error_type") == "DownloadAborted":
                 raise ValueError(
                     "Copernicus stopped before downloading a file. "
-                    "Configure Worldwide account… and retry."
+                    "Configure Worldwide account and retry."
                 )
             if "error_type" in result:
                 raise ValueError(

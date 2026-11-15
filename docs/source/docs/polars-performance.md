@@ -12,7 +12,7 @@ Click **Polar manager** in Polars or the routing wizard to open its component. I
 the sidebar and floating-window behavior of NMEA and Performance, and keeps its search,
 selection, and loaded catalog when hidden and reopened.
 
-In **Local polars**, use **Open polar…** to import a `.pol` file, toggle its **Enabled**
+In **Local polars**, use **Import .pol** to import a `.pol` file, toggle its **Enabled**
 checkbox, or select a file and click **Remove**. In **ORC catalog**, search by sail
 number, boat name, or type, select a result, and click **Download selected polar**.
 Already downloaded entries are disabled. Local polar lists and the routing wizard update
@@ -27,8 +27,8 @@ updates the chart and speed table immediately. Your selection survives hiding, f
 redocking, and polar-list updates; if the selected polar is removed or disabled, the
 first available polar is selected instead. The speed table remains beside the chart.
 
-```{image} ../_static/images/manual/panel-polar-selector.png
-:alt: Polar selector with the polar list beside the speed table
+```{image} ../_static/images/manual/panel-polars.png
+:alt: The Polars panel beside the speed table
 :width: 300px
 ```
 

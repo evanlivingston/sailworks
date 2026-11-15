@@ -22,7 +22,7 @@ def prepare_coverage(
         raise RoutingNoWindError(
             "Load a wind forecast covering the departure and start position."
         )
-    report("Checking current coverage…")
+    report("Checking current coverage")
     coverage = check_current_coverage(routing, auto_download)
     if coverage.needs_warning and (not confirm(coverage) or coverage.blocked):
         raise DownloadCancelledError()

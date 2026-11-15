@@ -242,7 +242,7 @@ class SessionController(QObject):
             and not self.connections.polling_active
         ):
             self.connection_task.start(
-                "Connecting instruments…", lambda _: self.connections.start_polling()
+                "Connecting instruments", lambda _: self.connections.start_polling()
             )
 
     def set_live_reading(self, active):
@@ -254,7 +254,7 @@ class SessionController(QObject):
             self.start_connections()
         elif self.connections.polling_active:
             self.connection_task.start(
-                "Disconnecting instruments…", lambda _: self.connections.stop_polling()
+                "Disconnecting instruments", lambda _: self.connections.stop_polling()
             )
 
     def _forecast_selection_changed(self):

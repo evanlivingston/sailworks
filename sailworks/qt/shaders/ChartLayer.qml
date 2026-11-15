@@ -231,7 +231,7 @@ Item {
             anchors.centerIn: parent
             color: "white"
             font.pixelSize: 12
-            text: root.chartUnavailable ? "Chart unavailable" : "Chart loading…"
+            text: root.chartUnavailable ? "Chart unavailable" : "Chart loading"
         }
     }
 }

@@ -104,8 +104,8 @@ def test_drop_validation_accepts_text_and_ebl_but_not_mixed_remote_or_directorie
 def test_dialog_always_offers_folder_import_and_w2k_sync(app, controller):
     dialog = LogLibraryDialog(controller)
     try:
-        assert dialog.actions["Import folder…"].isEnabled()
-        assert dialog.actions["Sync W2K-1…"].isEnabled()
+        assert dialog.actions["Import folder"].isEnabled()
+        assert dialog.actions["Sync W2K-1"].isEnabled()
     finally:
         dialog.close()
 
@@ -149,13 +149,13 @@ def test_dialog_import_edit_reload_open_paused_and_remove(
     dialog = LogLibraryDialog(controller)
     try:
         assert set(dialog.actions) == {
-            "Import…",
-            "Import folder…",
-            "Sync W2K-1…",
+            "Import",
+            "Import folder",
+            "Sync W2K-1",
             "Save details",
             "Open",
-            "File Info…",
-            "Delete…",
+            "File Info",
+            "Delete",
         }
         monkeypatch.setattr(
             QFileDialog, "getOpenFileNames", lambda *args: ([str(source)], "")
@@ -165,12 +165,12 @@ def test_dialog_import_edit_reload_open_paused_and_remove(
         assert dialog.logs.rowCount() == 1
         assert controller.session.log.entries
         assert not controller.session.playing
-        dialog.actions["File Info…"].click()
+        dialog.actions["File Info"].click()
         assert dialog.file_info_dialog.isVisible()
         assert "Device metadata unavailable" in dialog.file_info_dialog.notice.text()
         dialog.file_info_dialog.close()
         controller.session.set_playing(True)
-        dialog.actions["File Info…"].click()
+        dialog.actions["File Info"].click()
         dialog.file_info_dialog.close()
         dialog.actions["Save details"].click()
         saved = LogLibrary(controller.log_library.directory).entries()[0]
@@ -191,7 +191,7 @@ def test_dialog_import_edit_reload_open_paused_and_remove(
         monkeypatch.setattr(
             QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes
         )
-        dialog.actions["Delete…"].click()
+        dialog.actions["Delete"].click()
         assert dialog.logs.rowCount() == 0
         assert not managed.exists()
         assert controller.session.log is None
@@ -694,7 +694,7 @@ def test_import_errors_clear_visible_progress(app, controller, tmp_path, monkeyp
         assert "disk full" in controller.session.error
         assert controller.log_progress is None
         assert dialog.import_progress.isHidden()
-        assert dialog.actions["Import…"].isEnabled()
+        assert dialog.actions["Import"].isEnabled()
     finally:
         dialog.close()
 

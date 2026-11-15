@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -21,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from sailworks.core.loglibrary import LOG_SUFFIXES
 from .loginfo import LogInfoDialog
+from .tables import make_table
 from .theme import MenuBuilder, ThemedMenu
 
 LOG_FILTER = "Instrument logs (*.log *.nmea *.txt *.ebl *.EBL);;All files (*)"
@@ -65,7 +65,7 @@ class LogImportProgress(QWidget):
             self.bar.setFormat(f"%p% · {done:,} / {total:,} bytes")
         else:
             self.bar.setRange(0, 0)
-            self.bar.setFormat("Working…")
+            self.bar.setFormat("Working")
         self.show()
 
 
@@ -97,15 +97,8 @@ class LogLibraryDialog(QDialog):
         layout = QVBoxLayout(self)
         self.import_progress = LogImportProgress(controller, self)
         layout.addWidget(self.import_progress)
-        self.logs = QTableWidget()
-        self.logs.setColumnCount(5)
-        self.logs.setHorizontalHeaderLabels(
-            ["Name", "Vessel", "Status", "Time span", "Duration"]
-        )
-        self.logs.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.logs = make_table(["Name", "Vessel", "Status", "Time span", "Duration"])
         self.logs.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.logs.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.logs.horizontalHeader().setStretchLastSection(True)
         self.logs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.logs.customContextMenuRequested.connect(self._context_menu)
         self.logs.installEventFilter(self)
@@ -113,13 +106,13 @@ class LogLibraryDialog(QDialog):
         row = QHBoxLayout()
         self.actions = {}
         for label, callback in (
-            ("Import…", self.import_logs),
-            ("Import folder…", self.import_folder),
-            ("Sync W2K-1…", self.sync_w2k),
+            ("Import", self.import_logs),
+            ("Import folder", self.import_folder),
+            ("Sync W2K-1", self.sync_w2k),
             ("Save details", self.save),
             ("Open", self.open_log),
-            ("File Info…", self.show_file_info),
-            ("Delete…", self.delete_selected),
+            ("File Info", self.show_file_info),
+            ("Delete", self.delete_selected),
         ):
             button = QPushButton(label)
             button.clicked.connect(callback)
@@ -226,7 +219,7 @@ class LogLibraryDialog(QDialog):
     def sync_busy(self):
         busy = self.controller.session.loading
         selected = bool(self.selected_identifiers())
-        always = {"Import…", "Import folder…", "Sync W2K-1…"}
+        always = {"Import", "Import folder", "Sync W2K-1"}
         for label, button in self.actions.items():
             button.setEnabled(not busy and (label in always or selected))
 

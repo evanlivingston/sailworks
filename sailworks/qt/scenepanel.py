@@ -2297,7 +2297,7 @@ class ScenePanel(QWidget):
                 builder.add("Fit", lambda: self.fit_requested.emit(fit_nodes), key="F")
             if track_element is not None:
                 builder.add(
-                    "Add Point…",
+                    "Add Point",
                     lambda: self._add_point(node),
                     key="P",
                 )
@@ -2309,7 +2309,7 @@ class ScenePanel(QWidget):
                 )
             if point_element is not None:
                 builder.add(
-                    "Edit…",
+                    "Edit",
                     lambda: self._edit_point(node),
                     key="E",
                 )
@@ -2337,7 +2337,7 @@ class ScenePanel(QWidget):
         if shape_element is not None:
             builder.section()
             builder.add(
-                "Edit Note…",
+                "Edit Note",
                 lambda: self._edit_shape_note(shape_element),
                 key="O",
             )

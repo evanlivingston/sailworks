@@ -31,7 +31,7 @@ s.bind(("", port))
 s.listen(1)
 
 print(f"NMEA server listening on port {port} ({len(f)} sentences loaded)")
-print("Waiting for connection...")
+print("Waiting for connection")
 
 line_index = 0
 
@@ -48,7 +48,7 @@ try:
                     time.sleep(0.01)
         except (BrokenPipeError, ConnectionResetError):
             print(
-                f"Client disconnected at sentence {line_index}. Waiting for reconnection..."
+                f"Client disconnected at sentence {line_index}. Waiting for reconnection"
             )
 except KeyboardInterrupt:
     pass

@@ -85,7 +85,7 @@ class MapCursorMixin:
             update_routing(lat, lon)
         self._cursor_screen_position = position
         self._cursor_parts = {
-            "wind": "Wind …",
+            "wind": "Wind",
             "gust": "",
             "current": "",
             "wave": "",

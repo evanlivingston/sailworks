@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
-    QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -28,6 +27,7 @@ from sailworks.core.era5 import (
 )
 from sailworks.core.timecontrol import utc_to_wall
 from .forecastdownload import ModelListRow
+from .tables import make_table
 
 CDS_REQUESTS_URL = "https://cds.climate.copernicus.eu/requests"
 CDS_LIVE_URL = "https://cds.climate.copernicus.eu/live"
@@ -141,14 +141,10 @@ class Era5DownloadTab(QWidget):
         self.progress.setTextVisible(True)
         self.progress.hide()
         layout.addWidget(self.progress)
-        self.catalog = QTableWidget(0, 5)
-        self._rows = []
-        self.catalog.setHorizontalHeaderLabels(
+        self.catalog = make_table(
             ["UTC coverage", "Area N/W/S/E", "Variables", "Status", "Artifact"]
         )
-        self.catalog.horizontalHeader().setStretchLastSection(True)
-        self.catalog.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.catalog.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self._rows = []
         layout.addWidget(self.catalog)
         self.timer = QTimer(self)
         self.timer.setInterval(500)
@@ -319,9 +315,9 @@ class Era5DownloadTab(QWidget):
             self.service.clear_error(self.service.key_for(self.plan))
             self.job = self.service.submit(self.plan)
             self.progress.setRange(0, 0)
-            self.progress.setFormat("Contacting CDS…")
+            self.progress.setFormat("Contacting CDS")
             self.progress.show()
-            self.status.setText("ERA5 request running in background…")
+            self.status.setText("ERA5 request running in background")
             self.request_button.setEnabled(False)
             self.cancel_button.setEnabled(True)
             self.retry_button.setEnabled(False)
@@ -331,7 +327,7 @@ class Era5DownloadTab(QWidget):
     def cancel(self):
         if self.nbs_cancel is not None:
             self.nbs_cancel.set()
-            self.status.setText("Cancelling the satellite wind download…")
+            self.status.setText("Cancelling the satellite wind download")
             self.cancel_button.setEnabled(False)
             return
         if self.plan is not None:
@@ -371,7 +367,7 @@ class Era5DownloadTab(QWidget):
         if state is None:
             self.status.setText("Historical data is not available yet.")
             return
-        self.nbs_progress = {"percent": 0, "stage": "Starting…"}
+        self.nbs_progress = {"percent": 0, "stage": "Starting"}
         self.nbs_error = None
         self.nbs_tranche = None
         self.nbs_cancel = threading.Event()
@@ -385,7 +381,7 @@ class Era5DownloadTab(QWidget):
         self.progress.setValue(0)
         self.progress.setFormat("%p%")
         self.progress.show()
-        self.status.setText("Downloading NOAA satellite-blended winds…")
+        self.status.setText("Downloading NOAA satellite-blended winds")
         self.request_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
 
@@ -448,9 +444,9 @@ class Era5DownloadTab(QWidget):
         self.service.clear_error(key)
         self.job = self.service.submit(self.plan, retry=True)
         self.progress.setRange(0, 0)
-        self.progress.setFormat("Contacting CDS…")
+        self.progress.setFormat("Contacting CDS")
         self.progress.show()
-        self.status.setText("Retrying ERA5 request in background…")
+        self.status.setText("Retrying ERA5 request in background")
         self.request_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self.retry_button.setEnabled(False)
@@ -480,9 +476,9 @@ class Era5DownloadTab(QWidget):
             if callable(resume_active) and resume_active():
                 self._resume_was_active = True
                 self.progress.setRange(0, 0)
-                self.progress.setFormat("Resuming ERA5 request…")
+                self.progress.setFormat("Resuming ERA5 request")
                 self.progress.show()
-                self.status.setText("Resuming queued ERA5 download…")
+                self.status.setText("Resuming queued ERA5 download")
             elif getattr(self, "_resume_was_active", False):
                 self._resume_was_active = False
                 self.progress.hide()
@@ -562,7 +558,7 @@ class Era5DownloadTab(QWidget):
                 "No downloaded ERA5 history to show yet; download it first."
             )
             return False
-        self.status.setText("Building ERA5 history display…")
+        self.status.setText("Building ERA5 history display")
 
         def build():
             try:

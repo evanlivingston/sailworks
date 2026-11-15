@@ -96,7 +96,7 @@ class W2KImportDialog(QDialog):
         self.test_button.clicked.connect(self.test)
         self.sync_button = QPushButton("Sync now")
         self.sync_button.clicked.connect(self.sync)
-        self.local_button = QPushButton("Use SD copy…")
+        self.local_button = QPushButton("Use SD copy")
         self.local_button.clicked.connect(self.use_local_copy)
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.clicked.connect(self.cancel)
@@ -187,7 +187,7 @@ class W2KImportDialog(QDialog):
             return
         self._mode = "test"
         self._cancelled = False
-        self.status.setText("Connecting…")
+        self.status.setText("Connecting")
         self.task.start("Connecting", self._locked(lambda progress: sync.scan()))
 
     def sync(self):
@@ -198,7 +198,7 @@ class W2KImportDialog(QDialog):
             return
         self._mode = "sync"
         self._cancelled = False
-        self.status.setText("Syncing…")
+        self.status.setText("Syncing")
 
         def operation(progress):
             return sync.run(progress, stop=lambda: self._cancelled or self.task.closed)
@@ -218,7 +218,7 @@ class W2KImportDialog(QDialog):
             return
         self._mode = "sync"
         self._cancelled = False
-        self.status.setText("Reading local copy…")
+        self.status.setText("Reading local copy")
 
         def operation(progress):
             sync.seed(folder)
@@ -248,7 +248,7 @@ class W2KImportDialog(QDialog):
         if not self.task.busy:
             return
         self._cancelled = True
-        self.status.setText("Cancelling…")
+        self.status.setText("Cancelling")
         self.cancel_button.setEnabled(False)
 
     def _finished(self, result, error):

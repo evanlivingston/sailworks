@@ -10,9 +10,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QLabel,
     QCheckBox,
-    QTableWidget,
     QTableWidgetItem,
-    QAbstractItemView,
     QPushButton,
     QGroupBox,
     QProgressBar,
@@ -23,6 +21,7 @@ from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES
 from sailworks.core.forecasttranche import ModelConfiguration
 from sailworks.core.weathernextcredentials import describe_access_error
 from .dropdown import Dropdown
+from .tables import make_table
 from .text import qt_text
 
 MODELS = (
@@ -268,11 +267,8 @@ class ForecastDownloadOptions(QWidget):
             self.duration.addItem(label, value)
         self.duration.setCurrentIndex(4)
         times.addWidget(self.duration)
-        self.hours = QTableWidget(0, 3)
+        self.hours = make_table(["", "", ""], stretch_last=False)
         self.hours.horizontalHeader().hide()
-        self.hours.verticalHeader().hide()
-        self.hours.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.hours.horizontalHeader().setStretchLastSection(True)
         for column in range(3):
             self.hours.setColumnWidth(column, 65)
         self.hours.setMinimumHeight(140)
@@ -753,7 +749,7 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
         if configuration is None:
             self.size_estimate.setText("Select models and a region for an estimate.")
             return
-        self.size_estimate.setText("Checking run availability and download size…")
+        self.size_estimate.setText("Checking run availability and download size")
         self._estimate_timer.start()
 
     def _set_size_estimate_error(self, error, prefix="Estimate unavailable"):
@@ -788,8 +784,6 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
             )
         else:
             summary = detail.split(" for ", 1)[0]
-            if len(summary) > 96:
-                summary = summary[:93] + "…"
         return summary
 
     def _start_size_estimate(self):
@@ -870,7 +864,7 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
             self._set_size_estimate_error(self.analysis.error, "Download failed")
         elif busy:
             status = str(getattr(self.analysis, "status", "") or "").strip()
-            self.size_estimate.setText(status or "Updating forecast…")
+            self.size_estimate.setText(status or "Updating forecast")
             self.size_estimate.setToolTip(
                 "Current step of the forecast task. The size estimate returns when it finishes."
             )

@@ -10,11 +10,10 @@ structure. Regatta is hidden in GTK and should remain absent in Qt.
 | Charts, Logs, Polars in the main workspace header | All three workspaces, above the context toolbar |
 | Polars table on the left and full-circle chart on the right | Same split, table row stride and colored wind headers |
 | GTK polar curves, tack mirroring, speed rings and hover details | Shared production Cairo renderer used by both frontends |
-| Polar selector with Filename/Sail/Name/Type | Shared-dock selector; changing a row updates the workspace |
+| Polar selection, enable toggles, imports and ORC downloads | One shared-dock Polars panel with an Enabled/Sail/Name/Type table; changing a row updates the workspace |
 | Performance panel with STW/SOG, wind band, sample visibility/count and Clear samples | Same controls and shared session history/filtering |
 | Shared NMEA panel reachable from all three views | One panel/session; transport state survives tab changes |
 | Shared, draggable/floating tool panels | Qt docks retain tabs/splits; floating panels have compact draggable chrome, edge resize/snap, double-click docking and Window → Reset Panels |
-| Polar manager for imports and ORC downloads | Same shared-dock Polar Manager, reusing the migrated import/ORC component |
 | Logs map above plots | Independent map above plots with a vertical splitter |
 | Logs Speed/Wind (A)/Wind (T)/Depth/HDG/RW switches | Same labels, defaults, series grouping, local time labels and wind-direction formulas |
 | View-specific toolbars | Charts, Logs and Polars controls follow the selected workspace |

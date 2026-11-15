@@ -98,13 +98,13 @@ def test_refresh_catalog_shows_satellite_wind_status(tmp_path):
         "start": "2026-05-16T00:00:00+00:00",
         "end": "2026-05-16T18:00:00+00:00",
         "area": [49.54, -125.97, 45.2, -121.62],
-        "status": "Downloading NBS 2026-05-16…",
+        "status": "Downloading NBS 2026-05-16",
     }
 
     tab.refresh_catalog()
 
     labels = [tab.catalog.item(row, 3).text() for row in range(tab.catalog.rowCount())]
-    assert "Downloading NBS 2026-05-16…" in labels
+    assert "Downloading NBS 2026-05-16" in labels
 
 
 def test_history_model_list_dispatches_to_checked_models(tmp_path):

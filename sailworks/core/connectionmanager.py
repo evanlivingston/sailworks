@@ -296,7 +296,7 @@ class ConnectionManager(EventDispatcher):
             self.dispatch("data", dd)
 
         if rf < len(sources_snapshot):
-            logger.info("Reconnecting in 5 seconds...")
+            logger.info("Reconnecting in 5 seconds")
             self.stop_event.wait(timeout=5)
             if self.stop_event.is_set():
                 return len(dd)

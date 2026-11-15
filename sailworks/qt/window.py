@@ -256,7 +256,6 @@ class PreviewWindow(QMainWindow):
         self.nmea_scroll.setWidget(self.nmea_panel)
         self.routing_panel = RoutingPanel(controller)
         controller.polars.changed.connect(self.routing_panel.refresh_polars)
-        controller.polars.use_requested.connect(self._use_polar)
         self.undo_stack = QUndoStack(self)
         # Both maps share one history, so a corner edit keeps one Ctrl-Z
         # sequence wherever the user made it.
@@ -315,6 +314,7 @@ class PreviewWindow(QMainWindow):
         self.map.navigation_request.connect(self._navigation_request)
         self.log_map.navigation_request.connect(self._navigation_request)
         self.polar_manager_panel = PolarLibrary(controller, self)
+        self.polar_manager_panel.polar_chosen.connect(self.polar_workspace.select)
         file_menu = self.menuBar().addMenu("File")
         edit_menu = self.menuBar().addMenu("Edit")
         self.undo_action = self.undo_stack.createUndoAction(self, "Undo")
@@ -327,25 +327,25 @@ class PreviewWindow(QMainWindow):
         edit_menu.addAction(self.redo_action)
         open_log = file_menu.addAction(
             symbol_icon("document-open-symbolic"),
-            "Open NMEA log…",
+            "Open NMEA log",
             self.show_log_library,
         )
         open_log.setShortcut(QKeySequence.StandardKey.Open)
         file_menu.addAction(
             symbol_icon("weather-windy-symbolic"),
-            "Open forecast…",
+            "Open forecast",
             self.show_library,
         )
-        file_menu.addAction("Data Library…", self.show_library)
+        file_menu.addAction("Data Library", self.show_library)
         file_menu.addAction("Polars", self.show_polar_workspace)
         file_menu.addAction(
-            "Open native routing result…", self.show_native_routing_result
+            "Open native routing result", self.show_native_routing_result
         )
         file_menu.addSeparator()
         file_menu.addAction("Close window", self.close).setShortcut(
             QKeySequence.StandardKey.Close
         )
-        self.settings_action = file_menu.addAction("Settings…", self.show_settings)
+        self.settings_action = file_menu.addAction("Settings", self.show_settings)
         self.settings_action.setMenuRole(QAction.MenuRole.PreferencesRole)
         self.settings_action.setShortcut(QKeySequence.StandardKey.Preferences)
         self._create_routing_inspector()
@@ -378,13 +378,13 @@ class PreviewWindow(QMainWindow):
             window_menu.addAction(action)
         window_menu.addSeparator()
         window_menu.addAction("Reset Panels", self.reset_panels)
-        file_menu.addAction("Import GPX…", lambda: navigationio.import_gpx(self))
-        file_menu.addAction("Export navigation…", self._export_navigation)
+        file_menu.addAction("Import GPX", lambda: navigationio.import_gpx(self))
+        file_menu.addAction("Export navigation", self._export_navigation)
         fit_menu = self.menuBar().addMenu("Navigate")
         fit_menu.addAction("Fit NMEA track", self._fit_track)
         fit_menu.addAction("Fit route", self._fit_route)
         fit_menu.addSeparator()
-        find_place = fit_menu.addAction("Search places…", self._focus_place_search)
+        find_place = fit_menu.addAction("Search places", self._focus_place_search)
         find_place.setShortcut(QKeySequence.StandardKey.Find)
         self.views.currentChanged.connect(self._view_changed)
         self.workspace_toolbar.visibilityChanged.connect(self._sync_timeline)
@@ -431,7 +431,7 @@ class PreviewWindow(QMainWindow):
         view_menu.addSeparator()
         view_menu.addAction("Reset layout", self.workspace.reset_layout)
         log_menu = self.menuBar().addMenu("Logs")
-        log_menu.addAction("Log library…", self.show_log_library)
+        log_menu.addAction("Log library", self.show_log_library)
         self._index_chart_places()
 
     def _build_panel_stacks(self):
@@ -452,14 +452,8 @@ class PreviewWindow(QMainWindow):
             ("right", "nmea", "NMEA", self.nmea_scroll),
             ("right", "routing", "Routing", self.routing_panel),
             ("right", "weather", "Weather", self.weather_panel),
-            (
-                "right",
-                "polar-selector",
-                "Polar selector",
-                self.polar_workspace.selector,
-            ),
+            ("right", "polars", "Polars", self.polar_manager_panel),
             ("right", "performance", "Performance", self.polar_workspace.performance),
-            ("right", "polar-manager", "Polar Manager", self.polar_manager_panel),
             ("right", "chart-debug", "Chart Debug", self.chart_debug_panel),
         )
         definitions += tuple(
@@ -691,7 +685,7 @@ class PreviewWindow(QMainWindow):
     def _save_log_edits(self):
         try:
             if self.controller.save_log_edits():
-                self.statusBar().showMessage("Saving edited log…", 3000)
+                self.statusBar().showMessage("Saving edited log", 3000)
         except Exception as exc:
             QMessageBox.warning(self, "Unable to save log", str(exc))
 
@@ -972,7 +966,7 @@ class PreviewWindow(QMainWindow):
 
     def show_polar_workspace(self):
         self.views.setCurrentWidget(self.polar_workspace)
-        self._show_panel("polar-selector")
+        self._show_panel("polars")
 
     def _select_saved_route(self, route):
         # The routing manager's active route is the window's current route now
@@ -1649,7 +1643,7 @@ class PreviewWindow(QMainWindow):
     def _export_navigation(self):
         menu = ThemedMenu(self)
         builder = MenuBuilder(menu)
-        builder.add("Export GPX…", lambda: navigationio.export_all(self), key="G")
+        builder.add("Export GPX", lambda: navigationio.export_all(self), key="G")
         menu.exec(self.map.mapToGlobal(self.map.rect().bottomLeft()))
 
     def _show_panel(self, panel):
@@ -2117,7 +2111,7 @@ class PreviewWindow(QMainWindow):
         layout.addWidget(self.connection_status)
         self._connection_status_text = None
         self._refresh_connection_status()
-        self.log_library_button = QPushButton("Log library…")
+        self.log_library_button = QPushButton("Log library")
         self.log_library_button.clicked.connect(self.show_log_library)
         layout.addWidget(self.log_library_button)
         self.track_source_group = QWidget()
@@ -2180,7 +2174,7 @@ class PreviewWindow(QMainWindow):
             else "Start a new timestamped recording"
         )
         if getattr(self.controller, "log_edit_busy", False):
-            message = "Deleting selected range…"
+            message = "Deleting selected range"
         elif getattr(self.controller, "log_edit_error", None):
             message = f"Unable to delete range: {self.controller.log_edit_error}"
         else:
@@ -2448,15 +2442,6 @@ class PreviewWindow(QMainWindow):
 
     def show_library(self):
         self._ensure_library()
-
-    def _use_polar(self, name):
-        index = self.routing_panel.polar.findText(name)
-        if index >= 0:
-            self.routing_panel.polar.setCurrentIndex(index)
-            self.routing_panel.pages.setCurrentIndex(0)
-            self._show_panel("routing")
-            if self.library_dialog is not None:
-                self.library_dialog.hide()
 
     def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
         self.workspace.close()

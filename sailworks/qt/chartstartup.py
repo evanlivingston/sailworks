@@ -35,8 +35,8 @@ class ChartStartup(QObject):
         # Existing guards prevent routing against an incomplete shoreline list,
         # and prevent conflicting library/map-data mutation during initialization.
         self.owner.map_data.task.busy = True
-        self.owner.map_data.task.message = "Loading saved charts…"
-        self.owner.map_data.message = "Loading saved charts…"
+        self.owner.map_data.task.message = "Loading saved charts"
+        self.owner.map_data.message = "Loading saved charts"
 
     def start(self, canvas):
         if self.began is None and self.state == "waiting":

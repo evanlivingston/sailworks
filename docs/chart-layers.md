@@ -64,7 +64,7 @@ depth values themselves are not interpolated or modified.
 
 ## Offline MBTiles
 
-In **Data Library → Charts**, choose **MBTiles…** and select a `.mbtiles`
+In **Data Library → Charts**, choose **MBTiles** and select a `.mbtiles`
 archive. The app references the original file; it does not convert or copy it.
 Use **Offline MBTiles charts** in Sources & appearance to hide/show the whole class,
 or use individual library checkboxes to choose archives. Removing an entry

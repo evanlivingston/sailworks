@@ -114,7 +114,7 @@ def download_tides(manager, provider, view, area, cached, start, end, cancel, pr
         saved_prediction = manager.cached_station(station, start, end)
         progress(
             ("Using saved" if saved_prediction is not None else "Downloading")
-            + " %s (%d/%d)…" % (station.name, index, len(selected))
+            + " %s (%d/%d)" % (station.name, index, len(selected))
         )
         try:
             value = manager.download_station(provider, station, start, end, cancel)

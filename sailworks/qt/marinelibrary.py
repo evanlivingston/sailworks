@@ -192,7 +192,7 @@ class MarineLibraryTab(QWidget):
         self.downloads[kind] = download
         row.addWidget(download)
         if self.settings_callback is not None:
-            advanced = QPushButton("Advanced…")
+            advanced = QPushButton("Advanced")
             advanced.setToolTip("Saved source priority and account settings")
             advanced.clicked.connect(
                 lambda _=False, kind=kind: self.settings_callback(kind)
@@ -266,7 +266,7 @@ class MarineLibraryTab(QWidget):
                 return planner.download(area, start, end, cancel, report)
 
             complete = self.complete_currents
-            message = "Downloading current coverage…"
+            message = "Downloading current coverage"
         else:
             cached = tuple(self.manager.stations)
             route_area = area if self.targets[kind].currentIndex() > 0 else None
@@ -285,7 +285,7 @@ class MarineLibraryTab(QWidget):
                 )
 
             complete = self.complete_tides
-            message = "Finding tide stations in the selected area…"
+            message = "Finding tide stations in the selected area"
         self.jobs.start(message, operation, complete)
 
     def complete_currents(self, result):

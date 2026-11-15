@@ -375,7 +375,7 @@ class Era5DownloadService:
             self.progress[key] = {
                 "done": 0,
                 "total": 0,
-                "stage": "Queued for CDS…",
+                "stage": "Queued for CDS",
             }
             thread = threading.Thread(
                 target=self._run_guarded, args=(key, plan, cancel, retry), daemon=True
@@ -469,7 +469,7 @@ class Era5DownloadService:
         pieces = list(split_request(plan))
         total = len(pieces)
         self._set_progress(
-            key, done=0, total=total, stage=f"Planning {total} CDS chunk(s)…"
+            key, done=0, total=total, stage=f"Planning {total} CDS chunk(s)"
         )
         entries = self._catalog_entries(catalog)
         staged_chunks = []
@@ -501,9 +501,9 @@ class Era5DownloadService:
                     )
                     continue
                 if self._pending_entry(self._load_pending(), piece) is not None:
-                    stage = f"Chunk {n + 1}/{total}: resuming queued CDS request…"
+                    stage = f"Chunk {n + 1}/{total}: resuming queued CDS request"
                 else:
-                    stage = f"Chunk {n + 1}/{total}: submitting to CDS…"
+                    stage = f"Chunk {n + 1}/{total}: submitting to CDS"
                 self._set_progress(key, stage=stage)
                 try:
                     self._ensure_chunk_request(piece)
@@ -519,7 +519,7 @@ class Era5DownloadService:
                 if cancel.is_set():
                     raise Era5Error("ERA5 download canceled")
                 self._set_progress(
-                    key, stage=f"Chunk {n + 1}/{total}: waiting for CDS results…"
+                    key, stage=f"Chunk {n + 1}/{total}: waiting for CDS results"
                 )
                 staged_chunks.append(
                     self._stage_chunk(staging, n, piece, cancel, retry)
@@ -535,7 +535,7 @@ class Era5DownloadService:
                     raise Era5Error("ERA5 download canceled")
                 self._set_progress(
                     key,
-                    stage=f"Chunk {n + 1}/{total}: waiting for a CDS queue slot…",
+                    stage=f"Chunk {n + 1}/{total}: waiting for a CDS queue slot",
                 )
                 self._submit_with_backoff(piece, cancel)
                 staged_chunks.append(
@@ -552,7 +552,7 @@ class Era5DownloadService:
             if not staged_chunks:
                 self._set_progress(key, done=total, stage="Already available")
                 return
-            self._set_progress(key, stage="Publishing ERA5 history…")
+            self._set_progress(key, stage="Publishing ERA5 history")
             self._publish_chunks(root, catalog, staged_chunks, cancel)
             for _path, piece, _provenance in staged_chunks:
                 self._forget_pending(getattr(piece, "_pending_request_id", None))
