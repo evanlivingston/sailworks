@@ -256,6 +256,9 @@ class RoutingPanel(QWidget):
         self.start_mode.addItem("First waypoint", "first-track-point")
         self.start_mode.addItem("Boat position", "boat-position")
         self.destination.currentIndexChanged.connect(self._plan_changed)
+        self.destination.currentIndexChanged.connect(
+            self._seed_departure_from_destination
+        )
         self.start_mode.currentIndexChanged.connect(self._plan_changed)
         form.addRow(self.destination)
         form.addRow(self.start_mode)
@@ -877,6 +880,18 @@ class RoutingPanel(QWidget):
             historical=self.historical.values(),
         )
 
+    def apply_track_default(self, track):
+        """Seed the departure field from a track's saved default, if any."""
+        default = getattr(track, "default_departure", None)
+        if not default:
+            return False
+        try:
+            stamp = datetime.fromisoformat(str(default))
+        except ValueError:
+            return False
+        self.departure.setDateTime(QDateTime(stamp))
+        return True
+
     def restore_options(self, saved):
         from sailworks.core.workspacestate import mapping
 
@@ -1018,6 +1033,12 @@ class RoutingPanel(QWidget):
         self.destination.blockSignals(False)
         self._plan_changed()
         self.refresh()
+
+    def _seed_departure_from_destination(self, *_):
+        """Take the chosen track's saved departure unless the field was edited."""
+        target = self.destination.currentData()
+        if isinstance(target, Track):
+            self.apply_track_default(target)
 
     def _plan_changed(self, *_):
         target = self.destination.currentData()
@@ -1262,6 +1283,18 @@ class RoutingPanel(QWidget):
             and not (cancel is not None and cancel.is_set())
         )
 
+    def _sync_run_visibility(self, historical_running):
+        """One progress display and one Cancel at a time.
+
+        The historical panel owns progress while a historical run is alive.
+        This panel's Cancel is the one tied to the routing engine, so it stays
+        visible only while the engine is actually running; during acquisition
+        the historical panel's Cancel is the one that works.
+        """
+        for widget in (self.progress, self.status):
+            widget.setVisible(not historical_running)
+        self.cancel_button.setVisible(not historical_running or self.routing.busy)
+
     def _display_status(self):
         message = self.routing.message
         if not self._native_heartbeat_active():
@@ -1280,7 +1313,13 @@ class RoutingPanel(QWidget):
         self.status.setText(self._display_status())
 
     def refresh(self):
-        busy = self.routing.busy
+        # A historical run owns its own thread, so it is busy even though
+        # the routing controller behind Calculate route is idle.
+        historical_running = self.historical.is_running()
+        busy = self.routing.busy or historical_running
+        # The historical panel shows its own progress, status and Cancel while
+        # it runs; a second copy here only competes for attention.
+        self._sync_run_visibility(historical_running)
         self._refresh_safety()
         for control in (
             *self.inputs,

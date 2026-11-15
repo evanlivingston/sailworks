@@ -66,7 +66,9 @@ class HistoricalPublisher:
             return record.scene_group_id
         identifier = f"{GROUP_PREFIX}{record.job_id}"
         name = str(record.spec.get("group_name") or identifier)
-        group_id = self.scene.ensure_group(identifier, name, parent=DEFAULT_ROUTING_GROUP)
+        group_id = self.scene.ensure_group(
+            identifier, name, parent=DEFAULT_ROUTING_GROUP
+        )
         record.scene_group_id = str(group_id or identifier)
         self.store.save(record)
         return record.scene_group_id
@@ -93,6 +95,14 @@ class HistoricalPublisher:
             key = f"{PUBLISHED_ROUTE_PREFIX}{uid}"
             if record.published.get(key) == uid:
                 continue
+            # An ensemble publishes dozens of routes at once. Show the route
+            # lines and leave the contours off so the map stays readable; the
+            # user can turn any isochrone layer on by hand. Only the first
+            # publication sets this, so a later user toggle is never undone.
+            try:
+                route.isochrones_visible = False
+            except AttributeError:
+                pass
             self.scene.assign({(KIND_ROUTING, uid)}, group_id, save=False)
             record.published[key] = uid
             changed = True

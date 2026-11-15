@@ -158,8 +158,17 @@ class Routing(Track):
         traces_visible=False,
         isochrone_fill_visible=False,
         isochrone_outlines_visible=False,
+        color=None,
+        default_departure=None,
     ):
-        super().__init__(name, points, visible, collection)
+        super().__init__(
+            name,
+            points,
+            visible,
+            collection,
+            color=color,
+            default_departure=default_departure,
+        )
         # None means schema-v1 contours have not been hydrated for display yet.
         self._isochrones = isochrones
         # None explicitly means provenance is unknown, including legacy routes.
@@ -601,6 +610,8 @@ class Routing(Track):
                 traces_visible=traces_visible,
                 isochrone_fill_visible=isochrone_fill_visible,
                 isochrone_outlines_visible=isochrone_outlines_visible,
+                color=d.color,
+                default_departure=d.default_departure,
             )
         ic = list(map(lambda x: list(map(IsoPoint.from_list, x)), j["isochrones"]))
         return Routing(
@@ -617,4 +628,6 @@ class Routing(Track):
             traces_visible=traces_visible,
             isochrone_fill_visible=isochrone_fill_visible,
             isochrone_outlines_visible=isochrone_outlines_visible,
+            color=d.color,
+            default_departure=d.default_departure,
         )

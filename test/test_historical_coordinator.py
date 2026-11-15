@@ -317,6 +317,27 @@ def test_publish_routes_is_grouped_and_idempotent(monkeypatch, tmp_path):
     assert scene.count("save") == 1
 
 
+def test_published_routes_hide_isochrones_until_the_user_asks(monkeypatch, tmp_path):
+    store = HistoricalRoutingStore(tmp_path / "store")
+    scene = FakeScene()
+    spec = _spec()
+    coordinator, job_id = _start(
+        monkeypatch, store, spec, scene=scene, outcomes=_outcomes(spec)
+    )[:2]
+    routes = [FakeRoute("uid-a"), FakeRoute("uid-b")]
+
+    coordinator.publish_routes(job_id, routes)
+
+    # An ensemble publishes many routes at once: the lines stay on, the
+    # contours do not, so the map is readable until the user opts in.
+    assert [route.isochrones_visible for route in routes] == [False, False]
+
+    # A later republish must not undo a manual toggle.
+    routes[0].isochrones_visible = True
+    coordinator.publish_routes(job_id, routes)
+    assert routes[0].isochrones_visible is True
+
+
 def test_delete_job_removes_routes_releases_pins_and_archives(monkeypatch, tmp_path):
     store = HistoricalRoutingStore(tmp_path / "store")
     spec = _spec()
@@ -937,3 +958,23 @@ def test_rechecked_members_start_at_one_attempt_and_are_logged(monkeypatch, tmp_
     assert entries[0]["year"] == 2018
     assert entries[0]["previous_reason"]
     assert set(entries[0]["members"]) == new_ids
+
+
+def test_freezing_reads_the_wind_store_not_the_job_store(tmp_path):
+    """The ERA5 catalog lives in the analysis store, not the job store."""
+    from types import SimpleNamespace
+
+    job_store = HistoricalRoutingStore(tmp_path / "jobs")
+    wind_store = SimpleNamespace(root=tmp_path / "analysis")
+
+    coordinator = HistoricalRoutingCoordinator(
+        store=job_store, tranche_store_provider=lambda: wind_store
+    )
+    assert coordinator._wind_store() is wind_store
+
+    coordinator.tranche_store_provider = None
+    coordinator.tranche_store = wind_store
+    assert coordinator._wind_store() is wind_store
+
+    coordinator.tranche_store = None
+    assert coordinator._wind_store() is job_store

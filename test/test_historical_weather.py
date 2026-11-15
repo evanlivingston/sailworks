@@ -788,6 +788,162 @@ def test_era5_coverage_fails_clearly_when_the_queue_stays_full(tmp_path, monkeyp
     assert sleeps == list(adapter._QUEUE_BACKOFF_SECONDS)
 
 
+class _TrackingArcoService(_TrackingEra5Service):
+    """An ARCO downloader stub, labelled the way the core service is."""
+
+    source_label = "ARCO"
+
+
+_ARCO_STORAGE_ERROR = (
+    "google.api_core.exceptions.NotFound: 404 GET "
+    "https://storage.googleapis.com/download/storage/v1/b/arco-era5/o/"
+    "wind%2F2026%2F05%2F01.nc?alt=media: No such object. "
+    "GCS request queue depth: 3."
+)
+
+
+def _arco_coverage(adapter, tmp_path, service):
+    from types import SimpleNamespace
+
+    return adapter.Era5Coverage(
+        SimpleNamespace(root=tmp_path), service_factory=lambda store: service
+    )
+
+
+def test_era5_coverage_defaults_to_the_cds_source(tmp_path):
+    import sailworks.qt.historicalera5 as adapter
+
+    coverage = _arco_coverage(adapter, tmp_path, _TrackingEra5Service())
+
+    assert coverage.source == "CDS"
+
+
+def test_era5_coverage_recognises_the_arco_download_service(tmp_path):
+    import sailworks.qt.historicalera5 as adapter
+
+    service = object.__new__(adapter.ArcoDownloadService)
+    coverage = _arco_coverage(adapter, tmp_path, service)
+
+    assert coverage.source == "ARCO"
+
+
+def test_arco_coverage_reports_reading_not_cds_queuing(tmp_path, monkeypatch):
+    adapter = _cover_after_first_check(monkeypatch)
+    service = _TrackingArcoService()
+    reports = []
+
+    def progress(stage, completed, total, message=""):
+        reports.append(message)
+
+    _arco_coverage(adapter, tmp_path, service).ensure(_era5_units(2), progress=progress)
+
+    reading = [message for message in reports if message.startswith("reading ARCO ")]
+    assert len(reading) == 2
+    assert reading[0].startswith("reading ARCO 2026-05-01 ")
+    assert reading[1].startswith("reading ARCO 2026-05-02 ")
+    assert "queued" not in " ".join(reports).lower()
+    assert "CDS" not in " ".join(reports)
+    assert reports[-1] == "ERA5 wind data ready from ARCO"
+    assert "ERA5" in reports[-1]
+
+
+class _HourProgressArcoService(_TrackingArcoService):
+    """An ARCO stub that reports a different stage on each poll."""
+
+    def __init__(self, stages, **kwargs):
+        super().__init__(**kwargs)
+        self.stages = list(stages)
+        self.stage_polls = 0
+
+    def progress_for(self, plan):
+        index = min(self.stage_polls, len(self.stages) - 1)
+        self.stage_polls += 1
+        return {"done": 0, "total": 1, "stage": self.stages[index]}
+
+
+_ARCO_HOUR_STAGES = [
+    "Chunk 1/1: ARCO wind hour 1/6 · 2026-05-01 00:00 UTC",
+    "Chunk 1/1: ARCO wind hour 2/6 · 2026-05-01 01:00 UTC",
+]
+
+
+def _arco_hour_reports(tmp_path, monkeypatch, stages, *, alive_polls):
+    adapter = _cover_after_first_check(monkeypatch)
+    monkeypatch.setattr(adapter, "_sleep_seconds", lambda seconds: None)
+    service = _HourProgressArcoService(stages, alive_polls=alive_polls)
+    reports = []
+
+    def progress(stage, completed, total, message=""):
+        reports.append((stage, completed, total, message))
+
+    _arco_coverage(adapter, tmp_path, service).ensure(_era5_units(1), progress=progress)
+    return reports
+
+
+def test_arco_coverage_forwards_hour_stages_at_unit_counts(tmp_path, monkeypatch):
+    reports = _arco_hour_reports(
+        tmp_path, monkeypatch, _ARCO_HOUR_STAGES, alive_polls=3
+    )
+
+    hours = [entry for entry in reports if "ARCO wind hour" in entry[3]]
+    assert [message for _stage, _done, _total, message in hours] == _ARCO_HOUR_STAGES
+    # Overall counts stay the weather-unit index; no hour percentage replaces it.
+    assert {(stage, done, total) for stage, done, total, _m in hours} == {
+        ("acquiring", 0, 1)
+    }
+
+
+def test_arco_coverage_does_not_repeat_an_unchanged_stage(tmp_path, monkeypatch):
+    stages = [_ARCO_HOUR_STAGES[0], _ARCO_HOUR_STAGES[0], _ARCO_HOUR_STAGES[1]]
+
+    reports = _arco_hour_reports(tmp_path, monkeypatch, stages, alive_polls=4)
+
+    hours = [message for _s, _d, _t, message in reports if "ARCO wind hour" in message]
+    assert hours == _ARCO_HOUR_STAGES
+
+
+def test_cds_coverage_ignores_service_stages(tmp_path, monkeypatch):
+    adapter = _cover_after_first_check(monkeypatch)
+    monkeypatch.setattr(adapter, "_sleep_seconds", lambda seconds: None)
+
+    class CdsWithStages(_TrackingEra5Service):
+        def progress_for(self, plan):
+            self.stage_polls = getattr(self, "stage_polls", 0) + 1
+            return {"done": 0, "total": 1, "stage": f"CDS stage {self.stage_polls}"}
+
+    reports = []
+
+    def progress(stage, completed, total, message=""):
+        reports.append(message)
+
+    _arco_coverage(adapter, tmp_path, CdsWithStages()).ensure(
+        _era5_units(1), progress=progress
+    )
+
+    assert [message for message in reports if message.startswith("CDS stage ")] == []
+
+
+def test_arco_errors_are_not_classified_or_retried_as_cds(tmp_path, monkeypatch):
+    adapter = _cover_after_first_check(monkeypatch)
+    sleeps = []
+    monkeypatch.setattr(adapter, "_sleep_seconds", sleeps.append)
+    service = _TrackingArcoService(errors={"k1": _ARCO_STORAGE_ERROR}, alive_polls=1)
+
+    with pytest.raises(RuntimeError) as caught:
+        _arco_coverage(adapter, tmp_path, service).ensure(_era5_units(1))
+
+    message = str(caught.value)
+    assert "ERA5 download failed for 2026-05-01" in message
+    # The actionable storage error is surfaced unchanged, not reclassified.
+    assert _ARCO_STORAGE_ERROR in message
+    assert "No such object" in message
+    assert "CDS" not in message
+    assert "credentials" not in message
+    assert "queue limit" not in message
+    assert len(service.submitted) == 1
+    assert sleeps == []
+
+
 @pytest.mark.parametrize(
     "error",
     [
@@ -917,3 +1073,94 @@ def test_era5_coverage_cancellation_raises_and_cancels_submitted(tmp_path, monke
     assert [id(plan) for plan in service.cancelled] == [
         id(plan) for plan in service.submitted
     ]
+
+
+def _window_units(windows, region=REGION):
+    from types import SimpleNamespace
+
+    return [
+        SimpleNamespace(
+            start_utc=start, end_utc=end, region=region, unit_id=f"{start:}"
+        )
+        for start, end in windows
+    ]
+
+
+def test_merged_windows_collapse_ensemble_members():
+    """Same trip on nearby dates across ten years is ten requests, not seventy."""
+    from sailworks.qt.historicalera5 import merge_windows
+
+    windows = []
+    for year in range(2015, 2025):
+        base = datetime(year, 11, 11, tzinfo=UTC)
+        for offset in range(-3, 4):
+            start = base + timedelta(days=offset)
+            windows.append((start, start + timedelta(days=5)))
+
+    spans = merge_windows(_window_units(windows))
+
+    assert len(spans) == 10
+    assert spans[0][1] == datetime(2015, 11, 8, tzinfo=UTC)
+    assert spans[0][2] == datetime(2015, 11, 19, tzinfo=UTC)
+    assert spans[-1][1] == datetime(2024, 11, 8, tzinfo=UTC)
+    assert spans[-1][2] == datetime(2024, 11, 19, tzinfo=UTC)
+
+
+def test_merged_windows_join_exactly_adjacent_windows():
+    from sailworks.qt.historicalera5 import merge_windows
+
+    start = datetime(2026, 5, 1, tzinfo=UTC)
+    spans = merge_windows(
+        _window_units(
+            [
+                (start, start + timedelta(days=2)),
+                (start + timedelta(days=2), start + timedelta(days=4)),
+            ]
+        )
+    )
+
+    assert len(spans) == 1
+    assert spans[0][1:] == (start, start + timedelta(days=4))
+
+
+def test_merged_windows_keep_real_gaps_apart():
+    from sailworks.qt.historicalera5 import merge_windows
+
+    start = datetime(2026, 5, 1, tzinfo=UTC)
+    spans = merge_windows(
+        _window_units(
+            [
+                (start, start + timedelta(days=1)),
+                (start + timedelta(days=3), start + timedelta(days=4)),
+            ]
+        )
+    )
+
+    assert len(spans) == 2
+
+
+def test_merged_windows_never_merge_across_regions():
+    from sailworks.qt.historicalera5 import merge_windows
+
+    start = datetime(2026, 5, 1, tzinfo=UTC)
+    other = (-5.0, 40.0, 5.0, 50.0)
+    units = _window_units([(start, start + timedelta(days=1))]) + _window_units(
+        [(start, start + timedelta(days=1))], region=other
+    )
+
+    assert len(merge_windows(units)) == 2
+
+
+def test_merged_windows_respect_the_request_length_limit():
+    from sailworks.core.era5 import MAX_DAYS
+    from sailworks.qt.historicalera5 import merge_windows
+
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    spans = merge_windows(
+        _window_units([(start, start + timedelta(days=MAX_DAYS + 10))])
+    )
+
+    assert len(spans) == 2
+    for _area, span_start, span_end in spans:
+        assert span_end - span_start <= timedelta(days=MAX_DAYS)
+    assert spans[1][1] == spans[0][2]

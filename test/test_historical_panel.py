@@ -13,8 +13,10 @@ import pytest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QScrollArea, QTreeWidgetItem
 
+import sailworks.qt.era5download as era5download
 import sailworks.qt.historicalera5 as historicalera5
 import sailworks.qt.historicalrouting as historicalrouting
+from sailworks.core.arco import ArcoDownloadService
 from sailworks.core.geo.track import Track
 from sailworks.core.historicalroutingrecords import MemberRecord
 from sailworks.qt.historicalrouting import HistoricalRoutingPanel
@@ -625,6 +627,73 @@ def test_ensure_wind_raises_on_a_reported_error(qtbot, monkeypatch, tmp_path):
     assert service.cleared == ["key"]
 
 
+def test_historical_acquisition_defaults_to_the_arco_service(qtbot):
+    panel = historical_panel(qtbot)
+    assert panel._service_factory is ArcoDownloadService
+
+
+def test_historical_acquisition_keeps_an_injected_service_factory(qtbot):
+    service = _Service()
+    factory = lambda store: service  # noqa: E731 - the panel only calls it once
+    panel = historical_panel(qtbot, service_factory=factory)
+    assert panel._service_factory is factory
+
+
+def test_ensure_wind_uses_arco_without_a_cds_fallback(qtbot, monkeypatch, tmp_path):
+    monkeypatch.setattr(historicalera5, "read_era5_catalog", lambda root: [])
+    monkeypatch.setattr(
+        historicalera5,
+        "select_window_entries",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("missing")),
+    )
+    monkeypatch.setattr(historicalera5, "plan_request", lambda *a, **k: object())
+
+    def no_cds(store):
+        raise AssertionError("historical acquisition fell back to the CDS service")
+
+    monkeypatch.setattr(historicalera5, "Era5DownloadService", no_cds)
+    service = _Service(error="arco transport refused the transfer")
+    constructed = []
+
+    def factory(store):
+        constructed.append(store)
+        return service
+
+    monkeypatch.setattr(historicalrouting, "ArcoDownloadService", factory)
+    store = SimpleNamespace(root=str(tmp_path))
+    controller = SimpleNamespace(
+        core=None, analysis=SimpleNamespace(state=SimpleNamespace(store=store))
+    )
+    panel = historical_panel(qtbot, controller=controller)
+    with pytest.raises(RuntimeError) as error:
+        panel.ensure_wind([_unit()])
+    assert "arco transport refused the transfer" in str(error.value)
+    assert "CDS" not in str(error.value)
+    assert constructed == [store]
+
+
+def test_era5_download_tab_still_uses_the_cds_service(qtbot, monkeypatch):
+    sentinel = SimpleNamespace()
+    stores = []
+
+    def factory(store):
+        stores.append(store)
+        return sentinel
+
+    monkeypatch.setattr(era5download, "Era5DownloadService", factory)
+    monkeypatch.setattr(
+        era5download.Era5DownloadTab, "refresh_catalog", lambda self: None
+    )
+    store = SimpleNamespace(root=".")
+    controller = SimpleNamespace(
+        analysis=SimpleNamespace(state=SimpleNamespace(store=store))
+    )
+    tab = era5download.Era5DownloadTab(controller)
+    qtbot.addWidget(tab)
+    assert tab.service is sentinel
+    assert stores == [store]
+
+
 def test_run_bound_blocks_until_finished_and_returns_outcomes(qtbot):
     outcomes = [SimpleNamespace(member_id="2020-000")]
     panel = historical_panel(qtbot)
@@ -1099,11 +1168,11 @@ def test_acquiring_stage_updates_the_status_text(qtbot):
     panel = historical_panel(qtbot)
     panel.actions.progress("acquiring", 3, 12, "downloading")
 
-    assert "Acquiring" in panel.options.status.text()
-    assert "3/12" in panel.options.status.text()
-    assert "downloading" in panel.options.status.text()
+    # Counts live in the bars; the status line stays a short phase label.
+    assert panel.options.status.text() == "Acquiring weather"
     widget = panel.options.progress_widget
-    assert widget.overall_label.text() == "3 / 12 weather units"
+    assert widget.overall_bar.maximum() == 12
+    assert widget.overall_bar.value() == 3
 
 
 def test_weather_progress_events_drive_the_progress_widget(qtbot):
@@ -1111,13 +1180,11 @@ def test_weather_progress_events_drive_the_progress_widget(qtbot):
     panel._progress("acquiring", 2, 10, "Downloading ERA5 wind")
 
     widget = panel.options.progress_widget
-    assert widget.overall_label.text() == "2 / 10 weather units"
-    assert widget.overall_bar.value() == 20
+    assert widget.overall_bar.maximum() == 10
+    assert widget.overall_bar.value() == 2
     assert widget.route_bar.isHidden()
     # Acquisition owns the widget and replaces the stale start-up status.
-    assert (
-        panel.options.status.text() == "Acquiring weather 2/10 · Downloading ERA5 wind"
-    )
+    assert panel.options.status.text() == "Acquiring weather"
     assert not panel.options.status.isHidden()
 
 
@@ -1128,3 +1195,71 @@ def test_finished_marks_the_progress_widget(qtbot):
 
     panel._finished("", "")
     assert panel.options.progress_widget.overall_label.text() == "done"
+
+
+def test_is_running_tracks_the_worker_thread(qtbot):
+    """A live worker is busy even while the routing controller is idle."""
+    panel = historical_panel(qtbot)
+    assert panel.is_running() is False
+
+    thread = SimpleNamespace(is_alive=lambda: True, alive_flag=True)
+    panel._thread = thread
+    assert panel.is_running() is True
+
+    thread.is_alive = lambda: False
+    assert panel.is_running() is False
+
+
+def test_routing_panel_hides_its_duplicate_progress_while_historical_runs():
+    """One progress display and one Cancel, not two of each."""
+    from types import SimpleNamespace
+
+    from sailworks.qt.routingpanel import RoutingPanel
+
+    seen = {}
+
+    def widget(name):
+        return SimpleNamespace(
+            setVisible=lambda visible, n=name: seen.__setitem__(n, visible)
+        )
+
+    panel = SimpleNamespace(
+        progress=widget("progress"),
+        status=widget("status"),
+        cancel_button=widget("cancel"),
+    )
+
+    panel.routing = SimpleNamespace(busy=False)
+
+    # Acquisition: only the historical panel's Cancel can stop it.
+    RoutingPanel._sync_run_visibility(panel, True)
+    assert seen == {"progress": False, "status": False, "cancel": False}
+
+    # Routing: the engine owns the Cancel.
+    panel.routing.busy = True
+    RoutingPanel._sync_run_visibility(panel, True)
+    assert seen == {"progress": False, "status": False, "cancel": True}
+
+    # Idle: the normal routing controls come back.
+    panel.routing.busy = False
+    RoutingPanel._sync_run_visibility(panel, False)
+    assert seen == {"progress": True, "status": True, "cancel": True}
+
+
+def test_snapshot_replaces_the_stale_acquisition_status(qtbot):
+    panel = historical_panel(qtbot)
+    panel.routing_controller = SimpleNamespace(
+        busy=True,
+        message="Native scenario 2/63 · effort 40%",
+        bound_total=63,
+        bound_completed=1,
+        progress_indeterminate=False,
+        percent=40.0,
+        native_started_at=None,
+        native_counters=None,
+    )
+    panel.options.set_status("Acquiring weather")
+
+    panel._progress_snapshot()
+
+    assert panel.options.status.text() == "Native scenario 2/63 · effort 40%"

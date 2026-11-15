@@ -26,6 +26,7 @@ from sailworks.core import utils
 
 from sailworks.core.mapviewport import MapPoint
 from .style import (
+    CairoStyle,
     ROUTE_SAIL_CHANGE_COLOUR,
     ROUTE_UNKNOWN_COLOUR,
     Style,
@@ -217,6 +218,34 @@ def routing_detail_fields(r):
             avg_str += " (leg mean)"
         fields.append(("speed", avg_str))
     return fields
+
+
+def parse_track_colour(value):
+    """Return an RGBA tuple for a saved ``#rrggbb`` track colour, or ``None``.
+
+    Tracks are drawn with the fixed dashed styles unless the user chose a
+    colour for that track; a malformed value falls back to the default style
+    rather than failing a frame.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lstrip("#")
+    if len(text) != 6:
+        return None
+    try:
+        red, green, blue = (int(text[index : index + 2], 16) for index in (0, 2, 4))
+    except ValueError:
+        return None
+    return (red / 255.0, green / 255.0, blue / 255.0, 1.0)
+
+
+def _apply_track_style(cr, style, track):
+    """Stroke a track with its own colour when it has one, else the default."""
+    colour = parse_track_colour(getattr(track, "color", None))
+    if colour is None:
+        style.apply(cr)
+        return
+    CairoStyle(color=colour, line_width=style.line_width, dash=style.dash).apply(cr)
 
 
 def track_mark_count(count):
@@ -679,10 +708,12 @@ class NavigationRenderer:
                     cr.stroke()
 
                     if prevx is not None and prevy is not None:
-                        if active:
-                            Style.Track.TrackActive.apply(cr)
-                        else:
-                            Style.Track.TrackInactive.apply(cr)
+                        default = (
+                            Style.Track.TrackActive
+                            if active
+                            else Style.Track.TrackInactive
+                        )
+                        _apply_track_style(cr, default, tr)
 
                         cr.move_to(prevx, prevy)
                         cr.line_to(x, y)

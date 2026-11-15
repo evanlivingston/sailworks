@@ -114,9 +114,22 @@ class HistoricalRoutingCoordinator:
     must accept it.
     """
 
-    def __init__(self, *, store, scene=None, now=None):
+    def __init__(
+        self,
+        *,
+        store,
+        scene=None,
+        now=None,
+        tranche_store=None,
+        tranche_store_provider=None,
+    ):
         self.store = store
         self.scene = scene
+        # Job records live in ``store``; the ERA5 catalog and forecast
+        # tranches live in the forecast analysis store. They are different
+        # roots, so freezing needs the latter explicitly.
+        self.tranche_store = tranche_store
+        self.tranche_store_provider = tranche_store_provider
         if now is None:
             self._clock = lambda: datetime.now(timezone.utc)
         elif callable(now):
@@ -126,6 +139,12 @@ class HistoricalRoutingCoordinator:
             self._clock = lambda: fixed
         self.publisher = HistoricalPublisher(store=store, scene=scene, now=self._clock)
         self.retrier = HistoricalRetrier(self)
+
+    def _wind_store(self):
+        """The store holding the ERA5 catalog and wind tranches."""
+        if self.tranche_store_provider is not None:
+            return self.tranche_store_provider()
+        return self.tranche_store or self.store
 
     def preflight(self, spec, base_request):
         """Plan members, exclusions and the acquisition, without side effects."""
@@ -392,7 +411,7 @@ class HistoricalRoutingCoordinator:
             executions = build_executions(
                 prepared,
                 base_request,
-                store=self.store,
+                store=self._wind_store(),
                 target_departure_utc=self._target_departure(spec),
                 current_binding=getattr(acquisition, "binding", None),
                 use_currents=use_currents,

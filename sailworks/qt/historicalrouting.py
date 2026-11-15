@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QSplitter, QVBoxLayout, QWidget
 
+from sailworks.core.arco import ArcoDownloadService
 from sailworks.core.historicalcoordinator import HistoricalRoutingCoordinator
 from sailworks.core.historicalrouting import HistoricalRoutingSpec, reference_year
 from sailworks.core.historicalroutingstore import HistoricalRoutingStore
@@ -74,7 +75,12 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         super().__init__(parent)
         self.routing_controller = routing_controller
         self.request_provider = request_provider
-        self._service_factory = service_factory
+        # Ensemble acquisitions use the ARCO transport by default; tests and
+        # callers may still inject a fake through ``service_factory``.
+        self._service_factory = service_factory or ArcoDownloadService
+        # Set while weather acquisition is running, so the progress probe can
+        # read its real span/request/hour counts.
+        self._coverage = None
         self._cancel_event = threading.Event()
         self._thread = None
         self._record = None
@@ -87,6 +93,9 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         self.coordinator = HistoricalRoutingCoordinator(
             store=self.store,
             scene=scene_provider() if scene_provider is not None else None,
+            # Wind tranches and the ERA5 catalog live in the forecast analysis
+            # store, not in the job store.
+            tranche_store_provider=self._tranche_store,
         )
         self.actions = HistoricalRoutingActions(self)
 
@@ -153,6 +162,10 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
                 "Build a route request before starting historical routing."
             )
         return request
+
+    def is_running(self):
+        """Whether a historical run, including weather acquisition, is alive."""
+        return self._thread is not None and self._thread.is_alive()
 
     def _departure_local(self, departure):
         zone = ZoneInfo(local_timezone_id())
@@ -243,7 +256,22 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
             completed = 0
             route_percent = None
             route_indeterminate = True
+        coverage = self._coverage
+        detail = None
+        if coverage is not None and hasattr(coverage, "detail"):
+            try:
+                detail = coverage.detail()
+            except Exception:
+                detail = None
+        if routing:
+            # Acquisition left its phase label behind; show what the engine is
+            # actually doing now instead of a stale "Acquiring weather".
+            self.options.set_status(getattr(rc, "message", "") or "Routing members")
+        # Only one Cancel is shown: the routing engine's while it runs, this
+        # panel's while acquisition is the thing that can be stopped.
+        self.options.cancel_button.setVisible(not routing)
         return {
+            "weather_detail": detail,
             "running": bool(getattr(rc, "busy", False))
             or (self._thread is not None and self._thread.is_alive()),
             "completed": completed,

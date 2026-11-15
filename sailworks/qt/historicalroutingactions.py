@@ -36,14 +36,9 @@ class HistoricalRoutingActions:
             owner._tranche_store()
             preflight = getattr(owner.coordinator, "preflight", None)
             if callable(preflight):
-                prepared = preflight(spec, base)
-                west, south, east, north = spec.region
-                owner.options.set_estimate(
-                    f"{prepared.effective_years} years · "
-                    f"{prepared.estimated_bytes / 1e9:.1f} GB wind data · "
-                    f"region {south:.0f}°–{north:.0f} lat, "
-                    f"{west:.0f}°–{east:.0f} lon"
-                )
+                # The run reports downloaded size and remaining time live, so
+                # the panel does not need a static years/region summary first.
+                preflight(spec, base)
         except Exception as error:
             owner.options.set_status(str(error))
             return
@@ -193,15 +188,10 @@ class HistoricalRoutingActions:
     def progress(self, stage, completed, total, message):
         owner = self.owner
         if str(stage).startswith("acquir"):
+            # The progress bars carry the counts and the current hour, so the
+            # status line stays a short phase label instead of duplicating it.
             owner.options.set_weather_progress(completed, total, message)
-            text = (
-                f"Acquiring weather {completed}/{total}"
-                if total
-                else "Acquiring weather"
-            )
-            if message:
-                text = f"{text} · {message}"
-            owner.options.set_status(text)
+            owner.options.set_status("Acquiring weather")
             return
         suffix = f" {completed}/{total}" if total else ""
         owner.options.set_status(

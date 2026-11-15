@@ -360,6 +360,11 @@ class Era5DownloadService:
         self._completed_resumes = []
 
     _job_key = staticmethod(job_key)
+    # Publication identity is overridable so an alternate ERA5 reader can use
+    # the same atomic catalog without being labelled as a CDS download.
+    queued_stage = "Queued for CDS…"
+    catalog_dataset = DATASET
+    catalog_source = "CDS ERA5 hourly single levels reanalysis"
 
     def _matching_key(self, plan):
         key = self._job_key(plan)
@@ -391,7 +396,7 @@ class Era5DownloadService:
             self.progress[key] = {
                 "done": 0,
                 "total": 0,
-                "stage": "Queued for CDS…",
+                "stage": self.queued_stage,
             }
             thread = threading.Thread(
                 target=self._run_guarded, args=(key, plan, cancel, retry), daemon=True
@@ -436,7 +441,7 @@ class Era5DownloadService:
             ):
                 del self._job_plans[key]
 
-    def _set_progress(self, key, *, done=None, total=None, stage=None):
+    def _set_progress(self, key, *, done=None, total=None, stage=None, detail=None):
         with self._lock:
             entry = self.progress.setdefault(key, {"done": 0, "total": 0, "stage": ""})
             if done is not None:
@@ -445,39 +450,15 @@ class Era5DownloadService:
                 entry["total"] = total
             if stage is not None:
                 entry["stage"] = stage
+            if detail is not None:
+                # A finer tier inside the current chunk, e.g. hours of a day.
+                entry["detail"] = {"done": int(detail[0]), "total": int(detail[1])}
 
     def _run_guarded(self, key, plan, cancel, retry):
         try:
             self._run(plan, cancel, retry)
         except Exception as exc:
-            # CDS exceptions can contain request headers and credential material.
-            raw_message = str(exc)
-            lowered = raw_message.lower()
-            status = _http_status(exc)
-            if status in (401, 403) or any(
-                word in lowered for word in ("unauthor", "credential", "token")
-            ):
-                message = (
-                    "CDS API authentication failed. Check ~/.cdsapirc and accept "
-                    "the ERA5 dataset terms at cds.climate.copernicus.eu."
-                )
-            elif isinstance(exc, Era5Error):
-                message = raw_message
-            elif status in (400, 422):
-                message = f"ERA5 request rejected (HTTP {status}): {raw_message}"
-            else:
-                # Third-party errors may embed CDS request headers or tokens, so
-                # keep only the exception class and any HTTP status. A bare
-                # HTTPError is a transport/rate-limit failure, not a credentials
-                # one, and callers classify on the status.
-                kind = type(exc).__name__
-                if status is not None:
-                    kind = f"{kind} HTTP {status}"
-                message = (
-                    f"ERA5 download failed ({kind}); CDS may be rate limiting or "
-                    "temporarily unavailable, or the request was rejected. "
-                    "Retry shortly."
-                )
+            message = self._failure_message(exc)
             with self._lock:
                 self.errors[key] = message[:1000]
             self._set_progress(key, stage="Failed")
@@ -487,6 +468,36 @@ class Era5DownloadService:
                 if job and job[0] is threading.current_thread():
                     del self._jobs[key]
                 self._trim_finished()
+
+    def _failure_message(self, exc):
+        """Map a retrieval failure to an actionable message for the caller."""
+        # CDS exceptions can contain request headers and credential material.
+        raw_message = str(exc)
+        lowered = raw_message.lower()
+        status = _http_status(exc)
+        if status in (401, 403) or any(
+            word in lowered for word in ("unauthor", "credential", "token")
+        ):
+            return (
+                "CDS API authentication failed. Check ~/.cdsapirc and accept "
+                "the ERA5 dataset terms at cds.climate.copernicus.eu."
+            )
+        if isinstance(exc, Era5Error):
+            return raw_message
+        if status in (400, 422):
+            return f"ERA5 request rejected (HTTP {status}): {raw_message}"
+        # Third-party errors may embed CDS request headers or tokens, so
+        # keep only the exception class and any HTTP status. A bare
+        # HTTPError is a transport/rate-limit failure, not a credentials
+        # one, and callers classify on the status.
+        kind = type(exc).__name__
+        if status is not None:
+            kind = f"{kind} HTTP {status}"
+        return (
+            f"ERA5 download failed ({kind}); CDS may be rate limiting or "
+            "temporarily unavailable, or the request was rejected. "
+            "Retry shortly."
+        )
 
     def _run(self, plan, cancel, retry):
         key = self._job_key(plan)
@@ -498,7 +509,8 @@ class Era5DownloadService:
             key, done=0, total=total, stage=f"Planning {total} CDS chunk(s)…"
         )
         entries = self._catalog_entries(catalog)
-        staged_chunks = []
+        published = 0
+        published_chunks = []
         done = 0
         with tempfile.TemporaryDirectory(prefix="era5-") as staging:
             # CDS caps the number of queued requests per dataset and asks scripts
@@ -537,9 +549,14 @@ class Era5DownloadService:
                 self._set_progress(
                     key, stage=f"Chunk {n + 1}/{total}: waiting for CDS results…"
                 )
-                staged_chunks.append(
-                    self._stage_chunk(staging, n, piece, cancel, retry)
-                )
+                staged = self._stage_chunk(staging, n, piece, cancel, retry)
+                # Publish each validated day immediately. A run that is
+                # cancelled, or an app that restarts, then keeps every finished
+                # day and the next run skips it instead of downloading again.
+                self._set_progress(key, stage=f"Chunk {n + 1}/{total}: publishing…")
+                self._publish_chunks(root, catalog, [staged], cancel)
+                published_chunks.append(staged)
+                published += 1
                 done += 1
                 self._set_progress(
                     key,
@@ -548,12 +565,10 @@ class Era5DownloadService:
                 )
             if cancel.is_set():
                 raise Era5Error("ERA5 download canceled")
-            if not staged_chunks:
+            if not published:
                 self._set_progress(key, done=total, stage="Already available")
                 return
-            self._set_progress(key, stage="Publishing ERA5 history…")
-            self._publish_chunks(root, catalog, staged_chunks, cancel)
-            for _path, piece, _provenance in staged_chunks:
+            for _path, piece, _provenance in published_chunks:
                 self._forget_pending(getattr(piece, "_pending_request_id", None))
         self._set_progress(key, done=total, stage="Complete")
 
@@ -816,8 +831,8 @@ class Era5DownloadService:
                 if created:
                     registered.append(artifact)
                 record = {
-                    "dataset": DATASET,
-                    "source": "CDS ERA5 hourly single levels reanalysis",
+                    "dataset": self.catalog_dataset,
+                    "source": self.catalog_source,
                     "artifact": artifact.path,
                     "sha256": artifact.sha256,
                     "size": artifact.size,

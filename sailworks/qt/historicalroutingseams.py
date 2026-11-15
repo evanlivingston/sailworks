@@ -1,7 +1,9 @@
 """Blocking coordinator seams the historical routing panel supplies.
 
 The mixin expects the owning panel to provide ``routing_controller``,
-``options``, ``_service_factory`` and ``_cancel_event``.
+``options``, ``_service_factory`` and ``_cancel_event``. The panel's default
+factory downloads ERA5 wind through the ARCO transport; the manual ERA5
+download tab keeps using the CDS service directly.
 """
 
 from __future__ import annotations
@@ -41,7 +43,12 @@ class HistoricalRoutingSeams:
             service_factory=self._service_factory,
             cancel_event=self._cancel_event,
         )
-        coverage.ensure(units, progress)
+        # The progress probe samples live acquisition counts for its bars.
+        self._coverage = coverage
+        try:
+            coverage.ensure(units, progress)
+        finally:
+            self._coverage = None
 
     def _marine_manager(self):
         manager = getattr(

@@ -96,60 +96,83 @@ def select_window_entries(
     end = _as_utc(end_utc, "window end")
     expected = hourly_window(start, end)
     if len(expected) < MIN_WINDOW_HOURS:
-        raise HistoricalTrancheError(f"window must cover at least {MIN_WINDOW_HOURS} hours")
+        raise HistoricalTrancheError(
+            f"window must cover at least {MIN_WINDOW_HOURS} hours"
+        )
     if len(expected) > MAX_WINDOW_HOURS:
-        raise HistoricalTrancheError(f"window must cover at most {MAX_WINDOW_HOURS} hours")
+        raise HistoricalTrancheError(
+            f"window must cover at most {MAX_WINDOW_HOURS} hours"
+        )
     requested_area = _validate_area(area, "requested area")
     required = _required_variables(fields)
 
+    # A catalog chunk need only overlap the window: acquisition stores whole
+    # UTC days, so a window that starts mid-day is covered by a chunk that
+    # begins earlier and ends later. Only overlap matters here; the hourly
+    # walk below proves exact coverage.
     contained = []
     for entry in catalog or ():
         if not (entry.get("artifact") and entry.get("start") and entry.get("end")):
             continue
         span = _entry_span(entry)
-        if span[0] < start or span[1] >= end:
+        if span[1] < start or span[0] > expected[-1]:
             continue
         contained.append((span, entry))
     if not contained:
         raise HistoricalTrancheError(
-            f"no ERA5 catalog entries fall inside {expected[0].isoformat()} .. "
+            f"no ERA5 catalog entries cover {expected[0].isoformat()} .. "
             f"{expected[-1].isoformat()}"
         )
     contained.sort(key=lambda item: item[0][0])
 
-    distinct_areas: list[tuple[float, ...]] = []
-    for _, entry in contained:
-        entry_area = _validate_area(entry.get("area"), "catalog entry area")
-        if not any(_areas_match(entry_area, known) for known in distinct_areas):
-            distinct_areas.append(entry_area)
-    if len(distinct_areas) > 1:
-        raise HistoricalTrancheError("ERA5 window spans more than one area")
-
+    # Only this window's area is relevant. Another route's region can store the
+    # same days, and its chunks must not make this window look ambiguous.
     matching = [
         (span, entry)
         for span, entry in contained
-        if _areas_match(_validate_area(entry.get("area"), "catalog entry area"), requested_area)
+        if _areas_match(
+            _validate_area(entry.get("area"), "catalog entry area"), requested_area
+        )
     ]
     if not matching:
-        raise HistoricalTrancheError(f"no ERA5 catalog entries match area {requested_area}")
+        raise HistoricalTrancheError(
+            f"no ERA5 catalog entries match area {requested_area}"
+        )
 
-    covered: dict[datetime, dict] = {}
-    selected = []
+    candidates = []
     for span, entry in matching:
         variables = tuple(entry.get("variables") or era5.VARIABLES)
         missing = [name for name in required if name not in variables]
         if missing:
             raise HistoricalTrancheError(
-                f"entry for {span[0].isoformat()} is missing variables: " f"{', '.join(missing)}"
+                f"entry for {span[0].isoformat()} is missing variables: "
+                f"{', '.join(missing)}"
             )
-        cursor = span[0]
-        while cursor <= span[1]:
-            if cursor in covered:
-                raise HistoricalTrancheError(
-                    f"window hour {cursor.isoformat()} is covered by more than one entry"
-                )
-            covered[cursor] = entry
-            cursor += _HOUR
+        candidates.append((span, entry, variables))
+    candidates.sort(key=lambda item: item[0][0])
+
+    # Greedy interval cover. Each chosen chunk must start after the last chosen
+    # chunk ends, so no hour is concatenated into the GRIB twice, and the chunk
+    # that reaches furthest is preferred. A partial day and the whole day are
+    # alternatives, never both.
+    selected = []
+    covered: set[datetime] = set()
+    cursor = start
+    while cursor <= expected[-1]:
+        best = None
+        for span, entry, variables in candidates:
+            if span[0] > cursor or span[1] < cursor:
+                continue
+            if best is None or span[1] > best[0][1]:
+                best = (span, entry, variables)
+        if best is None:
+            raise HistoricalTrancheError(
+                f"window hour {cursor.isoformat()} is not covered by any entry"
+            )
+        span, entry, variables = best
+        last = min(span[1], expected[-1])
+        for hour in range(int((last - cursor).total_seconds() // 3600) + 1):
+            covered.add(cursor + _HOUR * hour)
         selected.append(
             {
                 "artifact": str(entry["artifact"]),
@@ -159,6 +182,7 @@ def select_window_entries(
                 "variables": list(variables),
             }
         )
+        cursor = span[1] + _HOUR
 
     for hour in expected:
         if hour not in covered:
@@ -194,7 +218,9 @@ def build_wind_tranche(
     except ValueError as exc:
         raise HistoricalTrancheError(str(exc)) from exc
     selected = select_window_entries(entries, start_utc, end_utc, search_area)
-    tranche = era5.build_history_display(_StoreCarrier(store), selected, model_id=model_id)
+    tranche = era5.build_history_display(
+        _StoreCarrier(store), selected, model_id=model_id
+    )
     try:
         store.publish(tranche)
     except FileExistsError:
@@ -240,7 +266,9 @@ def _parse_stamp(value, label: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
-        raise HistoricalTrancheError(f"{label} is not an ISO timestamp: {value}") from exc
+        raise HistoricalTrancheError(
+            f"{label} is not an ISO timestamp: {value}"
+        ) from exc
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return _as_utc(parsed, label)
@@ -250,7 +278,9 @@ def _entry_span(entry) -> tuple[datetime, datetime]:
     start = _parse_stamp(entry.get("start"), "entry start")
     end = _parse_stamp(entry.get("end"), "entry end")
     if end < start:
-        raise HistoricalTrancheError(f"entry end precedes its start: {start.isoformat()}")
+        raise HistoricalTrancheError(
+            f"entry end precedes its start: {start.isoformat()}"
+        )
     return start, end
 
 

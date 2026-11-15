@@ -643,6 +643,11 @@ def test_failed_multichunk_import_preserves_preexisting_content_addressed_artifa
             target.write_bytes(data)
             return Artifact(f"artifacts/{sha}", sha, len(data))
 
+        def register_file_tracked(self, source):
+            # Each validated day publishes as it completes, so the import needs
+            # the tracked variant the real store provides.
+            return self.register_file(source), True
+
     class Client:
         def retrieve(self, _dataset, _request, target):
             Path(target).write_bytes(existing_bytes)
@@ -661,7 +666,11 @@ def test_failed_multichunk_import_preserves_preexisting_content_addressed_artifa
     with pytest.raises(Era5Error, match="second chunk"):
         service._run(planned, threading.Event(), False)
     assert (root / "artifacts" / digest).read_bytes() == existing_bytes
-    assert not (root / "era5-history.json").exists()
+    # Each validated day publishes as it completes, so the first day's entry is
+    # kept for reuse and only the failed chunk is missing.
+    entries = json.loads((root / "era5-history.json").read_text())
+    assert len(entries) == 1
+    assert entries[0]["end"] == "2025-01-01T23:00:00+00:00"
 
 
 def test_successful_era5_import_publishes_catalog_and_artifact(tmp_path):
