@@ -428,6 +428,40 @@ def test_weather_phase_shows_units_and_hides_the_route_row(qtbot):
     assert widget.counters_label.text() == "Downloading ERA5 wind"
 
 
+def test_weather_phase_survives_a_probe_refresh_while_acquiring(qtbot):
+    widget = HistoricalProgress()
+    qtbot.addWidget(widget)
+    widget.set_weather_phase(0, 12, "ERA5 wind coverage")
+    widget.set_probe(
+        lambda: _snapshot(
+            completed=0,
+            total=0,
+            route_percent=None,
+            route_indeterminate=True,
+            routing=False,
+        )
+    )
+    widget.refresh_from_probe()
+
+    assert widget.overall_label.text() == "0 / 12 weather units"
+    assert widget.route_bar.isHidden()
+    assert widget.route_caption.isHidden()
+    assert widget.route_label.isHidden()
+    assert widget.counters_label.text() == "ERA5 wind coverage"
+
+
+def test_weather_phase_hands_over_when_routing_starts(qtbot):
+    widget = HistoricalProgress()
+    qtbot.addWidget(widget)
+    widget.set_weather_phase(0, 12, "ERA5 wind coverage")
+    widget.set_probe(lambda: _snapshot(routing=True))
+    widget.refresh_from_probe()
+
+    assert widget.overall_label.text() == "12 / 70 routes"
+    assert not widget.route_bar.isHidden()
+    assert widget.route_label.text() == "41% · forward isochrone"
+
+
 def test_reset_is_idle_and_finished_leaves_the_outcome(qtbot):
     widget = HistoricalProgress()
     qtbot.addWidget(widget)

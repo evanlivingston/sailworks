@@ -189,11 +189,13 @@ class HistoricalProgress(QWidget):
 
         if self._weather_phase:
             # Acquisition reports unit progress only.  Leave the weather
-            # display in place until the route tier actually starts.
-            if completed > 0 or route_percent is not None:
-                self._weather_phase = False
-            else:
+            # display in place until the route tier actually starts; the
+            # snapshot's ``routing`` flag marks that handover, so a snapshot
+            # that merely lacks a route percent cannot clear the display.
+            routing = bool(snapshot.get("routing", route_percent is not None))
+            if not routing and completed == 0:
                 return
+            self._weather_phase = False
 
         if total > 0 and completed >= total:
             fraction = 1.0

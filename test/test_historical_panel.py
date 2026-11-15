@@ -554,7 +554,7 @@ class _Service:
         self.cleared = []
         self.cancelled = []
 
-    def submit(self, plan):
+    def submit(self, plan, *, retry=False):
         self.submitted.append(plan)
         return SimpleNamespace(era5_key="key", is_alive=lambda: False)
 
@@ -1040,6 +1040,72 @@ def test_progress_snapshot_reads_the_routing_controller(qtbot):
     assert snapshot["elapsed_seconds"] >= 40
 
 
+def test_progress_snapshot_waits_for_native_routing(qtbot):
+    panel = historical_panel(qtbot)
+    panel.routing_controller = SimpleNamespace(
+        busy=True,
+        bound_completed=0,
+        bound_total=0,
+        percent=0.0,
+        progress_indeterminate=False,
+        message="downloading ERA5",
+        native_counters=None,
+        native_started_at=None,
+    )
+
+    snapshot = panel._progress_snapshot()
+    assert snapshot["route_percent"] is None
+    assert snapshot["route_indeterminate"] is True
+    assert snapshot["routing"] is False
+    assert snapshot["completed"] == 0
+
+
+def test_progress_snapshot_reports_routing_once_it_starts(qtbot):
+    panel = historical_panel(qtbot)
+    panel.routing_controller = SimpleNamespace(
+        busy=True,
+        bound_completed=4,
+        bound_total=70,
+        percent=12.0,
+        progress_indeterminate=False,
+        message="forward isochrone",
+        native_counters={},
+        native_started_at=None,
+    )
+
+    snapshot = panel._progress_snapshot()
+    assert snapshot["routing"] is True
+    assert snapshot["route_percent"] == 12.0
+    assert snapshot["completed"] == 4
+
+    # A started native engine alone is enough, even before a member binds.
+    panel.routing_controller = SimpleNamespace(
+        busy=True,
+        bound_completed=0,
+        bound_total=0,
+        percent=5.0,
+        progress_indeterminate=False,
+        message="native startup",
+        native_counters={},
+        native_started_at=time.monotonic() - 5,
+    )
+
+    snapshot = panel._progress_snapshot()
+    assert snapshot["routing"] is True
+    assert snapshot["route_percent"] == 5.0
+
+
+def test_acquiring_stage_updates_the_status_text(qtbot):
+    panel = historical_panel(qtbot)
+    panel.actions.progress("acquiring", 3, 12, "downloading")
+
+    assert "Acquiring" in panel.options.status.text()
+    assert "3/12" in panel.options.status.text()
+    assert "downloading" in panel.options.status.text()
+    widget = panel.options.progress_widget
+    assert widget.overall_label.text() == "3 / 12 weather units"
+
+
 def test_weather_progress_events_drive_the_progress_widget(qtbot):
     panel = historical_panel(qtbot)
     panel._progress("acquiring", 2, 10, "Downloading ERA5 wind")
@@ -1048,8 +1114,11 @@ def test_weather_progress_events_drive_the_progress_widget(qtbot):
     assert widget.overall_label.text() == "2 / 10 weather units"
     assert widget.overall_bar.value() == 20
     assert widget.route_bar.isHidden()
-    # Acquisition owns the widget; the status line keeps its old text.
-    assert panel.options.status.isHidden()
+    # Acquisition owns the widget and replaces the stale start-up status.
+    assert (
+        panel.options.status.text() == "Acquiring weather 2/10 · Downloading ERA5 wind"
+    )
+    assert not panel.options.status.isHidden()
 
 
 def test_finished_marks_the_progress_widget(qtbot):

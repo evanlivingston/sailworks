@@ -225,17 +225,32 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         """The progress probe the options panel's widget samples."""
         rc = self.routing_controller
         started = getattr(rc, "native_started_at", None)
-        return {
-            "running": bool(getattr(rc, "busy", False))
-            or (self._thread is not None and self._thread.is_alive()),
-            "completed": int(getattr(rc, "bound_completed", 0) or 0),
-            "total": int(getattr(rc, "bound_total", 0) or 0),
-            "route_percent": (
+        total = int(getattr(rc, "bound_total", 0) or 0)
+        # A zero bound total means the native engine has not seen a member yet:
+        # the run is still acquiring weather. Reporting a route percent then
+        # would make the widget drop the weather phase and repaint an empty
+        # route view on every refresh.
+        routing = total > 0 or started is not None
+        if routing:
+            completed = int(getattr(rc, "bound_completed", 0) or 0)
+            route_percent = (
                 None
                 if getattr(rc, "progress_indeterminate", True)
                 else float(getattr(rc, "percent", 0.0) or 0.0)
-            ),
-            "route_indeterminate": bool(getattr(rc, "progress_indeterminate", True)),
+            )
+            route_indeterminate = bool(getattr(rc, "progress_indeterminate", True))
+        else:
+            completed = 0
+            route_percent = None
+            route_indeterminate = True
+        return {
+            "running": bool(getattr(rc, "busy", False))
+            or (self._thread is not None and self._thread.is_alive()),
+            "completed": completed,
+            "total": total,
+            "route_percent": route_percent,
+            "route_indeterminate": route_indeterminate,
+            "routing": routing,
             "stage": getattr(rc, "message", "") or "",
             "counters": self._counter_text(getattr(rc, "native_counters", None)),
             "elapsed_seconds": (time.monotonic() - started) if started else 0.0,

@@ -194,8 +194,14 @@ class HistoricalRoutingActions:
         owner = self.owner
         if str(stage).startswith("acquir"):
             owner.options.set_weather_progress(completed, total, message)
-            if not total and message:
-                owner.options.set_status(message)
+            text = (
+                f"Acquiring weather {completed}/{total}"
+                if total
+                else "Acquiring weather"
+            )
+            if message:
+                text = f"{text} · {message}"
+            owner.options.set_status(text)
             return
         suffix = f" {completed}/{total}" if total else ""
         owner.options.set_status(
