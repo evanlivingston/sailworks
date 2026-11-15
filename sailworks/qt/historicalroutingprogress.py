@@ -9,13 +9,9 @@ progress in the engine, so this widget deliberately shows none.
 from __future__ import annotations
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import (
-    QGridLayout,
-    QLabel,
-    QProgressBar,
-    QSizePolicy,
-    QWidget,
-)
+from PySide6.QtWidgets import QGridLayout, QLabel, QSizePolicy, QWidget
+
+from sailworks.qt.progressbar import TweenedProgressBar
 
 #: How often the widget samples the panel's progress probe, in milliseconds.
 REFRESH_MS = 250
@@ -73,11 +69,7 @@ def _data_line(detail):
 
 
 def _caption(text):
-    label = QLabel(text)
-    font = label.font()
-    font.setBold(True)
-    label.setFont(font)
-    return label
+    return QLabel(text)
 
 
 def _compact_count(value):
@@ -120,13 +112,7 @@ class HistoricalProgress(QWidget):
         layout.setColumnStretch(1, 1)
 
         self.overall_caption = _caption("Overall")
-        self.overall_bar = QProgressBar()
-        self.overall_bar.setRange(0, 100)
-        self.overall_bar.setValue(0)
-        self.overall_bar.setTextVisible(False)
-        # Tall enough for the count drawn inside it, like the finer bars.
-        self.overall_bar.setFixedHeight(16)
-        self.overall_bar.setMinimumWidth(60)
+        self.overall_bar = TweenedProgressBar()
         self.overall_bar.setAccessibleName("Overall historical progress")
 
         self.overall_label = QLabel()
@@ -141,17 +127,10 @@ class HistoricalProgress(QWidget):
         )
 
         layout.addWidget(self.overall_caption, 0, 0)
-        layout.addWidget(self.overall_bar, 0, 1)
-        layout.addWidget(self.overall_label, 0, 2)
-        layout.addWidget(self.eta_label, 0, 3)
+        layout.addWidget(self.overall_bar, 0, 1, 1, 3)
 
         self.route_caption = _caption("Current route")
-        self.route_bar = QProgressBar()
-        self.route_bar.setRange(0, 100)
-        self.route_bar.setValue(0)
-        self.route_bar.setTextVisible(False)
-        self.route_bar.setFixedHeight(10)
-        self.route_bar.setMinimumWidth(60)
+        self.route_bar = TweenedProgressBar()
         self.route_bar.setAccessibleName("Current route progress")
 
         self.route_label = QLabel()
@@ -160,9 +139,8 @@ class HistoricalProgress(QWidget):
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
 
-        layout.addWidget(self.route_caption, 1, 0)
-        layout.addWidget(self.route_bar, 1, 1)
-        layout.addWidget(self.route_label, 1, 2, 1, 2)
+        layout.addWidget(self.route_caption, 3, 0)
+        layout.addWidget(self.route_bar, 3, 1, 1, 3)
 
         # Acquisition has two finer tiers than the batch: the request being
         # fetched and the hour inside it. Both are real counts, not estimates.
@@ -175,10 +153,10 @@ class HistoricalProgress(QWidget):
         self.hour_caption = _caption("Hour")
         self.hour_bar = self._detail_bar("Current weather hour progress")
 
-        layout.addWidget(self.request_caption, 2, 0)
-        layout.addWidget(self.request_bar, 2, 1, 1, 3)
-        layout.addWidget(self.hour_caption, 3, 0)
-        layout.addWidget(self.hour_bar, 3, 1, 1, 3)
+        layout.addWidget(self.request_caption, 1, 0)
+        layout.addWidget(self.request_bar, 1, 1, 1, 3)
+        layout.addWidget(self.hour_caption, 2, 0)
+        layout.addWidget(self.hour_bar, 2, 1, 1, 3)
 
         self.counters_label = QLabel()
         self.counters_label.setWordWrap(True)
@@ -186,16 +164,13 @@ class HistoricalProgress(QWidget):
         font = self.counters_label.font()
         font.setPointSize(max(7, font.pointSize() - 1))
         self.counters_label.setFont(font)
-        layout.addWidget(self.counters_label, 4, 1, 1, 3)
+        layout.addWidget(self.overall_label, 4, 1, 1, 3)
+        layout.addWidget(self.eta_label, 5, 1, 1, 3)
+        layout.addWidget(self.route_label, 6, 1, 1, 3)
+        layout.addWidget(self.counters_label, 7, 1, 1, 3)
 
     def _detail_bar(self, name):
-        bar = QProgressBar()
-        bar.setRange(0, 100)
-        bar.setValue(0)
-        bar.setTextVisible(True)
-        bar.setFormat("")
-        bar.setFixedHeight(16)
-        bar.setMinimumWidth(60)
+        bar = TweenedProgressBar()
         bar.setAccessibleName(name)
         bar.setVisible(False)
         return bar
@@ -203,16 +178,13 @@ class HistoricalProgress(QWidget):
     @staticmethod
     def _count_bar(bar, done, total):
         """Draw ``done / total`` in the bar itself, or spin when unknown."""
-        done = max(0, int(done or 0))
-        total = max(0, int(total or 0))
-        bar.setTextVisible(True)
-        if total <= 0:
-            bar.setRange(0, 0)
-            bar.setFormat("")
-        else:
-            bar.setRange(0, total)
-            bar.setValue(min(done, total))
-            bar.setFormat("%v / %m")
+        bar.set_count(done, total)
+
+    def _set_working(self, working):
+        """Keep the idle sweep on while acquisition or routing is running."""
+        for bar in (self.overall_bar, self.request_bar, self.hour_bar):
+            bar.set_active(working and not bar.isHidden())
+        self.route_bar.set_active(working and not self.route_bar.isHidden())
 
     # -- probe plumbing --------------------------------------------------
     def set_probe(self, probe):
@@ -285,7 +257,10 @@ class HistoricalProgress(QWidget):
         else:
             fraction = 0.0
 
-        self.overall_bar.setValue(int(round(fraction * 100)))
+        self.overall_bar.setRange(0, 100)
+        self.overall_bar.setFormat("%p%")
+        self.overall_bar.set_value(int(round(fraction * 100)))
+        self.overall_bar.set_active(total > 0 and completed < total)
         self.overall_label.setText(f"{completed} / {total} routes")
         self.overall_label.setVisible(True)
 
@@ -299,15 +274,17 @@ class HistoricalProgress(QWidget):
         self.eta_label.setVisible(bool(eta))
 
         self._set_route_visible(True)
-        self.overall_bar.setTextVisible(False)
-        self.overall_bar.setFormat("")
         if indeterminate:
             self.route_bar.setRange(0, 0)
+            self.route_bar.setFormat("")
+            self.route_bar.set_active(True)
             self.route_label.setText(f"working · {stage}" if stage else "working")
         else:
             self.route_bar.setRange(0, 100)
+            self.route_bar.setFormat("%p%")
             percent = route_percent if route_percent is not None else 0.0
-            self.route_bar.setValue(int(round(min(max(percent, 0.0), 100.0))))
+            self.route_bar.set_value(int(round(min(max(percent, 0.0), 100.0))))
+            self.route_bar.set_active(completed < total)
             self.route_label.setText(
                 f"{percent:.0f}% · {stage}" if stage else f"{percent:.0f}%"
             )
@@ -327,6 +304,7 @@ class HistoricalProgress(QWidget):
         self._set_weather_visible(True)
         self._set_route_visible(False)
         self._count_bar(self.overall_bar, completed, total)
+        self._set_working(True)
         self.overall_label.setVisible(False)
         if not self.eta_label.text():
             self.eta_label.setText("estimating…")
@@ -380,6 +358,7 @@ class HistoricalProgress(QWidget):
         self.counters_label.setVisible(False)
         self._set_weather_visible(False)
         self._set_route_visible(False)
+        self._set_working(False)
 
     def reset(self):
         """Return to the idle state: zeroed bars, no labels, hidden."""
@@ -399,9 +378,10 @@ class HistoricalProgress(QWidget):
             label.setText("")
             label.setVisible(False)
         self._set_weather_visible(False)
-        for bar in (self.request_bar, self.hour_bar):
+        for bar in (self.overall_bar, self.request_bar, self.hour_bar, self.route_bar):
+            bar.set_active(False)
             bar.setRange(0, 100)
-            bar.setValue(0)
+            bar.set_value(0, animate=False)
         self._set_route_visible(True)
         self.setVisible(False)
 

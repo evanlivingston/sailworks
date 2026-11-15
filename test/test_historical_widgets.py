@@ -418,6 +418,7 @@ def test_weather_phase_shows_units_and_hides_the_route_row(qtbot):
     widget = HistoricalProgress()
     qtbot.addWidget(widget)
     widget.set_weather_phase(2, 10, "Downloading ERA5 wind")
+    qtbot.wait(400)  # the fill tweens towards the new count
 
     # Counts are drawn inside the bar so a narrow panel cannot clip them.
     assert widget.overall_bar.maximum() == 10
@@ -453,6 +454,7 @@ def test_weather_detail_draws_request_and_hour_bars(qtbot):
         }
     )
 
+    qtbot.wait(400)  # the fill tweens towards the new count
     assert not widget.request_bar.isHidden()
     assert widget.request_bar.maximum() == 17
     assert widget.request_bar.value() == 2
@@ -486,6 +488,7 @@ def test_weather_phase_survives_a_probe_refresh_while_acquiring(qtbot):
         )
     )
     widget.refresh_from_probe()
+    qtbot.wait(400)  # the fill tweens towards the new count
 
     assert widget.overall_bar.maximum() == 12
     assert widget.route_bar.isHidden()
