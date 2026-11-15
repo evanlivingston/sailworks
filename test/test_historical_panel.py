@@ -107,6 +107,78 @@ def historical_panel(qtbot, *, controller=None, request=None, service_factory=No
     return panel
 
 
+def analysis_with_store(store):
+    return SimpleNamespace(state=SimpleNamespace(store=store))
+
+
+def test_tranche_store_reads_the_session_controller_analysis(qtbot):
+    """The real controller keeps the analysis on its session controller."""
+    store = FakeStore()
+    controller = SimpleNamespace(
+        core=None,
+        session_controller=SimpleNamespace(analysis=analysis_with_store(store)),
+    )
+    panel = historical_panel(qtbot, controller=controller)
+    assert panel._tranche_store() is store
+
+
+def test_tranche_store_falls_back_to_the_controller_analysis(qtbot):
+    store = FakeStore()
+    controller = SimpleNamespace(core=None, analysis=analysis_with_store(store))
+    panel = historical_panel(qtbot, controller=controller)
+    assert panel._tranche_store() is store
+
+
+def _stub_start_job_inputs(monkeypatch, panel, spec=None):
+    monkeypatch.setattr(panel, "spec", lambda: spec)
+    monkeypatch.setattr(panel, "_base_request", lambda: object())
+    monkeypatch.setattr(panel.options, "validation_message", lambda: "")
+
+
+def test_start_job_reports_a_missing_tranche_store(qtbot, monkeypatch):
+    panel = historical_panel(qtbot)
+    messages = []
+    monkeypatch.setattr(panel.options, "set_status", messages.append)
+    _stub_start_job_inputs(monkeypatch, panel, spec=object())
+    panel.actions.start_job()
+    assert messages
+    assert "forecast analysis store" in messages[-1]
+    assert panel._thread is None
+
+
+def test_start_job_starts_the_thread_when_the_store_exists(qtbot, monkeypatch):
+    store = FakeStore()
+    controller = SimpleNamespace(
+        core=None,
+        session_controller=SimpleNamespace(analysis=analysis_with_store(store)),
+    )
+    panel = historical_panel(qtbot, controller=controller)
+    messages = []
+    monkeypatch.setattr(panel.options, "set_status", messages.append)
+    monkeypatch.setattr(panel.coordinator, "preflight", None)
+    _stub_start_job_inputs(monkeypatch, panel, spec=object())
+    ran = []
+    monkeypatch.setattr(panel, "_run_job", lambda spec, base: ran.append((spec, base)))
+    panel.actions.start_job()
+    panel._thread.join(2)
+    assert "Starting historical routing…" in messages
+    assert ran
+
+
+def test_start_job_reports_unexpected_spec_errors(qtbot, monkeypatch):
+    panel = historical_panel(qtbot)
+    messages = []
+    monkeypatch.setattr(panel.options, "set_status", messages.append)
+
+    def boom():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(panel, "spec", boom)
+    panel.actions.start_job()
+    assert messages == ["boom"]
+    assert panel._thread is None
+
+
 def test_historical_panel_fits_a_narrow_compare_page(qtbot):
     controller = SimpleNamespace(core=None, analysis=None)
     panel = HistoricalRoutingPanel(controller, store_factory=FakeStore)
@@ -134,11 +206,106 @@ def test_mode_combo_switches_the_stack_and_dispatches(qtbot, monkeypatch, tmp_pa
     panel.compare_mode.setCurrentIndex(panel.compare_mode.findData("historical"))
     assert panel.compare_stack.currentIndex() == 1
 
+    panel.pages.setCurrentIndex(panel.pages.indexOf(panel.compare_page))
     calls = []
     monkeypatch.setattr(panel.historical, "start_job", lambda: calls.append(True))
     panel._calculate()
     assert calls == [True]
     assert panel.routing.started == []
+
+
+def test_plan_tab_calculate_ignores_persisted_historical_mode(
+    qtbot, monkeypatch, tmp_path
+):
+    panel = routing_panel(qtbot, monkeypatch, tmp_path)
+    panel.compare_mode.setCurrentIndex(panel.compare_mode.findData("historical"))
+    panel.pages.setCurrentIndex(0)
+    historical_calls = []
+    monkeypatch.setattr(
+        panel.historical, "start_job", lambda: historical_calls.append(True)
+    )
+    monkeypatch.setattr(
+        panel, "_request", lambda backend=None: (SimpleNamespace(roundings=()), ())
+    )
+
+    panel._calculate()
+
+    assert historical_calls == []
+    assert len(panel.routing.started) == 1
+
+
+def test_compare_tab_calculate_with_historical_mode_starts_the_job(
+    qtbot, monkeypatch, tmp_path
+):
+    panel = routing_panel(qtbot, monkeypatch, tmp_path)
+    panel.compare_mode.setCurrentIndex(panel.compare_mode.findData("historical"))
+    panel.pages.setCurrentIndex(panel.pages.indexOf(panel.compare_page))
+    historical_calls = []
+    monkeypatch.setattr(
+        panel.historical, "start_job", lambda: historical_calls.append(True)
+    )
+
+    panel._calculate()
+
+    assert historical_calls == [True]
+    assert panel.routing.started == []
+
+
+def test_restored_historical_mode_does_not_hijack_plan_calculate(
+    qtbot, monkeypatch, tmp_path
+):
+    panel = routing_panel(qtbot, monkeypatch, tmp_path)
+    saved = panel.saved_options()
+    saved["compare_mode"] = "historical"
+    panel.restore_options(saved)
+    assert panel.compare_mode.currentData() == "historical"
+    panel.pages.setCurrentIndex(0)
+    historical_calls = []
+    monkeypatch.setattr(
+        panel.historical, "start_job", lambda: historical_calls.append(True)
+    )
+    monkeypatch.setattr(
+        panel, "_request", lambda backend=None: (SimpleNamespace(roundings=()), ())
+    )
+
+    panel._calculate()
+
+    assert historical_calls == []
+    assert len(panel.routing.started) == 1
+
+
+def test_missing_compare_page_falls_back_to_the_standard_path(
+    qtbot, monkeypatch, tmp_path
+):
+    panel = routing_panel(qtbot, monkeypatch, tmp_path)
+    panel.compare_mode.setCurrentIndex(panel.compare_mode.findData("historical"))
+    index = panel.pages.indexOf(panel.compare_page)
+    panel.pages.removeTab(index)
+    assert panel.pages.indexOf(panel.compare_page) == -1
+    historical_calls = []
+    monkeypatch.setattr(
+        panel.historical, "start_job", lambda: historical_calls.append(True)
+    )
+    monkeypatch.setattr(
+        panel, "_request", lambda backend=None: (SimpleNamespace(roundings=()), ())
+    )
+
+    panel._calculate()
+
+    assert historical_calls == []
+    assert len(panel.routing.started) == 1
+
+
+def test_compare_tab_calculate_reports_a_missing_route(qtbot, monkeypatch, tmp_path):
+    panel = routing_panel(qtbot, monkeypatch, tmp_path)
+    panel.compare_mode.setCurrentIndex(panel.compare_mode.findData("historical"))
+    panel.pages.setCurrentIndex(panel.pages.indexOf(panel.compare_page))
+    monkeypatch.setattr(panel.historical.options, "is_setup_ready", lambda: False)
+    monkeypatch.setattr(panel.historical, "start_job", lambda: None)
+
+    panel._calculate()
+
+    assert "Set a route" in panel.status.text()
 
 
 def test_show_historical_job_selects_compare_and_dispatches(

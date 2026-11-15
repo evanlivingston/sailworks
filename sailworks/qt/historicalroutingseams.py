@@ -18,10 +18,20 @@ class HistoricalRoutingSeams:
     """ERA5 coverage, current acquisition and bound-run adapters."""
 
     def _tranche_store(self):
-        analysis = getattr(self.routing_controller, "analysis", None)
+        controller = self.routing_controller
+        analysis = getattr(
+            getattr(controller, "session_controller", None), "analysis", None
+        )
+        if analysis is None:
+            analysis = getattr(controller, "analysis", None)
+        if analysis is None:
+            analysis = getattr(getattr(controller, "core", None), "analysis", None)
         store = getattr(getattr(analysis, "state", None), "store", None)
         if store is None:
-            raise RuntimeError("ERA5 acquisition requires the analysis tranche store.")
+            raise RuntimeError(
+                "Historical routing needs the forecast analysis store. "
+                "Open or refresh a forecast first."
+            )
         return store
 
     def ensure_wind(self, units, progress=None):

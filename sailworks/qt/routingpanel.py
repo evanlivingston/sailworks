@@ -645,7 +645,8 @@ class RoutingPanel(QWidget):
         )
         self.compare_stack.addWidget(self.historical)
         compare.addWidget(self.compare_stack, 1)
-        self.pages.addTab(self._scroll_page(compare_page), "Compare")
+        self.compare_page = self._scroll_page(compare_page)
+        self.pages.addTab(self.compare_page, "Compare")
         currents_page = QWidget()
         currents = QVBoxLayout(currents_page)
         self.use_currents = QCheckBox("Include currents")
@@ -680,6 +681,14 @@ class RoutingPanel(QWidget):
         if historical:
             self.historical.refresh_route_summary()
         self.options_changed.emit()
+
+    def _on_compare_page(self):
+        """Whether the Compare tab owns the Calculate button right now."""
+        page = getattr(self, "compare_page", None)
+        if page is None:
+            return False
+        index = self.pages.indexOf(page)
+        return index >= 0 and self.pages.currentIndex() == index
 
     def _build_current_priority(self):
         self.parameters_box.layout().addWidget(section_label("Currents"))
@@ -1052,7 +1061,9 @@ class RoutingPanel(QWidget):
             self.refresh()
 
     def _calculate(self):
-        if self.compare_mode.currentData() == "historical":
+        if self.compare_mode.currentData() == "historical" and self._on_compare_page():
+            if not self.historical.options.is_setup_ready():
+                self.status.setText("Set a route before starting historical routing.")
             self.historical.start_job()
             return
         backend = self.backend.currentData() or "legacy"

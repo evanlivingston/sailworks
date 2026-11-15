@@ -25,6 +25,7 @@ class HistoricalRoutingActions:
     def start_job(self):
         owner = self.owner
         if owner._thread is not None and owner._thread.is_alive():
+            owner.options.set_status("A historical run is already in progress.")
             return
         try:
             spec = owner.spec()
@@ -32,6 +33,7 @@ class HistoricalRoutingActions:
             message = owner.options.validation_message()
             if message:
                 raise ValueError(message)
+            owner._tranche_store()
             preflight = getattr(owner.coordinator, "preflight", None)
             if callable(preflight):
                 prepared = preflight(spec, base)
@@ -42,7 +44,7 @@ class HistoricalRoutingActions:
                     f"region {south:.0f}°–{north:.0f} lat, "
                     f"{west:.0f}°–{east:.0f} lon"
                 )
-        except (ValueError, OverflowError) as error:
+        except Exception as error:
             owner.options.set_status(str(error))
             return
         owner._cancel_event.clear()
