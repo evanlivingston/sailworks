@@ -881,7 +881,7 @@ class ScenePanel(QWidget):
     delete_requested = Signal(object)
     move_point_requested = Signal(object, int)
     edit_track_requested = Signal(str)
-    edit_route_requested = Signal(str)
+    edit_track_properties_requested = Signal(str)
     # The chosen polygon shape's uid: the window routes it to the live
     # viewport's vertex edit mode.
     shape_edit_requested = Signal(str)
@@ -2246,7 +2246,12 @@ class ScenePanel(QWidget):
             and node[1] == KIND_TRACK
             and not node[2].startswith("race:")
         )
-        edit_route = node is not None and node[0] == "item" and node[1] == KIND_ROUTING
+        edit_track_properties = (
+            node is not None
+            and node[0] == "item"
+            and node[1] == KIND_TRACK
+            and not node[2].startswith("race:")
+        )
 
         builder.add("New Collection", self._new_collection, key="N")
         if keys:
@@ -2314,10 +2319,10 @@ class ScenePanel(QWidget):
                     lambda: self.edit_track_requested.emit(node[2]),
                     key="E",
                 )
-            if edit_route:
+            if edit_track_properties:
                 builder.add(
-                    "Edit Route…",
-                    lambda: self.edit_route_requested.emit(node[2]),
+                    "Track Properties…",
+                    lambda: self.edit_track_properties_requested.emit(node[2]),
                     key="E",
                 )
             if point_element is not None:

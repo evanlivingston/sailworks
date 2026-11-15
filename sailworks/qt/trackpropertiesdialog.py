@@ -1,4 +1,4 @@
-"""Edit a route's saved defaults: departure time and drawn colour."""
+"""Edit a track's saved defaults: departure time and drawn colour."""
 
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (
 )
 
 
-class RouteEditDialog(QDialog):
-    """Edit the values a route carries into the routing panel.
+class TrackPropertiesDialog(QDialog):
+    """Edit the values a waypoint track carries into route planning.
 
     The departure saved here seeds the routing panel; the panel field still
     overrides it for a single run.
@@ -28,7 +28,7 @@ class RouteEditDialog(QDialog):
 
     def __init__(self, parent=None, *, departure=None, colour=None):
         super().__init__(parent)
-        self.setWindowTitle("Edit Route")
+        self.setWindowTitle("Track Properties")
         self._colour = str(colour) if colour else None
 
         self.use_departure = QCheckBox("Default departure")
@@ -50,7 +50,7 @@ class RouteEditDialog(QDialog):
         self.use_departure.toggled.connect(self.departure.setEnabled)
 
         self.colour_button = QPushButton()
-        self.colour_button.setAccessibleName("Route colour")
+        self.colour_button.setAccessibleName("Track colour")
         self.colour_button.clicked.connect(self._pick_colour)
         self._paint_swatch()
 
@@ -77,7 +77,7 @@ class RouteEditDialog(QDialog):
 
     def _pick_colour(self):
         initial = QColor(self._colour) if self._colour else QColor(Qt.GlobalColor.blue)
-        chosen = QColorDialog.getColor(initial, self, "Route colour")
+        chosen = QColorDialog.getColor(initial, self, "Track colour")
         if chosen.isValid():
             self._colour = chosen.name()
             self._paint_swatch()

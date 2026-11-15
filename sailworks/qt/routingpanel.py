@@ -256,6 +256,9 @@ class RoutingPanel(QWidget):
         self.start_mode.addItem("First waypoint", "first-track-point")
         self.start_mode.addItem("Boat position", "boat-position")
         self.destination.currentIndexChanged.connect(self._plan_changed)
+        self.destination.currentIndexChanged.connect(
+            self._seed_departure_from_destination
+        )
         self.start_mode.currentIndexChanged.connect(self._plan_changed)
         form.addRow(self.destination)
         form.addRow(self.start_mode)
@@ -877,9 +880,9 @@ class RoutingPanel(QWidget):
             historical=self.historical.values(),
         )
 
-    def apply_route_default(self, route):
-        """Seed the departure field from a route's saved default, if any."""
-        default = getattr(route, "default_departure", None)
+    def apply_track_default(self, track):
+        """Seed the departure field from a track's saved default, if any."""
+        default = getattr(track, "default_departure", None)
         if not default:
             return False
         try:
@@ -1030,6 +1033,12 @@ class RoutingPanel(QWidget):
         self.destination.blockSignals(False)
         self._plan_changed()
         self.refresh()
+
+    def _seed_departure_from_destination(self, *_):
+        """Take the chosen track's saved departure unless the field was edited."""
+        target = self.destination.currentData()
+        if isinstance(target, Track):
+            self.apply_track_default(target)
 
     def _plan_changed(self, *_):
         target = self.destination.currentData()

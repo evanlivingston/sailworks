@@ -21,6 +21,23 @@ import gpxpy
 from sailworks.core.geo.elementmultipoint import ElementMultiPoint
 
 
+def _normalise_departure(value):
+    """Return a whole-minute ISO departure string, or ``None`` when unset."""
+    from datetime import datetime
+
+    from sailworks.core.marine.routingrecord import SchemaError
+
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise SchemaError("default_departure must be an ISO datetime string")
+    try:
+        stamp = datetime.fromisoformat(value)
+    except ValueError:
+        raise SchemaError("default_departure must be an ISO datetime") from None
+    return stamp.replace(second=0, microsecond=0).isoformat()
+
+
 class Track(ElementMultiPoint):
     def __init__(
         self,
@@ -29,14 +46,18 @@ class Track(ElementMultiPoint):
         visible=True,
         collection=None,
         color=None,
+        default_departure=None,
     ):
         super().__init__(name, points, visible, collection)
         self.color = color
+        self.default_departure = _normalise_departure(default_departure)
 
     def to_json(self):
         c = super().to_json()
         if self.color is not None:
             c["color"] = self.color
+        if self.default_departure:
+            c["default_departure"] = self.default_departure
         return c
 
     @staticmethod
@@ -47,6 +68,7 @@ class Track(ElementMultiPoint):
             d.points,
             d.visible,
             color=j.get("color"),
+            default_departure=j.get("default_departure"),
         )
         # Older versions persisted race boat tracks in the user collection
         # (both the original flag and the later race-key scheme). Flag them so

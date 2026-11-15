@@ -285,7 +285,9 @@ class PreviewWindow(QMainWindow):
         self.scene_panel.move_point_requested.connect(self._move_scene_point)
         controller.log_library_changed.connect(self.scene_panel.refresh)
         self.scene_panel.edit_track_requested.connect(self._scene_edit_track)
-        self.scene_panel.edit_route_requested.connect(self._scene_edit_route)
+        self.scene_panel.edit_track_properties_requested.connect(
+            self._scene_edit_track_properties
+        )
         self.scene_panel.shape_edit_requested.connect(self._scene_edit_shape_vertices)
         # The canvas republishes shapes after a create or a geometry edit, so
         # both the map and the log map keep their Scene rows in step. The
@@ -1439,28 +1441,32 @@ class PreviewWindow(QMainWindow):
             return
         super().keyPressEvent(event)
 
-    def _scene_edit_route(self, key):
-        """Edit a route's saved departure and colour."""
-        route = next(
-            (item for item in self.controller.core.routingManager if item.uid == key),
+    def _scene_edit_track_properties(self, key):
+        """Edit a waypoint track's departure default and colour.
+
+        The track is the input to route planning, so its departure seeds the
+        routing panel; the panel field still overrides it per run.
+        """
+        track = next(
+            (item for item in self.controller.core.trackManager if item.uid == key),
             None,
         )
-        if route is None:
+        if track is None:
             return
-        from sailworks.qt.routeeditdialog import RouteEditDialog
+        from sailworks.qt.trackpropertiesdialog import TrackPropertiesDialog
 
-        dialog = RouteEditDialog(
+        dialog = TrackPropertiesDialog(
             self,
-            departure=getattr(route, "default_departure", None),
-            colour=getattr(route, "color", None),
+            departure=getattr(track, "default_departure", None),
+            colour=getattr(track, "color", None),
         )
-        if dialog.exec() != RouteEditDialog.DialogCode.Accepted:
+        if dialog.exec() != TrackPropertiesDialog.DialogCode.Accepted:
             return
         values = dialog.values()
-        route.default_departure = values.get("default_departure")
-        route.color = values.get("color")
-        self.controller.core.routingManager.save()
-        self.routing_panel.apply_route_default(route)
+        track.default_departure = values.get("default_departure")
+        track.color = values.get("color")
+        self.controller.core.trackManager.save()
+        self.routing_panel.apply_track_default(track)
         self.scene_panel.refresh()
 
     def _scene_edit_track(self, key):
