@@ -12,7 +12,7 @@ Prepare ashore
 --------------
 
 - Download the forecast for the race area and time window in
-  **File → Data Library… → Forecasts**.
+  **File → Data Library → Forecasts**.
 - Load or import the boat's polar in **Polar manager**, and check that it is the
   configuration you will sail.
 - Build a route in the **Routing** panel, or set up tracks and marks you want on the
@@ -47,7 +47,7 @@ After finishing
 
 - Stop and save the recording in **Logs** so the session is kept.
 - Open **Performance** in Polars and compare measured speed with the predicted curves.
-- Export tracks or routes with **File → Export navigation…** if you want to keep them
+- Export tracks or routes with **File → Export navigation** if you want to keep them
   outside the app.
 - Note what differed from the plan: forecast timing, wind strength, current, or boat
   setup.

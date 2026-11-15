@@ -2,9 +2,9 @@
 
 from types import SimpleNamespace
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSortFilterProxyModel
+from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -12,11 +12,11 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QProgressBar,
     QPushButton,
     QTabWidget,
-    QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -26,20 +26,10 @@ from .theme import section_label
 from .dropdown import Dropdown
 from .chartlayerspanel import ChartLayersPanel
 from .mapdatasetup import MapDataSetup
+from sailworks.core.polarfiles import orc_filename
 from sailworks.rendering.style import Style
+from .tables import fit_columns, make_table, make_view
 from .text import qt_text
-
-
-def table(headers):
-    widget = QTableWidget(0, len(headers))
-    widget.setHorizontalHeaderLabels(headers)
-    widget.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-    widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-    widget.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-    widget.setAlternatingRowColors(True)
-    widget.horizontalHeader().setStretchLastSection(True)
-    widget.verticalHeader().hide()
-    return widget
 
 
 def selected_row(widget, entries):
@@ -96,6 +86,7 @@ class DataLibrary(QDialog):
         super().__init__(parent)
         self.controller = controller
         self.data = controller.data
+        self.polars = controller.polars
         self.capture_region = capture_region
         self.forecast_options = None
         self.setWindowTitle("Data Library")
@@ -109,6 +100,7 @@ class DataLibrary(QDialog):
         self._history()
         self._charts()
         self._marine()
+        self._polars()
         self.progress = QProgressBar()
         layout.addWidget(self.progress)
         self.status = QLabel()
@@ -122,7 +114,7 @@ class DataLibrary(QDialog):
         layout.addWidget(buttons)
         self.data.changed.connect(self.refresh)
         controller.routing.changed.connect(self.refresh)
-        controller.polars.changed.connect(self.refresh_buttons)
+        controller.polars.changed.connect(self.refresh_polars)
         controller.map_data.changed.connect(self.refresh_buttons)
         self.refresh()
         self.tabs.currentChanged.connect(self._forecast_tab_changed)
@@ -181,17 +173,17 @@ class DataLibrary(QDialog):
         local = QWidget()
         layout = QVBoxLayout(local)
         layout.addWidget(section_label("Local charts"))
-        self.charts = table(["Enabled / chart", "Type", "Path"])
+        self.charts = make_table(["Enabled / chart", "Type", "Path"])
         self.charts.setColumnWidth(0, 180)
         self.charts.setColumnWidth(1, 80)
         self.charts.itemChanged.connect(self.toggle_chart)
         self.charts.itemSelectionChanged.connect(self.refresh_buttons)
         layout.addWidget(self.charts, 2)
         row = QHBoxLayout()
-        self.button(row, "Vector file…", self.import_vector)
-        self.button(row, "Vector folder…", self.import_vector_folder)
-        self.button(row, "Raster folder…", self.import_raster)
-        self.button(row, "MBTiles…", self.import_mbtiles)
+        self.button(row, "Vector file", self.import_vector)
+        self.button(row, "Vector folder", self.import_vector_folder)
+        self.button(row, "Raster folder", self.import_raster)
+        self.button(row, "MBTiles", self.import_mbtiles)
         self.remove_chart_button = self.button(row, "Remove", self.remove_chart)
         layout.addLayout(row)
         note = QLabel(
@@ -220,7 +212,7 @@ class DataLibrary(QDialog):
         self.button(row, "Find charts", self.find_charts)
         self.chart_download = self.button(row, "Download selected", self.download_chart)
         layout.addLayout(row)
-        self.available_charts = table(["Cell", "Title", "Scale", "Size"])
+        self.available_charts = make_table(["Cell", "Title", "Scale", "Size"])
         self.available_charts.setColumnWidth(0, 110)
         self.available_charts.horizontalHeader().setStretchLastSection(False)
         self.available_charts.horizontalHeader().setSectionResizeMode(
@@ -263,6 +255,56 @@ class DataLibrary(QDialog):
         )
         self.marine.jobs.changed.connect(self.refresh_buttons)
         self.tabs.addTab(self.marine, "Tides && Currents")
+
+    def _polars(self):
+        self.polar_version = None
+        self.polar_installed = None
+        self.polar_index = {}
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        heading = QHBoxLayout()
+        heading.addWidget(section_label("ORC polar catalog"))
+        heading.addStretch()
+        self.catalog_button = self.button(
+            heading, "Update catalog", self.update_catalog
+        )
+        layout.addLayout(heading)
+        details = QHBoxLayout()
+        self.catalog_updated = QLabel()
+        self.catalog_count = QLabel()
+        details.addWidget(self.catalog_updated)
+        details.addWidget(self.catalog_count)
+        details.addStretch(1)
+        layout.addLayout(details)
+        self.polar_search = QLineEdit()
+        self.polar_search.setPlaceholderText("Search boat, type or identifier")
+        self.polar_search.textChanged.connect(self.filter_polars)
+        layout.addWidget(self.polar_search)
+        self.polar_table = make_view()
+        self.polar_model = QStandardItemModel(self)
+        self.polar_model.setHorizontalHeaderLabels(
+            ["Sail / identifier", "Boat", "Type", "Installed"]
+        )
+        self.polar_filter = QSortFilterProxyModel(self)
+        self.polar_filter.setSourceModel(self.polar_model)
+        self.polar_filter.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.polar_filter.setFilterKeyColumn(-1)
+        self.polar_table.setModel(self.polar_filter)
+        fit_columns(self.polar_table, stretch=(0,), contents=(1, 2, 3))
+        self.polar_table.selectionModel().selectionChanged.connect(self.polar_selected)
+        layout.addWidget(self.polar_table)
+        actions = QHBoxLayout()
+        self.add_polar_button = self.button(
+            actions, "Add to polar library", self.add_polar
+        )
+        actions.addStretch(1)
+        layout.addLayout(actions)
+        self.polar_empty = QLabel(
+            "No catalog yet. Use Update catalog to download it."
+        )
+        self.polar_empty.setWordWrap(True)
+        layout.addWidget(self.polar_empty)
+        self.tabs.addTab(page, "Polars")
 
     def _show_marine_settings(self, kind):
         callback = getattr(self.parent(), "show_marine_settings", None)
@@ -309,16 +351,106 @@ class DataLibrary(QDialog):
             ],
         )
         busy = self.data.task.busy
-        self.progress.setVisible(busy)
-        self.progress.setRange(0, 0 if self.data.task.percent < 0 else 100)
-        if self.data.task.percent >= 0:
-            self.progress.setValue(self.data.task.percent)
-        self.status.setText(self.data.task.message)
+        self.sync_progress()
         if self.forecast_options is not None:
             self.forecast_options.setEnabled(not busy)
         self.latitude.setEnabled(not busy)
         self.longitude.setEnabled(not busy)
+        self.refresh_polars()
         self.refresh_buttons()
+
+    def refresh_polars(self):
+        polars = self.polars
+        installed = set(polars.manager.polars_files)
+        if id(self.polar_version) != id(polars.catalog):
+            self.polar_model.removeRows(0, self.polar_model.rowCount())
+            self.polar_filter.setDynamicSortFilter(False)
+            self.polar_index = {}
+            for row, entry in enumerate(polars.catalog):
+                identifier, boat, boat_type = entry
+                known = polars.identities.get(identifier)
+                if known is not None:
+                    boat, boat_type = known
+                items = [
+                    QStandardItem(str(identifier)),
+                    QStandardItem(str(boat)),
+                    QStandardItem(str(boat_type)),
+                    QStandardItem(
+                        "Yes" if orc_filename(identifier) in installed else ""
+                    ),
+                ]
+                items[0].setData(identifier, Qt.ItemDataRole.UserRole)
+                self.polar_model.appendRow(items)
+                self.polar_index[identifier] = row
+            self.polar_filter.setDynamicSortFilter(True)
+            self.polar_version = polars.catalog
+        elif installed != self.polar_installed:
+            for identifier, row in self.polar_index.items():
+                name = "Yes" if orc_filename(identifier) in installed else ""
+                self.polar_model.item(row, 3).setText(name)
+        self.polar_installed = installed
+        count = len(polars.catalog)
+        self.catalog_count.setText(f"{count:,} boats" if count else "")
+        updated = polars.catalog_updated
+        if updated:
+            self.catalog_updated.setText("Last updated " + updated[:10])
+        else:
+            self.catalog_updated.setText("Not downloaded yet")
+        self.polar_empty.setVisible(not count)
+        self.polar_table.setVisible(bool(count))
+        self.polar_search.setEnabled(bool(count))
+        self.sync_progress()
+        self.refresh_buttons()
+
+    def sync_progress(self):
+        polars = self.polars.task
+        task = polars if polars.busy else self.data.task
+        self.progress.setVisible(task.busy)
+        self.progress.setRange(0, 0 if task.percent < 0 else 100)
+        if task.percent >= 0:
+            self.progress.setValue(task.percent)
+        self.status.setText(task.message if task.busy else self.data.task.message)
+
+    def filter_polars(self, *_):
+        self.polar_filter.setFilterFixedString(self.polar_search.text().strip())
+        self.refresh_buttons()
+
+    def selected_polar(self):
+        index = self.polar_table.currentIndex()
+        if not index.isValid():
+            return ""
+        item = self.polar_model.item(
+            self.polar_filter.mapToSource(index).row(), 0
+        )
+        return item.data(Qt.ItemDataRole.UserRole) if item else ""
+
+    def polar_selected(self, *_):
+        self.refresh_buttons()
+        identifier = self.selected_polar()
+        if not identifier:
+            return
+        if orc_filename(identifier) in self.polars.manager.polars_files:
+            return
+        known = self.polars.identities.get(identifier)
+        if known is not None:
+            self.apply_identity(identifier, *known)
+        elif not self.polars.task.busy:
+            self.polars.lookup_boat(identifier, self.apply_identity)
+
+    def apply_identity(self, identifier, name, boat_type):
+        row = self.polar_index.get(identifier)
+        if row is None:
+            return
+        self.polar_model.item(row, 1).setText(name)
+        self.polar_model.item(row, 2).setText(boat_type)
+
+    def update_catalog(self):
+        self.polars.update_catalog()
+
+    def add_polar(self):
+        identifier = self.selected_polar()
+        if identifier:
+            self.attempt(lambda: self.polars.download(identifier))
 
     def refresh_buttons(self):
         blocked = (
@@ -346,6 +478,13 @@ class DataLibrary(QDialog):
             and self.imported_chart(chart)
         )
         self.remove_chart_button.setEnabled(not blocked and imported)
+        button = getattr(self, "add_polar_button", None)
+        if button is not None:
+            identifier = self.selected_polar()
+            available = bool(identifier) and (
+                orc_filename(identifier) not in self.polars.manager.polars_files
+            )
+            button.setEnabled(not blocked and available)
         self.marine.refresh_buttons(blocked)
 
     def imported_chart(self, chart):

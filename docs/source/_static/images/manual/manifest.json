@@ -30,13 +30,13 @@
       "height": 1400
     },
     {
-      "name": "panel-polar-selector",
-      "title": "Polar selector",
-      "description": "Choose the polar used for routing and performance readouts.",
-      "file": "panel-polar-selector.png",
-      "sha256": "01ce157aafce752e8330e2c4b8e4da5d35e505780cf901e15c5685378af2ab44",
-      "width": 920,
-      "height": 480
+      "name": "panel-polars",
+      "title": "Polars",
+      "description": "Choose the polar for routing and performance readouts, and enable, import or download polar files.",
+      "file": "panel-polars.png",
+      "sha256": "7153cd851fa320a8ec20f338e6ff44852a3f23f0337d4ec28a462bab5cdef910",
+      "width": 460,
+      "height": 273
     },
     {
       "name": "panel-routing",

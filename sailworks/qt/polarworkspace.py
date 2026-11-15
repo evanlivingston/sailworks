@@ -204,24 +204,12 @@ class PolarWorkspace(QWidget):
         self.generation = 0
         self.name = ""
         self.worker_thread = None
-        self.selector = QTableWidget(0, 4)
-        self.selector.setHorizontalHeaderLabels(["Filename", "Sail", "Name", "Type"])
-        self.selector.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
-        self.selector.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.selector.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.selector.horizontalHeader().setStretchLastSection(True)
-        self.selector.verticalHeader().hide()
-        self.selector.setShowGrid(False)
-        self.selector.setColumnWidth(0, 160)
-        self.selector.setMinimumWidth(250)
-        self.selector.currentCellChanged.connect(self._selected)
         self.chart = PolarCanvas(controller)
         self.performance = PerformanceControls(controller, self.chart)
         self.table = QTableWidget()
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setShowGrid(False)
+        # Speed matrix: custom background and centred headers, not tables.make_table().
         self.table.setStyleSheet("QTableWidget { background-color: #303030; }")
         self.table.verticalHeader().setDefaultSectionSize(22)
         self.table.verticalHeader().hide()
@@ -259,25 +247,8 @@ class PolarWorkspace(QWidget):
             return
         self.names = names
         selected = self.name if self.name in names else (names[0] if names else "")
-        self.selector.blockSignals(True)
-        self.selector.setRowCount(len(names))
-        for row, name in enumerate(names):
-            meta = manager.get_metadata(name)
-            for column, text in enumerate(
-                (name, meta.get("sail", ""), meta.get("name", ""), meta.get("type", ""))
-            ):
-                item = QTableWidgetItem(str(text))
-                item.setToolTip(str(text))
-                self.selector.setItem(row, column, item)
-        if selected:
-            self.selector.selectRow(names.index(selected))
-        self.selector.blockSignals(False)
         if selected != self.name:
             self.select(selected)
-
-    def _selected(self, row, *_):
-        if 0 <= row < len(self.names):
-            self.select(self.names[row])
 
     def select(self, name):
         if self.closed:
@@ -285,10 +256,6 @@ class PolarWorkspace(QWidget):
         self.generation += 1
         token = self.generation
         self.name = name
-        if name in self.names:
-            self.selector.blockSignals(True)
-            self.selector.selectRow(self.names.index(name))
-            self.selector.blockSignals(False)
         self.chart.set_polar(None)
         self.table.setRowCount(0)
         self.table.setColumnCount(0)

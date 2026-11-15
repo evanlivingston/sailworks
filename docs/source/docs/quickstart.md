@@ -25,7 +25,7 @@ First look at the chart
 -----------------------
 
 Sailworks opens an empty chart and does not prompt for downloads. To install the base
-maps, open **File → Data Library…**, keep the **Charts** tab, select the
+maps, open **File → Data Library**, keep the **Charts** tab, select the
 **Downloads & base maps** section, and press **Download World Coastlines**, then
 **Download OpenSeaMap**. Each download reports **Installed:** when complete.
 
@@ -36,8 +36,8 @@ Command-scroll also zooms, and a mouse wheel zooms as before.
 Load a forecast
 ---------------
 
-Open **File → Data Library…** and switch to the **Forecasts** tab, or pick
-**Open forecast…** from the File menu for a forecast file you already have. Choose the
+Open **File → Data Library** and switch to the **Forecasts** tab, or pick
+**Open forecast** from the File menu for a forecast file you already have. Choose the
 weather model, the region and the time range, then start the download. When it finishes,
 step through the forecast with the toolbar time controls and choose the displayed fields
 in the **Weather** panel.
