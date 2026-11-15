@@ -509,7 +509,8 @@ class Era5DownloadService:
             key, done=0, total=total, stage=f"Planning {total} CDS chunk(s)…"
         )
         entries = self._catalog_entries(catalog)
-        staged_chunks = []
+        published = 0
+        published_chunks = []
         done = 0
         with tempfile.TemporaryDirectory(prefix="era5-") as staging:
             # CDS caps the number of queued requests per dataset and asks scripts
@@ -548,9 +549,14 @@ class Era5DownloadService:
                 self._set_progress(
                     key, stage=f"Chunk {n + 1}/{total}: waiting for CDS results…"
                 )
-                staged_chunks.append(
-                    self._stage_chunk(staging, n, piece, cancel, retry)
-                )
+                staged = self._stage_chunk(staging, n, piece, cancel, retry)
+                # Publish each validated day immediately. A run that is
+                # cancelled, or an app that restarts, then keeps every finished
+                # day and the next run skips it instead of downloading again.
+                self._set_progress(key, stage=f"Chunk {n + 1}/{total}: publishing…")
+                self._publish_chunks(root, catalog, [staged], cancel)
+                published_chunks.append(staged)
+                published += 1
                 done += 1
                 self._set_progress(
                     key,
@@ -559,12 +565,10 @@ class Era5DownloadService:
                 )
             if cancel.is_set():
                 raise Era5Error("ERA5 download canceled")
-            if not staged_chunks:
+            if not published:
                 self._set_progress(key, done=total, stage="Already available")
                 return
-            self._set_progress(key, stage="Publishing ERA5 history…")
-            self._publish_chunks(root, catalog, staged_chunks, cancel)
-            for _path, piece, _provenance in staged_chunks:
+            for _path, piece, _provenance in published_chunks:
                 self._forget_pending(getattr(piece, "_pending_request_id", None))
         self._set_progress(key, done=total, stage="Complete")
 

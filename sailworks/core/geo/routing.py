@@ -15,6 +15,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
 from copy import deepcopy
+from datetime import datetime
 
 import gpxpy
 from weatherrouting import IsoPoint
@@ -139,6 +140,21 @@ def _summary_from_json(value):
     return deepcopy(value)
 
 
+def _normalise_departure(value):
+    """Return a whole-minute ISO departure string, or ``None`` when unset."""
+    from sailworks.core.marine.routingrecord import SchemaError
+
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise SchemaError("default_departure must be an ISO datetime string")
+    try:
+        stamp = datetime.fromisoformat(value)
+    except ValueError:
+        raise SchemaError("default_departure must be an ISO datetime") from None
+    return stamp.replace(second=0, microsecond=0).isoformat()
+
+
 class Routing(Track):
     def __init__(
         self,
@@ -158,8 +174,10 @@ class Routing(Track):
         traces_visible=False,
         isochrone_fill_visible=False,
         isochrone_outlines_visible=False,
+        default_departure=None,
+        color=None,
     ):
-        super().__init__(name, points, visible, collection)
+        super().__init__(name, points, visible, collection, color=color)
         # None means schema-v1 contours have not been hydrated for display yet.
         self._isochrones = isochrones
         # None explicitly means provenance is unknown, including legacy routes.
@@ -197,6 +215,9 @@ class Routing(Track):
         # Independent portrayal for the contour layers themselves. Changing it
         # bumps ``revision`` so overlay caches rebuild.
         self._isochrone_colour_by = normalize_isochrone_colour_by(isochrone_colour_by)
+        # A planned departure the user saved with the route. The routing panel
+        # starts from it and the user can still overwrite the field there.
+        self.default_departure = _normalise_departure(default_departure)
         # Lazily loaded per-leg readouts for the "tack" and sail-change
         # overlays; None means the saved result has not been read yet.
         self._leg_readouts = None
@@ -509,6 +530,8 @@ class Routing(Track):
 
     def to_json(self):
         c = super().to_json()
+        if self.default_departure:
+            c["default_departure"] = self.default_departure
         if self.result_ref is not None:
             c["result_schema"] = 1
             c["result_ref"] = self.result_ref.to_dict()
@@ -570,6 +593,7 @@ class Routing(Track):
             from sailworks.core.marine.routingrecord import SchemaError
 
             raise SchemaError("isochrone_outlines_visible must be a boolean")
+        default_departure = _normalise_departure(j.get("default_departure"))
         isochrones_visible = j.get("isochrones_visible", True)
         if type(isochrones_visible) is not bool:
             from sailworks.core.marine.routingrecord import SchemaError
@@ -601,6 +625,8 @@ class Routing(Track):
                 traces_visible=traces_visible,
                 isochrone_fill_visible=isochrone_fill_visible,
                 isochrone_outlines_visible=isochrone_outlines_visible,
+                default_departure=default_departure,
+                color=d.color,
             )
         ic = list(map(lambda x: list(map(IsoPoint.from_list, x)), j["isochrones"]))
         return Routing(
@@ -617,4 +643,6 @@ class Routing(Track):
             traces_visible=traces_visible,
             isochrone_fill_visible=isochrone_fill_visible,
             isochrone_outlines_visible=isochrone_outlines_visible,
+            default_departure=default_departure,
+            color=d.color,
         )

@@ -877,6 +877,18 @@ class RoutingPanel(QWidget):
             historical=self.historical.values(),
         )
 
+    def apply_route_default(self, route):
+        """Seed the departure field from a route's saved default, if any."""
+        default = getattr(route, "default_departure", None)
+        if not default:
+            return False
+        try:
+            stamp = datetime.fromisoformat(str(default))
+        except ValueError:
+            return False
+        self.departure.setDateTime(QDateTime(stamp))
+        return True
+
     def restore_options(self, saved):
         from sailworks.core.workspacestate import mapping
 

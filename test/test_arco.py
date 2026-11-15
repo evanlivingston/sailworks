@@ -1,7 +1,7 @@
 import json
 import sys
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -877,3 +877,41 @@ def test_direct_chunk_reader_reports_the_real_cause_when_retries_run_out(
     # The message names the transport failure instead of blaming credentials.
     assert "URLError" in str(error.value)
     assert state["calls"] == 4
+
+
+def test_a_cancelled_run_keeps_the_days_it_already_fetched(tmp_path):
+    """Interrupted work is reused, not re-downloaded after a restart."""
+    store = store_for(tmp_path)
+    cancel = threading.Event()
+    times = tuple(
+        datetime(2025, 1, 1 + hour // 24, hour % 24, tzinfo=UTC) for hour in range(30)
+    )
+    reads = {"count": 0}
+
+    def on_read():
+        reads["count"] += 1
+        if reads["count"] == 50:  # finish day one, then stop mid day two
+            cancel.set()
+
+    fake = FakeDataset(
+        times,
+        make_data(times),
+        attrs=availability_attrs(era5t="2025-01-02T05:00:00"),
+        on_read=on_read,
+    )
+    service = ArcoDownloadService(
+        store,
+        opener=lambda url: fake,
+        encoder=FakeEccodes(),
+        validator=accepting_validator,
+        workers=1,
+    )
+    plan = planned("2025-01-01T00:00", "2025-01-02T05:00")
+
+    with pytest.raises(ArcoError, match="canceled"):
+        service._run(plan, cancel, False)
+
+    entries = json.loads((tmp_path / "era5-history.json").read_text())
+    assert len(entries) == 1
+    assert entries[0]["start"] == "2025-01-01T00:00:00+00:00"
+    assert entries[0]["end"] == "2025-01-01T23:00:00+00:00"

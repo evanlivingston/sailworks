@@ -694,7 +694,6 @@ class ArcoDownloadService(Era5DownloadService):
             self._set_progress(key, done=total, stage="Already available")
             return
 
-        staged = []
         failed = True
         try:
             dataset = self._open()
@@ -785,7 +784,13 @@ class ArcoDownloadService(Era5DownloadService):
                             "includes preliminary ERA5T hours beyond the stable "
                             "ARCO stop"
                         )
-                    staged.append((path, piece, provenance))
+                    # Publish each validated day immediately: a cancelled run
+                    # or an app restart keeps every finished day, and the next
+                    # run skips it instead of reading it again.
+                    self._set_progress(key, stage=f"Chunk {n + 1}/{total}: publishing…")
+                    self._publish_chunks(
+                        root, catalog, [(path, piece, provenance)], cancel
+                    )
                     done += 1
                     self._set_progress(
                         key,
@@ -794,8 +799,6 @@ class ArcoDownloadService(Era5DownloadService):
                     )
                 if cancel.is_set():
                     raise ArcoError("ARCO ERA5 download canceled")
-                self._set_progress(key, stage="Publishing ARCO ERA5 history…")
-                self._publish_chunks(root, catalog, staged, cancel)
             failed = False
         finally:
             if failed:
