@@ -12,9 +12,23 @@ from sailworks.core.historicaljob import JobProgress
 from sailworks.core.historicaltranche import read_era5_catalog, select_window_entries
 from sailworks.core.historicalweather import era5_area
 
-# CDS queues every submitted request, so a long job that submits all of its
-# plans at once trips its per-user request limit and fails with HTTP errors.
-MAX_CONCURRENT = 4
+# CDS enforces a per-dataset limit on queued requests and asks clients to
+# submit them sequentially: ``Maximum number queued requests for this dataset
+# has been reached. Please configure your scripts to request data
+# sequentially``. One submission at a time is slower than a worker pool, but a
+# long job that submits several plans at once trips that limit and fails.
+MAX_CONCURRENT = 1
+
+_POLL_SECONDS = 0.25
+# A queued-request rejection means the account's other jobs are still queued,
+# so the same plan is retried after a bounded wait before it fails.
+_QUEUE_ATTEMPTS = 3
+_QUEUE_BACKOFF_SECONDS = (30.0, 60.0)
+_QUEUE_MARKERS = (
+    "queued requests",
+    "queue limit",
+    "maximum number queued",
+)
 
 _CREDENTIAL_STATUS = (401, 403)
 _TRANSIENT_STATUS = (429, 500, 502, 503, 504)
@@ -76,6 +90,21 @@ def error_message(error):
     return text
 
 
+def queue_limited(error):
+    """Whether a CDS error reports the per-dataset queued-request limit.
+
+    The limit is a queue depth, not a failure of the request itself: the same
+    plan is submitted again once the queue drains.
+    """
+    lowered = str(error or "").lower()
+    return any(marker in lowered for marker in _QUEUE_MARKERS)
+
+
+def _sleep_seconds(seconds):
+    """Sleep for ``seconds``; tests replace this to stay fast."""
+    time.sleep(seconds)
+
+
 def report_progress(progress, stage, completed, total, message=""):
     """Call a progress callback in either accepted shape.
 
@@ -111,8 +140,18 @@ def covered(root, unit):
     return bool(chosen)
 
 
+class _Cancelled(Exception):
+    """Internal signal: the cancel event fired during ERA5 acquisition."""
+
+
 class Era5Coverage:
-    """Ensure every acquisition unit has stored ERA5 wind before routing."""
+    """Ensure every acquisition unit has stored ERA5 wind before routing.
+
+    Acquisition is deliberately sequential: CDS enforces a per-dataset limit on
+    queued requests and requires clients to submit requests one at a time. A
+    plan is submitted, waited for, and only then is the next plan submitted.
+    That is slower than a worker pool, but it respects the CDS queue limit.
+    """
 
     def __init__(self, store, *, service_factory=None, cancel_event=None):
         self.store = store
@@ -123,6 +162,27 @@ class Era5Coverage:
 
     def _cancelled(self):
         return self.cancel_event is not None and self.cancel_event.is_set()
+
+    def _key(self, plan, thread):
+        return getattr(thread, "era5_key", None) or self.service.key_for(plan)
+
+    def _wait(self, plan, thread):
+        """Wait for a submitted plan and return ``(key, error)``.
+
+        ``error`` is None once the thread has finished without reporting a
+        failure; a reported failure returns as soon as it appears.
+        """
+        key = self._key(plan, thread)
+        while True:
+            error = self.service.error_for(key)
+            if error:
+                return key, error
+            if not thread.is_alive():
+                # A thread can record its error as it finishes.
+                return key, self.service.error_for(key)
+            if self._cancelled():
+                raise _Cancelled
+            _sleep_seconds(_POLL_SECONDS)
 
     def ensure(self, units, progress=None):
         pending = []
@@ -138,64 +198,66 @@ class Era5Coverage:
             pending.append((unit, plan))
         total = len(pending)
         report_progress(progress, "acquiring", 0, total, "ERA5 wind coverage")
-        remaining = list(pending)
-        active = []
         submitted = []
-
-        def fill():
-            # Keep only MAX_CONCURRENT plans queued at CDS; each new plan starts
-            # as an earlier one finishes.
-            while remaining and len(active) < MAX_CONCURRENT:
-                unit, plan = remaining.pop(0)
-                thread = self.service.submit(plan, retry=True)
-                active.append((unit, plan, thread))
-                submitted.append((unit, plan, thread))
-                report_progress(
-                    progress,
-                    "acquiring",
-                    total - len(remaining) - len(active),
-                    total,
-                    f"queued {unit.start_utc:%Y-%m-%d} "
-                    f"({len(submitted)}/{total} submitted)",
-                )
-
-        fill()
-        while active:
-            if self._cancelled():
-                for _unit, plan, _thread in submitted:
-                    self.service.cancel(plan)
-                raise RuntimeError("ERA5 acquisition cancelled.")
-            for entry in tuple(active):
-                unit, plan, thread = entry
-                self._raise_error(unit, plan, thread)
-                if not thread.is_alive():
-                    active.remove(entry)
-            completed = total - len(remaining) - len(active)
-            report_progress(
-                progress,
-                "acquiring",
-                completed,
-                total,
-                f"{len(submitted)}/{total} submitted, "
-                f"{completed}/{total} finished; downloading ERA5 wind data",
-            )
-            fill()
-            if active:
-                time.sleep(0.25)
-        for unit, plan, thread in submitted:
-            self._raise_error(unit, plan, thread)
+        try:
+            for index, (unit, plan) in enumerate(pending):
+                self._acquire(unit, plan, index, total, submitted, progress)
+        except _Cancelled:
+            for _unit, cancelled_plan, _thread in submitted:
+                self.service.cancel(cancelled_plan)
+            raise RuntimeError("ERA5 acquisition cancelled.") from None
+        for unit, _plan, _thread in submitted:
             if not covered(self.root, unit):
                 raise RuntimeError(
                     f"ERA5 wind coverage is still missing for {unit.start_utc:%Y-%m-%d}."
                 )
         report_progress(progress, "acquired", total, total, "ERA5 wind coverage ready")
 
-    def _raise_error(self, unit, plan, thread):
-        key = getattr(thread, "era5_key", None) or self.service.key_for(plan)
-        error = self.service.error_for(key)
-        if error:
-            self.service.clear_error(key)
-            raise RuntimeError(
-                f"ERA5 download failed for {unit.start_utc:%Y-%m-%d}: "
-                f"{error_message(error)}"
+    def _acquire(self, unit, plan, index, total, submitted, progress):
+        """Submit one plan at a time, retrying only when the CDS queue is full."""
+        for attempt in range(1, _QUEUE_ATTEMPTS + 1):
+            if self._cancelled():
+                raise _Cancelled
+            thread = self.service.submit(plan, retry=True)
+            submitted.append((unit, plan, thread))
+            report_progress(
+                progress,
+                "acquiring",
+                index,
+                total,
+                f"queued {unit.start_utc:%Y-%m-%d} ({index + 1}/{total} submitted)",
             )
+            key, error = self._wait(plan, thread)
+            if not error:
+                report_progress(
+                    progress,
+                    "acquiring",
+                    index + 1,
+                    total,
+                    f"{index + 1}/{total} finished; downloading ERA5 wind data",
+                )
+                return
+            self.service.clear_error(key)
+            if not queue_limited(error):
+                # Credentials/licence, transient and request errors stay final
+                # for this plan with their existing classifications.
+                raise RuntimeError(
+                    f"ERA5 download failed for {unit.start_utc:%Y-%m-%d}: "
+                    f"{error_message(error)}"
+                )
+            if attempt >= _QUEUE_ATTEMPTS:
+                raise RuntimeError(
+                    f"ERA5 download failed for {unit.start_utc:%Y-%m-%d}: the CDS "
+                    f"queue limit is still reached after {_QUEUE_ATTEMPTS} attempts "
+                    f"({error_message(error)}). Retry the download later."
+                )
+            delay = _QUEUE_BACKOFF_SECONDS[attempt - 1]
+            report_progress(
+                progress,
+                "acquiring",
+                index,
+                total,
+                f"waiting for the CDS queue ({delay:.0f}s before retry "
+                f"{attempt}/{_QUEUE_ATTEMPTS - 1})",
+            )
+            _sleep_seconds(delay)

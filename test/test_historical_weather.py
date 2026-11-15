@@ -696,10 +696,11 @@ def _cover_after_first_check(monkeypatch):
     return adapter
 
 
-def test_era5_coverage_caps_concurrent_submissions(tmp_path, monkeypatch):
+def test_era5_coverage_submits_one_plan_at_a_time(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     adapter = _cover_after_first_check(monkeypatch)
+    monkeypatch.setattr(adapter, "_sleep_seconds", lambda seconds: None)
     units = _era5_units(9)
     service = _TrackingEra5Service()
     reports = []
@@ -713,14 +714,108 @@ def test_era5_coverage_caps_concurrent_submissions(tmp_path, monkeypatch):
 
     coverage.ensure(units, progress=progress)
 
-    assert service.peak == adapter.MAX_CONCURRENT == 4
+    # CDS demands sequential submission: never more than one request in flight.
+    assert service.peak == adapter.MAX_CONCURRENT == 1
     assert len(service.submitted) == len(units)
     assert len({id(plan) for plan in service.submitted}) == len(units)
     assert service.retry_flags == [True] * len(units)
+    queued_days = [
+        message.split()[1]
+        for _stage, _completed, _total, message in reports
+        if message.startswith("queued ")
+    ]
+    assert len(queued_days) == len(units)
+    assert queued_days == sorted(queued_days)  # ISO dates sort chronologically
     assert reports[-1] == ("acquired", 9, 9, "ERA5 wind coverage ready")
     completed = [entry[1] for entry in reports]
     assert completed == sorted(completed)
     assert max(completed) == 9
+
+
+_QUEUE_ERROR = (
+    "Maximum number queued requests for this dataset has been reached. "
+    "Please configure your scripts to request data sequentially."
+)
+
+
+def test_era5_coverage_retries_a_full_cds_queue(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    adapter = _cover_after_first_check(monkeypatch)
+    sleeps = []
+    monkeypatch.setattr(adapter, "_sleep_seconds", sleeps.append)
+    service = _TrackingEra5Service(errors={"k1": _QUEUE_ERROR}, alive_polls=1)
+    reports = []
+
+    def progress(stage, completed, total, message=""):
+        reports.append(message)
+
+    coverage = adapter.Era5Coverage(
+        SimpleNamespace(root=tmp_path), service_factory=lambda store: service
+    )
+
+    coverage.ensure(_era5_units(1), progress=progress)
+
+    assert len(service.submitted) == 2
+    assert service.retry_flags == [True, True]
+    assert sleeps == [adapter._QUEUE_BACKOFF_SECONDS[0]]
+    assert any("waiting for the CDS queue" in message for message in reports)
+    assert reports[-1] == "ERA5 wind coverage ready"
+
+
+def test_era5_coverage_fails_clearly_when_the_queue_stays_full(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    adapter = _cover_after_first_check(monkeypatch)
+    sleeps = []
+    monkeypatch.setattr(adapter, "_sleep_seconds", sleeps.append)
+    service = _TrackingEra5Service(
+        errors={f"k{index}": _QUEUE_ERROR for index in range(1, 4)},
+        alive_polls=1,
+    )
+    coverage = adapter.Era5Coverage(
+        SimpleNamespace(root=tmp_path), service_factory=lambda store: service
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        coverage.ensure(_era5_units(1))
+
+    message = str(caught.value)
+    assert "CDS queue limit" in message
+    assert "Maximum number queued requests" in message
+    assert "Retry the download later" in message
+    assert len(service.submitted) == 3
+    assert sleeps == list(adapter._QUEUE_BACKOFF_SECONDS)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "ERA5 download failed (HTTPError HTTP 403); forbidden",
+        "ERA5 download failed (HTTPError HTTP 429); CDS may be rate limiting.",
+        "ERA5 download failed (HTTPError HTTP 503); CDS may be unavailable.",
+        "ERA5 request rejected (HTTP 422): invalid area",
+    ],
+)
+def test_era5_coverage_does_not_retry_other_error_classes(tmp_path, monkeypatch, error):
+    from types import SimpleNamespace
+
+    adapter = _cover_after_first_check(monkeypatch)
+    sleeps = []
+    monkeypatch.setattr(adapter, "_sleep_seconds", sleeps.append)
+    service = _TrackingEra5Service(errors={"k1": error}, alive_polls=1)
+    coverage = adapter.Era5Coverage(
+        SimpleNamespace(root=tmp_path), service_factory=lambda store: service
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        coverage.ensure(_era5_units(1))
+
+    message = str(caught.value)
+    assert "queue limit" not in message
+    assert "waiting for the CDS queue" not in message
+    assert len(service.submitted) == 1
+    assert sleeps == []
 
 
 @pytest.mark.parametrize(
@@ -791,6 +886,7 @@ def test_era5_coverage_failure_names_rate_limit_not_credentials(tmp_path, monkey
     assert "ERA5 download failed for 2026-05-01" in message
     assert "temporarily refused" in message
     assert "credentials" not in message
+    assert len(service.submitted) == 1
 
 
 def test_era5_coverage_cancellation_raises_and_cancels_submitted(tmp_path, monkeypatch):
@@ -800,9 +896,14 @@ def test_era5_coverage_cancellation_raises_and_cancels_submitted(tmp_path, monke
     import sailworks.qt.historicalera5 as adapter
 
     monkeypatch.setattr(adapter, "covered", lambda root, unit: False)
+    monkeypatch.setattr(adapter, "_sleep_seconds", lambda seconds: None)
     service = _TrackingEra5Service(alive_polls=10**6)
     cancel = threading.Event()
-    cancel.set()
+
+    def progress(stage, completed, total, message=""):
+        if message.startswith("queued "):
+            cancel.set()
+
     coverage = adapter.Era5Coverage(
         SimpleNamespace(root=tmp_path),
         service_factory=lambda store: service,
@@ -810,9 +911,9 @@ def test_era5_coverage_cancellation_raises_and_cancels_submitted(tmp_path, monke
     )
 
     with pytest.raises(RuntimeError, match="cancelled"):
-        coverage.ensure(_era5_units(9))
+        coverage.ensure(_era5_units(9), progress=progress)
 
-    assert len(service.submitted) == adapter.MAX_CONCURRENT
+    assert len(service.submitted) == adapter.MAX_CONCURRENT == 1
     assert [id(plan) for plan in service.cancelled] == [
         id(plan) for plan in service.submitted
     ]
