@@ -115,15 +115,17 @@ def test_rejects_window_longer_than_maximum(tmp_path):
 def test_rejects_non_whole_hour_and_naive_bounds(tmp_path):
     entries = hourly_chunks(make_store(tmp_path).root, range(2))
     with pytest.raises(HistoricalTrancheError, match="whole hour"):
-        select_window_entries(entries, datetime(2025, 1, 1, 0, 30, tzinfo=UTC), at(3), CATALOG_AREA)
+        select_window_entries(
+            entries, datetime(2025, 1, 1, 0, 30, tzinfo=UTC), at(3), CATALOG_AREA
+        )
     with pytest.raises(HistoricalTrancheError, match="timezone-aware UTC"):
         select_window_entries(entries, datetime(2025, 1, 1, 0), at(3), CATALOG_AREA)
 
 
-def test_rejects_when_no_entries_fall_inside_window(tmp_path):
+def test_rejects_when_no_entries_cover_the_window(tmp_path):
     store = make_store(tmp_path)
     entries = hourly_chunks(store.root, range(4, 6))
-    with pytest.raises(HistoricalTrancheError, match="inside"):
+    with pytest.raises(HistoricalTrancheError, match="cover"):
         select_window_entries(entries, at(0), at(2), CATALOG_AREA)
 
 
@@ -252,3 +254,27 @@ def test_rejects_a_caller_region_in_catalog_order(tmp_path):
     entries = hourly_chunks(store.root, range(2))
     with pytest.raises(HistoricalTrancheError, match="ordered"):
         build_wind_tranche(store, at(0), at(2), CATALOG_AREA, catalog=entries)
+
+
+def test_accepts_a_window_that_starts_mid_day(tmp_path):
+    """Acquisition stores whole UTC days; a 20:00 window is still covered."""
+    store = make_store(tmp_path)
+    entries = [
+        chunk(store.root, "day1.grib", at(0), at(23)),
+        chunk(
+            store.root,
+            "day2.grib",
+            at(0) + timedelta(days=1),
+            at(23) + timedelta(days=1),
+        ),
+    ]
+    start = datetime(2025, 1, 1, 20, tzinfo=UTC)
+
+    selected = select_window_entries(
+        entries, start, start + timedelta(hours=20), CATALOG_AREA
+    )
+
+    assert selected
+    # Only the chunks that overlap the window are used, and they are enough to
+    # cover every hour in it exactly once.
+    assert len(selected) <= 2
