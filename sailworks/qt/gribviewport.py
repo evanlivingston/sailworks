@@ -64,6 +64,7 @@ from sailworks.qt.viewporttransform import (
     continuous_longitude,
     zoom_preview_transform,
 )
+from sailworks.qt.worldunderlaycache import load_for, save_for
 
 logger = logging.getLogger("sailworks")
 
@@ -116,6 +117,69 @@ def _render_world(data_dir, palette, factor):
         return _surface_image(surface, factor)
     finally:
         renderer._release_resources()
+
+
+def _spawn_world_thread(worker):
+    Thread(target=worker, name="world-underlay", daemon=True).start()
+
+
+def _emit_world(emit, image, error):
+    try:
+        emit(image, error)
+    except RuntimeError:
+        # The viewport can be gone by the time a worker finishes.
+        pass
+
+
+def start_world_underlay(
+    data_dir, palette, factor, render, emit, cache_directory=None, runner=None
+):
+    """Serve the startup world underlay, from cache when the inputs match.
+
+    A hit emits the cached raster immediately and starts no worker, so the
+    launch pays no render.  A miss keeps the existing worker; a successful
+    render is stored for the next launch, a failure writes nothing.
+
+    ``runner`` exists so tests can run the worker inline; production always
+    uses a daemon thread.
+    """
+    if data_dir is None:
+        from sailworks.core.storage import DATA_DIR
+
+        data_dir = DATA_DIR
+    started = time.perf_counter()
+    try:
+        from sailworks.qt.gribviewportchart import base_sources
+
+        sources = base_sources(data_dir)
+    except Exception:  # noqa: BLE001 - a cache key must not block the render
+        logger.debug("World underlay cache key unavailable", exc_info=True)
+        sources = ()
+    if sources:
+        cached = load_for(sources, palette, factor, cache_directory)
+        if cached is not None:
+            logger.info(
+                "World underlay loaded from cache in %.3f s",
+                time.perf_counter() - started,
+            )
+            _emit_world(emit, cached, "")
+            return True
+
+    def worker():
+        started = time.perf_counter()
+        try:
+            image = render(data_dir, palette, factor)
+        except Exception as exc:  # noqa: BLE001 - reported through the signal
+            logger.warning("World underlay unavailable: %s", exc)
+            _emit_world(emit, None, str(exc))
+            return
+        if sources:
+            save_for(sources, palette, factor, image, cache_directory)
+        logger.info("World underlay rendered in %.3f s", time.perf_counter() - started)
+        _emit_world(emit, image, "")
+
+    (runner or _spawn_world_thread)(worker)
+    return False
 
 
 # The residency budget of the viewport's field store.  This is a declared
@@ -2309,26 +2373,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         # basemap stays the visible one instead.
                         self._show_basemap()
                 world_factor = max(1, round(self.devicePixelRatio()))
-
-                def render_world():
-                    started = time.perf_counter()
-                    try:
-                        image = _render_world(
-                            chart_data_dir, self._chart_palette, world_factor
-                        )
-                        logger.info(
-                            "World underlay rendered in %.3f s",
-                            time.perf_counter() - started,
-                        )
-                        self.worldRendered.emit(image, "")
-                    except Exception as exc:
-                        logger.warning("World underlay unavailable: %s", exc)
-                        try:
-                            self.worldRendered.emit(None, str(exc))
-                        except RuntimeError:
-                            pass
-
-                Thread(target=render_world, name="world-underlay", daemon=True).start()
+                start_world_underlay(
+                    chart_data_dir,
+                    self._chart_palette,
+                    world_factor,
+                    _render_world,
+                    self.worldRendered.emit,
+                )
                 if self._chart_layer:
                     self._environment_provider = chart_image_provider("environment")
                     self.engine().addImageProvider(
