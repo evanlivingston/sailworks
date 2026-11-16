@@ -64,6 +64,10 @@ class SettingsManager(Storage):
         self.chartSatelliteVisible = False
         self.satellitePack = ""
         self.chartENCVisible = True
+        # Experimental GPU scene source for the ENC overlay.  Off is the
+        # raster ENC path every existing user has, so the scene is only ever
+        # drawn when it is explicitly asked for.
+        self.chartENCScene = False
         self.chartRasterVisible = True
         self.chartMBTilesVisible = True
         self.chartCM93Visible = True

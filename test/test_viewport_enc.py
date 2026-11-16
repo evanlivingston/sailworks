@@ -309,6 +309,46 @@ def test_an_unreadable_cell_is_reported_and_never_pruned(tmp_path):
     assert catalog.sources[0].native_scale == 0
 
 
+def test_an_unchanged_cell_is_never_reopened(tmp_path):
+    """The cell's own identity keeps an unchanged chart from being read again."""
+    first = tmp_path / "US5AAAA.000"
+    second = tmp_path / "US5BBBB.000"
+    first.write_bytes(b"first cell")
+    second.write_bytes(b"second cell")
+    _settings(tmp_path, [_entry(str(first)), _entry(str(second))])
+
+    metadata = viewportenc.CatalogMetadata(viewportenc.cache_directory(tmp_path))
+    catalog = viewportenc.EncCatalog(tmp_path, metadata=metadata).refresh()
+    assert [source.path for source in catalog.sources] == [str(first), str(second)]
+    assert (metadata.reads, metadata.reuses) == (2, 0)
+
+    # The manifest did not change, so no cell is opened by this refresh.
+    assert catalog.refresh() is catalog
+    assert (metadata.reads, metadata.reuses) == (2, 0)
+    assert [source.path for source in catalog.sources] == [str(first), str(second)]
+
+    # A second launch reads the stored metadata, never the cells.
+    relaunched = viewportenc.CatalogMetadata(viewportenc.cache_directory(tmp_path))
+    viewportenc.EncCatalog(tmp_path, metadata=relaunched).refresh()
+    assert (relaunched.reads, relaunched.reuses) == (0, 2)
+
+
+def test_only_a_touched_cell_is_reopened(tmp_path):
+    """A changed cell identity reopens that cell and reuses its neighbour."""
+    first = tmp_path / "US5AAAA.000"
+    second = tmp_path / "US5BBBB.000"
+    first.write_bytes(b"first cell")
+    second.write_bytes(b"second cell")
+    _settings(tmp_path, [_entry(str(first)), _entry(str(second))])
+    viewportenc.EncCatalog(tmp_path).refresh()
+
+    first.write_bytes(b"the first cell was replaced by another one")
+    metadata = viewportenc.CatalogMetadata(viewportenc.cache_directory(tmp_path))
+    catalog = viewportenc.EncCatalog(tmp_path, metadata=metadata).refresh()
+    assert [source.path for source in catalog.sources] == [str(first), str(second)]
+    assert (metadata.reads, metadata.reuses) == (1, 1)
+
+
 # ------------------------------------------------------- the descriptors
 def test_the_source_descriptor_is_the_one_the_reference_renderer_expects():
     """The worker hands the reference the descriptors it already reads."""
@@ -747,6 +787,33 @@ def test_the_viewport_never_enables_the_enc_layer_by_itself():
                 ):
                     flags.append(node.args[0].value)
     assert "--enc-chart-layer" in flags
+
+
+def test_the_enc_scene_layer_is_given_a_catalog_it_can_refresh(tmp_path):
+    """The scene layer's catalog is the viewport's own catalog, not the raster source."""
+    catalog = gribviewport.enc_scene_catalog(tmp_path, "dark")
+    assert isinstance(catalog, viewportenc.EncCatalog)
+    # The three reads ``EncSceneLayer._compose`` makes.
+    assert catalog.refresh() is catalog
+    assert hasattr(catalog.manifest, "class_enabled")
+    assert catalog.sources == ()
+    # The raster source is what the layer used to be handed: it has no
+    # ``refresh()``, so the layer became unavailable at runtime.
+    assert not hasattr(viewportenc.ViewportEncSource, "refresh")
+
+
+def test_the_enc_scene_layer_is_wired_to_the_catalog():
+    """The injection site names the catalog factory, so it cannot regress."""
+    tree = ast.parse(inspect.getsource(gribviewport))
+    factories = [
+        ast.unparse(keyword.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", "") == "EncSceneLayer"
+        for keyword in node.keywords
+        if keyword.arg == "catalog_factory"
+    ]
+    assert factories == ["enc_scene_catalog"]
 
 
 def test_the_chart_palette_is_the_users_own(tmp_path):
