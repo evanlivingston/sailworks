@@ -305,7 +305,9 @@ class WeatherNextSource(GribSource):
             raise ValueError("WeatherNext requires a requested region")
         south, west, north, east = _expanded(self.bounds)
         url = statistics_store_url(run_time, payload.get("run_tag", "01_preds"))
-        dataset = open_statistics_store(url, credentials=WeatherNextCredentials().token)
+        dataset = open_statistics_store(
+            url, credentials=WeatherNextCredentials().credentials()
+        )
         lat = dataset.coords["lat_0p1"].values
         lat_slice = slice(south, north) if lat[0] <= lat[-1] else slice(north, south)
         selected_lat = dataset.coords["lat_0p1"].sel(lat_0p1=lat_slice).values
