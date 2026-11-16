@@ -15,7 +15,9 @@ class _Host(RetainedOverlayMixin):
             core=SimpleNamespace(trackManager=[], poiManager=[])
         )
         self.navigation = SimpleNamespace(
-            draw_race_tracks=lambda gpsmap, cr, **kwargs: None
+            draw_race_tracks=lambda gpsmap, cr, **kwargs: None,
+            draw_routes=lambda gpsmap, cr, *args, **kwargs: None,
+            draw_navigation=lambda gpsmap, cr, **kwargs: None,
         )
         self.time_control = SimpleNamespace(time=SimpleNamespace(timestamp=lambda: 0))
 
@@ -393,3 +395,42 @@ def test_snapshot_is_per_element_not_per_point():
     entry = snap[1][0]
     assert len(entry) == 5
     assert entry[2] == 5000
+
+
+def test_navigation_image_reports_routes_draw_failure_once(caplog):
+    import logging
+
+    host = _Host()
+    host._center_lat = 48.0
+    host._center_lon = -123.0
+    host._zoom = 6.0
+
+    def failing(gpsmap, cr, *args, **kwargs):
+        raise RuntimeError("route boom")
+
+    host.navigation.draw_routes = failing
+
+    def failures():
+        return [
+            record
+            for record in caplog.records
+            if "Routes overlay draw failed" in record.getMessage()
+        ]
+
+    with caplog.at_level(logging.WARNING, logger="sailworks.qt.mapoverlays"):
+        image = host._navigation_image()
+        assert image is not None and not image.isNull()
+        assert "Routes" in host._overlay_error
+        assert "route boom" in host._overlay_error
+        assert len(failures()) == 1
+
+        host._navigation_image()
+        assert len(failures()) == 1
+
+        host.navigation.draw_routes = lambda *args, **kwargs: None
+        host._navigation_image()
+        assert host._overlay_error is None
+
+        host.navigation.draw_routes = failing
+        host._navigation_image()
+        assert len(failures()) == 2

@@ -154,6 +154,22 @@ def _routing_presented_route(toggled, route, native, active_route):
     return route
 
 
+def _log_edit_status_message_for(widget):
+    """Status line text for the log edit state, or the idle message.
+
+    Busy covers both deleting and saving the log; the error is reported
+    generically so a failed save is not described as a failed delete.
+    """
+    if getattr(widget.controller, "log_edit_busy", False):
+        return "Updating log"
+    error = getattr(widget.controller, "log_edit_error", None)
+    if error:
+        return f"Log edit failed: {error}"
+    if widget.cursor_status.text():
+        return ""
+    return widget._connection_message()
+
+
 class PreviewWindow(QMainWindow):
     def __init__(self, controller, workspace_path=None):
         super().__init__()
@@ -2307,13 +2323,7 @@ class PreviewWindow(QMainWindow):
             if session.recording
             else "Start a new timestamped recording"
         )
-        if getattr(self.controller, "log_edit_busy", False):
-            message = "Deleting selected range"
-        elif getattr(self.controller, "log_edit_error", None):
-            message = f"Unable to delete range: {self.controller.log_edit_error}"
-        else:
-            message = "" if self.cursor_status.text() else self._connection_message()
-        self.statusBar().showMessage(message)
+        self.statusBar().showMessage(_log_edit_status_message_for(self))
         self.syncing = False
         refresh_log_editor = getattr(self, "_refresh_log_editor_controls", None)
         if callable(refresh_log_editor):
@@ -2323,6 +2333,10 @@ class PreviewWindow(QMainWindow):
             scene_panel.refresh()
         self._refresh_data()
         self._refresh_log_position()
+
+    def _log_edit_status_message(self):
+        """Status line text for the log edit state, or the idle message."""
+        return _log_edit_status_message_for(self)
 
     def _refresh_log_editor_controls(self):
         session = self.session
