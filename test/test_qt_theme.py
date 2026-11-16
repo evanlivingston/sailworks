@@ -24,6 +24,8 @@ from sailworks.qt.theme import (
     SURFACE,
     TEXT,
     TRACK,
+    UNCHECKED_HOVER,
+    UNCHECKED_SURFACE,
     MenuBuilder,
     ThemedMenu,
     apply_theme,
@@ -109,6 +111,26 @@ def test_line_edit_outer_edge_is_not_brighter_than_its_fill():
     assert edge <= fill + 3
 
 
+def test_disabled_line_edit_outer_edge_is_not_brighter_than_its_fill():
+    # A disabled field keeps the same 1 px box purely as a metrics placeholder,
+    # but that border is painted in the disabled fill: visibly borderless, and
+    # nothing reflows when the field is toggled on and off.
+    app = application()
+    apply_theme(app)
+    window = QWidget()
+    layout = QVBoxLayout(window)
+    field = QLineEdit("0")
+    field.setEnabled(False)
+    layout.addWidget(field)
+    window.show()
+    app.processEvents()
+    fill = QColor(DISABLED_SURFACE).lightness()
+    edge = max(color.lightness() for color in _edge_luminances(field))
+    assert window.isVisible()
+    assert not field.isEnabled()
+    assert edge <= fill + 3
+
+
 def test_focused_line_edit_keeps_a_distinguishable_accent_edge():
     # Holding the window keeps the widget tree alive for the grab.
     window, focused, _unfocused = _line_edit_pair()
@@ -166,12 +188,14 @@ def test_unchecked_checkbox_indicator_has_no_light_border():
     apply_theme(app)
     box = QCheckBox()
     image = _checkbox_image(box)
-    fill = QColor(SURFACE).lightness()
+    fill = QColor(UNCHECKED_SURFACE).lightness()
     # The box is a flat fill, so its straight edges are no brighter than the
     # fill. The corners are rounded away from the fill, so they are skipped.
     edge = _image_edge_colors(image, inset=3)
     assert max(color.lightness() for color in edge) <= fill + 3
     assert max(_rendered_luminances(box)) < 120
+    # Markedly grey against the row background, not near-black.
+    assert fill >= QColor(SURFACE).lightness() * 2 - 6
 
 
 def test_checked_checkbox_keeps_a_visible_check_mark():
@@ -206,9 +230,18 @@ def test_checkbox_fills_come_from_the_theme_surfaces():
     hovered = _painted_indicator(
         QStyle.StateFlag.State_Enabled | QStyle.StateFlag.State_MouseOver
     )
-    assert hovered.pixelColor(7, 7).name() == HOVER_SURFACE
+    assert hovered.pixelColor(7, 7).name() == UNCHECKED_HOVER
     unchecked = _painted_indicator(QStyle.StateFlag.State_Enabled)
-    assert unchecked.pixelColor(7, 7).name() == SURFACE
+    assert unchecked.pixelColor(7, 7).name() == UNCHECKED_SURFACE
+    # Nothing else moved: checked stays the accent, disabled the dim surface.
+    # Sample beside the tick, which is painted over the centre.
+    checked = QStyle.StateFlag.State_Enabled | QStyle.StateFlag.State_On
+    assert _painted_indicator(checked).pixelColor(12, 7).name() == ACCENT
+    assert (
+        _painted_indicator(QStyle.StateFlag.State_On).pixelColor(12, 7).name()
+        == DISABLED_SURFACE
+    )
+    assert UNCHECKED_HOVER != HOVER_SURFACE
 
 
 def test_checkbox_indicator_keeps_its_fifteen_pixel_slot():

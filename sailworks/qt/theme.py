@@ -30,11 +30,15 @@ ACCENT = "#3584e4"
 BORDER = "#454545"
 DISABLED_SURFACE = "#292929"
 DISABLED_TEXT = "#777774"
-DISABLED_BORDER = "#3a3a3a"
 # Dimmed accent fill for a checked control that cannot be operated.
 DISABLED_ACCENT = "#3a4656"
-# Hover fill shared by editable fields and checkbox indicators.
+# Hover fill of an editable field.
 HOVER_SURFACE = "#323232"
+# An unchecked box is a flat grey, roughly twice the row background in
+# lightness, so it reads as a box rather than a black hole. Its hover is one
+# step lighter; it is distinct from the field hover, which is darker.
+UNCHECKED_SURFACE = "#3a3a3a"
+UNCHECKED_HOVER = "#474747"
 # Checkbox indicator box. The toggle field rows reserve a slot this wide, so
 # the painted indicator and its metrics must keep exactly this size.
 INDICATOR_SIZE = 15
@@ -262,7 +266,7 @@ class ThemeStyle(QProxyStyle):
         elif checked:
             fill, mark = QColor(ACCENT), QColor(TEXT)
         else:
-            fill = QColor(HOVER_SURFACE if hovered else SURFACE)
+            fill = QColor(UNCHECKED_HOVER if hovered else UNCHECKED_SURFACE)
             mark = None
         rect = QRectF(option.rect)
         painter.setBrush(fill)
@@ -486,9 +490,10 @@ def apply_theme(app: QApplication):
         QStatusBar { border-top: 1px solid #454545; }
         QLineEdit:disabled, QLineEdit#placeSearchEdit:disabled,
         QComboBox:disabled, QDateTimeEdit:disabled,
-        QDoubleSpinBox:disabled, QAbstractSpinBox:disabled {
+        QDoubleSpinBox:disabled, QSpinBox:disabled,
+        QAbstractSpinBox:disabled {
             background: $disabled_surface; color: $disabled_text;
-            border-color: $disabled_border; }
+            border-color: $disabled_surface; }
     """).substitute(
             caption=TYPE_CAPTION,
             detail=TYPE_DETAIL,
@@ -496,7 +501,6 @@ def apply_theme(app: QApplication):
             semibold=TYPE_WEIGHT_SEMIBOLD,
             disabled_surface=DISABLED_SURFACE,
             disabled_text=DISABLED_TEXT,
-            disabled_border=DISABLED_BORDER,
             disabled_accent=DISABLED_ACCENT,
             surface=SURFACE,
             border=BORDER,
