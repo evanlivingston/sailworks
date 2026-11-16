@@ -119,10 +119,12 @@ def test_second_view_reuses_meshes_and_tessellates_nothing(tmp_path):
     assert cache.put(cell)
     mesh_cache = encview.MeshCache(1_000_000)
 
-    # Two plans for the same cell with different per-view clips: the clip is
-    # what used to force a rebuild.
+    # A cell wholly inside the view meshes to its own coverage, so the mesh is
+    # view-independent and a second view reuses it.  A clip narrower than the
+    # coverage is view-dependent and `_prepare_cell` deliberately does not
+    # cache it.
     first = _build(
-        (_plan(cell.path, cell.version, shapely.box(0, 0, 1.0, 2), True, coverage),),
+        (_plan(cell.path, cell.version, coverage, True, coverage),),
         cache,
         mesh_cache,
         bounding=_box(0, 0, 1.0, 2),
@@ -131,7 +133,7 @@ def test_second_view_reuses_meshes_and_tessellates_nothing(tmp_path):
     assert first is not None and builds == 1
 
     second = _build(
-        (_plan(cell.path, cell.version, shapely.box(0.5, 0.5, 2, 2), True, coverage),),
+        (_plan(cell.path, cell.version, coverage, True, coverage),),
         cache,
         mesh_cache,
         bounding=_box(0.5, 0.5, 2, 2),

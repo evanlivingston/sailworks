@@ -838,9 +838,16 @@ def build_scene_mesh(
     )
 
     for _index, record, geometry, _group in ordered_records:
-        line_pixels, line_dash = LINE_STYLES.get(
-            record.source_class, (stroke_pixels, None)
-        )
+        if stroke_pixels is None:
+            # LINE_STYLES holds screen-pixel widths and dashes.  A caller that
+            # supplied a source-unit ``stroke_width`` has no pixel contract to
+            # convert them with - its width is already the caller's own
+            # approximation - so the caller's width governs every class.
+            line_pixels, line_dash = None, None
+        else:
+            line_pixels, line_dash = LINE_STYLES.get(
+                record.source_class, (stroke_pixels, None)
+            )
 
         if simplify:
             started = time.perf_counter()

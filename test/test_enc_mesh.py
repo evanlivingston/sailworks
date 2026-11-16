@@ -247,8 +247,9 @@ def test_stroke_width_cannot_be_given_twice():
 
 
 def test_screen_unit_stroke_uses_the_projection_scale():
-    # The projection halves source coordinates, so a 2 px stroke is 4 source
-    # units wide on the ground; it must not be drawn as 2 source units.
+    # The projection halves source coordinates, so one screen pixel is two
+    # source units.  COALNE is a 1.5 px class line (LINE_STYLES), so it must be
+    # 1.5 * 2 = 3.0 source units wide on the ground, not 1.5.
     projection = lambda positions: np.asarray(positions) * 0.5  # noqa: E731
     mesh = build_scene_mesh(
         _scene((0, "COALNE", LineString([(0, 0), (10, 0)]))),
@@ -257,7 +258,7 @@ def test_screen_unit_stroke_uses_the_projection_scale():
         area_outlines=False,
     )
     positions = mesh.positions
-    assert np.ptp(positions[:, 1]) == pytest.approx(4.0)
+    assert np.ptp(positions[:, 1]) == pytest.approx(3.0)
 
 
 def test_palette_colours_parts_in_draw_order():
