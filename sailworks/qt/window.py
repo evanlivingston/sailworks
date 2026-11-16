@@ -529,6 +529,7 @@ class PreviewWindow(QMainWindow):
         splitter.setSizes([480, 520, 380])
         self.setCentralWidget(splitter)
         self._panel_splitter = splitter
+        self._watch_drawer_flags(splitter)
         self._panel_stacks = {"left": left_stack, "right": right_stack}
         self._panel_stack_width = {"left": 480, "right": 380}
         self._panel_stack_open = {"left": True, "right": True}
@@ -753,7 +754,11 @@ class PreviewWindow(QMainWindow):
         self._position_drawer_flags()
         QTimer.singleShot(0, self._position_drawer_flags)
 
-    def _position_drawer_flags(self):
+    def _watch_drawer_flags(self, splitter):
+        """Keep the drawer tabs on the panel edges as the splitter is dragged."""
+        splitter.splitterMoved.connect(self._position_drawer_flags)
+
+    def _position_drawer_flags(self, *_):
         if not self.drawer_flags:
             return
         stacks = getattr(self, "_panel_stacks", {})
