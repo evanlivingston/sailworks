@@ -80,10 +80,24 @@ def _identity(positions):
 
 
 #: Mirrors the ColoredPoint2D layout the coloured item uploads: two float32
-#: coordinates followed by four straight RGBA bytes, 12 bytes per vertex.
+#: coordinates followed by four premultiplied RGBA bytes, 12 bytes per vertex.
 _COLORED_VERTEX = np.dtype(
     {"names": ["x", "y", "rgba"], "formats": ["<f4", "<f4", "4u1"], "itemsize": 12}
 )
+
+
+def _premultiplied(colours):
+    """Premultiply straight RGBA bytes the way the Qt uploader must.
+
+    Qt Quick's scene-graph blend mode is premultiplied, so the coloured vertex
+    upload stores ``rgb * a // 255`` (integer division, truncating) and leaves
+    alpha unchanged.  ``MeshPart.colour`` itself stays straight.
+    """
+    colours = np.asarray(colours, dtype=np.uint8).copy()
+    colours[..., :3] = (
+        colours[..., :3].astype(np.uint16) * colours[..., 3:4].astype(np.uint16) // 255
+    ).astype(np.uint8)
+    return colours
 
 
 def _two_cell_view_scene():
@@ -366,13 +380,19 @@ def test_enc_mesh_item_colored_reattach(app):
 
 
 def test_enc_mesh_item_renders_view_scene_in_order(app):
-    """A two-cell ViewScene uploads through one coloured node, in order."""
+    """A two-cell ViewScene uploads through one coloured node, in order.
+
+    Expectations are premultiplied: Qt Quick's scene-graph blend mode is
+    premultiplied, so the uploader multiplies each vertex's RGB by its alpha
+    and leaves alpha alone.  The palette's ``MeshPart.colour`` stays straight,
+    so the two conventions differ only for translucent parts.
+    """
     if not hasattr(QSGGeometry, "defaultAttributes_ColoredPoint2D"):
         pytest.skip("this PySide6 build lacks defaultAttributes_ColoredPoint2D")
 
     scene = _two_cell_view_scene()
     expected_positions = scene.positions.astype(np.float32)
-    expected_colours = scene.vertex_colours()
+    expected_colours = _premultiplied(scene.vertex_colours())
     source_positions = scene.positions.copy()
 
     frames = _Frames()
@@ -402,12 +422,22 @@ def test_enc_mesh_item_renders_view_scene_in_order(app):
         np.testing.assert_array_equal(vertices["y"], expected_positions[:, 1])
         np.testing.assert_array_equal(vertices["rgba"], expected_colours)
         # Each part's run keeps its own colour, in part order, with no merge.
+        # The opaque runs are unchanged by the premultiply; the translucent
+        # outline (200, 100, 50, 128) becomes (100, 50, 25, 128), because
+        # 200*128//255 == 100, 100*128//255 == 50, 50*128//255 == 25.
+        np.testing.assert_array_equal(
+            vertices["rgba"][3:6],
+            np.tile(np.array([100, 50, 25, 128], dtype=np.uint8), (3, 1)),
+        )
         for part in scene.parts:
             start = part.first_vertex
             stop = start + part.vertex_count
             np.testing.assert_array_equal(
                 vertices["rgba"][start:stop],
-                np.tile(np.array(part.colour, dtype=np.uint8), (part.vertex_count, 1)),
+                np.tile(
+                    _premultiplied(np.array(part.colour, dtype=np.uint8)),
+                    (part.vertex_count, 1),
+                ),
             )
 
         # The float64 source is untouched by the upload.
