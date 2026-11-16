@@ -327,6 +327,7 @@ class WorkerGrib(Grib):
         return self._hours
 
     def get_rindex_data(self, hour):  # type: ignore[override]
+        """Cached :class:`RindexData` for ``hour``; arrays, not a list of tuples."""
         return self._index_data(hour)
 
     def close(self):

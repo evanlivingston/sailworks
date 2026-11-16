@@ -18,7 +18,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 import datetime
 import logging
 from functools import lru_cache
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional, Tuple
 
 import numpy as np
 
@@ -74,6 +74,20 @@ class MetaGrib:
         self.last_forecast = last_forecast
         self.path = path
         self.model_name = model_name
+
+
+class RindexData(NamedTuple):
+    """Whole-grid wind index as parallel arrays, in the legacy tuple order.
+
+    Cell ``i`` of every array is the same cell the historical
+    ``list[tuple[lat, lon, u, v]]`` held at position ``i`` (row-major), so
+    consumers iterating or masking all four arrays see identical values.
+    """
+
+    lat: np.ndarray
+    lon: np.ndarray
+    u: np.ndarray
+    v: np.ndarray
 
 
 class Grib(weatherrouting.Grib):
@@ -146,6 +160,7 @@ class Grib(weatherrouting.Grib):
 
     @lru_cache(maxsize=2048)
     def get_rindex_data(self, t):
+        """Whole grid at hour ``t`` as :class:`RindexData` (no tuple building)."""
         u_band, v_band = self._find_bands_for_time(t)
         if u_band is None or v_band is None:
             raise ValueError(f"Wind data not found for forecast hour {t}")
@@ -154,63 +169,11 @@ class Grib(weatherrouting.Grib):
         v = v_band.ReadAsArray()
 
         gt = self.dataset.GetGeoTransform()
-        uv_data = []
+        ys, xs = np.indices(u.shape, dtype=np.float64)
+        lat = gt[3] + (xs + 0.5) * gt[4] + (ys + 0.5) * gt[5]
+        lon = gt[0] + (xs + 0.5) * gt[1] + (ys + 0.5) * gt[2]
 
-        for y in range(u.shape[0]):
-            for x in range(u.shape[1]):
-                lon = gt[0] + (x + 0.5) * gt[1] + (y + 0.5) * gt[2]
-                lat = gt[3] + (x + 0.5) * gt[4] + (y + 0.5) * gt[5]
-                uv_data.append((lat, lon, u[y, x], v[y, x]))
-
-        return uv_data
-
-    def _get_wind_data(self, t, bounds):
-        try:
-            uv = self.get_rindex_data(t)
-        except Exception as e:
-            logger.debug(e)
-            return None
-
-        return list(
-            filter(
-                lambda x: bounds[0][0] <= x[0] <= bounds[1][0]
-                and bounds[0][1] <= x[1] <= bounds[1][1],
-                uv,
-            )
-        )
-
-    @lru_cache(maxsize=512)
-    def get_pressure_rindex_data(self, t):
-        band = self._find_pressure_band_for_time(t)
-        if band is None:
-            raise ValueError(f"Pressure data not found for forecast hour {t}")
-
-        pressure = band.ReadAsArray()
-        gt = self.dataset.GetGeoTransform()
-        data = []
-
-        for y in range(pressure.shape[0]):
-            for x in range(pressure.shape[1]):
-                lon = gt[0] + (x + 0.5) * gt[1] + (y + 0.5) * gt[2]
-                lat = gt[3] + (x + 0.5) * gt[4] + (y + 0.5) * gt[5]
-                data.append((lat, lon, pressure[y, x]))
-
-        return data
-
-    def _get_pressure_data(self, t, bounds):
-        try:
-            pressure = self.get_pressure_rindex_data(t)
-        except Exception as e:
-            logger.debug(e)
-            return None
-
-        return list(
-            filter(
-                lambda x: bounds[0][0] <= x[0] <= bounds[1][0]
-                and bounds[0][1] <= x[1] <= bounds[1][1],
-                pressure,
-            )
-        )
+        return RindexData(lat.ravel(), lon.ravel(), u.ravel(), v.ravel())
 
     @property
     def sampling(self):

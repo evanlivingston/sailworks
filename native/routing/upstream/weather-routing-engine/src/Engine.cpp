@@ -152,10 +152,20 @@ double searchLandMarginNm(const RoutingRequest& request) {
   return configured > 0.0 ? configured + 0.01 : 0.0;
 }
 
+// Wind direction the wind blows from, in [0, 360). A wind snapshot is fixed for
+// every heading and candidate of a node, so callers compute this once and pass
+// it down instead of paying an atan2 per use.
+double windFromDegreesFor(Vector2 windToward) {
+  return normalizeHeading(vectorDirectionToDegrees(windToward) + 180.0);
+}
+
+Tack tackFor(double course, double windFrom) {
+  return angularDifferenceDegrees(course, windFrom) >= 0.0 ? Tack::Starboard
+                                                          : Tack::Port;
+}
+
 Tack tackFor(double course, Vector2 wind) {
-  const double from = normalizeHeading(vectorDirectionToDegrees(wind) + 180.0);
-  return angularDifferenceDegrees(course, from) >= 0.0 ? Tack::Starboard
-                                                       : Tack::Port;
+  return tackFor(course, windFromDegreesFor(wind));
 }
 
 bool isMotor(PropulsionMode mode) { return mode != PropulsionMode::Sail; }
@@ -986,6 +996,8 @@ Duration directConnectionWindow(const RoutingRequest& request, const Node& from,
       std::max(stageMinimum, Duration{std::chrono::hours{2}}));
 }
 
+// `windFromCache`, when supplied, holds the wind-from direction shared by every
+// heading of the same node, so it is computed once instead of per call.
 std::vector<Node> propagate(const RoutingRequest& request,
                             const RoutingEnvironment& environment,
                             const VesselPerformanceModel& performanceModel,
@@ -994,7 +1006,8 @@ std::vector<Node> propagate(const RoutingRequest& request,
                             Duration maximumIntegrationSlice,
                             RoutingStatus* dataFailure,
                             std::optional<ResolvedEnvironment>* fanWeather = nullptr,
-                            Context* context = nullptr) {
+                            Context* context = nullptr,
+                            double* windFromCache = nullptr) {
   const bool reuse = fanWeather && fanWeather->has_value();
   const auto resolved = reuse ? **fanWeather : internal::resolveEnvironment(
       request, environment, from.position, from.time);
@@ -1012,19 +1025,24 @@ std::vector<Node> propagate(const RoutingRequest& request,
     return {};
   }
   const double tws = vectorMagnitudeKnots(resolved.snapshot.wind.velocity);
-  const double twa =
-      trueWindAngleDegrees(resolved.snapshot.wind.velocity, heading);
+  const double windFrom =
+      windFromCache != nullptr && *windFromCache >= 0.0
+          ? *windFromCache
+          : windFromDegreesFor(resolved.snapshot.wind.velocity);
+  if (windFromCache != nullptr) *windFromCache = windFrom;
+  const double twa = std::abs(angularDifferenceDegrees(heading, windFrom));
   const auto performances = performanceModel.candidatesAt(
       from.position, from.time, tws, twa, resolved.snapshot.waves, from.mode,
       from.modeDuration);
   std::vector<Node> result;
+  result.reserve(performances.size());
   for (const auto& performance : performances) {
     if (!hardMotionConstraints(request, resolved.snapshot, heading,
                                performance, performanceModel, from.position, from.time)) {
       ++diagnostics.constraintRejections;
       continue;
     }
-    const Tack nextTack = tackFor(heading, resolved.snapshot.wind.velocity);
+    const Tack nextTack = tackFor(heading, windFrom);
     const Duration penalty = transitionPenalty(
         request, from, performance.mode, nextTack, performance.sailPlan, twa);
     if (penalty >= step) continue;
@@ -1053,8 +1071,18 @@ std::vector<Node> propagate(const RoutingRequest& request,
       ++diagnostics.propulsionRejections;
       continue;
     }
-    Node node = from;
-  node.motionChecked = false;
+    // Carry only the lineage state this successor inherits. Copying the whole
+    // node would also duplicate the predecessor's leg and motion segments,
+    // which are replaced below.
+    Node node{};
+    node.motionChecked = false;
+    node.fuel = from.fuel;
+    node.risk = from.risk;
+    node.motorDuration = from.motorDuration;
+    node.waitDuration = from.waitDuration;
+    node.manoeuvres = from.manoeuvres;
+    node.departureEgressActive = from.departureEgressActive;
+    node.predecessor = from.predecessor;
     node.position = end;
     node.time = from.time + step;
     node.incomingHeading = heading;
@@ -1081,7 +1109,7 @@ std::vector<Node> propagate(const RoutingRequest& request,
     node.incomingLeg.speedThroughWaterKnots =
         replay->averageSpeedThroughWaterKnots;
     node.incomingLeg.estimatedFuelLitres = fuel;
-    node.incomingMotionSegments = replay->segments;
+    node.incomingMotionSegments = std::move(replay->segments);
     result.push_back(std::move(node));
   }
   return result;
@@ -1736,6 +1764,7 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
       const double bearing =
           initialBearingDegrees(from.position, request.destination);
       std::optional<ResolvedEnvironment> fanWeather;
+      double windFrom = -1.0;
       for (double heading :
            headings(layerHeadingStep, bearing, request.options.adaptiveHeadings,
                     request.options.refinedHeadingStepDegrees,
@@ -1754,7 +1783,8 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
         for (auto& next : propagate(request, environment, performance, from,
                                     heading, layerStep, diagnostics,
                                     integrationSlice, &dataFailure,
-                                    context.sanity()?&fanWeather:nullptr, &context)) {
+                                    context.sanity()?&fanWeather:nullptr, &context,
+                                    &windFrom)) {
           const std::uint64_t ordinaryForwardGenerated =
               diagnostics.generatedStates -
               diagnostics.coastalEndpointGeneratedStates;
@@ -1958,6 +1988,7 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
         const double bearing =
             initialBearingDegrees(from.position, request.destination);
         std::optional<ResolvedEnvironment> fanWeather;
+        double windFrom = -1.0;
         for (double heading : headings(
                  request.options.refinedHeadingStepDegrees, bearing,
                  request.options.adaptiveHeadings,
@@ -1971,7 +2002,7 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
                    request, environment, performance, from, heading,
                    request.options.minimumTimeStep, diagnostics,
                    Duration{std::chrono::minutes{5}}, &dataFailure,
-                   context.sanity()?&fanWeather:nullptr, &context)) {
+                   context.sanity()?&fanWeather:nullptr, &context, &windFrom)) {
             const std::uint64_t ordinaryForwardGenerated =
                 diagnostics.generatedStates -
                 diagnostics.coastalEndpointGeneratedStates;
