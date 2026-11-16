@@ -68,6 +68,7 @@ class HistoricalRoutingActions:
                     event.stage, event.completed, event.total, event.message
                 ),
                 on_outcome=lambda outcome: owner.outcome_reported.emit(outcome),
+                cancel=owner._cancel_event.is_set,
             )
         except Exception as error:  # the UI thread shows the message
             owner.job_finished.emit("", f"{type(error).__name__}: {error}")

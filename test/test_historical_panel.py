@@ -50,6 +50,7 @@ class FakeRouting(QObject):
         self.confirm = None
         self.started = []
         self.cancelled = 0
+        self.cancel_event = threading.Event()
 
     def start(self, request, scenarios, backend=None):
         self.started.append((request, scenarios, backend))
@@ -349,7 +350,7 @@ def test_historical_section_locks_and_restores_the_parameter_axes(
 def test_historical_options_have_no_run_button(qtbot):
     panel = historical_panel(qtbot, request=None)
     assert not hasattr(panel.options, "run_button")
-    assert not panel.options.cancel_button.isEnabled()
+    assert not hasattr(panel.options, "cancel_button")
 
 
 def test_show_job_loads_a_published_run(qtbot):
@@ -1218,7 +1219,7 @@ def test_is_running_tracks_the_worker_thread(qtbot):
 
 
 def test_routing_panel_hides_its_duplicate_progress_while_historical_runs():
-    """One progress display and one Cancel, not two of each."""
+    """One progress display; the panel's bottom Cancel is the only Cancel."""
     from types import SimpleNamespace
 
     from sailworks.qt.routingpanel import RoutingPanel
@@ -1238,19 +1239,57 @@ def test_routing_panel_hides_its_duplicate_progress_while_historical_runs():
 
     panel.routing = SimpleNamespace(busy=False)
 
-    # Acquisition: only the historical panel's Cancel can stop it.
+    # A historical run owns progress, whether or not the engine is busy.
     RoutingPanel._sync_run_visibility(panel, True)
-    assert seen == {"progress": False, "status": False, "cancel": False}
+    assert seen == {"progress": False, "status": False}
 
-    # Routing: the engine owns the Cancel.
     panel.routing.busy = True
     RoutingPanel._sync_run_visibility(panel, True)
-    assert seen == {"progress": False, "status": False, "cancel": True}
+    assert seen == {"progress": False, "status": False}
 
-    # Idle: the normal routing controls come back.
+    # Idle: the normal routing progress comes back.
     panel.routing.busy = False
     RoutingPanel._sync_run_visibility(panel, False)
-    assert seen == {"progress": True, "status": True, "cancel": True}
+    assert seen == {"progress": True, "status": True}
+    assert "cancel" not in seen, "the single Cancel is never hidden"
+
+
+def test_bottom_cancel_dispatches_to_the_live_run(qtbot, monkeypatch, tmp_path):
+    """The one Cancel button cancels a historical job or the routing engine."""
+    panel = routing_panel(qtbot, monkeypatch, tmp_path)
+    cancelled = []
+    monkeypatch.setattr(
+        panel.historical, "cancel_job", lambda: cancelled.append("historical")
+    )
+
+    monkeypatch.setattr(panel.historical, "is_running", lambda: True)
+    panel.refresh()
+    assert not panel.cancel_button.isHidden()
+    assert panel.cancel_button.isEnabled()
+    panel.cancel_button.click()
+    assert cancelled == ["historical"]
+    assert panel._fake_controller.routing.cancelled == 0
+
+    monkeypatch.setattr(panel.historical, "is_running", lambda: False)
+    panel._fake_controller.routing.busy = True
+    panel.refresh()
+    assert panel.cancel_button.isEnabled()
+    panel.cancel_button.click()
+    assert cancelled == ["historical"]
+    assert panel._fake_controller.routing.cancelled == 1
+
+
+def test_bottom_cancel_disables_once_a_historical_cancel_is_requested(
+    qtbot, monkeypatch, tmp_path
+):
+    panel = routing_panel(qtbot, monkeypatch, tmp_path)
+    monkeypatch.setattr(panel.historical, "is_running", lambda: True)
+    panel.refresh()
+    assert panel.cancel_button.isEnabled()
+
+    panel.historical._cancel_event.set()
+    panel.refresh()
+    assert panel.cancel_button.isEnabled() is False
 
 
 def test_snapshot_replaces_the_stale_acquisition_status(qtbot):

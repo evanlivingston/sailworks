@@ -287,7 +287,7 @@ class RoutingPanel(QWidget):
         self.calculate.setProperty("primary", True)
         self.calculate.clicked.connect(self._calculate)
         self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.clicked.connect(self.routing.cancel)
+        self.cancel_button.clicked.connect(self._cancel_run)
         actions.addWidget(self.calculate)
         actions.addWidget(self.cancel_button)
 
@@ -1295,16 +1295,31 @@ class RoutingPanel(QWidget):
         )
 
     def _sync_run_visibility(self, historical_running):
-        """One progress display and one Cancel at a time.
+        """One progress display at a time; one Cancel for either kind of run.
 
         The historical panel owns progress while a historical run is alive.
-        This panel's Cancel is the one tied to the routing engine, so it stays
-        visible only while the engine is actually running; during acquisition
-        the historical panel's Cancel is the one that works.
+        The bottom Cancel is now the only Cancel: it dispatches to the
+        historical job while one is running and to the routing engine
+        otherwise, so it stays visible in every state.
         """
         for widget in (self.progress, self.status):
             widget.setVisible(not historical_running)
-        self.cancel_button.setVisible(not historical_running or self.routing.busy)
+
+    def _cancel_run(self):
+        """Cancel whichever run is live behind the single Cancel button."""
+        if self.historical.is_running():
+            self.historical.cancel_job()
+        else:
+            self.routing.cancel()
+
+    def _historical_cancelling(self):
+        event = getattr(self.historical, "_cancel_event", None)
+        return bool(event is not None and event.is_set())
+
+    def _cancel_requested(self, historical_running):
+        if historical_running:
+            return self._historical_cancelling()
+        return bool(self.routing.cancel_event.is_set())
 
     def _display_status(self):
         message = self.routing.message
@@ -1352,7 +1367,9 @@ class RoutingPanel(QWidget):
             and self.polar.count() > 0
             and self.destination.currentData() is not None
         )
-        self.cancel_button.setEnabled(busy and not self.routing.cancel_event.is_set())
+        self.cancel_button.setEnabled(
+            busy and not self._cancel_requested(historical_running)
+        )
         if getattr(self.routing, "progress_indeterminate", False):
             # Native runs expose lifecycle messages only: show a busy bar
             # rather than a percentage the engine cannot report.

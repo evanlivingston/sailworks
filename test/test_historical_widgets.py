@@ -147,23 +147,23 @@ def test_options_have_no_run_button(qtbot):
     widget = options(qtbot)
     assert not hasattr(widget, "run_button")
     assert not hasattr(widget, "set_setup_ready")
-    assert not widget.cancel_button.isEnabled()
+    # The panel's bottom Cancel is the only one: the options area has none.
+    assert not hasattr(widget, "cancel_button")
+    assert not hasattr(widget, "cancel_requested")
 
 
-def test_running_state_only_switches_cancel(qtbot):
+def test_running_state_only_drives_the_progress_widget(qtbot):
     widget = options(qtbot)
-    cancelled = []
-    widget.cancel_requested.connect(lambda: cancelled.append(True))
+    assert not hasattr(widget, "cancel_button")
 
     widget.set_running(True)
-    assert widget.cancel_button.isEnabled()
-    widget.cancel_button.click()
-    assert cancelled == [True]
-
+    assert widget._running is True
     widget.set_running(False)
-    assert not widget.cancel_button.isEnabled()
+    assert widget._running is False
+
     widget.set_available(False, "Native backend capability missing: bound runs")
-    assert not widget.cancel_button.isEnabled()
+    assert widget._available is False
+    assert not hasattr(widget, "cancel_button")
 
 
 def test_values_follow_the_current_controls(qtbot):

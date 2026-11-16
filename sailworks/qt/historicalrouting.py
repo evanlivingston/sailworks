@@ -124,7 +124,6 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         # opens its results. There is no separate job selector here.
         self.job_selector = None
 
-        self.options.cancel_requested.connect(self.cancel_job)
         self.options.values_changed.connect(self._values_changed)
         self.results.delete_requested.connect(self.delete_job)
         self.results.retry_failed_requested.connect(self.retry_failed)
@@ -281,9 +280,6 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
             # Acquisition left its phase label behind; show what the engine is
             # actually doing now instead of a stale "Acquiring weather".
             self.options.set_status(getattr(rc, "message", "") or "Routing members")
-        # Only one Cancel is shown: the routing engine's while it runs, this
-        # panel's while acquisition is the thing that can be stopped.
-        self.options.cancel_button.setVisible(not routing)
         return {
             "weather_detail": detail,
             "running": bool(getattr(rc, "busy", False))

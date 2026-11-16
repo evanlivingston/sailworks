@@ -10,10 +10,8 @@ specification the engine would reject anyway.
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
-    QHBoxLayout,
     QLabel,
     QPlainTextEdit,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -48,7 +46,6 @@ def _caption(text):
 class HistoricalRoutingOptions(QWidget):
     """Inputs for historical-year ensemble routing."""
 
-    cancel_requested = Signal()
     values_changed = Signal()
 
     def __init__(self, parent=None):
@@ -57,7 +54,6 @@ class HistoricalRoutingOptions(QWidget):
         self._available_reason = ""
         self._running = False
         self._build()
-        self._sync_buttons()
 
     # -- construction ----------------------------------------------------
     def _build(self):
@@ -137,16 +133,6 @@ class HistoricalRoutingOptions(QWidget):
         self.progress_widget = HistoricalProgress()
         self.progress_widget.setAccessibleName("Historical routing progress")
         layout.addWidget(self.progress_widget)
-
-        buttons = QHBoxLayout()
-        buttons.setSpacing(8)
-        self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.setAccessibleName("Cancel historical run")
-        self.cancel_button.setEnabled(False)
-        self.cancel_button.clicked.connect(lambda *_: self.cancel_requested.emit())
-        buttons.addWidget(self.cancel_button)
-        buttons.addStretch(1)
-        layout.addLayout(buttons)
         layout.addStretch(1)
 
     # -- values ----------------------------------------------------------
@@ -206,16 +192,10 @@ class HistoricalRoutingOptions(QWidget):
             self.progress_widget.start()
         else:
             self.progress_widget.stop()
-        self._sync_buttons()
 
     def set_available(self, available, reason=""):
         self._available = bool(available)
         self._available_reason = reason or ""
-        self._sync_buttons()
-
-    def _sync_buttons(self):
-        # Starting belongs to Calculate route; only a running job can be cancelled.
-        self.cancel_button.setEnabled(self._running)
 
     # -- validation ------------------------------------------------------
     def validation_message(self):

@@ -104,6 +104,23 @@ def _notify(on_progress, stage, completed, total, message=""):
         on_progress(JobProgress(str(stage), int(completed), int(total), str(message)))
 
 
+def _cancel_requested(cancel) -> bool:
+    """True when the caller's cancel handle has been signalled.
+
+    ``cancel`` may be a zero-argument callable or an object exposing ``is_set()``
+    (a :class:`threading.Event`), so both the Qt panel and headless tests can
+    pass what they already hold.
+    """
+    if cancel is None:
+        return False
+    is_set = getattr(cancel, "is_set", None)
+    if callable(is_set):
+        return bool(is_set())
+    if callable(cancel):
+        return bool(cancel())
+    return False
+
+
 class HistoricalRoutingCoordinator:
     """Run one historical job end to end, checkpointing every stage.
 
@@ -163,8 +180,16 @@ class HistoricalRoutingCoordinator:
         on_progress=None,
         on_outcome=None,
         tranche_factory=None,
+        cancel=None,
     ) -> str:
-        """Run the whole job and return its id, parked states included."""
+        """Run the whole job and return its id, parked states included.
+
+        ``cancel`` is an optional zero-argument callable (or ``threading.Event``)
+        checked before each member starts. When it reports cancellation the
+        member loop stops scheduling, finished members keep their checkpoints,
+        the job is left resumable and settles in ``cancelled`` rather than a
+        failure state.
+        """
         prepared = self.preflight(spec, base_request)
         record = self._create_record(spec, prepared)
 
@@ -212,6 +237,7 @@ class HistoricalRoutingCoordinator:
             run_bound=run_bound,
             concurrency=concurrency,
             on_outcome=on_outcome,
+            cancel=cancel,
         )
 
         # 6. Summarise, publish, settle.
@@ -219,7 +245,12 @@ class HistoricalRoutingCoordinator:
         record.spec["summary"] = summary
         record.last_checkpoint_utc = self._stamp()
         self.publisher.ensure_group(record)
-        self._set_state(record, self._final_state(prepared, collected))
+        if _cancel_requested(cancel):
+            # Cancelled between members: the job stays resumable, the members
+            # that finished keep their outcomes and this is not a failure.
+            self._set_state(record, JobState.CANCELLED.value)
+        else:
+            self._set_state(record, self._final_state(prepared, collected))
         _notify(
             on_progress,
             record.state,
@@ -438,6 +469,7 @@ class HistoricalRoutingCoordinator:
         concurrency,
         on_outcome,
         increment_attempts=True,
+        cancel=None,
     ):
         if run_bound is None:
             raise CoordinatorError("running a job requires a run_bound callable")
@@ -455,17 +487,30 @@ class HistoricalRoutingCoordinator:
             if on_outcome is not None:
                 on_outcome(outcome)
 
+        def report(returned) -> None:
+            for outcome in returned or ():
+                if outcome is not None and not any(
+                    outcome is item for item in collected
+                ):
+                    handle(outcome)
+
         kwargs = {"on_outcome": handle}
         if concurrency is not None:
             kwargs["concurrency"] = int(concurrency)
         try:
-            returned = run_bound(executions, **kwargs)
+            if cancel is None:
+                report(run_bound(executions, **kwargs))
+                return collected
+            # With a cancel handle the coordinator drives one member at a time
+            # so it can stop scheduling between members; each finished member
+            # is checkpointed before the next starts.
+            for execution in executions:
+                if _cancel_requested(cancel):
+                    break
+                report(run_bound([execution], **kwargs))
         except Exception as exc:
             self._fail(record, "running", exc)
             raise
-        for outcome in returned or ():
-            if outcome is not None and not any(outcome is item for item in collected):
-                handle(outcome)
         return collected
 
     def _apply_outcome(self, record, outcome, *, increment_attempts=True) -> None:
