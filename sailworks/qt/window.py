@@ -368,27 +368,30 @@ class PreviewWindow(QMainWindow):
         edit_menu.addAction(self.redo_action)
         open_log = file_menu.addAction(
             symbol_icon("document-open-symbolic"),
-            "Open NMEA log",
+            "Open NMEA log…",
             self.show_log_library,
         )
         open_log.setShortcut(QKeySequence.StandardKey.Open)
+        file_menu.addSeparator()
         file_menu.addAction(
             symbol_icon("weather-windy-symbolic"),
-            "Open forecast",
+            "Data Library…",
             self.show_library,
         )
-        file_menu.addAction("Data Library", self.show_library)
-        file_menu.addAction("Polars", self.show_polar_workspace)
+        file_menu.addAction("Polars…", self.show_polar_workspace)
         file_menu.addAction(
-            "Open native routing result", self.show_native_routing_result
+            "Import native routing result…", self.show_native_routing_result
         )
+        file_menu.addAction("Import GPX…", lambda: navigationio.import_gpx(self))
+        file_menu.addAction("Export navigation…", self._export_navigation)
+        file_menu.addSeparator()
+        self.settings_action = file_menu.addAction("Settings…", self.show_settings)
+        self.settings_action.setMenuRole(QAction.MenuRole.PreferencesRole)
+        self.settings_action.setShortcut(QKeySequence.StandardKey.Preferences)
         file_menu.addSeparator()
         file_menu.addAction("Close window", self.close).setShortcut(
             QKeySequence.StandardKey.Close
         )
-        self.settings_action = file_menu.addAction("Settings", self.show_settings)
-        self.settings_action.setMenuRole(QAction.MenuRole.PreferencesRole)
-        self.settings_action.setShortcut(QKeySequence.StandardKey.Preferences)
         self._create_routing_inspector()
         self._create_marine_panels(controller)
         self.weather_panel = WeatherPanel(
@@ -413,14 +416,8 @@ class PreviewWindow(QMainWindow):
         self.dashboard_action.setCheckable(True)
         self.dashboard_action.toggled.connect(self._toggle_instruments)
         self.map_display_actions = (self.ais_action, self.dashboard_action)
-        window_menu = self.menuBar().addMenu("Window")
-        window_menu.addSection("Panels")
-        for action in self.panel_actions.values():
-            window_menu.addAction(action)
-        window_menu.addSeparator()
-        window_menu.addAction("Reset Panels", self.reset_panels)
-        file_menu.addAction("Import GPX", lambda: navigationio.import_gpx(self))
-        file_menu.addAction("Export navigation", self._export_navigation)
+        view_menu.addSeparator()
+        view_menu.addAction("Reset panel layout…", self.reset_panel_layout)
         fit_menu = self.menuBar().addMenu("Navigate")
         fit_menu.addAction("Fit NMEA track", self._fit_track)
         fit_menu.addAction("Fit route", self._fit_route)
@@ -1885,6 +1882,18 @@ class PreviewWindow(QMainWindow):
     def reset_panels(self):
         """Restore the default panel order, visibility and stack widths."""
         self.restore_panel_state(self._default_panel_state)
+
+    def reset_panel_layout(self):
+        """Confirm, then restore the default panel order and visibility."""
+        answer = QMessageBox.question(
+            self,
+            "Reset panel layout",
+            "Restore the default panel order, visibility and widths?",
+            QMessageBox.StandardButton.Reset | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer == QMessageBox.StandardButton.Reset:
+            self.reset_panels()
 
     def _routing_changed(self):
         if self.controller.routing.busy:

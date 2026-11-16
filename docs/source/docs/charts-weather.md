@@ -65,8 +65,7 @@ planning.
 Weather forecasts
 -----------------
 
-1. Open **File → Data Library** and switch to the **Forecasts** tab, or pick
-   **Open forecast** from the File menu for a forecast file you already have.
+1. Open **File → Data Library** and switch to the **Forecasts** tab.
 2. Choose the weather model, the region and the time range, then start the download.
 3. The forecast is loaded into the chart when the download finishes. Step through it
    with the time controls in the toolbar, and use the **Weather** panel to choose the
