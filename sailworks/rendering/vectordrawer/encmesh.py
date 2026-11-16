@@ -280,6 +280,19 @@ def _ordered_parts(geometry) -> tuple:
     return (("other", geometry),)
 
 
+#: Per-class line style: ``(width in pixels, dash (on, off) in pixels)``.
+#: Mirrors ``CM93ChartDrawer._render_line``: land lines are heavier, cables
+#: and routes are dashed, contours are hairlines.
+LINE_STYLES = {
+    "COALNE": (1.5, None),
+    "SLCONS": (1.0, None),
+    "DEPCNT": (1.0, None),
+    "CBLSUB": (1.0, (6.0, 4.0)),
+    "FERYRT": (1.0, (6.0, 4.0)),
+    "NAVLNE": (1.0, (6.0, 4.0)),
+    "TSELNE": (1.0, (6.0, 4.0)),
+}
+
 #: Area paint order, mirroring ``S57ChartDrawer.AREA_ORDER``: depth areas
 #: first, then dredged areas, then land, then every other area class.
 AREA_ORDER = {"DEPARE": 0, "DRGARE": 1, "LNDARE": 2}
@@ -738,13 +751,14 @@ def build_scene_mesh(
             coverage if shapely.is_valid(coverage) else shapely.make_valid(coverage)
         )
 
-    def stroke(geometry, region=None):
+    def stroke(geometry, region=None, pixels=None, dash=None):
         return stroke_lines(
             geometry,
             stroke_width,
-            stroke_pixels=stroke_pixels,
+            stroke_pixels=stroke_pixels if pixels is None else pixels,
             projection=projection,
             region=region,
+            dash=dash,
         )
 
     records = tuple(getattr(scene, "records", ()))
@@ -816,6 +830,9 @@ def build_scene_mesh(
     )
 
     for _index, record, geometry, _group in ordered_records:
+        line_pixels, line_dash = LINE_STYLES.get(
+            record.source_class, (stroke_pixels, None)
+        )
 
         if simplify:
             started = time.perf_counter()
@@ -876,7 +893,12 @@ def build_scene_mesh(
                 _stage(timings, "clip", started)
             if not line_geometry.is_empty:
                 started = time.perf_counter()
-                line_vertices = stroke(line_geometry, region=clip_geometry)
+                line_vertices = stroke(
+                    line_geometry,
+                    region=clip_geometry,
+                    pixels=line_pixels,
+                    dash=line_dash,
+                )
                 _stage(timings, "stroke_line", started)
 
         outline_vertices = None
@@ -884,7 +906,9 @@ def build_scene_mesh(
             started = time.perf_counter()
             rings = _boundary_lines(fill_polygons)
             if rings:
-                outline_vertices = stroke(MultiLineString(rings), region=clip_geometry)
+                outline_vertices = stroke(
+                    MultiLineString(rings), region=clip_geometry
+                )
             _stage(timings, "stroke_outline", started)
 
         marker_kind = None

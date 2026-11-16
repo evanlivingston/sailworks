@@ -315,6 +315,39 @@ def _clip_stroke_triangles(triangles, region, quad_count, prepared=None) -> np.n
     return np.concatenate(clipped)
 
 
+def _dashed_geometry(geometry, dash, projection):
+    """Split every lineal part into the 'on' runs of a screen-space dash.
+
+    ``dash`` is ``(on, off)`` in pixels.  The pattern is measured on the
+    projected line, so it stays the same on screen at any zoom, and the cuts
+    are mapped back to source distance through the line's own length ratio.
+    """
+    from shapely.ops import substring
+
+    on, off = (float(dash[0]), float(dash[1]))
+    if on <= 0.0 or off < 0.0:
+        return geometry
+    runs = []
+    for line in _lines(geometry):
+        coordinates = np.asarray(line.coords, dtype=np.float64)
+        if coordinates.shape[0] < 2:
+            continue
+        screen = np.asarray(projection(coordinates), dtype=np.float64)
+        screen_length = float(np.hypot(*np.diff(screen, axis=0).T).sum())
+        source_length = float(line.length)
+        if screen_length <= 0.0 or source_length <= 0.0:
+            continue
+        ratio = source_length / screen_length
+        position = 0.0
+        while position < source_length:
+            end = min(position + on * ratio, source_length)
+            piece = substring(line, position, end)
+            if not piece.is_empty and len(piece.coords) >= 2:
+                runs.append(piece)
+            position = end + off * ratio
+    return MultiLineString(runs) if runs else LineString()
+
+
 def stroke_lines(
     geometry,
     stroke_width=None,
@@ -322,6 +355,7 @@ def stroke_lines(
     stroke_pixels=None,
     projection=None,
     region=None,
+    dash=None,
 ) -> np.ndarray:
     """Thick-line triangles for every lineal part, as an ``(N, 2)`` triangle list.
 
@@ -344,6 +378,9 @@ def stroke_lines(
             raise ValueError("stroke_pixels must be positive")
     elif not float(stroke_width) > 0.0:
         raise ValueError("stroke_width must be positive source units")
+
+    if dash is not None and projection is not None:
+        geometry = _dashed_geometry(geometry, dash, projection)
 
     clip_geometry = None
     prepared_region = None
