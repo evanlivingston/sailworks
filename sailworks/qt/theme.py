@@ -21,6 +21,8 @@ BORDER = "#454545"
 DISABLED_SURFACE = "#292929"
 DISABLED_TEXT = "#777774"
 DISABLED_BORDER = "#3a3a3a"
+# Dimmed accent fill for a checked control that cannot be operated.
+DISABLED_ACCENT = "#3a4656"
 
 # Alternating row tint for dense lists such as the scene tree. Blender's
 # outliner separates rows with a barely visible band rather than a stripe, so
@@ -307,7 +309,8 @@ def apply_theme(app: QApplication):
                                        border: 1px solid #3584e4; }
         QPushButton[primary="true"]:hover { background: #4b93eb; }
         QPushButton[primary="true"]:pressed { background: #2d6fc0; }
-        QPushButton[primary="true"]:disabled { background: #3a4656; color: #9b9b98; }
+        QPushButton[primary="true"]:disabled { background: $disabled_accent;
+                                               color: #9b9b98; }
         QPushButton[quiet="true"] { background: transparent; border-color: #3a3a3a;
                                     color: #b0b0ad; min-height: 20px; padding: 3px 10px; }
         QPushButton[quiet="true"]:hover { background: #303030; color: #e6e6e6; }
@@ -315,6 +318,13 @@ def apply_theme(app: QApplication):
                                             border-color: #3584e4; }
         QPushButton[quiet="true"]:disabled { background: transparent;
                                              border-color: #303030; color: #666663; }
+        QCheckBox::indicator:!checked { width: 13px; height: 13px;
+                                        background: $surface;
+                                        border: 1px solid $border;
+                                        border-radius: 3px; }
+        QCheckBox::indicator:!checked:hover { border-color: $accent; }
+        QCheckBox::indicator:!checked:disabled { background: $disabled_surface;
+                                                 border-color: $disabled_border; }
         QComboBox, QDateTimeEdit, QDoubleSpinBox { min-height: 24px; padding: 3px;
             border: 1px solid #454545; border-radius: 6px; background: #1e1e1e;
             outline: none; }
@@ -400,6 +410,10 @@ def apply_theme(app: QApplication):
             disabled_surface=DISABLED_SURFACE,
             disabled_text=DISABLED_TEXT,
             disabled_border=DISABLED_BORDER,
+            disabled_accent=DISABLED_ACCENT,
+            surface=SURFACE,
+            border=BORDER,
+            accent=ACCENT,
         )
     )
 

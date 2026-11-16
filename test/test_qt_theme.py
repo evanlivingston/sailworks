@@ -4,7 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QKeyEvent, QPalette
-from PySide6.QtWidgets import QApplication, QLineEdit
+from PySide6.QtWidgets import QApplication, QCheckBox, QLineEdit
 
 from sailworks.qt.theme import MenuBuilder, ThemedMenu, apply_theme
 
@@ -36,6 +36,34 @@ def test_disabled_inputs_resolve_to_a_dimmed_palette():
         enabled = palette.color(QPalette.ColorGroup.Active, role)
         disabled = palette.color(QPalette.ColorGroup.Disabled, role)
         assert disabled != enabled
+
+
+def _rendered_luminances(box):
+    image = box.grab().toImage()
+    values = []
+    for y in range(image.height()):
+        for x in range(image.width()):
+            values.append(image.pixelColor(x, y).lightness())
+    return values
+
+
+def test_unchecked_checkbox_indicator_has_no_light_border():
+    app = application()
+    apply_theme(app)
+    box = QCheckBox()
+    box.setFixedSize(15, 15)
+    assert max(_rendered_luminances(box)) < 120
+
+
+def test_checked_checkbox_keeps_a_visible_check_mark():
+    app = application()
+    apply_theme(app)
+    box = QCheckBox()
+    box.setFixedSize(15, 15)
+    box.setChecked(True)
+    # Styling the checked indicator with a background or border makes Qt drop
+    # the style's check glyph, leaving an accent square with no mark.
+    assert max(_rendered_luminances(box)) > 150
 
 
 def test_menu_builder_assigns_unique_mnemonics_and_sections():
