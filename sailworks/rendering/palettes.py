@@ -295,14 +295,6 @@ def isochrone_modes():
     return (ISOCHRONE_UNIFORM_MODE,) + tuple(row.mode for row in isochrone_metrics())
 
 
-def isochrone_mode_metric(mode_id):
-    """The metric naming an isochrone mode, or ``None`` (uniform has none)."""
-    for row in isochrone_metrics():
-        if row.mode == mode_id:
-            return row
-    return None
-
-
 def isochrone_mode_labels():
     """Display label per isochrone mode."""
     labels = {ISOCHRONE_UNIFORM_MODE: "Uniform"}

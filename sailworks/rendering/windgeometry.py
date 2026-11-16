@@ -41,9 +41,3 @@ def stroke_mesh(lines, dots, circle_segments=64):
     )
     result.setflags(write=False)
     return result
-
-
-def triangle_mesh(triangles):
-    result = np.array(triangles, dtype=np.float32).reshape(-1, 2).copy()
-    result.setflags(write=False)
-    return result

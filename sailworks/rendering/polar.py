@@ -82,15 +82,6 @@ class PolarRenderer:
             self.isolated_wind = wind
         self.queue_draw()
 
-    def load_polar(self, polar_file):
-        polar = None
-        try:
-            polar = Polar(self.polar_manager.get_path(polar_file))
-        except Exception:
-            logger.error("Error loading polar file %s", polar_file)
-
-        self.set_polar(polar)
-
     def set_polar(self, polar):
         self.polar = polar
         self.isolated_wind = None

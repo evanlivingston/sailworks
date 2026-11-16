@@ -87,10 +87,6 @@ def _load_tool(name, path):
     return module
 
 
-def _sha_of_entries(entries):
-    return hashlib.sha256(json.dumps(entries, sort_keys=True).encode()).hexdigest()
-
-
 def _pump(milliseconds):
     from PySide6.QtCore import QEventLoop, QTimer
 
@@ -331,26 +327,6 @@ def _reference_descriptors(data_dir, settings):
     return tuple(descriptors)
 
 
-def _reference_selection(descriptors, camera_scale, viewport_envelope):
-    """The application's selection rules, applied in the harness's own loop."""
-    from sailworks.core.enccharts import chart_scale_rank, chart_scale_visible
-
-    min_lon, max_lon, min_lat, max_lat = viewport_envelope
-    selected = []
-    for path, native_scale, envelopes in sorted(
-        descriptors, key=lambda c: (chart_scale_rank(c[1], camera_scale), c[0])
-    ):
-        if not chart_scale_visible(native_scale, camera_scale):
-            continue
-        if envelopes and not any(
-            a <= max_lon and b >= min_lon and c <= max_lat and d >= min_lat
-            for a, b, c, d in envelopes
-        ):
-            continue
-        selected.append(Path(path).stem.upper())
-    return tuple(selected)
-
-
 def _base_job(camera, dpr, palette, sources, cancel):
     from sailworks.core.mapviewport import MapViewport
     from sailworks.qt.gribviewportchart import ChartCamera
@@ -436,34 +412,6 @@ def _reference_composition(layer, camera, dpr, palette, data_dir, descriptors, p
         crop(_surface_array(annotations)),
         records,
     )
-
-
-def _cell_masks(descriptors, camera, dpr, palette, data_dir):
-    """One cell alone, drawn by the oracle: the per-cell ink used for multi-cell checks."""
-    from sailworks.rendering.encrenderer import ENCOverlayRenderer
-    from sailworks.core.scheduling import schedule_idle
-    from sailworks.qt.gribviewportchart import base_sources
-    from sailworks.rendering.overlayrenderer import MARGIN
-
-    sources = base_sources(data_dir)
-    job = _base_job(camera, dpr, palette, sources, Event())
-    oracle = ENCOverlayRenderer(schedule_idle)
-    masks = {}
-    try:
-        for descriptor in descriptors:
-            surface = oracle._render(replace(job, charts=(descriptor,)))
-            if surface is None:
-                continue
-            array = _surface_array(surface)
-            offset = MARGIN * dpr
-            array = array[
-                offset : offset + camera.height * dpr,
-                offset : offset + camera.width * dpr,
-            ]
-            masks[Path(descriptor[0]).stem.upper()] = _ink(array)
-    finally:
-        oracle._charts.clear()
-    return masks
 
 
 def _scenario_camera(base_camera, spec):
@@ -1207,26 +1155,6 @@ def _platform(widget):
         "requested_backend": os.environ.get("QSG_RHI_BACKEND", "default"),
         "device_pixel_ratio": float(quick.devicePixelRatio()),
     }
-
-
-def _viewport_envelope(camera):
-    from sailworks.core.mapviewport import MapViewport
-    from sailworks.qt.gribviewportchart import ChartCamera
-    from sailworks.rendering.overlayrenderer import MARGIN
-
-    viewport = MapViewport(ChartCamera(camera, 1), MARGIN, lambda: None)
-    p1, p2 = viewport.get_bbox()
-    lat1, lon1 = p1.get_degrees()
-    lat2, lon2 = p2.get_degrees()
-    return (min(lon1, lon2), max(lon1, lon2), min(lat1, lat2), max(lat1, lat2))
-
-
-def _camera_scale(camera):
-    from sailworks.core.mapviewport import MapViewport
-    from sailworks.qt.gribviewportchart import ChartCamera
-    from sailworks.rendering.overlayrenderer import MARGIN
-
-    return MapViewport(ChartCamera(camera, 1), MARGIN, lambda: None).get_scale()
 
 
 def main(argv=None):
