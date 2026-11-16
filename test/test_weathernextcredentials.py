@@ -5,6 +5,7 @@ import pytest
 from sailworks.core.weathernextcredentials import (
     API_DISABLED_HINT,
     QUOTA_PROJECT_HINT,
+    SCOPES,
     WeatherNextCredentials,
     WeatherNextCredentialsError,
     describe_access_error,
@@ -34,13 +35,42 @@ def test_service_account_file_uses_scoped_credentials(monkeypatch, tmp_path):
     assert WeatherNextCredentials(str(path)).credentials() is marker
 
 
-def test_adc_uses_google_auth_default(monkeypatch):
+def test_adc_loads_the_gcloud_file_without_shelling_out(monkeypatch, tmp_path):
+    adc = tmp_path / "application_default_credentials.json"
+    adc.write_text("{}")
     marker = object()
+    seen = {}
+
+    def load(filename, scopes=None):
+        seen["filename"] = filename
+        seen["scopes"] = scopes
+        return marker, None
+
+    monkeypatch.setattr(
+        "sailworks.core.weathernextcredentials.gcloud_adc_file", lambda: adc
+    )
+    monkeypatch.setattr("google.auth.load_credentials_from_file", load)
+
+    def no_default(*args, **kwargs):
+        raise AssertionError("google.auth.default forks the gcloud CLI")
+
+    monkeypatch.setattr("google.auth.default", no_default)
+    assert WeatherNextCredentials("").credentials() is marker
+    assert seen["filename"] == str(adc)
+    assert seen["scopes"] == SCOPES
+
+
+def test_adc_without_a_gcloud_file_uses_google_auth_default(monkeypatch, tmp_path):
+    marker = object()
+    monkeypatch.setattr(
+        "sailworks.core.weathernextcredentials.gcloud_adc_file",
+        lambda: tmp_path / "missing.json",
+    )
     monkeypatch.setattr("google.auth.default", lambda scopes: (marker, "project"))
     assert WeatherNextCredentials("").credentials() is marker
 
 
-def test_gcs_filesystem_passes_the_token(monkeypatch):
+def test_gcs_filesystem_passes_resolved_credentials(monkeypatch, tmp_path):
     captured = {}
 
     class _Filesystem:
@@ -48,10 +78,20 @@ def test_gcs_filesystem_passes_the_token(monkeypatch):
             captured["token"] = token
 
     monkeypatch.setattr("gcsfs.GCSFileSystem", _Filesystem)
-    WeatherNextCredentials("/tmp/key.json").gcs_filesystem()
-    assert captured["token"] == "/tmp/key.json"
+    path = tmp_path / "key.json"
+    path.write_text("{}")
+    marker = object()
+    monkeypatch.setattr(
+        "google.oauth2.service_account.Credentials.from_service_account_file",
+        lambda filename, scopes: marker,
+    )
+    WeatherNextCredentials(str(path)).gcs_filesystem()
+    assert captured["token"] is marker
+
+    adc_marker = object()
+    monkeypatch.setattr(WeatherNextCredentials, "credentials", lambda self: adc_marker)
     WeatherNextCredentials("").gcs_filesystem()
-    assert captured["token"] == "google_default"
+    assert captured["token"] is adc_marker
 
 
 @pytest.mark.parametrize("message", ["without a quota project", "USER_PROJECT_DENIED"])

@@ -61,6 +61,18 @@ class WeatherNextCredentialsError(RuntimeError):
     """WeatherNext credentials are missing or invalid."""
 
 
+def gcloud_adc_file() -> Path | None:
+    """The path google-auth reads gcloud's ADC file from, if it is known."""
+    try:
+        from google.auth import _cloud_sdk
+    except ImportError:
+        return None
+    try:
+        return Path(_cloud_sdk.get_application_default_credentials_path())
+    except Exception:
+        return None
+
+
 class WeatherNextCredentials:
     """Resolve the credentials used by WeatherNext Zarr access."""
 
@@ -73,7 +85,12 @@ class WeatherNextCredentials:
 
     @property
     def token(self) -> str:
-        """The gcsfs token/path; safe to serialize into zarr storage options."""
+        """The gcsfs token/path; safe to serialize into zarr storage options.
+
+        Passing this token to gcsfs makes it resolve ``google_default`` with
+        ``google.auth.default()``, which forks the gcloud CLI. Prefer
+        :meth:`credentials` for a client built in a threaded process.
+        """
         return self.path or "google_default"
 
     @property
@@ -81,6 +98,30 @@ class WeatherNextCredentials:
         if self.using_adc:
             return "Application Default Credentials"
         return f"Credentials file: {self.path}"
+
+    def _adc_credentials(self):
+        """Application Default Credentials without google-auth's gcloud probe.
+
+        ``google.auth.default()`` runs ``gcloud config get-value project``
+        whenever gcloud's ADC file exists. That fork happens while Qt, asyncio
+        and worker threads are live, and the child process dies with a
+        segmentation fault, so load the file google-auth would have used and let
+        only the metadata-server fallback run through google-auth.
+        """
+        import google.auth
+
+        file = gcloud_adc_file()
+        if file is not None and file.is_file():
+            try:
+                credentials, _project = google.auth.load_credentials_from_file(
+                    str(file), scopes=SCOPES
+                )
+            except Exception:
+                credentials = None
+            if credentials is not None:
+                return credentials
+        credentials, _project = google.auth.default(scopes=SCOPES)
+        return credentials
 
     def credentials(self):
         """Return google-auth credentials for the configured source."""
@@ -94,22 +135,26 @@ class WeatherNextCredentials:
 
             return Credentials.from_service_account_file(str(file), scopes=SCOPES)
         try:
-            import google.auth
+            import google.auth  # noqa: F401
         except ImportError as exc:
             raise WeatherNextCredentialsError(
                 "WeatherNext needs gcsfs and google-auth; install the weathernext extra"
             ) from exc
         try:
-            credentials, _project = google.auth.default(scopes=SCOPES)
+            return self._adc_credentials()
         except Exception as exc:
             raise WeatherNextCredentialsError(
                 "WeatherNext credentials are not configured: choose a service-account "
                 "JSON or set GOOGLE_APPLICATION_CREDENTIALS"
             ) from exc
-        return credentials
 
     def gcs_filesystem(self):
-        """A gcsfs client for the configured credentials."""
+        """A gcsfs client for the configured credentials.
+
+        The resolved credentials are passed instead of ``token="google_default"``
+        because gcsfs resolves that token with ``google.auth.default()``, which
+        forks the ``gcloud`` CLI from the calling thread.
+        """
         import gcsfs
 
-        return gcsfs.GCSFileSystem(token=self.token)
+        return gcsfs.GCSFileSystem(token=self.credentials())
