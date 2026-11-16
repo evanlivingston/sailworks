@@ -14,6 +14,9 @@ from .scrollchrome import install_wheel_guard
 BACKGROUND = "#242424"
 PANEL = "#303030"
 SURFACE = "#1e1e1e"
+# Fill of an editable field, identical to the slider track in
+# ``sailworks.qt.slider`` so text inputs and sliders read as the same control.
+TRACK = "#2b2b2b"
 TEXT = "#e6e6e6"
 MUTED = "#b0b0ad"
 ACCENT = "#3584e4"
@@ -325,12 +328,15 @@ def apply_theme(app: QApplication):
         QCheckBox::indicator:!checked:hover { border-color: $accent; }
         QCheckBox::indicator:!checked:disabled { background: $disabled_surface;
                                                  border-color: $disabled_border; }
-        QComboBox, QDateTimeEdit, QDoubleSpinBox { min-height: 24px; padding: 3px;
-            border: 1px solid #454545; border-radius: 6px; background: #1e1e1e;
-            outline: none; }
-        QComboBox:hover { background: #262626; }
-        QDateTimeEdit:focus, QDoubleSpinBox:focus {
-            border-color: #3584e4; outline: none; }
+        QComboBox, QDateTimeEdit, QDoubleSpinBox, QSpinBox { min-height: 24px;
+            padding: 3px; border: 1px solid $track; border-radius: 3px;
+            background: $track; outline: none; }
+        QLineEdit { padding: 2px 4px; border: 1px solid $track;
+            border-radius: 3px; background: $track; color: $text; }
+        QComboBox:hover { background: #323232; border-color: #323232; }
+        QLineEdit:focus, QComboBox:focus, QDateTimeEdit:focus,
+        QDoubleSpinBox:focus, QSpinBox:focus {
+            border-color: $accent; outline: none; }
         QComboBox QAbstractItemView { background: #1e1e1e; color: #e6e6e6;
             border: none; outline: 0; padding: 0;
             selection-background-color: #3584e4; selection-color: #ffffff; }
@@ -347,9 +353,9 @@ def apply_theme(app: QApplication):
         QComboBox QAbstractItemView::item:selected { background: #3584e4;
             color: #ffffff; }
         QLineEdit#placeSearchEdit { min-height: 24px; padding: 3px 8px;
-            border: 1px solid #454545; border-radius: 6px;
-            background: #1e1e1e; color: #e6e6e6; }
-        QLineEdit#placeSearchEdit:focus { border-color: #3584e4; }
+            border: 1px solid $track; border-radius: 3px;
+            background: $track; color: $text; }
+        QLineEdit#placeSearchEdit:focus { border-color: $accent; }
         QListView#placeSearchResults { background: #242424; color: #e6e6e6;
             border: 1px solid #454545; border-radius: 6px;
             outline: 0; padding: 2px; }
@@ -414,6 +420,8 @@ def apply_theme(app: QApplication):
             surface=SURFACE,
             border=BORDER,
             accent=ACCENT,
+            track=TRACK,
+            text=TEXT,
         )
     )
 

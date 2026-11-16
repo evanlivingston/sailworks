@@ -3,10 +3,16 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QKeyEvent, QPalette
-from PySide6.QtWidgets import QApplication, QCheckBox, QLineEdit
+from PySide6.QtGui import QColor, QKeyEvent, QPalette
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QLineEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
-from sailworks.qt.theme import MenuBuilder, ThemedMenu, apply_theme
+from sailworks.qt.theme import ACCENT, TRACK, MenuBuilder, ThemedMenu, apply_theme
 
 
 def application():
@@ -45,6 +51,59 @@ def _rendered_luminances(box):
         for x in range(image.width()):
             values.append(image.pixelColor(x, y).lightness())
     return values
+
+
+def _edge_luminances(box):
+    image = box.grab().toImage()
+    width, height = image.width(), image.height()
+    points = [(x, 0) for x in range(width)]
+    points += [(x, height - 1) for x in range(width)]
+    points += [(0, y) for y in range(height)]
+    points += [(width - 1, y) for y in range(height)]
+    return [image.pixelColor(x, y) for x, y in points]
+
+
+def _line_edit_pair():
+    app = application()
+    apply_theme(app)
+    window = QWidget()
+    layout = QVBoxLayout(window)
+    focused = QLineEdit("0")
+    unfocused = QLineEdit("0")
+    layout.addWidget(focused)
+    layout.addWidget(unfocused)
+    window.show()
+    window.activateWindow()
+    focused.setFocus()
+    app.processEvents()
+    assert focused.hasFocus()
+    return window, focused, unfocused
+
+
+def test_line_edit_outer_edge_is_not_brighter_than_its_fill():
+    # A styled border changes how Qt sizes the box, so the inputs match the
+    # slider track with a border painted in the track colour: no visible
+    # outline and no geometry change. This test fails if either half regresses.
+    # Holding the window keeps the widget tree alive for the grab.
+    window, _focused, unfocused = _line_edit_pair()
+    fill = QColor(TRACK).lightness()
+    # Tolerant of rounding and antialiasing at the corners, which may only
+    # darken; anything lighter reintroduces an outline.
+    edge = max(color.lightness() for color in _edge_luminances(unfocused))
+    assert window.isVisible()
+    assert edge <= fill + 3
+
+
+def test_focused_line_edit_keeps_a_distinguishable_accent_edge():
+    # Holding the window keeps the widget tree alive for the grab.
+    window, focused, _unfocused = _line_edit_pair()
+    accent = QColor(ACCENT)
+    # Accent is much bluer than the neutral track, so the edge is compared by
+    # its blue-over-red split instead of an exact colour that settings or
+    # platform rounding could shift.
+    edge = max(color.blue() - color.red() for color in _edge_luminances(focused))
+    assert window.isVisible()
+    assert edge >= accent.blue() - accent.red() - 40
 
 
 def test_unchecked_checkbox_indicator_has_no_light_border():
