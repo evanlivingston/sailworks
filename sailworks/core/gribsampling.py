@@ -784,25 +784,62 @@ class WeatherSampler:
             origins[ids] = self._origin(u, v)
         return result, origins
 
+    def _time_axis(self, identity, field):
+        """Sorted valid-time axis for ``_side`` searchsorted, cached per key."""
+        cache = getattr(self, "_time_axes", None)
+        if cache is None:
+            self._time_axes = cache = {}
+        key = (identity, field)
+        try:
+            return cache[key]
+        except KeyError:
+            axis = cache[key] = np.asarray(self._times[key], dtype=float)
+            return axis
+
     def _side(self, identity, group, times, field, lats, lons, query, before, cancel):
         values = np.full((len(lats), 2 if field == "wind" else 1), np.nan)
         stamps = np.full(len(lats), np.nan)
         origins = np.full(len(lats), "", dtype=object)
-        for valid in times:
+        axis = (
+            times if isinstance(times, np.ndarray) else np.asarray(times, dtype=float)
+        )
+        if not axis.size or not len(lats):
+            return values, stamps, origins
+        # One cursor per point; each point then walks outward from its bracket
+        # until a finite sample lands, so the whole axis is never rescanned.
+        if before:
+            cursor = np.searchsorted(axis, query, side="right") - 1
+        else:
+            cursor = np.searchsorted(axis, query, side="left")
+        starts = np.flatnonzero(
+            np.isfinite(query) & (cursor >= 0) & (cursor < axis.size)
+        )
+        buckets: dict[int, list[int]] = {}
+        for point, position in zip(starts.tolist(), cursor[starts].tolist()):
+            buckets.setdefault(position, []).append(point)
+        while buckets:
             if cancel():
                 break
-            use = ~np.isfinite(stamps) & (
-                (query >= valid) if before else (query <= valid)
-            )
-            if not use.any():
-                continue
-            pairs = self._pairs[identity, valid] if field == "wind" else ()
-            candidate, names = self._at_time(
-                group[valid], field, lats[use], lons[use], pairs
-            )
-            good = np.isfinite(candidate).all(axis=1)
-            ids = np.flatnonzero(use)[good]
-            values[ids], stamps[ids], origins[ids] = candidate[good], valid, names[good]
+            position = max(buckets) if before else min(buckets)
+            points = np.asarray(buckets.pop(position), dtype=int)
+            points = points[~np.isfinite(stamps[points])]
+            if points.size:
+                valid = float(axis[position])
+                pairs = self._pairs[identity, valid] if field == "wind" else ()
+                candidate, names = self._at_time(
+                    group[valid], field, lats[points], lons[points], pairs
+                )
+                good = np.isfinite(candidate).all(axis=1)
+                ids = points[good]
+                values[ids], stamps[ids], origins[ids] = (
+                    candidate[good],
+                    valid,
+                    names[good],
+                )
+                following = position - 1 if before else position + 1
+                missed = points[~good]
+                if missed.size and 0 <= following < axis.size:
+                    buckets.setdefault(following, []).extend(missed.tolist())
             if np.isfinite(stamps).all():
                 break
         return values, stamps, origins
@@ -818,10 +855,16 @@ class WeatherSampler:
             values[both] = _circular_blend(a[both], b[both], weight[:, None])
         else:
             values[both] = a[both] + (b[both] - a[both]) * weight[:, None]
+        labels: dict[tuple[str, str], str] = {}
         for i in np.flatnonzero(both):
-            names[i] = "\x1f".join(
-                sorted(set(sa[i].split("\x1f")) | set(sb[i].split("\x1f")))
-            )
+            key = (sa[i], sb[i])
+            merged = labels.get(key)
+            if merged is None:
+                merged = "\x1f".join(
+                    sorted(set(sa[i].split("\x1f")) | set(sb[i].split("\x1f")))
+                )
+                labels[key] = merged
+            names[i] = merged
         return values, names
 
     def sample(self, field, instant, lats, lons, cancel=lambda: False):
@@ -847,11 +890,11 @@ class WeatherSampler:
             if not use.any():
                 continue
             group = self.groups[identity]
-            times = self._times[identity, field]
+            times = self._time_axis(identity, field)
             a, ta, sa = self._side(
                 identity,
                 group,
-                reversed(times),
+                times,
                 field,
                 lats[use],
                 lons[use],
@@ -873,13 +916,22 @@ class WeatherSampler:
             result[use], origins[use] = self._blend(
                 a, ta, sa, b, tb, sb, stamps[use], field
             )
-        self.last_sources = {
-            name for origin in origins for name in origin.split("\x1f") if name
-        }
-        self.point_sources = np.array(
-            [", ".join(origin.split("\x1f")) if origin else None for origin in origins],
-            dtype=object,
-        )
+        last = set()
+        labels = {}
+        point_sources = np.empty(len(origins), dtype=object)
+        for i, origin in enumerate(origins):
+            if origin:
+                label = labels.get(origin)
+                if label is None:
+                    parts = origin.split("\x1f")
+                    last.update(part for part in parts if part)
+                    label = ", ".join(parts)
+                    labels[origin] = label
+                point_sources[i] = label
+            else:
+                point_sources[i] = None
+        self.last_sources = last
+        self.point_sources = point_sources
         return result
 
     @staticmethod

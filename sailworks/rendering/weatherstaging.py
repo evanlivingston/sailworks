@@ -325,7 +325,7 @@ def stage_wind(  # noqa: C901 - staging, memo reuse and cancellation kept togeth
         a, ta, sa = sampler._side(
             identity,
             group,
-            reversed(times),
+            times,
             parameter,
             lat[use],
             lon[use],
@@ -434,7 +434,7 @@ def stage_streamline_endpoints(sampler, stamp, lats, lons, cancel=lambda: False)
         ai, tai, sai = sampler._side(
             identity,
             group,
-            reversed(times),
+            times,
             "wind",
             lat[use],
             lon[use],

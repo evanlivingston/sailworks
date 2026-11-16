@@ -1,6 +1,7 @@
 """Small Qt frontend for evaluating NMEA, plotting, panels, and map integration."""
 
 import sys
+import time
 from bisect import bisect_right
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -8,6 +9,7 @@ from html import escape
 
 from PySide6.QtCore import (
     Qt,
+    QEventLoop,
     QTimer,
     QSize,
     QSignalBlocker,
@@ -23,6 +25,7 @@ from PySide6.QtGui import (
     QUndoStack,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QDockWidget,
     QFileDialog,
     QLabel,
@@ -149,6 +152,22 @@ def _routing_presented_route(toggled, route, native, active_route):
     if _routing_owns_route(toggled, native, active_route):
         return toggled
     return route
+
+
+def _log_edit_status_message_for(widget):
+    """Status line text for the log edit state, or the idle message.
+
+    Busy covers both deleting and saving the log; the error is reported
+    generically so a failed save is not described as a failed delete.
+    """
+    if getattr(widget.controller, "log_edit_busy", False):
+        return "Updating log"
+    error = getattr(widget.controller, "log_edit_error", None)
+    if error:
+        return f"Log edit failed: {error}"
+    if widget.cursor_status.text():
+        return ""
+    return widget._connection_message()
 
 
 class PreviewWindow(QMainWindow):
@@ -2304,13 +2323,7 @@ class PreviewWindow(QMainWindow):
             if session.recording
             else "Start a new timestamped recording"
         )
-        if getattr(self.controller, "log_edit_busy", False):
-            message = "Deleting selected range"
-        elif getattr(self.controller, "log_edit_error", None):
-            message = f"Unable to delete range: {self.controller.log_edit_error}"
-        else:
-            message = "" if self.cursor_status.text() else self._connection_message()
-        self.statusBar().showMessage(message)
+        self.statusBar().showMessage(_log_edit_status_message_for(self))
         self.syncing = False
         refresh_log_editor = getattr(self, "_refresh_log_editor_controls", None)
         if callable(refresh_log_editor):
@@ -2320,6 +2333,10 @@ class PreviewWindow(QMainWindow):
             scene_panel.refresh()
         self._refresh_data()
         self._refresh_log_position()
+
+    def _log_edit_status_message(self):
+        """Status line text for the log edit state, or the idle message."""
+        return _log_edit_status_message_for(self)
 
     def _refresh_log_editor_controls(self):
         session = self.session
@@ -2574,7 +2591,71 @@ class PreviewWindow(QMainWindow):
     def show_library(self):
         self._ensure_library()
 
+    def _confirm_unsaved_log_edits(self) -> bool:
+        """Prompt to save unsaved log edits before the window closes.
+
+        Returns True when the close may continue. Saving runs on the
+        controller's worker thread, so the helper pumps queued events until the
+        save finishes; a failed or timed-out save keeps the window open.
+        """
+        session = getattr(self, "session", None)
+        controller = getattr(self, "controller", None)
+        if (
+            session is None
+            or controller is None
+            or getattr(session, "source", None) != "log"
+            or getattr(session, "log", None) is None
+            or not getattr(session, "log_edits_dirty", False)
+        ):
+            return True
+        choice = QMessageBox.question(
+            self,
+            "Unsaved log edits",
+            "The edited log has unsaved changes.\n\n" "Save them before closing?",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if choice == QMessageBox.StandardButton.Cancel:
+            return False
+        if choice != QMessageBox.StandardButton.Save:
+            return True
+        try:
+            controller.save_log_edits()
+        except Exception as error:
+            QMessageBox.warning(self, "Unable to save log", str(error))
+            return False
+        deadline = time.monotonic() + 15.0
+        while getattr(controller, "log_edit_busy", False):
+            if time.monotonic() >= deadline:
+                QMessageBox.warning(
+                    self,
+                    "Unable to save log",
+                    "Timed out while saving the edited log.",
+                )
+                return False
+            QApplication.processEvents(
+                QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents, 50
+            )
+            time.sleep(0.05)
+        error = getattr(controller, "log_edit_error", None)
+        if error:
+            QMessageBox.warning(self, "Unable to save log", str(error))
+            return False
+        if getattr(session, "log_edits_dirty", False):
+            QMessageBox.warning(
+                self,
+                "Unable to save log",
+                "The edited log still has unsaved changes.",
+            )
+            return False
+        return True
+
     def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
+        if not self._confirm_unsaved_log_edits():
+            event.ignore()
+            return
         self.workspace.close()
         if self.map.timeline is not None:
             self.map.timeline.dispose()

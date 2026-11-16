@@ -370,6 +370,10 @@ class SessionController(QObject):
 
     def _tick(self):
         now = time.monotonic()
+        if not self.session.playing or self.session.source != "log":
+            # Keep elapsed time fresh so resuming does not replay stale time.
+            self.last_tick = now
+            return
         self.session.advance(now - self.last_tick)
         self.last_tick = now
 
