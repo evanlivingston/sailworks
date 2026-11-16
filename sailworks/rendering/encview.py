@@ -55,6 +55,7 @@ Cells that contribute no geometry are reported in :attr:`ViewScene.skipped`
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import os
 import threading
 import time
@@ -264,6 +265,7 @@ class MeshCache:
         palette_key,
         stroke_pixels,
         granule=None,
+        trim=None,
     ) -> tuple:
         """Identity of one reusable cell mesh.
 
@@ -277,6 +279,13 @@ class MeshCache:
         :func:`_granule_region`).  It is part of the key because the geometry
         really does depend on it, but it changes only on a grid step, so a pan
         smaller than a step keeps the key and reuses the mesh.
+
+        ``trim`` is :func:`_trim_digest` of the ground a better-ranked cell
+        subtracted from this one, and ``None`` when nothing was subtracted.  A
+        trimmed mesh is clipped to the cell's *remaining* coverage, so the key
+        must change when the better-cell set changes even though the cell,
+        its granule and its style have not: the digest is exactly that
+        identity, and equal digests mean equal geometry.
         """
         return (
             os.path.abspath(os.fspath(path)),
@@ -286,6 +295,7 @@ class MeshCache:
             palette_key,
             float(stroke_pixels),
             granule,
+            trim,
         )
 
     @property
@@ -785,47 +795,97 @@ def _granule_key(granule) -> tuple:
     return tuple(round(float(value), GRANULE_DECIMALS) for value in granule.bounds)
 
 
-def _granule_owned(own, planned, view, granule) -> bool:
+def _trim_digest(region) -> bytes | None:
+    """A stable identity for the ground a trimmed cell keeps.
+
+    The trim is ``coverage`` minus the ground better-ranked cells claim, which
+    depends on the planned cell set and ranks but not on the camera, so a
+    digest of the trimmed geometry is stable across a pan and changes exactly
+    when a neighbour set changes its shape.  Bytes are compared, not hashes of
+    a lossy description: equal digests mean equal geometry, so two different
+    neighbour sets cannot collide.  ``None`` when the region cannot be encoded,
+    and the caller then refuses to cache rather than key it wrongly.
+    """
+    if region is None or getattr(region, "is_empty", True):
+        return None
+    try:
+        encoded = shapely.to_wkb(region)
+    except Exception:  # noqa: BLE001 - an unencodable trim is just not cached
+        return None
+    return hashlib.blake2b(bytes(encoded), digest_size=16).hexdigest()
+
+
+def _trimmed_coverages(plan):
+    """Each planned cell's coverage minus the ground better cells claim.
+
+    ``plan`` is in the planner's draw order, best-ranked first, so a cell's
+    better ranks are exactly the entries before it.  The subtraction uses whole
+    coverages, not the view clip: inside the view it is the same set the
+    planner subtracted (``(C - U) n V == (C n V) - (U n V)``), and outside it
+    it keeps the mesh consistent with the next pan step.  A cell with unknown
+    coverage claims nothing - it draws over the view without masking - so it is
+    neither trimmed nor does it trim.  The entry for an untrimmed cell is that
+    cell's own coverage object, so the caller can tell the two apart by
+    identity.
+    """
+    covered = None
+    trimmed: list = []
+    for cell in plan:
+        own = cell.coverage if getattr(cell, "coverage_known", False) else None
+        if own is None:
+            trimmed.append(None)
+            continue
+        if covered is None:
+            trimmed.append(own)
+            covered = own
+            continue
+        try:
+            trimmed.append(shapely.difference(own, covered))
+            covered = shapely.union(covered, own)
+        except Exception:  # noqa: BLE001 - untestable trim is not cached
+            trimmed.append(None)
+    return trimmed
+
+
+def _granule_owned(base, planned, view, granule) -> bool:
     """Whether ``granule`` can be meshed for this cell without changing pixels.
 
-    Two conditions, and both are needed.  The planned clip must be exactly the
-    coverage intersected with the view - no ground subtracted for a better cell
-    - so a mesh over the granule adds no geometry an upper cell hides.  And
-    the cell must cover part of the granule.  The clip itself is then
-    ``coverage`` intersected with the granule: the same geometry the view needs,
-    plus the border the next pan step reaches into.
+    Two conditions, and both are needed.  The planned clip must be exactly
+    ``base`` intersected with the view, where ``base`` is the cell's own
+    coverage or - where better-ranked cells claim ground - that coverage minus
+    their claim: only then does a mesh over the granule add nothing the view
+    does not need and nothing an upper cell hides.  And the cell must cover
+    part of the granule.  The clip itself is then ``base`` intersected with the
+    granule: the same geometry the view needs, plus the border the next pan
+    step reaches into.
     """
-    if not _untrimmed(own, planned, view):
+    if not _planned_matches(base, planned, view):
         return False
     try:
-        return not shapely.intersection(own, granule).is_empty
+        return not shapely.intersection(base, granule).is_empty
     except Exception:  # noqa: BLE001 - an untestable cell is just not cached
         return False
 
 
-def _untrimmed(own, planned, view) -> bool:
-    """Whether ``planned`` is exactly ``coverage`` intersected with the view.
+def _planned_matches(base, planned, view) -> bool:
+    """Whether ``planned`` is exactly ``base`` intersected with the view.
 
-    Bounds first, so almost every cell is rejected without a polygon op; the
-    area test then catches an interior subtraction that leaves the envelope
-    unchanged, which is the common case where a better cell holds a hole.
+    ``base`` may have holes - the ground a better-ranked cell keeps - so an
+    envelope shortcut is not enough: a hole that reaches the view edge changes
+    the intersection's bounds, which is exactly the case a pan produces.  The
+    intersection is computed once and compared with a symmetric difference,
+    an exact set test at source precision, so a plan that subtracted more,
+    less or a different neighbour is refused.
     """
-    own_bounds = _bounds(own)
     view_bounds = _bounds(view)
-    planned_bounds = _bounds(planned)
-    if own_bounds is None or view_bounds is None or planned_bounds is None:
-        return False
-    expected = (
-        max(own_bounds[0], view_bounds[0]),
-        max(own_bounds[1], view_bounds[1]),
-        min(own_bounds[2], view_bounds[2]),
-        min(own_bounds[3], view_bounds[3]),
-    )
-    if any(abs(left - right) > 1e-9 for left, right in zip(planned_bounds, expected)):
+    if view_bounds is None or _bounds(base) is None or _bounds(planned) is None:
         return False
     try:
-        full = float(shapely.area(shapely.intersection(own, shapely.box(*view_bounds))))
-        return abs(float(shapely.area(planned)) - full) <= 1e-9 * max(1.0, full)
+        expected = shapely.intersection(base, shapely.box(*view_bounds))
+        if expected.is_empty:
+            return False
+        difference = shapely.area(shapely.symmetric_difference(expected, planned))
+        return float(difference) <= 1e-9 * max(1.0, float(shapely.area(expected)))
     except Exception:  # noqa: BLE001 - an untestable cell is just not cached
         return False
 
@@ -853,12 +913,22 @@ def _prepare_cell(
     owner,
     mesh_scale=None,
     reuse_granules=True,
+    trimmed=None,
 ):
     """Resolve a cell's clip, query region and cache key, without touching it."""
     known = bool(cell.coverage_known)
     own = cell.coverage if known else None
+    # The ground this cell keeps once better-ranked cells have claimed theirs.
+    # ``trimmed`` is the same object as ``own`` when nothing was subtracted, so
+    # an untrimmed cell keeps exactly its old key and old clip.
+    base = own
+    trim_identity = None
     granule = None
     if known and own is not None:
+        if trimmed is not None and trimmed is not own:
+            trim_identity = _trim_digest(trimmed)
+            if trim_identity is not None:
+                base = trimmed
         # Mesh the region the view can see, not the whole cell.  Clipping to
         # ``cell.coverage`` makes the mesh view-independent, but at harbour
         # zoom the coverage is orders of magnitude larger than the view
@@ -872,19 +942,20 @@ def _prepare_cell(
         clip_region = planned
         cacheable = False
         if owner is not None and cell.clip is not None:
-            if _same_extent(own, cell.clip):
-                # The whole cell is visible, so its clip is already view-free:
-                # key the mesh on the cell and keep the previous behaviour.
+            if _same_extent(base, cell.clip):
+                # The whole cell - or the whole ground it still owns - is
+                # visible, so its clip is already view-free: key the mesh on
+                # the cell and keep the previous behaviour.
                 granule = _granule_region(cell.clip)
                 clip_region = cell.clip
                 cacheable = granule is not None
             elif reuse_granules and region is not None:
                 candidate = _granule_region(region)
                 if candidate is not None and _granule_owned(
-                    own, planned, region, candidate
+                    base, planned, region, candidate
                 ):
                     granule = candidate
-                    clip_region = shapely.intersection(own, candidate)
+                    clip_region = shapely.intersection(base, candidate)
                     cacheable = not clip_region.is_empty
         query_region = clip_region
     elif known:
@@ -943,6 +1014,7 @@ def _prepare_cell(
                 palette_key,
                 stroke_pixels,
                 granule_key,
+                trim_identity,
             )
         else:
             bucket = _scale_bucket(projection, clip_region)
@@ -955,6 +1027,7 @@ def _prepare_cell(
                     palette_key,
                     stroke_pixels,
                     granule_key,
+                    trim_identity,
                 )
     return _CellTask(
         index=index,
@@ -1205,9 +1278,14 @@ def build_view_scene(
     mesh is clipped to that view quantised onto a grid a quarter of its span -
     a *granule* - and keyed on it.  A camera move smaller than one grid step
     keeps the granule, its meshes and the key, so no cell re-tessellates; a
-    move across a step rebuilds only that cell's granule.  ``False`` restores
-    the view-clipped mesh, one per exact viewport, which is what the parity
-    check compares against.
+    move across a step rebuilds only that cell's granule.  A cell trimmed by a
+    better-ranked one is reusable on the same terms: the trim is the cell's
+    coverage minus the better cells' ground, which is fixed by the planned cell
+    set and ranks, not by the camera, so the mesh is clipped to that remainder
+    intersected with the granule and keyed on it.  The key also carries a
+    digest of the trim geometry, so a changed better-cell set cannot return a
+    stale mesh.  ``False`` restores the view-clipped mesh, one per exact
+    viewport, which is what the parity check compares against.
 
     ``bounding`` is the view to query cells with: an OGR or shapely geometry, a
     viewport with ``get_bbox()``, or ``None`` to use the union of the plan's own
@@ -1279,7 +1357,10 @@ def build_view_scene(
         _focus_cache(owner, region)
 
     # What a cell needs is view-independent data plus its own plan entry, so it
-    # is resolved here, once, before any worker exists.
+    # is resolved here, once, before any worker exists.  The trim for each cell
+    # is recomputed from the plan's own order, so a mesh cached for a trimmed
+    # cell carries the identity of the ground it kept.
+    trimmed_by_index = _trimmed_coverages(plan)
     tasks = [
         _prepare_cell(
             cell,
@@ -1291,6 +1372,7 @@ def build_view_scene(
             owner,
             mesh_scale=mesh_scale,
             reuse_granules=reuse_granules,
+            trimmed=trimmed_by_index[index],
         )
         for index, cell in enumerate(plan)
     ]

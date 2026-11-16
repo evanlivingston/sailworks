@@ -510,21 +510,120 @@ def test_pan_inside_the_granule_reuses_the_mesh(tmp_path):
     np.testing.assert_array_equal(first.positions, second.positions)
 
 
-def test_granule_is_not_used_when_a_better_cell_owns_part_of_it(tmp_path):
+def test_granule_is_not_used_when_the_plan_lacks_the_trimming_cell(tmp_path):
     lower = _cell(tmp_path, "lower.000", _area(0, 0, 10, 10))
     coverage = shapely.box(0, 0, 10, 10)
     cache = encscene.SceneCache(1_000_000)
     assert cache.put(lower)
     mesh_cache = encview.MeshCache(1_000_000)
-    # The planned clip is trimmed by a better-ranked cell, so it does not cover
-    # the visible granule: meshing the granule would add hidden geometry.
+    # The planned clip is trimmed, but the plan does not carry the better cell
+    # that trimmed it, so the ground this cell keeps is unknown: meshing the
+    # granule could add hidden geometry.  Refusing the cache is the safe side.
     trimmed = shapely.box(2, 2, 3.0, 3.5)
     plan = (_plan(lower.path, lower.version, trimmed, True, coverage),)
 
     scene = _build(plan, cache, mesh_cache, bounding=_box(2.1, 2.1, 3.1, 3.1))
     assert scene is not None
     assert scene.mesh_built == 1
-    # Not cached: a repeated frame meshes it again, as before this change.
+    # Not cached: a repeated frame meshes it again.
     again = _build(plan, cache, mesh_cache, bounding=_box(2.1, 2.1, 3.1, 3.1))
     assert again is not None
     assert again.mesh_hits == 0 and again.mesh_built == 1
+
+
+def _trimmed_plan(lower, coverage, better, better_coverage, view):
+    """A two-cell plan: the better cell claims a slab of the lower one."""
+    return (
+        _plan(
+            better.path,
+            better.version,
+            shapely.intersection(better_coverage, view),
+            True,
+            better_coverage,
+        ),
+        _plan(
+            lower.path,
+            lower.version,
+            shapely.intersection(shapely.difference(coverage, better_coverage), view),
+            True,
+            coverage,
+        ),
+    )
+
+
+def test_trimmed_cell_reuses_its_mesh_across_a_pan(tmp_path):
+    lower = _cell(tmp_path, "trimlower.000", _area(0, 0, 10, 10))
+    better = _cell(tmp_path, "trimbetter.000", _area(0, 0, 2.5, 10))
+    coverage = shapely.box(0, 0, 10, 10)
+    better_coverage = shapely.box(0, 0, 2.5, 10)
+    cache = encscene.SceneCache(1_000_000)
+    assert cache.put(lower) and cache.put(better)
+    mesh_cache = encview.MeshCache(1_000_000)
+
+    view = shapely.box(2.1, 2.1, 3.1, 3.1)
+    first = _build(
+        _trimmed_plan(lower, coverage, better, better_coverage, view),
+        cache,
+        mesh_cache,
+        bounding=_box(2.1, 2.1, 3.1, 3.1),
+    )
+    assert first is not None
+    # Two cells, one of them trimmed: both meshes built on the first frame.
+    assert first.mesh_built == 2 and mesh_cache.triangulations == 2
+
+    # A 2% pan stays inside the granule, and the better-cell set is unchanged,
+    # so the trimmed cell's mesh is as reusable as the untrimmed one's.
+    pan = shapely.box(2.12, 2.1, 3.12, 3.1)
+    second = _build(
+        _trimmed_plan(lower, coverage, better, better_coverage, pan),
+        cache,
+        mesh_cache,
+        bounding=_box(2.12, 2.1, 3.12, 3.1),
+    )
+    assert second is not None
+    assert second.mesh_built == 0 and second.mesh_hits == 2
+    assert mesh_cache.triangulations == 2
+    np.testing.assert_array_equal(first.positions, second.positions)
+
+
+def test_changed_better_cell_set_invalidates_a_trimmed_mesh(tmp_path):
+    lower = _cell(tmp_path, "trimrekey.000", _area(0, 0, 10, 10))
+    wide = _cell(tmp_path, "trimwide.000", _area(0, 0, 2.5, 10))
+    narrow = _cell(tmp_path, "trimnarrow.000", _area(0, 0, 2.0, 10))
+    coverage = shapely.box(0, 0, 10, 10)
+    cache = encscene.SceneCache(1_000_000)
+    assert cache.put(lower) and cache.put(wide) and cache.put(narrow)
+    mesh_cache = encview.MeshCache(1_000_000)
+    view = shapely.box(2.1, 2.1, 3.1, 3.1)
+
+    first = _fixed_frame_build(
+        _trimmed_plan(lower, coverage, wide, shapely.box(0, 0, 2.5, 10), view),
+        cache,
+        mesh_cache,
+        14.236,
+        bounding=_box(2.1, 2.1, 3.1, 3.1),
+    )
+    assert first is not None and mesh_cache.triangulations == 2
+
+    # Same camera, same lower cell, same granule - only the neighbour's claim
+    # shrank, so the ground the lower cell keeps is different geometry.  The
+    # key must change or a stale strip would be drawn where the wider cell used
+    # to cover.  In the fixed reference frame nothing else in the key can
+    # account for it: scale and tolerance are None by design.
+    second = _fixed_frame_build(
+        _trimmed_plan(lower, coverage, narrow, shapely.box(0, 0, 2.0, 10), view),
+        cache,
+        mesh_cache,
+        14.236,
+        bounding=_box(2.1, 2.1, 3.1, 3.1),
+    )
+    assert second is not None
+    assert second.mesh_hits == 0 and mesh_cache.triangulations == 4
+    lower_keys = [key for key in mesh_cache._entries if key[0] == lower.path]
+    assert len(lower_keys) == 2
+    # Same cell, same granule, no scale or tolerance: only the trim identity
+    # can keep those two meshes apart.
+    assert lower_keys[0][2] is None and lower_keys[0][3] is None
+    assert lower_keys[0][:2] == lower_keys[1][:2]
+    assert lower_keys[0][6] == lower_keys[1][6]
+    assert lower_keys[0][7] != lower_keys[1][7]
