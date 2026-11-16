@@ -267,7 +267,11 @@ class PolarLibrary(QWidget):
         if (
             name
             and QMessageBox.question(
-                self, "Remove polar copy?", f"Delete {name} from the polar library?"
+                self,
+                "Remove polar copy?",
+                f"Delete {name} from the polar library?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
             )
             == QMessageBox.StandardButton.Yes
         ):

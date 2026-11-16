@@ -461,9 +461,24 @@ class SettingsDialog(QDialog):
 
     def remove_connection(self):
         index = self.connections.currentRow()
-        if index >= 0:
-            self.draft.pop(index)
-            self.reload()
+        if index < 0:
+            return
+        name = connection_key(self.draft[index])
+        if (
+            QMessageBox.question(
+                self,
+                "Remove connection?",
+                f"Remove '{name}' from the connection list?\n\n"
+                "Routes and live data that used it may need another provider. "
+                "Nothing changes until you save.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        self.draft.pop(index)
+        self.reload()
 
     def apply_connections(self):
         configs = [dict(c) for c in self.draft]
