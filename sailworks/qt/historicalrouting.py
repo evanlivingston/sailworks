@@ -126,7 +126,6 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
 
         self.options.cancel_requested.connect(self.cancel_job)
         self.options.values_changed.connect(self._values_changed)
-        self.results.member_selected.connect(self._member_selected)
         self.results.delete_requested.connect(self.delete_job)
         self.results.retry_failed_requested.connect(self.retry_failed)
         self.results.recheck_requested.connect(self.recheck_excluded)
@@ -392,9 +391,6 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
 
     def delete_job(self):
         self.actions.delete_job()
-
-    def _member_selected(self, member_id):
-        self.actions.member_selected(member_id)
 
     def _result_uids(self):
         return self.actions.result_uids()

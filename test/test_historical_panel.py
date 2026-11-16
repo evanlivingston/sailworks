@@ -198,9 +198,9 @@ def test_historical_panel_fits_a_narrow_compare_page(qtbot):
 
     assert panel.minimumSizeHint().width() <= 340
     assert scroll.horizontalScrollBar().maximum() == 0
-    assert panel.results.table.isVisibleTo(scroll)
-    assert panel.results.canvas.width() > 0
-    assert panel.results.canvas.height() > 0
+    assert panel.results.isVisibleTo(scroll)
+    assert panel.results.delete_button.isVisibleTo(scroll)
+    assert panel.results.height() > 0
 
 
 def test_compare_page_shows_axes_and_toggles_the_historical_section(
@@ -385,8 +385,8 @@ def test_show_job_loads_a_published_run(qtbot):
     assert panel._record is record
     assert not panel.results.isHidden()
     assert panel.results.empty_label.isHidden()
-    assert panel.results.table.rowCount() == 1
-    assert "1 complete years" in panel.results.summary.text()
+    assert len(panel.results._rows) == 1
+    assert panel.results.delete_button.isEnabled()
 
 
 def test_show_job_reports_a_missing_run_without_raising(qtbot):
@@ -725,7 +725,7 @@ def _member():
     )
 
 
-def test_results_populate_from_a_fake_summary_and_records(qtbot):
+def test_results_project_records_and_pick_the_median(qtbot):
     panel = historical_panel(qtbot)
     record = SimpleNamespace(
         job_id="job-1",
@@ -743,14 +743,16 @@ def test_results_populate_from_a_fake_summary_and_records(qtbot):
         members={"2020-000": _member()},
         excluded_years=(),
     )
+    panel._outcomes = {
+        "2020-000": SimpleNamespace(member_id="2020-000", duration_hours=120.0)
+    }
     panel._show_record(record)
-    assert "1 complete years" in panel.results.summary.text()
-    assert panel.results.table.rowCount() == 1
-    assert panel.results.table.item(0, 0).text() == "2020"
-    assert panel.results.canvas._curve == [(0.0, 0.0), (10.0, 1.0)]
-    assert panel.results.canvas._strip == [
-        {"year": 2020, "offset_days": 0, "outcome": "finished"}
+    assert [(row["member_id"], row["year"]) for row in panel.results._rows] == [
+        ("2020-000", 2020)
     ]
+    assert panel.results._rows[0]["route_uid"] == "route-a"
+    assert panel.results._median_member_id == "2020-000"
+    assert panel.results.delete_button.isEnabled()
 
 
 def test_delete_calls_the_coordinator_and_the_collection(qtbot):
@@ -770,7 +772,9 @@ def test_delete_calls_the_coordinator_and_the_collection(qtbot):
     panel.delete_job()
     assert calls == [("job-1", [route], collection)]
     assert panel._record is None
-    assert panel.results.table.rowCount() == 0
+    assert panel.results._rows == []
+    assert panel.results._median_member_id is None
+    assert panel.results.isHidden()
 
 
 # -- scene attachment, retry and visibility wiring -----------------------
@@ -860,7 +864,7 @@ def test_set_scene_attaches_and_publishes_routes_after_a_retry(qtbot):
     panel._finished("job-1", "")
 
     assert published == [("job-1", [route])]
-    assert panel.results.table.rowCount() == 1
+    assert [row["route_uid"] for row in panel.results._rows] == ["route-a"]
 
 
 def test_retry_failed_uses_the_start_job_seams_and_refreshes_rows(qtbot, monkeypatch):
@@ -902,7 +906,7 @@ def test_retry_failed_uses_the_start_job_seams_and_refreshes_rows(qtbot, monkeyp
     assert calls["ensure_wind"] == panel.ensure_wind
     assert calls["run_bound"] == panel.run_bound
     assert calls["current_selection_factory"] == panel.current_selection_factory
-    assert panel.results.table.rowCount() == 1
+    assert len(panel.results._rows) == 1
     assert panel._retrying is False
 
 
@@ -1027,7 +1031,10 @@ def test_recheck_excluded_uses_the_same_seams_and_publishes_new_routes(
     assert calls["run_bound"] == panel.run_bound
     assert calls["current_selection_factory"] == panel.current_selection_factory
     assert calls["concurrency"] is None
-    assert panel.results.table.rowCount() == 2
+    assert [row["route_uid"] for row in panel.results._rows] == [
+        "route-a",
+        "route-b",
+    ]
     assert published == [("job-1", routes)]
     assert panel._retrying is False
 
@@ -1065,7 +1072,7 @@ def test_cancelling_a_recheck_leaves_the_panel_usable(qtbot, monkeypatch):
     assert panel._thread.is_alive() is False
     assert panel.results.recheck_button.isEnabled() is True
     assert panel.results.delete_button.isEnabled() is True
-    assert panel.results.table.rowCount() == 1
+    assert len(panel.results._rows) == 1
 
 
 def test_existing_compare_calculate_path_is_unchanged(qtbot, monkeypatch, tmp_path):

@@ -4,12 +4,11 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtWidgets import QAbstractItemView, QTableWidget
 
 from sailworks.qt.historicalroutingoptions import HistoricalRoutingOptions
 from sailworks.qt.historicalroutingprogress import HistoricalProgress, format_eta
-from sailworks.qt.historicalroutingresults import HistoricalRoutingResults, _CurveCanvas
+from sailworks.qt.historicalroutingresults import HistoricalRoutingResults
 from sailworks.qt.slider import Slider
 
 ROWS = [
@@ -195,29 +194,62 @@ def test_preflight_panel_hides_when_empty(qtbot):
     assert widget.preflight.isHidden()
 
 
-def test_rows_populate_table_with_outcome_prefixes_and_clicks(qtbot):
+def test_rows_track_only_the_median_finished_member(qtbot):
     results = HistoricalRoutingResults()
     qtbot.addWidget(results)
-    selected = []
-    results.member_selected.connect(selected.append)
+    assert results._median_member_id is None
+
     results.set_rows(ROWS)
-    assert results.table.rowCount() == 3
+    # Only the first row finished, so it is the median despite its neighbours.
+    assert results._median_member_id == "2023-000"
 
-    outcomes = [
-        results.table.item(row, 3).text() for row in range(results.table.rowCount())
-    ]
-    prefixes = {text.split(" ")[0] for text in outcomes}
-    assert prefixes == {"✓", "—", "✕"}
-    assert any("Finished" in text for text in outcomes)
-    assert any("No finish" in text for text in outcomes)
-
-    row = next(
-        index
-        for index in range(results.table.rowCount())
-        if results.table.item(index, 0).data(Qt.ItemDataRole.UserRole) == "2023-000"
+    results.set_rows(
+        [
+            {
+                "member_id": "slow",
+                "year": 2020,
+                "offset_days": 0,
+                "outcome": "finished",
+                "duration_hours": 240.0,
+            },
+            {
+                "member_id": "quick",
+                "year": 2021,
+                "offset_days": 0,
+                "outcome": "finished",
+                "duration_hours": 10.0,
+            },
+            {
+                "member_id": "middle",
+                "year": 2022,
+                "offset_days": 0,
+                "outcome": "finished",
+                "duration_hours": 120.0,
+            },
+            {
+                "member_id": "dnf",
+                "year": 2023,
+                "offset_days": 0,
+                "outcome": "no_finish_within_horizon",
+                "duration_hours": 240.0,
+            },
+        ]
     )
-    results.table.cellClicked.emit(row, 3)
-    assert selected == ["2023-000"]
+    assert results._median_member_id == "middle"
+
+    results.set_rows([])
+    assert results._median_member_id is None
+
+
+def test_results_panel_has_no_table_summary_or_curve(qtbot):
+    results = HistoricalRoutingResults()
+    qtbot.addWidget(results)
+    for name in ("table", "summary", "canvas", "set_summary", "set_curve", "set_strip"):
+        assert not hasattr(results, name)
+    for name in ("member_selected",):
+        assert not hasattr(results, name)
+    assert not results.findChildren(QTableWidget)
+    assert not results.findChildren(QAbstractItemView)
 
 
 def test_results_stay_hidden_until_a_run_is_displayed(qtbot):
@@ -279,58 +311,11 @@ def test_actions_follow_job_state(qtbot):
     results.set_actions_enabled(False, True, True)
     assert not results.retry_button.isEnabled()
     assert results.recheck_button.isEnabled()
+    assert results._median_member_id == "2023-000"
     results.clear()
     assert not results.delete_button.isEnabled()
-    assert results.table.rowCount() == 0
-
-
-def test_curve_canvas_paints_empty_and_populated_data(qtbot):
-    canvas = _CurveCanvas()
-    qtbot.addWidget(canvas)
-    canvas.resize(QSize(320, 200))
-    pixmap = QPixmap(canvas.size())
-    canvas.render(pixmap)
-    assert not pixmap.isNull()
-
-    canvas.set_curve([])
-    canvas.set_strip([])
-    canvas.render(QPixmap(canvas.size()))
-
-    canvas.set_curve([(0.0, 0.0), (60.0, 0.35), (120.0, 0.8), (180.0, 1.0)])
-    canvas.set_strip(
-        [
-            {
-                "year": 2022,
-                "offset_days": 0,
-                "duration_hours": 120.0,
-                "outcome": "finished",
-            },
-            {
-                "year": 2023,
-                "offset_days": 0,
-                "duration_hours": 140.0,
-                "outcome": "finished",
-            },
-            {
-                "year": 2023,
-                "offset_days": 1,
-                "duration_hours": 240.0,
-                "outcome": "no_finish",
-            },
-        ]
-    )
-    painted = QPixmap(canvas.size())
-    canvas.render(painted)
-    assert not painted.isNull()
-
-    results = HistoricalRoutingResults()
-    qtbot.addWidget(results)
-    results.resize(QSize(640, 520))
-    results.set_summary("Requested 10 years · Effective 9 · Excluded 1 · 63 routes")
-    results.set_rows(ROWS)
-    results.set_curve([(0.0, 0.0), (120.0, 0.8)])
-    results.set_strip(canvas._strip)
-    results.render(QPixmap(results.size()))
+    assert results._median_member_id is None
+    assert results.isHidden()
 
 
 # -- historical progress -------------------------------------------------
