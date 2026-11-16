@@ -390,3 +390,103 @@ def test_cached_colours_are_reused_and_accounted(tmp_path, monkeypatch):
 
     monkeypatch.setattr(encpalette, "vertex_colours", boom)
     np.testing.assert_array_equal(second.vertex_colours(), first.colours)
+
+
+def test_point_feature_in_ground_owned_by_better_cell_is_still_drawn(tmp_path):
+    """A marker only the lower-ranked cell holds survives the fill clip.
+
+    The plan trims a cell's ``clip_region`` to the ground no better-ranked cell
+    owns, but a point feature on ground the better cell covers is still inside
+    this cell's visible coverage.  Markers are additive, so the symbol has to be
+    queried and drawn; the same cell's stroke in that region stays clipped, so
+    nothing is painted twice.
+    """
+    better = _cell(
+        tmp_path,
+        "better.000",
+        [
+            _record(
+                0,
+                "DEPARE",
+                Polygon([(0, 0), (2, 0), (2, 2), (0, 2)]),
+                (("DRVAL1", 0.0), ("DRVAL2", 10.0)),
+            )
+        ],
+    )
+    lower = _cell(
+        tmp_path,
+        "lower.000",
+        [
+            # Unique to the lower-ranked cell, and inside the ground the
+            # better-ranked cell owns.
+            _record(0, "OBSTRN", Point(1.0, 1.0)),
+            # Also in the better cell's ground: a line must stay clipped.
+            _record(1, "COALNE", LineString([(0.2, 0.8), (1.2, 1.2)])),
+        ],
+    )
+    better_plan = _plan(
+        better.path,
+        better.version,
+        shapely.box(0, 0, 2, 2),
+        True,
+        coverage=shapely.box(0, 0, 2, 2),
+    )
+    lower_plan = _plan(
+        lower.path,
+        lower.version,
+        shapely.box(2, 0, 4, 4),
+        True,
+        coverage=shapely.box(0, 0, 4, 4),
+    )
+    # The pre-condition that made the bug: the plan's clip for the lower cell
+    # excludes the point while its visible coverage still contains it.
+    assert not lower_plan.clip.covers(Point(1.0, 1.0))
+    assert lower_plan.coverage.covers(Point(1.0, 1.0))
+
+    cache = encscene.SceneCache(1_000_000)
+    assert cache.put(better) and cache.put(lower)
+
+    # A shapely view region: the masked point query is composed in shapely.
+    assembled = _build(
+        (better_plan, lower_plan), cache, bounding=shapely.box(0, 0, 4, 4)
+    )
+
+    assert assembled is not None
+    span = next(cell for cell in assembled.cells if cell.path == lower.path)
+    end = span.first_vertex + span.vertex_count
+    in_span = tuple(
+        part for part in assembled.parts if span.first_vertex <= part.first_vertex < end
+    )
+
+    markers = tuple(part for part in in_span if part.kind == encmesh.MARKER)
+    assert tuple(part.source_class for part in markers) == ("OBSTRN",), (
+        "a point feature unique to a lower-ranked cell must still be drawn: "
+        "the query region and the marker clip are the cell's own visible "
+        "coverage, not the trimmed fill clip"
+    )
+    marker = markers[0]
+    vertices = np.asarray(
+        assembled.positions[
+            marker.first_vertex : marker.first_vertex + marker.vertex_count
+        ]
+    )[:, :2]
+    point = np.asarray(_projection([(1.0, 1.0)])[0], dtype=np.float64)[:2]
+    # The symbol is built around the point, so its vertices bracket it.
+    assert np.all(vertices.min(axis=0) - 0.1 <= point)
+    assert np.all(point <= vertices.max(axis=0) + 0.1)
+
+    # The other half of the separation: geometry that would double-paint stays
+    # clipped to the ground this cell alone owns.
+    lines = tuple(part for part in in_span if part.source_class == "COALNE")
+    assert not lines, "a line in ground a better-ranked cell owns must stay clipped"
+
+
+# NOTE: point features were made additive: ``point_region`` is the cell's own
+# visible coverage, so a marker only the lower-ranked cell holds still reaches
+# the mesher and is drawn, matching the Cairo drawer.  Lines and areas keep the
+# trimmed ``clip_region``.  That is deliberate, because strokes and fills are
+# not additive - they would double-paint wherever both cells hold the feature.
+# The cost is that a line or area feature only the lower-ranked cell holds is
+# still dropped.  Areas measured 94/94 filled in the US3WA1EF view, so the gap
+# is not visible there; lines were not measured.  Unmeasured gap, not a
+# guarantee.

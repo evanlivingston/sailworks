@@ -665,6 +665,7 @@ def build_scene_mesh(
     coverage=None,
     *,
     clip=None,
+    point_clip=None,
     area_outlines=True,
     stroke_pixels=None,
     projection=None,
@@ -689,6 +690,13 @@ def build_scene_mesh(
       drawing the full cell.
     * ``False`` - clipping explicitly not requested; the full cell is drawn
       and reported as ``coverage_state == "none"``.
+
+    ``point_clip`` is the region point features must fall inside; ``None``
+    (default) uses the fill clip.  A quilted composition passes the cell's own
+    visible coverage here, because a point feature may exist only in the
+    lower-ranked cell: markers are additive, so keeping the cell's own point
+    inside ground a better cell owns draws the symbol the Cairo drawer draws,
+    and a symbol both cells hold is drawn twice at the same position.
 
     Supported but undrawable features become :class:`UnsupportedPart` entries;
     nothing is dropped silently.  Coordinates stay ``float64``.
@@ -856,8 +864,16 @@ def build_scene_mesh(
         lineal = tuple(part for kind, part in ordered if kind == "line")
         other = tuple(part for kind, part in ordered if kind == "other")
         points = tuple(part for part in other if part.geom_type == "Point")
-        if clip_geometry is not None:
-            points = tuple(point for point in points if clip_geometry.covers(point))
+        # Markers are additive symbols, so a point may be kept in a region the
+        # fill clip excludes.  ``point_clip`` is the cell's own visible coverage
+        # in a quilt, where ``clip_geometry`` has already been trimmed to the
+        # ground no better-ranked cell owns: a cell can hold a point feature the
+        # better cell lacks, and clipping it by ground ownership loses it
+        # outright.  Duplicating a symbol at the same position costs one run and
+        # paints identically, which is what the Cairo drawer does.
+        point_geometry = clip_geometry if point_clip is None else point_clip
+        if point_geometry is not None:
+            points = tuple(point for point in points if point_geometry.covers(point))
         other = tuple(part for part in other if part.geom_type != "Point")
         _stage(timings, "ordered", started)
 

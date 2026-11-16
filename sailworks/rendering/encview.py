@@ -642,6 +642,10 @@ class _CellTask:
     #: The projection this cell is meshed with: the fixed reference frame when
     #: one was requested, else the view's own projection.
     projection: object = None
+    #: The region this cell's point features must fall inside: its own visible
+    #: coverage, which is wider than ``clip_region`` wherever a better-ranked
+    #: cell owns the ground.  ``None`` falls back to the fill clip.
+    point_region: object = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -716,6 +720,23 @@ def _prepare_cell(
         query_region = region
         cacheable = False
 
+    # Point features are clipped by this cell's own visible coverage, not by
+    # the ground a better-ranked cell owns.  ``clip_region`` is trimmed to what
+    # no better cell claims, which loses a point feature only this cell holds:
+    # markers are additive symbols, so it is safe to keep them, and a symbol
+    # both cells hold is drawn twice at the same position, as Cairo does.
+    point_region = None
+    if own is not None and region is not None and hasattr(region, "geom_type"):
+        point_region = (
+            own if _same_extent(own, clip_region) else shapely.intersection(own, region)
+        )
+    if point_region is not None:
+        # Query the whole visible cell, not just the ground it owns: the
+        # records for those unique point features have to reach the mesher
+        # before it can keep them.  Fills and lines are still clipped to
+        # ``clip_region``, so nothing is painted twice.
+        query_region = point_region
+
     # The drawer's half-pixel tolerance.  A known-coverage cell is meshed
     # against its own coverage, so its tolerance is view-independent within a
     # bucket; an unknown-coverage cell falls back to the queried view.  In the
@@ -761,6 +782,7 @@ def _prepare_cell(
         tolerance=tolerance,
         key=key,
         projection=(mesh_projection if mesh_projection is not None else projection),
+        point_region=point_region,
     )
 
 
@@ -791,6 +813,42 @@ def _marker_scale(task, region):
     if not per_pixel:
         return None
     return float(min(per_pixel))
+
+
+def _soundings_within(records, region):
+    """The SOUNDG records inside ``region``; other classes pass through.
+
+    A widened query (see :func:`_prepare_cell`) returns records the fill clip
+    excludes.  Sounding labels are not marker geometry and are not clipped
+    again downstream, so they keep the narrower clip and only the marker slice
+    grows.
+    """
+    if region is None:
+        return records
+    bounds = region.bounds
+    kept = []
+    for record in records:
+        if getattr(record, "source_class", None) != encsounding.SOUNDING_CLASS:
+            kept.append(record)
+            continue
+        envelope = getattr(record, "envelope", None)
+        if envelope is not None:
+            min_x, max_x, min_y, max_y = envelope
+            if (
+                max_x < bounds[0]
+                or min_x > bounds[2]
+                or max_y < bounds[1]
+                or min_y > bounds[3]
+            ):
+                continue
+        try:
+            geometry = shapely.from_wkb(record.wkb)
+        except Exception:  # noqa: BLE001 - the collector skips it too
+            kept.append(record)
+            continue
+        if geometry is not None and shapely.intersects(geometry, region):
+            kept.append(record)
+    return tuple(kept)
 
 
 def _mesh_cell(
@@ -836,6 +894,7 @@ def _mesh_cell(
             # build_scene_mesh as clip=True with coverage=None and raise.
             coverage=task.clip_region,
             clip=True if task.clip_region is not None else None,
+            point_clip=task.point_region,
             stroke_pixels=stroke_pixels,
             projection=task.projection,
             palette=palette,
@@ -844,7 +903,9 @@ def _mesh_cell(
             timings=timings,
         )
         started = time.perf_counter()
-        soundings = encsounding.soundings_from_records(records)
+        soundings = encsounding.soundings_from_records(
+            _soundings_within(records, task.clip_region)
+        )
         _stage(timings, "soundings", started)
         started = time.perf_counter()
         colours = encpalette.vertex_colours(
