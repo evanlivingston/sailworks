@@ -19,7 +19,6 @@ import logging
 import math
 from typing import List, Optional, Tuple
 
-from weatherrouting import Polar
 from sailworks.core.polarperformance import PerformanceSample, wind_band
 
 logger = logging.getLogger("sailworks")
