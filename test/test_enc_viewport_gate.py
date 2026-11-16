@@ -779,3 +779,55 @@ def test_satellite_render_camera_keeps_the_padded_extent(divisor):
         assert covered == pytest.approx(
             padded.view().get_scale() * padded.height * 2.0, rel=1e-9
         )
+
+
+def _translated(array, dy, dx):
+    """Candidate with ``candidate[y + dy, x + dx] == array[y, x]``."""
+    moved = np.zeros_like(array)
+    height, width = array.shape[:2]
+    top, bottom = max(0, dy), min(height, height + dy)
+    left, right = max(0, dx), min(width, width + dx)
+    moved[top:bottom, left:right] = array[
+        top - dy : bottom - dy, left - dx : right - dx
+    ]
+    return moved
+
+
+def _registration_reference():
+    reference = np.zeros((96, 112, 4), dtype=np.uint8)
+    reference[10:30, 12:50] = (200, 90, 30, 255)
+    reference[40:78, 58:100] = (20, 40, 200, 255)
+    for index in range(7):
+        row = 8 + index * 12
+        reference[row : row + 3, 6:104] = (10, 10, 10, 255)
+    return reference
+
+
+@pytest.mark.parametrize("dy, dx", ((0, 0), (7, -5)))
+def test_registration_recovers_a_known_shift_and_the_gate_rejects_it(dy, dx):
+    module = tool()
+    background = np.zeros((96, 112, 4), dtype=np.uint8)
+    reference = _registration_reference()
+    candidate = _translated(reference, dy, dx)
+
+    found = module._registration(candidate, reference)
+    assert (found["dy"], found["dx"]) == (dy, dx)
+    assert found["score"] > 0.9
+
+    metrics = module._fidelity(candidate, reference, background)
+    shift = max(abs(dx), abs(dy))
+    assert metrics["registration_shift"] == shift
+    # Coverage is translation invariant: it cannot see the misregistration
+    # that the registration metric is here to catch.
+    assert metrics["coverage"] > 0.9
+    assert module._registration_check([metrics]) == (shift <= 1)
+
+
+def test_fidelity_requires_equal_candidate_and_reference_shapes():
+    module = tool()
+    with pytest.raises(ValueError, match="equal shapes"):
+        module._fidelity(
+            np.zeros((4, 4, 4), dtype=np.uint8),
+            np.zeros((5, 4, 4), dtype=np.uint8),
+            np.zeros((4, 4, 4), dtype=np.uint8),
+        )

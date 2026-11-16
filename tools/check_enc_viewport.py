@@ -57,6 +57,8 @@ CHECK_NAMES = (
     "source_selection_exact",
     "multi_cell_coverage_exercised",
     "zero_alpha_preserved",
+    "pixel_registration_exact",
+    "ink_mask_not_saturated",
     "annotations_faithful",
     "native_metal_dpr2",
     "native_chart_nonblank",
@@ -109,14 +111,26 @@ def _wait(predicate, timeout_s, step_ms=50):
 
 
 def _grab(widget):
-    """The scene graph's framebuffer as premultiplied BGRA bytes (native)."""
+    """The scene graph's framebuffer as premultiplied BGRA bytes (native).
+
+    The viewport is a QQuickView, a QWindow rather than a QWidget, so it has
+    no grabFramebuffer(); grabWindow() renders the window's scene graph and
+    returns the same premultiplied, device-pixel image. QWidget hosts keep
+    the framebuffer path. The image is never resized or cropped here: the
+    caller compares it against the oracle at native resolution.
+    """
     import numpy as np
 
     from PySide6.QtGui import QImage
 
-    image = widget.grabFramebuffer().convertToFormat(
-        QImage.Format.Format_ARGB32_Premultiplied
-    )
+    grab = getattr(widget, "grabFramebuffer", None)
+    if grab is None:
+        grab = getattr(widget, "grabWindow", None)
+    if grab is None:
+        raise RuntimeError(
+            f"{type(widget).__name__} has neither grabFramebuffer nor grabWindow"
+        )
+    image = grab().convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
     if image.isNull():
         raise RuntimeError("framebuffer readback failed")
     return (
@@ -158,10 +172,93 @@ def _ink(array):
     return (array.astype("int16") > INK_EPSILON).any(axis=2)
 
 
+def _registration(candidate, reference, max_shift=8):
+    """Integer (dx, dy) translation that maps reference onto candidate.
+
+    ``candidate[y + dy, x + dx]`` is expected to match ``reference[y, x]``.
+    The estimate is a normalised cross-correlation of the luma reduction over
+    an integer grid of +-max_shift: a block-reduced coarse pass, then a full
+    resolution refinement around the coarse best. It is deterministic, pure
+    numpy and needs no Qt, and it is the only fidelity metric that is not
+    translation invariant.
+    """
+    import numpy as np
+
+    if candidate.shape != reference.shape:
+        raise ValueError(
+            "registration needs equal shapes: "
+            f"candidate {candidate.shape} != reference {reference.shape}"
+        )
+    if candidate.ndim < 3 or candidate.shape[2] < 3:
+        raise ValueError(f"registration needs a colour image, got {candidate.shape}")
+
+    def luma(array):
+        data = np.asarray(array, dtype="float32")
+        return data[..., 0] * 0.114 + data[..., 1] * 0.587 + data[..., 2] * 0.299
+
+    def reduced(array, step):
+        if step <= 1:
+            return array
+        rows = (array.shape[0] // step) * step
+        cols = (array.shape[1] // step) * step
+        trimmed = array[:rows, :cols]
+        return trimmed.reshape(rows // step, step, cols // step, step).mean(axis=(1, 3))
+
+    def ncc(ref, cand, dy, dx):
+        height, width = ref.shape
+        top, bottom = max(0, -dy), min(height, height - dy)
+        left, right = max(0, -dx), min(width, width - dx)
+        if bottom - top < 8 or right - left < 8:
+            return -1.0
+        a = ref[top:bottom, left:right]
+        b = cand[top + dy : bottom + dy, left + dx : right + dx]
+        a = a - a.mean()
+        b = b - b.mean()
+        denominator = float(np.sqrt((a * a).sum() * (b * b).sum()))
+        if denominator <= 0.0:
+            return 0.0
+        return float((a * b).sum() / denominator)
+
+    ref_luma = luma(reference)
+    candidate_luma = luma(candidate)
+    step = 2 if max(reference.shape[:2]) > 512 else 1
+    coarse_ref = reduced(ref_luma, step)
+    coarse_candidate = reduced(candidate_luma, step)
+    radius = (max_shift + step - 1) // step
+    coarse_dy = coarse_dx = 0
+    coarse_score = ncc(coarse_ref, coarse_candidate, 0, 0)
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            score = ncc(coarse_ref, coarse_candidate, dy, dx)
+            if score > coarse_score:
+                coarse_dy, coarse_dx, coarse_score = dy, dx, score
+    centre_dy = coarse_dy * step
+    centre_dx = coarse_dx * step
+    window = step
+    best_dy, best_dx = centre_dy, centre_dx
+    best_score = ncc(ref_luma, candidate_luma, centre_dy, centre_dx)
+    for dy in range(
+        max(-max_shift, centre_dy - window), min(max_shift, centre_dy + window) + 1
+    ):
+        for dx in range(
+            max(-max_shift, centre_dx - window), min(max_shift, centre_dx + window) + 1
+        ):
+            score = ncc(ref_luma, candidate_luma, dy, dx)
+            if score > best_score:
+                best_dy, best_dx, best_score = dy, dx, score
+    return {"dx": int(best_dx), "dy": int(best_dy), "score": float(best_score)}
+
+
 def _fidelity(native, ref_on, ref_off):
     """Metrics of the native ENC layer against the reference, premultiplied BGRA."""
     import numpy as np
 
+    if native.shape != ref_on.shape or native.shape != ref_off.shape:
+        raise ValueError(
+            "fidelity needs equal shapes: "
+            f"native {native.shape}, ref_on {ref_on.shape}, "
+            f"ref_off {ref_off.shape}"
+        )
     on = ref_on.astype("int16")
     off = ref_off.astype("int16")
     nat = native.astype("int16")
@@ -185,6 +282,7 @@ def _fidelity(native, ref_on, ref_off):
                 continue
             interior &= np.roll(np.roll(zero, dy, axis=0), dx, axis=1)
     zero_violations = int((interior & (nat[:, :, 3] > 0)).sum())
+    registration = _registration(native, ref_on)
     return {
         "mae_255": float(diff.mean()),
         "p99_255": float(np.percentile(diff, 99)),
@@ -197,7 +295,23 @@ def _fidelity(native, ref_on, ref_off):
         "zero_alpha_violations": zero_violations,
         "ref_ink_pixels": int(ref_mask.sum()),
         "native_ink_pixels": int(native_mask.sum()),
+        "registration_dx": registration["dx"],
+        "registration_dy": registration["dy"],
+        "registration_shift": int(
+            max(abs(registration["dx"]), abs(registration["dy"]))
+        ),
+        "registration_score": registration["score"],
+        "ink_mask_fraction": float(max(ref_mask.mean(), native_mask.mean())),
     }
+
+
+def _registration_check(metrics):
+    """True only when every pair was shape-checked and registered to <=1 px.
+
+    ``_fidelity`` raises on unequal shapes, so a metric dict proves the shapes
+    matched; the shift is the part that a translated image can fail.
+    """
+    return bool(metrics) and all(item["registration_shift"] <= 1 for item in metrics)
 
 
 def _rounded(value):
@@ -781,6 +895,12 @@ def _run_session(  # noqa: C901 - one session keeps the widget and worker togeth
     )
     report["checks"]["zero_alpha_preserved"] = bool(report["fidelity"]) and all(
         m["zero_alpha_violations"] == 0 for m in report["fidelity"]
+    )
+    report["checks"]["pixel_registration_exact"] = _registration_check(
+        report["fidelity"]
+    )
+    report["checks"]["ink_mask_not_saturated"] = bool(report["fidelity"]) and all(
+        m["ink_mask_fraction"] <= 0.99 for m in report["fidelity"]
     )
     report["checks"]["annotations_faithful"] = bool(spread) and all(
         report["identity"][name].get("annotations_match") for name in spread
