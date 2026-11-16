@@ -35,12 +35,6 @@ from .forecastoverview import ForecastSourceDrawer, source_rows
 logger = logging.getLogger("sailworks")
 
 
-# Playback runs at twenty updates per second while keeping the user-facing
-# speed at two forecast hours per real second (50 ms x 360 s).
-PLAY_INTERVAL_MS = 50
-PLAY_STEP_SECONDS = 360
-
-
 class DayStripWidget(QWidget):
     """Horizontal day-by-day timeline strip.
 
@@ -72,14 +66,7 @@ class DayStripWidget(QWidget):
         self._now_timer = QTimer(self)
         self._now_timer.setInterval(30_000)
         self._now_timer.timeout.connect(self._update_now)
-
-    def showEvent(self, event):  # noqa: N802 - Qt virtual method name
-        super().showEvent(event)
-        self._update_now()
         self._now_timer.start()
-
-    def stop_clock(self):
-        self._now_timer.stop()
 
     def _update_now(self):
         self.now = datetime.now(timezone.utc).timestamp()
@@ -317,7 +304,6 @@ class DayStripWidget(QWidget):
 
     def hideEvent(self, event):
         self._stop_dragging()
-        self.stop_clock()
         super().hideEvent(event)
 
 
@@ -471,9 +457,9 @@ class ForecastTimeline(QWidget):
         self.slider.sliderReleased.connect(self.commit)
 
         self.play_timer = QTimer(self)
-        # Twenty updates per second, about two forecast hours per real second.
+        # Two forecast minutes per frame, about two forecast hours per real second.
         self.play_timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self.play_timer.setInterval(PLAY_INTERVAL_MS)
+        self.play_timer.setInterval(16)
         self.play_timer.timeout.connect(self.tick)
         self.commit_timer = QTimer(self)
         self.commit_timer.setSingleShot(True)
@@ -687,10 +673,8 @@ class ForecastTimeline(QWidget):
                 self.day_strip.set_position(None)
                 self.day_strip.set_marker(None)
                 self.source_overview.set_cursors(self.day_strip.now, None)
-            caption = self._caption_for(instant.timestamp())
-            self.caption.setText(caption)
-            if self.caption.toolTip() != caption:
-                self.caption.setToolTip(caption)
+            self.caption.setText(self._caption_for(instant.timestamp()))
+            self.caption.setToolTip(self.caption.text())
             self._syncing = False
         except Exception as exc:  # Never let a time change crash the app
             logger.warning("ForecastTimeline time change error: %s", exc)
@@ -776,14 +760,11 @@ class ForecastTimeline(QWidget):
             return False
         try:
             limit = self._playback_limit()
-            if (
-                limit is not None
-                and self.clock.time.timestamp() + PLAY_STEP_SECONDS >= limit
-            ):
+            if limit is not None and self.clock.time.timestamp() + 120 >= limit:
                 self.clock.set_time(datetime.fromtimestamp(limit))
                 self.pause()
                 return self.playing
-            self.step(PLAY_STEP_SECONDS)
+            self.step(120)
             if limit is not None and self.clock.time.timestamp() >= limit:
                 self.pause()
         except Exception as exc:  # Never let a tick crash the app
@@ -873,7 +854,6 @@ class ForecastTimeline(QWidget):
             self.pause()
             self.cancel_commit()
             self.poll_timer.stop()
-            self.day_strip.stop_clock()
             self.clock.disconnect("time_change", self._time_changed)
             self.marine.disconnect("changed", self._marine_changed)
             self.marine.fields.disconnect("changed", self._marine_changed)

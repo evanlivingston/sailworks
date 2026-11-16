@@ -119,20 +119,6 @@ class TestDayStrip(unittest.TestCase):
         self.mouse("MouseButtonRelease", 400, "LeftButton")
         self.assertEqual(self.stamps, [1250])
 
-    def test_clock_timer_runs_only_while_visible(self):
-        self.assertFalse(self.strip._now_timer.isActive())
-        self.strip.show()
-        self.app.processEvents()
-        self.assertTrue(self.strip._now_timer.isActive())
-        self.strip.hide()
-        self.app.processEvents()
-        self.assertFalse(self.strip._now_timer.isActive())
-        self.strip.show()
-        self.app.processEvents()
-        self.assertTrue(self.strip._now_timer.isActive())
-        self.strip.stop_clock()
-        self.assertFalse(self.strip._now_timer.isActive())
-
     def test_transport_button_is_larger_and_clickable(self):
         from PySide6.QtCore import QPoint, QSize, Qt
         from PySide6.QtTest import QTest

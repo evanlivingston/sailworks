@@ -1,6 +1,5 @@
 """Retained navigation and dashboard image overlays for Qt map hosts."""
 
-import logging
 import math
 import weakref
 
@@ -69,67 +68,8 @@ class MapOverlayServices:
                 pass
 
 
-def _record_overlay_failure(host, kind, error):
-    """Record a draw failure when the host implements the mixin hooks.
-
-    Duck-typed hosts (and tests that call the mixin methods unbound) keep the
-    previous behaviour: the failure is swallowed.
-    """
-    record = getattr(host, "_overlay_failed", None)
-    if callable(record):
-        record(kind, error)
-
-
-def _clear_overlay_failure(host, kind):
-    clear = getattr(host, "_overlay_ok", None)
-    if callable(clear):
-        clear(kind)
-
-
 class RetainedOverlayMixin:
     """Build retained overlay images from state supplied by the map host."""
-
-    # Draw failures are recorded for the viewport caption and logged once per
-    # distinct failure. Keep the text short: it is folded into a map caption.
-    _OVERLAY_ERROR_CHARS = 120
-    _OVERLAY_ERROR_TOTAL_CHARS = 160
-
-    def _overlay_failed(self, kind, error):
-        """Record an overlay draw failure, logging each distinct one once."""
-        key = (kind, type(error).__name__, str(error)[: self._OVERLAY_ERROR_CHARS])
-        if key == getattr(self, "_overlay_failure_key", None):
-            return
-        logging.getLogger(__name__).warning(
-            "%s overlay draw failed", kind, exc_info=True
-        )
-        self._overlay_failure_key = key
-        errors = dict(getattr(self, "_overlay_errors", None) or {})
-        errors[kind] = self._overlay_error_text(kind, error)
-        self._overlay_errors = errors
-        self._overlay_error = self._join_overlay_errors(errors)
-
-    def _overlay_ok(self, kind):
-        """Clear a recorded failure for *kind* after a successful draw."""
-        errors = dict(getattr(self, "_overlay_errors", None) or {})
-        if kind not in errors:
-            return
-        del errors[kind]
-        self._overlay_errors = errors
-        if not errors:
-            self._overlay_failure_key = None
-        self._overlay_error = self._join_overlay_errors(errors) if errors else None
-
-    @classmethod
-    def _overlay_error_text(cls, kind, error):
-        detail = f"{type(error).__name__}: {error}"
-        return detail[: cls._OVERLAY_ERROR_CHARS].strip() or kind
-
-    @classmethod
-    def _join_overlay_errors(cls, errors):
-        if not errors:
-            return None
-        text = " · ".join(f"{kind}: {detail}" for kind, detail in errors.items())
-        return text[: cls._OVERLAY_ERROR_TOTAL_CHARS] or None
 
     @property
     def navigation(self):
@@ -404,10 +344,8 @@ class RetainedOverlayMixin:
         ):
             try:
                 isochrones.draw(self, cr, frames, "routing-live")
-            except Exception as error:
-                _record_overlay_failure(self, "Isochrones", error)
-            else:
-                _clear_overlay_failure(self, "Isochrones")
+            except Exception:
+                pass
         navigation = getattr(self, "navigation", None)
         if navigation is not None:
             try:
@@ -417,20 +355,16 @@ class RetainedOverlayMixin:
                     self.time_control.time.timestamp(),
                     draw_routes=not getattr(self, "_qml_navigation_overlay", False),
                 )
-            except Exception as error:
-                _record_overlay_failure(self, "Routes", error)
-            else:
-                _clear_overlay_failure(self, "Routes")
+            except Exception:
+                pass
             try:
                 navigation.draw_navigation(
                     self,
                     cr,
                     draw_tracks=not getattr(self, "_qml_navigation_overlay", False),
                 )
-            except Exception as error:
-                _record_overlay_failure(self, "Navigation", error)
-            else:
-                _clear_overlay_failure(self, "Navigation")
+            except Exception:
+                pass
         # Compose the cached race geometry instead of redrawing race tracks on
         # every navigation image. The cache is keyed on view/track state, so
         # marker-only scrubbing reuses the previously rendered geometry.
@@ -485,10 +419,8 @@ class RetainedOverlayMixin:
             if ais_renderer is not None:
                 try:
                     ais_renderer.draw_targets(self, cr, ais_targets)
-                except Exception as error:
-                    _record_overlay_failure(self, "AIS", error)
-                else:
-                    _clear_overlay_failure(self, "AIS")
+                except Exception:
+                    pass
         if not getattr(self, "_qml_race_overlay", False):
             # The viewport draws race markers itself; only the legacy map
             # renderer needs these Cairo circles.

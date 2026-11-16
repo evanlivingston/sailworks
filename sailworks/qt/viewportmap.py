@@ -1207,7 +1207,6 @@ def _build_viewport_route_overlay(host):
             _routing_absence_caption(
                 getattr(host, "native_routing", None),
                 getattr(host, "isochrone_error", None),
-                getattr(host, "_overlay_error", None),
             ),
         ),
         "dashboard_visible": host.dashboard_visible,
@@ -1465,11 +1464,9 @@ def _routing_overlay(host):
     return isochrone_overlay_data(host.isochrone_frame)
 
 
-def _routing_absence_caption(model, isochrone_error=None, overlay_error=None):
+def _routing_absence_caption(model, isochrone_error=None):
     """Disclosure for missing routing geometry or trace times."""
     parts = []
-    if overlay_error:
-        parts.append(f"Overlay draw failed: {overlay_error}")
     if isochrone_error:
         parts.append(f"Isochrones unavailable: {isochrone_error}")
     if model is None:
