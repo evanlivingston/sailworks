@@ -81,7 +81,9 @@ def main():
     window.timeline.dispose()
     window.dispose_marine()
     window.map.dispose()
-    window.log_map.dispose()
+    log_map = window.current_log_map
+    if log_map is not None:
+        log_map.dispose()
     controller.close()
     window.close()
 

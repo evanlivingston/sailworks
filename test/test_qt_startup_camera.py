@@ -23,7 +23,7 @@ def test_initial_data_refresh_does_not_fit_or_switch_from_saved_view():
     window.map.set_points.assert_called_once_with(
         window.controller.points, [], fit=False
     )
-    window.log_map.set_points.assert_called_once_with(
+    window.current_log_map.set_points.assert_called_once_with(
         window.controller.points, [], fit=False
     )
     window.views.setCurrentWidget.assert_not_called()

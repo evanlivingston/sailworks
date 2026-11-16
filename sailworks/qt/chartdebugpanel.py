@@ -165,6 +165,11 @@ class ChartDebugPanel(QWidget):
         # view_changed fires on every pan frame; coalesce to a cheap poll.
         self._timer.start()
 
+    def add_map(self, map_widget):
+        """Watch a map that was built after the panel."""
+        map_widget.view_changed.connect(self._schedule)
+        self._schedule()
+
     def refresh(self):
         collection = self.controller.charts
         map_widget = self._active_map()

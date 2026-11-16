@@ -188,6 +188,17 @@ class PreviewWindow(QMainWindow):
         self.settings_dialog = None
         self.library_dialog = None
         self.log_library_dialog = None
+        # The Logs-tab viewport and the place gazetteer are built on first use:
+        # together they cost about a second of the window constructor.
+        self._log_map = None
+        self._log_points = None
+        self._log_position = None
+        self._ais_targets = ()
+        self._log_split_sizes = [350, 300]
+        self._pending_log_map_state = {}
+        self.place_index = None
+        self._pending_places = []
+        self._pending_chart_places = []
         try:
             pending_era5 = (
                 Path(controller.analysis.state.store.root) / "era5-pending.json"
@@ -216,10 +227,8 @@ class PreviewWindow(QMainWindow):
         for name in ("Charts", "Logs", "Polars"):
             self.workspace_tabs.addTab(qt_text(name))
         header.addWidget(self.workspace_tabs)
-        self.place_index = PlaceIndex.from_default()
-        self.place_search = PlaceSearch(
-            self.place_index, near=self._place_near, parent=self
-        )
+        QTimer.singleShot(0, self._load_place_index)
+        self.place_search = PlaceSearch(None, near=self._place_near, parent=self)
         self.place_search.place_selected.connect(self._go_to_place)
         header.addSeparator()
         header.addWidget(self.place_search)
@@ -234,8 +243,7 @@ class PreviewWindow(QMainWindow):
         controller.data.changed.connect(self._schedule_chart_places)
         self.plots = self._build_plots(controller)
         self.log_time = TimeControl()
-        self.log_map = ViewportMap(controller, self, time_control=self.log_time)
-        for canvas in (self.map, self.log_map):
+        for canvas in self._canvases():
             canvas.drawer_toggle_requested.connect(self._toggle_drawer)
         self.log_plot_panel = QWidget(self)
         plot_layout = QVBoxLayout(self.log_plot_panel)
@@ -260,9 +268,8 @@ class PreviewWindow(QMainWindow):
         plot_layout.addLayout(plot_controls)
         self.plots.set_viewport_callback(self._plot_viewport_changed)
         self.logs_view = QSplitter(Qt.Orientation.Vertical)
-        self.logs_view.addWidget(self.log_map)
         self.logs_view.addWidget(self.log_plot_panel)
-        self.logs_view.setSizes([350, 300])
+        self.logs_view.setSizes(self._log_split_sizes)
         self.logs_view.setCollapsible(0, False)
         self.logs_view.setCollapsible(1, False)
         self.polar_workspace = PolarWorkspace(controller, self)
@@ -287,7 +294,7 @@ class PreviewWindow(QMainWindow):
         self.undo_stack = QUndoStack(self)
         # Both maps share one history, so a corner edit keeps one Ctrl-Z
         # sequence wherever the user made it.
-        for canvas in (self.map, self.log_map):
+        for canvas in self._canvases():
             attach = getattr(canvas, "set_undo_stack", None)
             if callable(attach):
                 attach(self.undo_stack)
@@ -321,7 +328,7 @@ class PreviewWindow(QMainWindow):
         # both the map and the log map keep their Scene rows in step. The
         # viewport ships the signal separately; older canvases just don't have
         # it, which is not an error here.
-        for canvas in (self.map, self.log_map):
+        for canvas in self._canvases():
             shapes_changed = getattr(canvas, "shapes_changed", None)
             if shapes_changed is not None:
                 shapes_changed.connect(self.scene_panel.refresh)
@@ -353,7 +360,6 @@ class PreviewWindow(QMainWindow):
         race_scroll.setWidget(self.race_panel)
         self.race_scroll = race_scroll
         self.map.navigation_request.connect(self._navigation_request)
-        self.log_map.navigation_request.connect(self._navigation_request)
         self.polar_manager_panel = PolarLibrary(controller, self)
         self.polar_manager_panel.polar_chosen.connect(self.polar_workspace.select)
         file_menu = self.menuBar().addMenu("File")
@@ -395,7 +401,7 @@ class PreviewWindow(QMainWindow):
             controller, self._active_map, self.show_library
         )
         self.chart_debug_panel = ChartDebugPanel(
-            controller, self._active_map, (self.map, self.log_map)
+            controller, self._active_map, (self.map,)
         )
         self._build_panel_stacks()
         self._create_drawer_flags()
@@ -451,7 +457,7 @@ class PreviewWindow(QMainWindow):
         self.instruments = QLabel()
         self.cursor_status = CursorStatus()
         self.statusBar().addPermanentWidget(self.cursor_status, 1)
-        for canvas in (self.map, self.log_map):
+        for canvas in self._canvases():
             canvas.cursor_readout.connect(
                 lambda text, canvas=canvas: self._cursor_readout(canvas, text)
             )
@@ -829,9 +835,7 @@ class PreviewWindow(QMainWindow):
         hidden = getattr(self, "_scene_drawer_tabs_hidden", None)
         if hidden is None:
             hidden = self._scene_drawer_tabs_hidden = set()
-        for canvas in (getattr(self, "map", None), getattr(self, "log_map", None)):
-            if canvas is None:
-                continue
+        for canvas in self._canvases():
             # QML property writes force a scene re-sync; the drawer tabs are
             # already hidden, so only push them once per canvas instance.
             key = id(canvas)
@@ -921,7 +925,71 @@ class PreviewWindow(QMainWindow):
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.workspace_toolbar)
         self._sync_timeline()
 
+    def _canvases(self):
+        """The viewport maps built so far. Never constructs one."""
+        canvases = [getattr(self, "map", None)]
+        if hasattr(self, "_log_map"):
+            canvases.append(self._log_map)
+        else:
+            # Test doubles that predate the lazy Logs map keep its plain mock.
+            canvases.append(getattr(self, "log_map", None))
+        return tuple(canvas for canvas in canvases if canvas is not None)
+
+    @property
+    def current_log_map(self):
+        """The Logs-tab map when it has been built, otherwise None."""
+        return self._log_map
+
+    @property
+    def log_map(self):
+        """Compatibility accessor: builds the Logs-tab map on first use."""
+        return self._ensure_log_map()
+
+    def _ensure_log_map(self):
+        """Build the Logs-tab viewport once and replay its wiring."""
+        if self._log_map is not None:
+            return self._log_map
+        canvas = ViewportMap(self.controller, self, time_control=self.log_time)
+        self._log_map = canvas
+        # The splitter holds only the plot panel until this point.
+        self.logs_view.insertWidget(0, canvas)
+        self.logs_view.setCollapsible(0, False)
+        self.logs_view.setSizes(self._log_split_sizes)
+        canvas.drawer_toggle_requested.connect(self._toggle_drawer)
+        attach = getattr(canvas, "set_undo_stack", None)
+        if callable(attach):
+            attach(self.undo_stack)
+        shapes_changed = getattr(canvas, "shapes_changed", None)
+        if shapes_changed is not None:
+            shapes_changed.connect(self.scene_panel.refresh)
+        canvas.navigation_request.connect(self._navigation_request)
+        canvas.cursor_readout.connect(
+            lambda text, canvas=canvas: self._cursor_readout(canvas, text)
+        )
+        workspace = getattr(self, "workspace", None)
+        if workspace is not None:
+            canvas.view_changed.connect(workspace.changed)
+        panel = getattr(self, "chart_debug_panel", None)
+        if panel is not None:
+            panel.add_map(canvas)
+        canvas.ais_targets = self._ais_targets
+        canvas.ais_visible = self.ais_action.isChecked()
+        if self._log_points is not None:
+            points, offsets, fit = self._log_points
+            canvas.set_points(points, offsets, fit=fit)
+        if self._log_position is not None:
+            canvas.set_position(self._log_position)
+        self._position_drawer_flags()
+        self._sync_isochrone_colour_mode()
+        pending = self._pending_log_map_state
+        if pending and workspace is not None:
+            self._pending_log_map_state = {}
+            workspace.restore_log_map(pending)
+        return canvas
+
     def _view_changed(self, *_):
+        if self.views.currentWidget() is self.logs_view:
+            self._ensure_log_map()
         self._sync_timeline()
         self._sync_map_actions()
         if hasattr(self, "cursor_status"):
@@ -974,12 +1042,28 @@ class PreviewWindow(QMainWindow):
         self._indexed_chart_paths = self._indexing_chart_paths
         if error is not None or not places:
             return
+        if self.place_index is None:
+            self._pending_chart_places.append(places)
+            return
         self.place_index.add_places(places, merge_radius_km=5.0)
+        self.place_search.refresh()
+
+    def _load_place_index(self):
+        """Build the gazetteer after the window is on screen."""
+        if self.place_index is None:
+            self.place_index = PlaceIndex.from_default()
+        self.place_search.set_index(self.place_index)
+        for places in self._pending_chart_places:
+            self.place_index.add_places(places, merge_radius_km=5.0)
+        self._pending_chart_places = []
+        for query in self._pending_places:
+            self.place_search.edit.setText(query)
+        self._pending_places = []
         self.place_search.refresh()
 
     def _capture_analysis_region(self):
         return region_from_visible_workspace(
-            self.views.currentIndex(), self.map, self.log_map
+            self.views.currentIndex(), self.map, self.current_log_map
         )
 
     def _sync_map_actions(self):
@@ -1171,7 +1255,7 @@ class PreviewWindow(QMainWindow):
                             "closed": bool(getattr(course, "closed", False)),
                         }
                     )
-        for canvas in (self.map, self.log_map):
+        for canvas in self._canvases():
             try:
                 canvas.race_courses = courses
             except Exception:
@@ -1240,7 +1324,7 @@ class PreviewWindow(QMainWindow):
                         "active": track is active,
                     }
                 )
-        for canvas in (self.map, self.log_map):
+        for canvas in self._canvases():
             try:
                 canvas.race_tracks_overlay = tracks
             except Exception:
@@ -1259,7 +1343,7 @@ class PreviewWindow(QMainWindow):
         race = getattr(panel, "race", None) if panel is not None else None
         active = getattr(panel, "active_race_track", None)
         if active is None or not active.visible or not active.timestamps:
-            for canvas in (self.map, self.log_map):
+            for canvas in self._canvases():
                 try:
                     canvas.offsets = ()
                     canvas.position = None
@@ -1273,7 +1357,7 @@ class PreviewWindow(QMainWindow):
             except Exception:
                 position = None
             if position is not None:
-                for canvas in (self.map, self.log_map):
+                for canvas in self._canvases():
                     canvas.offsets = tuple(active.timestamps)
                     canvas.position = position
         # Keep every visible race boat on the map at the scrubbed time.
@@ -1308,7 +1392,7 @@ class PreviewWindow(QMainWindow):
                 positions = []
                 markers = []
         self._race_boat_positions = positions
-        for canvas in (self.map, self.log_map):
+        for canvas in self._canvases():
             try:
                 canvas.race_boat_positions = positions
                 canvas.race_positions = positions
@@ -1329,7 +1413,7 @@ class PreviewWindow(QMainWindow):
         self._navigation_route_selected(
             self.controller.core.routingManager.get_active()
         )
-        for canvas in (self.map, self.log_map):
+        for canvas in self._canvases():
             canvas.invalidate_navigation()
             refresh = getattr(canvas, "refresh_route_overlay", None)
             if callable(refresh):
@@ -1350,7 +1434,7 @@ class PreviewWindow(QMainWindow):
     def _scene_changed(self):
         self._sync_isochrone_colour_mode()
         self._publish_race_track_overlay()
-        for canvas in (self.map, self.log_map):
+        for canvas in self._canvases():
             invalidate = getattr(canvas, "invalidate_navigation", None)
             if callable(invalidate):
                 invalidate()
@@ -1403,7 +1487,9 @@ class PreviewWindow(QMainWindow):
                 self.controller.core.trackManager.set_active(track)
                 self._exit_track_edit()
                 self.map.invalidate_navigation()
-                self.log_map.invalidate_navigation()
+                log_map = self.current_log_map
+                if log_map is not None:
+                    log_map.invalidate_navigation()
                 self.map.update()
         elif kind == KIND_ROUTING:
             route = next(
@@ -1809,7 +1895,7 @@ class PreviewWindow(QMainWindow):
         self._scene_changed()
 
     def _toggle_ais(self, visible):
-        for canvas in (self.map, self.log_map):
+        for canvas in self._canvases():
             canvas.ais_visible = visible
             canvas.update()
 
@@ -1820,14 +1906,17 @@ class PreviewWindow(QMainWindow):
             for target in core.ais_manager.get_active_targets()
             if target.has_valid_position()
         )
-        for canvas in (self.map, self.log_map):
+        for canvas in self._canvases():
             canvas.ais_targets = targets
         self.map.update()
         self._ais_updated(targets)
 
     def _ais_updated(self, targets):
-        self.log_map.ais_targets = targets
-        self.log_map.update()
+        self._ais_targets = targets
+        log_map = self.current_log_map
+        if log_map is not None:
+            log_map.ais_targets = targets
+            log_map.update()
 
     def _export_navigation(self):
         menu = ThemedMenu(self)
@@ -1931,7 +2020,7 @@ class PreviewWindow(QMainWindow):
         selection (a saved route restored from the scene may have none).
         """
         self._sync_route_isochrones(element)
-        for canvas in (self.map, self.log_map):
+        for canvas in self._canvases():
             invalidate = getattr(canvas, "invalidate_navigation", None)
             if callable(invalidate):
                 invalidate()
@@ -1982,13 +2071,11 @@ class PreviewWindow(QMainWindow):
             outlines_setter = getattr(native, "set_outlines_visible", None)
             if callable(outlines_setter):
                 outlines_setter(outlines_visible)
-            for canvas in (getattr(self, "map", None), getattr(self, "log_map", None)):
-                if canvas is not None:
-                    canvas.isochrone_fill_visible = fill_visible
-                    canvas.isochrone_outlines_visible = outlines_visible
-        for canvas in (getattr(self, "map", None), getattr(self, "log_map", None)):
-            if canvas is not None:
-                canvas.isochrone_colour_by = mode
+            for canvas in self._canvases():
+                canvas.isochrone_fill_visible = fill_visible
+                canvas.isochrone_outlines_visible = outlines_visible
+        for canvas in self._canvases():
+            canvas.isochrone_colour_by = mode
 
     def _native_owns_route(self, route, native):
         """Whether a native overlay was presented for this route's result."""
@@ -2063,12 +2150,7 @@ class PreviewWindow(QMainWindow):
                 and self._native_owns_route(route, native)
                 and getattr(route, "isochrone_outlines_visible", False)
             )
-            for canvas in (
-                getattr(self, "map", None),
-                getattr(self, "log_map", None),
-            ):
-                if canvas is None:
-                    continue
+            for canvas in self._canvases():
                 if mode is not None:
                     # Both canvases share the mode attribute so switching
                     # between the map and log views never shows a stale colour
@@ -2397,7 +2479,11 @@ class PreviewWindow(QMainWindow):
         position = session.display_position
         self.plots.set_position(position)
         self.map.set_position(position if session.source == "log" else None)
-        self.log_map.set_position(position if session.source == "log" else None)
+        log_position = position if session.source == "log" else None
+        self._log_position = log_position
+        log_map = self.current_log_map
+        if log_map is not None:
+            log_map.set_position(log_position)
         if session.source == "log" and session.log and session.log.points:
             offsets = session.log.point_offsets
             if len(offsets) == len(session.log.points):
@@ -2519,11 +2605,14 @@ class PreviewWindow(QMainWindow):
         # bounds (often the placeholder pole), and later refreshes can replace
         # the user's last view. Only a deliberate source switch auto-fits.
         fit = bool(points) and previous is not None and previous[0] != session.source
-        self.log_map.set_points(
-            points,
-            offsets,
-            fit=fit,
-        )
+        self._log_points = (points, offsets, fit)
+        log_map = self.current_log_map
+        if log_map is not None:
+            log_map.set_points(
+                points,
+                offsets,
+                fit=fit,
+            )
         self.map.set_points(
             points,
             offsets,
