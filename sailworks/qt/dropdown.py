@@ -41,6 +41,16 @@ def field_columns(width, *, toggle_slot=0):
     return label_width, control_left, field_width
 
 
+def label_band(width, height):
+    """Rect a painted label fills: from x=0 to ``ROW_SPACING`` before the field.
+
+    Widgets that paint their own label (``Dropdown``, ``Slider``) use this so
+    their label ends where a layout-built label does in a ``ToggleFieldRow``.
+    """
+    label_width, _, _ = field_columns(width)
+    return QRectF(0, 0, label_width, height)
+
+
 class _HoverItemDelegate(QStyledItemDelegate):
     """Paint a visible hover row without changing the combo's current index."""
 
@@ -65,6 +75,10 @@ class Dropdown(QComboBox):
         super().__init__(parent)
         self._label = label
         self._value_inset = VALUE_INSET
+        # Space a trailing widget (an info button) takes from the row. The
+        # columns come from the row width plus this gutter, so a trailing
+        # button never moves the control's left edge.
+        self._column_gutter = 0
         self.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
@@ -90,6 +104,24 @@ class Dropdown(QComboBox):
     def valueInset(self):
         return self._value_inset
 
+    def set_column_gutter(self, pixels):
+        """Reserve ``pixels`` at the row's right edge for a trailing widget.
+
+        The label and control columns are computed from the full row width,
+        so a row that ends in an info button keeps the same control left edge
+        as every other row; only its field's right edge stops sooner.
+        """
+        gutter = max(0, int(pixels))
+        if gutter != self._column_gutter:
+            self._column_gutter = gutter
+            self.update()
+
+    def column_gutter(self):
+        return self._column_gutter
+
+    def _column_width(self):
+        return self.width() + self._column_gutter
+
     def setValueInset(self, inset):
         """Match the left padding another field (e.g. a QLineEdit) uses."""
         self._value_inset = max(0, int(inset))
@@ -99,9 +131,11 @@ class Dropdown(QComboBox):
     def _field_rect(self) -> QRectF:
         width = self.width()
         height = self.height()
-        # An unlabelled dropdown has no label band: the field uses the full
-        # width. Only a labelled row reserves the left part for its label.
-        left = round(width * (1.0 - FIELD_FRACTION)) if self._label else 0
+        # The control column comes from the shared row model, so a labelled
+        # row's field starts where a toggle row's checkbox does. An unlabelled
+        # dropdown has no label band: the field uses the full width.
+        _, control_left, _ = field_columns(self._column_width())
+        left = control_left if self._label else 0
         return QRectF(left, 2, max(0, width - left - 2), max(0, height - 4))
 
     def value_rect(self) -> QRectF:
@@ -194,7 +228,7 @@ class Dropdown(QComboBox):
         painter.drawRoundedRect(field, 3, 3)
 
         metrics = QFontMetrics(self.font())
-        label_rect = QRectF(6, 0, max(0, field.left() - 18), self.height())
+        label_rect = label_band(self._column_width(), self.height())
         if self._label:
             painter.setPen(text)
             painter.drawText(

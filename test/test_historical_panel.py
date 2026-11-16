@@ -1226,20 +1226,22 @@ def test_routing_panel_hides_its_duplicate_progress_while_historical_runs():
 
     seen = {}
 
-    def widget(name):
+    def widget(name, text=""):
         return SimpleNamespace(
-            setVisible=lambda visible, n=name: seen.__setitem__(n, visible)
+            setVisible=lambda visible, n=name: seen.__setitem__(n, visible),
+            text=lambda: text,
         )
 
     panel = SimpleNamespace(
         progress=widget("progress"),
-        status=widget("status"),
+        status=widget("status", "Route calculated"),
         cancel_button=widget("cancel"),
     )
 
     panel.routing = SimpleNamespace(busy=False)
 
-    # A historical run owns progress, whether or not the engine is busy.
+    # A historical run owns progress and status, whether or not the engine is
+    # busy.
     RoutingPanel._sync_run_visibility(panel, True)
     assert seen == {"progress": False, "status": False}
 
@@ -1247,10 +1249,21 @@ def test_routing_panel_hides_its_duplicate_progress_while_historical_runs():
     RoutingPanel._sync_run_visibility(panel, True)
     assert seen == {"progress": False, "status": False}
 
-    # Idle: the normal routing progress comes back.
+    # Idle with a finished-run message: no bar, but the message stays.
     panel.routing.busy = False
     RoutingPanel._sync_run_visibility(panel, False)
+    assert seen == {"progress": False, "status": True}
+
+    # A live routing run shows the bar and its message.
+    panel.routing.busy = True
+    RoutingPanel._sync_run_visibility(panel, False)
     assert seen == {"progress": True, "status": True}
+
+    # Idle with nothing to say: neither widget shows.
+    panel.status.text = lambda: ""
+    panel.routing.busy = False
+    RoutingPanel._sync_run_visibility(panel, False)
+    assert seen == {"progress": False, "status": False}
     assert "cancel" not in seen, "the single Cancel is never hidden"
 
 

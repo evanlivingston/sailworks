@@ -217,6 +217,11 @@ class RoutingPanel(QWidget):
         setup_layout.addWidget(section_label("Route setup"))
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        # Every row here is one full-width widget, so the form must not inset
+        # it: zero margins and no label/field gap keep the widget spanning the
+        # same width as a Blender-style row on the Compare page.
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setHorizontalSpacing(0)
         self.backend = Dropdown("Calculation")
         self.backend.addItem("Legacy (default)", "legacy")
         self.backend.addItem("Native (experimental)", "native")
@@ -330,6 +335,8 @@ class RoutingPanel(QWidget):
     def _build_safety_controls(self):
         self.safety_form = QFormLayout()
         self.safety_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        self.safety_form.setContentsMargins(0, 0, 0, 0)
+        self.safety_form.setHorizontalSpacing(0)
         self.safety_form.addRow(section_label("Routing limits"))
         self.limit_wind = QCheckBox("Limit maximum true wind")
         self.limit_wind.setAccessibleDescription(SAFETY_HELP["limit_wind"])
@@ -401,6 +408,8 @@ class RoutingPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         self.parameter_form = QFormLayout()
         self.parameter_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        self.parameter_form.setContentsMargins(0, 0, 0, 0)
+        self.parameter_form.setHorizontalSpacing(0)
         layout.addLayout(self.parameter_form)
 
         self.parameters_header = QToolButton()
@@ -552,8 +561,16 @@ class RoutingPanel(QWidget):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
+        button = self._info_button(text)
         layout.addWidget(widget, 1)
-        layout.addWidget(self._info_button(text))
+        layout.addWidget(button)
+        # The trailing button shortens the widget. A row that paints its own
+        # columns takes them from the full width instead, so the control keeps
+        # the same left edge as a row without a button and only its right edge
+        # stops before the button.
+        set_gutter = getattr(widget, "set_column_gutter", None)
+        if set_gutter is not None:
+            set_gutter(layout.spacing() + button.width())
         return row
 
     def _read_parameters(self):
@@ -719,7 +736,14 @@ class RoutingPanel(QWidget):
         self.priority_info.setText("ⓘ")
         self.priority_info.setToolTip("Why this matters")
         self.priority_info.clicked.connect(self._explain_priority)
+        # Same trailing-button geometry as an info row, so the dropdown keeps
+        # the shared control column instead of shifting left.
+        priority_row.setSpacing(4)
+        self.priority_info.setFixedWidth(self.priority_info.sizeHint().width())
         priority_row.addWidget(self.priority_info)
+        self.current_priority.set_column_gutter(
+            priority_row.spacing() + self.priority_info.width()
+        )
         self.parameters_box.layout().addLayout(priority_row)
 
     @staticmethod
@@ -1133,6 +1157,9 @@ class RoutingPanel(QWidget):
                     )
         except (ValueError, OverflowError) as error:
             self.status.setText(str(error))
+            # A validation error arrives while the panel is idle, so the
+            # label has to be shown again for the message to be readable.
+            self._sync_run_visibility(self.historical.is_running())
             return
         self.routing.start(request, scenarios, backend=backend)
 
@@ -1295,15 +1322,19 @@ class RoutingPanel(QWidget):
         )
 
     def _sync_run_visibility(self, historical_running):
-        """One progress display at a time; one Cancel for either kind of run.
+        """One progress display at a time, and no idle chrome.
 
-        The historical panel owns progress while a historical run is alive.
-        The bottom Cancel is now the only Cancel: it dispatches to the
-        historical job while one is running and to the routing engine
-        otherwise, so it stays visible in every state.
+        The progress bar shows only while this panel's routing run is live.
+        The historical panel owns progress while a historical run is alive,
+        so this bar stays hidden then. The status label shows only when it has
+        something to say, so an idle panel keeps its buttons but no empty bar
+        and no stray separator. The bottom Cancel is now the only Cancel: it
+        dispatches to the historical job while one is running and to the
+        routing engine otherwise, so it stays visible in every state.
         """
-        for widget in (self.progress, self.status):
-            widget.setVisible(not historical_running)
+        self.progress.setVisible(bool(self.routing.busy) and not historical_running)
+        has_text = bool(self.status.text().strip())
+        self.status.setVisible(has_text and not historical_running)
 
     def _cancel_run(self):
         """Cancel whichever run is live behind the single Cancel button."""
@@ -1326,11 +1357,12 @@ class RoutingPanel(QWidget):
         if not self._native_heartbeat_active():
             return message
         elapsed = self._elapsed_text(time.monotonic() - self.routing.native_started_at)
-        text = f"{message} · elapsed {elapsed}"
+        parts = [message] if message else []
+        parts.append(f"elapsed {elapsed}")
         counters = self._counter_text(getattr(self.routing, "native_counters", None))
         if counters:
-            text += f" · {counters}"
-        return text
+            parts.append(counters)
+        return " · ".join(parts)
 
     def _tick_native_heartbeat(self):
         if not self._native_heartbeat_active():
@@ -1343,9 +1375,6 @@ class RoutingPanel(QWidget):
         # the routing controller behind Calculate route is idle.
         historical_running = self.historical.is_running()
         busy = self.routing.busy or historical_running
-        # The historical panel shows its own progress, status and Cancel while
-        # it runs; a second copy here only competes for attention.
-        self._sync_run_visibility(historical_running)
         self._refresh_safety()
         for control in (
             *self.inputs,
@@ -1385,3 +1414,7 @@ class RoutingPanel(QWidget):
         else:
             self._native_elapsed_timer.stop()
         self.status.setText(self._display_status())
+        # Visibility follows the text just written: the progress bar shows
+        # only for a live routing run, the status only when it has something
+        # to say. The historical panel owns its own chrome while it runs.
+        self._sync_run_visibility(historical_running)

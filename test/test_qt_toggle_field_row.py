@@ -7,8 +7,10 @@ from sailworks.qt.dropdown import (
     FIELD_FRACTION,
     ROW_SPACING,
     TOGGLE_SLOT,
+    Dropdown,
     FieldRow,
     ToggleFieldRow,
+    label_band,
 )
 from sailworks.qt.slider import Slider
 from test.qt_analysis_fakes import app
@@ -164,6 +166,51 @@ def test_slider_only_insets_its_track_when_it_paints_a_label():
     labelled = Slider("Keep off coast")
     labelled.resize(400, 24)
     assert labelled._field_rect().left() == round(400 * (1.0 - FIELD_FRACTION))
+
+
+def test_painted_labels_sit_in_the_same_columns_as_a_toggle_row():
+    """A Dropdown and a Slider that paint their label share one column model."""
+    application = app()
+    toggle = ToggleFieldRow("Maximum wind", QLineEdit())
+    dropdown = Dropdown("Calculation")
+    dropdown.addItem("Legacy (default)")
+    slider = Slider("Sailing speed")
+    widgets = (toggle, dropdown, slider)
+    for widget in widgets:
+        widget.resize(420, 28)
+        widget.show()
+    application.processEvents()
+
+    def label_right(widget):
+        if isinstance(widget, ToggleFieldRow):
+            label = widget.layout().itemAt(0).widget()
+            return label.mapTo(widget, QPoint(label.width(), 0)).x()
+        return round(label_band(widget._column_width(), widget.height()).right())
+
+    def control_left(widget):
+        if isinstance(widget, ToggleFieldRow):
+            return widget.checkbox().mapTo(widget, QPoint(0, 0)).x()
+        return round(widget._field_rect().left())
+
+    # The painted label ends where the layout label does, and the painted
+    # control starts at the toggle row's control column.
+    assert len({label_right(w) for w in widgets}) == 1
+    assert len({control_left(w) for w in widgets}) == 1
+    assert label_right(dropdown) == control_left(dropdown) - ROW_SPACING
+
+
+def test_painted_row_keeps_its_columns_when_a_trailing_button_takes_width():
+    """An info button shortens the field's right edge, never the columns."""
+    app()
+    plain = Dropdown("Overlapping models")
+    plain.resize(500, 28)
+    with_button = Dropdown("Overlapping models")
+    with_button.resize(478, 28)
+    with_button.set_column_gutter(22)
+
+    assert with_button._field_rect().left() == plain._field_rect().left()
+    # Only the right edge moves: the field stops before the button.
+    assert with_button._field_rect().right() == plain._field_rect().right() - 22
 
 
 def test_compare_page_builds_one_toggle_row_per_axis(qtbot, monkeypatch, tmp_path):
