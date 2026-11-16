@@ -135,15 +135,58 @@ def _two_cell_view_scene():
     )
 
 
-def _uploaded_vertices(item):
-    """Read the coloured vertex buffer the item actually uploaded."""
-    geometry = item._geometry
-    assert geometry is not None and item._built_colored
-    count = geometry.vertexCount()
-    if count == 0:
-        return np.empty(0, dtype=_COLORED_VERTEX)
-    raw = ctypes.string_at(_vertex_address(geometry), count * _COLORED_VERTEX.itemsize)
-    return np.frombuffer(raw, dtype=_COLORED_VERTEX, count=count).copy()
+def _uploaded_scene_vertices(item):
+    """Read every coloured cell buffer, in scene order, and concatenate it.
+
+    The static path stores one ``QSGGeometryNode`` per contributing cell under
+    a single ``QSGTransformNode``; the root node holds no geometry itself, so
+    ``item._geometry`` (kept as a diagnostic for the first cell) is not the
+    scene's buffer.  Concatenating the children recovers the scene order.
+    """
+    assert item._built_colored
+    content = item._content_node
+    assert content is not None and item._static is not None
+    assert len(item._cell_nodes) == len(item._static.cells)
+    # Every cell node is attached to the one transform node: a cell that was
+    # built but never appended (dropped) leaves the counts disagreeing.
+    assert content.childCount() == len(item._cell_nodes)
+    counts = []
+    chunks = []
+    for cell, node in zip(item._static.cells, item._cell_nodes):
+        geometry = node.geometry()
+        count = geometry.vertexCount()
+        assert count == cell.vertices.shape[0]
+        counts.append(count)
+        if count:
+            raw = ctypes.string_at(
+                _vertex_address(geometry), count * _COLORED_VERTEX.itemsize
+            )
+            chunks.append(np.frombuffer(raw, dtype=_COLORED_VERTEX, count=count).copy())
+    if not chunks:
+        return counts, np.empty(0, dtype=_COLORED_VERTEX)
+    return counts, np.concatenate(chunks)
+
+
+def _mapped_cell_positions(item, vertices):
+    """Map concatenated static buffers through the item's transform matrix.
+
+    The buffers hold reference-frame offsets; the transform node carries the
+    pan/zoom matrix back to item pixels, so mapping here yields the positions
+    the render thread actually draws.
+    """
+    matrix = item._content_node.matrix()
+    rows = np.asarray(
+        [[matrix[i, j] for j in range(4)] for i in range(4)], dtype=np.float64
+    )
+    local = np.column_stack(
+        (
+            vertices["x"].astype(np.float64),
+            vertices["y"].astype(np.float64),
+            np.zeros(vertices.shape[0]),
+            np.ones(vertices.shape[0]),
+        )
+    )
+    return (local @ rows.T)[:, :2]
 
 
 def _wait_frames(frames, start, needed, timeout=TIMEOUT):
@@ -380,7 +423,12 @@ def test_enc_mesh_item_colored_reattach(app):
 
 
 def test_enc_mesh_item_renders_view_scene_in_order(app):
-    """A two-cell ViewScene uploads through one coloured node, in order.
+    """A two-cell ViewScene uploads one node per cell, in scene order.
+
+    The static path projects once and gives each contributing cell its own
+    ``QSGGeometryNode`` under one ``QSGTransformNode``, so the scene's geometry
+    is the concatenation of those children: six vertices for A's two triangles
+    and three for B's, three triangles in total.
 
     Expectations are premultiplied: Qt Quick's scene-graph blend mode is
     premultiplied, so the uploader multiplies each vertex's RGB by its alpha
@@ -416,10 +464,23 @@ def test_enc_mesh_item_renders_view_scene_in_order(app):
         assert tuple(cell.path for cell in item.view_scene.cells) == ("A.000", "B.000")
         assert item.generation == 1
 
-        vertices = _uploaded_vertices(item)
+        counts, vertices = _uploaded_scene_vertices(item)
+        # One node per contributing cell, six vertices for A and three for B.
+        # Nine vertices over three triangles is exactly the source scene, so a
+        # dropped cell (a node missing from the transform) or a truncated one
+        # (a short buffer) fails the count and the position comparison below.
+        assert counts == [cell.vertex_count for cell in scene.cells] == [6, 3]
         assert vertices.shape[0] == scene.vertex_count == 9
-        np.testing.assert_array_equal(vertices["x"], expected_positions[:, 0])
-        np.testing.assert_array_equal(vertices["y"], expected_positions[:, 1])
+        assert vertices.shape[0] // 3 == source_positions.shape[0] // 3 == 3
+        # Mapped through the item's transform, the buffers reproduce the
+        # source positions in scene order.
+        positions = _mapped_cell_positions(item, vertices)
+        np.testing.assert_allclose(
+            positions[:, 0], expected_positions[:, 0], rtol=0, atol=0.01
+        )
+        np.testing.assert_allclose(
+            positions[:, 1], expected_positions[:, 1], rtol=0, atol=0.01
+        )
         np.testing.assert_array_equal(vertices["rgba"], expected_colours)
         # Each part's run keeps its own colour, in part order, with no merge.
         # The opaque runs are unchanged by the premultiply; the translucent
@@ -457,7 +518,8 @@ def test_enc_mesh_item_renders_view_scene_in_order(app):
             if not _wait_frames(frames, frames.rendered(), 1):
                 pytest.fail(f"reattached view scene never rendered: {errors2}")
             assert item.upload_count > released, "reattach reused a stale node"
-            vertices = _uploaded_vertices(item)
+            counts, vertices = _uploaded_scene_vertices(item)
+            assert counts == [6, 3]
             np.testing.assert_array_equal(vertices["rgba"], expected_colours)
             resettled = item.upload_count
             assert _render_unchanged(
@@ -480,10 +542,16 @@ def test_enc_mesh_item_renders_view_scene_in_order(app):
             assert _wait_frames(
                 frames, frames.rendered(), 1
             ), "empty scene never rendered"
-            assert item.upload_count == resettled + 1
+            assert item.generation == 2
             assert item.view_scene is empty and item.mesh.is_empty
-            assert item._geometry.vertexCount() == 0
-            assert _uploaded_vertices(item).shape[0] == 0
+            # With no contributing cell there is nothing to allocate, so no
+            # upload is counted; the generation bump proves the scene was
+            # applied, and the empty node graph proves nothing stale survives.
+            assert item._static is None
+            assert item._cell_nodes == []
+            assert item._geometry is None
+            assert item._content_node is not None
+            assert item._content_node.childCount() == 0
         finally:
             _release(item, window2, handler2)
     finally:

@@ -200,8 +200,18 @@ def test_a_published_scene_reaches_the_render_thread(app):
             "afterRendering never fired for the published scene "
             f"(sceneGraphError={view.sceneGraphErrors() if hasattr(view, 'sceneGraphErrors') else 'n/a'})"
         )
-        assert item._built_colored and item._geometry is not None
-        assert item._geometry.vertexCount() == scene.vertex_count == 9
+        assert item._built_colored and item._built_static
+        # The static path uploads one geometry node per contributing cell under
+        # one transform node: six vertices for A's two triangles, three for B's
+        # single triangle.  A dropped cell loses a node, a truncated one loses
+        # vertices, and either breaks the sum below.
+        cell_vertices = [node.geometry().vertexCount() for node in item._cell_nodes]
+        assert len(cell_vertices) == len(scene.cells) == 2
+        assert cell_vertices == [6, 3]
+        assert item._content_node is not None
+        assert item._content_node.childCount() == len(cell_vertices)
+        assert sum(cell_vertices) == scene.vertex_count == 9
+        assert sum(cell_vertices) // 3 == len(scene.positions) // 3 == 3
 
         # A layer state that leaves nothing current withdraws the scene.
         harness._enc_scene_state_changed("unavailable")
