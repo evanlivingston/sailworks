@@ -40,7 +40,14 @@ class _ScrollActivity(QObject):
         viewport = area.viewport()
         viewport.installEventFilter(self)
         area.installEventFilter(self)
-        QTimer.singleShot(0, self.hide_bars)
+        # Child timer rather than QTimer.singleShot so the initial hide is
+        # cancelled when the scroll area is destroyed instead of firing
+        # against the deleted C++ object.
+        self._initial_hide = QTimer(self)
+        self._initial_hide.setSingleShot(True)
+        self._initial_hide.setInterval(0)
+        self._initial_hide.timeout.connect(self.hide_bars)
+        self._initial_hide.start()
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt virtual method name
         if event.type() == QEvent.Type.Wheel:

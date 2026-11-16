@@ -822,6 +822,9 @@ class PreviewWindow(QMainWindow):
         if opening:
             stack.show()
             stack.setMinimumWidth(0)
+            # show() restores the remembered width before the first animation
+            # tick, so reapply the closed-start layout to avoid a one-frame flash.
+            splitter.setSizes(sizes)
             width = max(300, min(self._panel_stack_width.get(side, 300), total - 300))
             if side == "left":
                 target = [width, max(0, total - width - sizes[2]), sizes[2]]
