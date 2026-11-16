@@ -45,10 +45,16 @@ CURRENT_SNAPSHOT_SHA = (
     "410b88ada69dd5a22fc18765a0f26b016e9d15df22bcfeaa954b8b4b62da2346"
 )
 ACCEPTED_SNAPSHOT_SHA = (EXPECTED_SNAPSHOT_SHA, CURRENT_SNAPSHOT_SHA)
+
 DEFAULT_SCENARIOS = ("san-francisco", "puget", "multi-cell")
 WIDGET_WIDTH = 710
 WIDGET_HEIGHT = 743
 BUDGET_S = 95.0
+#: A Quick item's asynchronous grab gets this long before the readback is
+#: treated as a failure and the widget path is tried instead.
+GRAB_TIMEOUT_MS = 15000
+# Bounded wait for the window to swap the frames that carry a state change.
+FRAME_TIMEOUT_MS = 5000
 MAE_LIMIT = 1.0
 P99_LIMIT = 8.0
 RATIO_LOW = 0.95
@@ -113,35 +119,208 @@ def _wait(predicate, timeout_s, step_ms=50):
     return bool(predicate())
 
 
+def _device_pixel_ratio(widget):
+    """The widget's device pixel ratio, from the window or its screen."""
+    owners = [widget]
+    window = getattr(widget, "window", None)
+    if callable(window):
+        owners.append(window())
+    for owner in owners:
+        ratio = getattr(owner, "devicePixelRatio", None)
+        if ratio is None:
+            continue
+        value = ratio() if callable(ratio) else ratio
+        if value and float(value) > 0:
+            return float(value)
+    screen = getattr(widget, "screen", None)
+    if callable(screen):
+        handle = screen()
+        ratio = getattr(handle, "devicePixelRatio", None)
+        if ratio is not None:
+            value = ratio() if callable(ratio) else ratio
+            if value and float(value) > 0:
+                return float(value)
+    return 1.0
+
+
+def _device_size(width, height, dpr):
+    """The device-pixel size a grab of a logical (width, height) must have."""
+    scale = float(dpr) if dpr and float(dpr) > 0 else 1.0
+    return (max(1, int(round(width * scale))), max(1, int(round(height * scale))))
+
+
+def _grab_request(size, dpr):
+    """The ``grabToImage()`` target that yields a device-pixel ``size``.
+
+    ``QQuickItem::grabToImage()`` takes its target size in device-independent
+    pixels and scales it by the window's device pixel ratio, so asking for the
+    device size itself returns an image dpr times too large (measured at dpr 2
+    on this machine: a 1420x1486 request produced a 2840x2972 image).  The
+    request is therefore derived from the device target, and the result is
+    asserted against that target rather than trusted.
+    """
+    width, height = size
+    scale = float(dpr) if dpr and float(dpr) > 0 else 1.0
+    return (
+        max(1, int(round(width / scale))),
+        max(1, int(round(height / scale))),
+    )
+
+
+def _assert_device_shape(array, size):
+    """Refuse a grab whose pixels are not the requested device size.
+
+    The oracle is cropped to ``camera.width * dpr`` by ``camera.height * dpr``
+    device pixels, so a grab of a different size would be compared against a
+    crop at another resolution: every fidelity number would be wrong while
+    looking plausible.  The shapes are named in the error.
+    """
+    width, height = size
+    got = tuple(int(value) for value in array.shape[:2])
+    expected = (int(height), int(width))
+    if got != expected:
+        raise RuntimeError(
+            "grab size mismatch: got "
+            f"{got[1]}x{got[0]} device pixels (array {got}), "
+            f"expected {expected[1]}x{expected[0]} (array {expected})"
+        )
+
+
+def _frame_source(widget):
+    """The window that reports committed frames for ``widget`` and its signal.
+
+    A QQuickView is the window itself; a QWidget host exposes it through
+    ``window()``/``windowHandle()``.  ``frameSwapped`` fires when a rendered
+    frame is presented, which is the moment a camera or chart change becomes
+    visible to ``grabToImage()``.  ``afterFrameEnd`` is the same commitment
+    reported by newer Qt versions, so either one is accepted.
+    """
+    candidates = [widget]
+    window = getattr(widget, "window", None)
+    if callable(window):
+        owner = window()
+        candidates.append(owner)
+        handle = getattr(owner, "windowHandle", None)
+        if callable(handle):
+            candidates.append(handle())
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        for name in ("frameSwapped", "afterFrameEnd"):
+            signal = getattr(candidate, name, None)
+            if signal is not None and hasattr(signal, "connect"):
+                return candidate, signal
+    return None, None
+
+
+def _await_frame(widget, min_frames=2, timeout_ms=FRAME_TIMEOUT_MS):
+    """Wait, bounded, until ``min_frames`` freshly rendered frames are swapped.
+
+    ``grabToImage()`` renders the scene graph state the window last committed,
+    not the state just requested.  A scenario that moves the camera and
+    replaces the chart therefore has to let the window present those frames
+    before its pixels mean anything; grabbing first compares the previous
+    view against the new oracle.  Two frames are waited for: one may already
+    be in flight from before the change and commit the old state.
+
+    The wait cannot hang: a window that never reports a frame (hidden, or a
+    backend without the signal) returns its count after ``timeout_ms``.
+    Returns the number of frames observed, so the caller can record whether
+    the grab was frame-synchronised at all.
+    """
+    from PySide6.QtCore import QEventLoop, Qt, QTimer
+
+    window, signal = _frame_source(widget)
+    if signal is None:
+        _pump(min(timeout_ms, 100))
+        return 0
+    seen = []
+    loop = QEventLoop()
+
+    def _note(*_args):
+        seen.append(1)
+        if len(seen) >= min_frames:
+            loop.quit()
+
+    signal.connect(_note, Qt.ConnectionType.QueuedConnection)
+    try:
+        window.update()
+        QTimer.singleShot(timeout_ms, loop.quit)
+        loop.exec()
+    finally:
+        try:
+            signal.disconnect(_note)
+        except (RuntimeError, TypeError):
+            pass
+    return len(seen)
+
+
 def _grab(widget):
     """The scene graph's framebuffer as premultiplied BGRA bytes (native).
 
-    The viewport is a QQuickView, a QWindow rather than a QWidget, so it has
-    no grabFramebuffer(); grabWindow() renders the window's scene graph and
-    returns the same premultiplied, device-pixel image. QWidget hosts keep
-    the framebuffer path. The image is never resized or cropped here: the
-    caller compares it against the oracle at native resolution.
+    The viewport is a QQuickView, a QWindow rather than a QWidget.  Calling
+    its grabWindow() blocks the GUI thread waiting for a frame while holding
+    the GIL, and the render thread then deadlocks entering Python in
+    syncSceneGraph()/updatePaintNode().  A Quick view is therefore read
+    through its content item, whose grabToImage() is asynchronous and never
+    blocks the GUI thread.  QWidget hosts keep grabFramebuffer(), and
+    grabWindow() remains the last resort for a view with neither.
+
+    The image is never resized or cropped: the caller compares it against the
+    oracle crop, so the grab is requested at the widget's device pixel size
+    and that size is asserted.
     """
     import numpy as np
 
+    from PySide6.QtCore import QEventLoop, QSize, QTimer
     from PySide6.QtGui import QImage
 
-    grab = getattr(widget, "grabFramebuffer", None)
-    if grab is None:
-        grab = getattr(widget, "grabWindow", None)
-    if grab is None:
-        raise RuntimeError(
-            f"{type(widget).__name__} has neither grabFramebuffer nor grabWindow"
-        )
-    image = grab().convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
+    dpr = _device_pixel_ratio(widget)
+    target = _device_size(int(widget.width()), int(widget.height()), dpr)
+    image = None
+    content = getattr(widget, "contentItem", None)
+    item = None
+    if callable(content) and hasattr(widget, "grabWindow"):
+        item = content()
+        if item is not None:
+            # A new grabToImage() result per capture: the object is per-request
+            # and owns its own image, so nothing from a previous scenario can
+            # be returned.  What it *does* render is the last committed scene
+            # graph state, which is why callers wait on _await_frame() first.
+            result = item.grabToImage(QSize(*_grab_request(target, dpr)))
+            loop = QEventLoop()
+            result.ready.connect(loop.quit)
+            QTimer.singleShot(GRAB_TIMEOUT_MS, loop.quit)
+            loop.exec()
+            grabbed = result.image()
+            if grabbed is not None and not grabbed.isNull():
+                image = grabbed
+    if image is None:
+        grab = getattr(widget, "grabFramebuffer", None)
+        if grab is None and item is None:
+            # grabWindow() blocks the GUI thread while holding the GIL and
+            # deadlocks this view's render thread, so it is only reachable
+            # for a window that has no Quick content item at all.
+            grab = getattr(widget, "grabWindow", None)
+        if grab is None:
+            raise RuntimeError(
+                f"{type(widget).__name__} content item produced no image and "
+                "has neither grabFramebuffer nor an independent grabWindow"
+            )
+        image = grab()
+    if image is None:
+        raise RuntimeError("framebuffer readback failed")
+    image = image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
     if image.isNull():
         raise RuntimeError("framebuffer readback failed")
-    return (
+    array = (
         np.frombuffer(image.constBits(), np.uint8)
         .reshape(image.height(), image.bytesPerLine())[:, : image.width() * 4]
         .reshape(image.height(), image.width(), 4)
         .copy()
     )
+    _assert_device_shape(array, target)
+    return array
 
 
 def _surface_array(surface):
@@ -845,8 +1024,15 @@ def _run_session(  # noqa: C901 - one session keeps the widget and worker togeth
                 and report["identity"][name]["coverage_matches"]
             )
         probe.begin("reference")
+        # The camera and chart were just replaced inside composed(); wait for
+        # the window to present them before any pixel is read.
+        swaps = _await_frame(widget)
         native_frames = []
+        capture_swaps = []
         for _ in range(max(1, frames)):
+            # One fresh, committed frame per capture, so a repeat measures the
+            # readback rather than the same cached content.
+            capture_swaps.append(_await_frame(widget, min_frames=1))
             native_frames.append(_grab(widget))
         probe.end()
         native = native_frames[-1]
@@ -873,6 +1059,11 @@ def _run_session(  # noqa: C901 - one session keeps the widget and worker togeth
             "meaning": "fraction of reference annotation pixels matching within 8/255",
         }
         metrics.update(scenario=name, stable_readback=bool(stable))
+        report["identity"].setdefault(name, {})["frame_swaps"] = {
+            "settle": int(swaps),
+            "captures": int(sum(capture_swaps)),
+            "captures_requested": len(capture_swaps),
+        }
         report["fidelity"].append(metrics)
         report["scenarios"][name] = {
             "state": meta.get("state"),
@@ -1109,6 +1300,7 @@ def _experience(report, widget, base_camera, deadline):  # noqa: C901
         sizes.stage = "initial"
         startup = settle("initial", camera)
         layers = (widget._chart, widget._barbs, widget._fill)
+        _await_frame(widget)
         frame = _grab(widget)
         report["checks"]["combined_layers_visible"] = bool(
             startup
@@ -1139,6 +1331,7 @@ def _experience(report, widget, base_camera, deadline):  # noqa: C901
 
         widget.resize(850, 620)
         resized = settle("resize")
+        _await_frame(widget)
         shape = _grab(widget).shape
         report["checks"]["resize_recovers"] = bool(
             resized

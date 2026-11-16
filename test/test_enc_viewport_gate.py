@@ -38,6 +38,27 @@ def test_fidelity_identical_and_blank_negative():
     assert not module._fidelity(empty, reference, empty)["nonblank"]
 
 
+def test_grab_target_size_is_device_pixels_and_mismatch_rejected():
+    module = tool()
+    # dpr 1: logical and device pixels agree.
+    assert module._device_size(710, 743, 1) == (710, 743)
+    # dpr 2: the grab is requested at twice the logical size, matching the
+    # oracle crop of camera.width * dpr by camera.height * dpr.
+    assert module._device_size(710, 743, 2) == (1420, 1486)
+    assert module._device_size(850, 620, 2.0) == (1700, 1240)
+    # grabToImage() takes device-independent targets: the request that yields
+    # the device size is the device target divided by the ratio.
+    assert module._grab_request((710, 743), 1) == (710, 743)
+    assert module._grab_request((1420, 1486), 2) == (710, 743)
+    assert module._grab_request((1700, 1240), 2.0) == (850, 620)
+    # A grab at the requested device size is accepted ...
+    module._assert_device_shape(np.zeros((743, 710, 4), np.uint8), (710, 743))
+    module._assert_device_shape(np.zeros((1486, 1420, 4), np.uint8), (1420, 1486))
+    # ... and a device-independent grab against a device-pixel target is not.
+    with pytest.raises(RuntimeError, match="grab size mismatch"):
+        module._assert_device_shape(np.zeros((743, 710, 4), np.uint8), (1420, 1486))
+
+
 def test_weather_miss_keeps_enc_scene_visible():
     def item():
         state = SimpleNamespace(visible=None)
