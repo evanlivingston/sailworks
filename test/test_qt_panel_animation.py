@@ -4,11 +4,17 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtWidgets import QLabel, QSplitter, QWidget
+from PySide6.QtCore import QSize, Qt, QVariantAnimation
+from PySide6.QtWidgets import (
+    QLabel,
+    QSplitter,
+    QStackedWidget,
+    QWidget,
+)
 
 from sailworks.qt.collapsiblepanel import CollapsiblePanel
 from sailworks.qt.panelstack import PanelStack
+from sailworks.qt.window import PreviewWindow
 
 
 def _build_stack():
@@ -93,3 +99,101 @@ def test_showing_stack_keeps_closed_start_width(qtbot):
     qtbot.wait(0)
 
     assert splitter.sizes()[0] == 0
+
+
+class _AnimationHost(QWidget):
+    """Minimal host that borrows the window's freeze/thaw logic."""
+
+    _freeze_panel_animation_view = PreviewWindow._freeze_panel_animation_view
+    _thaw_panel_animation_view = PreviewWindow._thaw_panel_animation_view
+    _finish_panel_stack_toggle = PreviewWindow._finish_panel_stack_toggle
+
+
+def _make_animation_host(qtbot):
+    host = _AnimationHost()
+    host.views = QStackedWidget()
+    host.map = QWidget(host)
+    host.log_map = QWidget(host)
+    host.other = QWidget(host)
+    host.views.addWidget(host.map)
+    host.views.addWidget(host.log_map)
+    host.views.addWidget(host.other)
+    host._panel_stacks = {}
+    host._panel_stack_animation = None
+    host._panel_animation_frozen_view = None
+    host._position_drawer_calls = 0
+
+    def _position(*_):
+        host._position_drawer_calls += 1
+
+    host._position_drawer_flags = _position
+    qtbot.addWidget(host)
+    return host
+
+
+def test_freeze_pauses_only_the_active_map(qtbot):
+    host = _make_animation_host(qtbot)
+
+    host.views.setCurrentWidget(host.map)
+    host._freeze_panel_animation_view()
+
+    assert host._panel_animation_frozen_view is host.map
+    assert not host.map.updatesEnabled()
+    assert host.log_map.updatesEnabled()
+
+    # Idempotent: a second freeze must not adopt a newly selected view.
+    host.views.setCurrentWidget(host.log_map)
+    host._freeze_panel_animation_view()
+    assert host._panel_animation_frozen_view is host.map
+    assert host.log_map.updatesEnabled()
+
+
+def test_log_map_is_frozen_when_active(qtbot):
+    host = _make_animation_host(qtbot)
+
+    host.views.setCurrentWidget(host.log_map)
+    host._freeze_panel_animation_view()
+
+    assert host._panel_animation_frozen_view is host.log_map
+    assert not host.log_map.updatesEnabled()
+    assert host.map.updatesEnabled()
+
+
+def test_non_map_tab_is_not_frozen(qtbot):
+    host = _make_animation_host(qtbot)
+
+    host.views.setCurrentWidget(host.other)
+    host._freeze_panel_animation_view()
+
+    assert host._panel_animation_frozen_view is None
+    assert host.other.updatesEnabled()
+
+
+def test_thaw_reenables_and_clears(qtbot):
+    host = _make_animation_host(qtbot)
+
+    host.views.setCurrentWidget(host.map)
+    host._freeze_panel_animation_view()
+    host._thaw_panel_animation_view()
+
+    assert host._panel_animation_frozen_view is None
+    assert host.map.updatesEnabled()
+
+    # Idempotent: a second thaw with nothing frozen is a no-op.
+    host._thaw_panel_animation_view()
+    assert host._panel_animation_frozen_view is None
+    assert host.map.updatesEnabled()
+
+
+def test_finish_toggle_thaws_when_stack_is_missing(qtbot):
+    host = _make_animation_host(qtbot)
+    host.views.setCurrentWidget(host.map)
+    host._freeze_panel_animation_view()
+    animation = QVariantAnimation(host)
+    host._panel_stack_animation = animation
+
+    host._finish_panel_stack_toggle("left", False, animation)
+
+    assert host._panel_animation_frozen_view is None
+    assert host.map.updatesEnabled()
+    assert host._panel_stack_animation is None

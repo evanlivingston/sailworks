@@ -180,6 +180,8 @@ class PreviewWindow(QMainWindow):
         self.syncing = False
         self._instruments_syncing = False
         self.drawer_flags = {}
+        self._panel_animation_frozen_view = None
+        self._scene_drawer_tabs_hidden = set()
         self.data_key = None
         self._plot_log_generation = None
         self.settings_dialog = None
@@ -798,10 +800,46 @@ class PreviewWindow(QMainWindow):
             right.setGeometry(max(0, min(self.width() - 18, x)), top, 18, 64)
             right.show()
             right.raise_()
+        hidden = getattr(self, "_scene_drawer_tabs_hidden", None)
+        if hidden is None:
+            hidden = self._scene_drawer_tabs_hidden = set()
         for canvas in (getattr(self, "map", None), getattr(self, "log_map", None)):
-            if canvas is not None:
-                canvas.set_drawer_state(False, False, force=True)
-                canvas.set_drawer_tabs_visible(False)
+            if canvas is None:
+                continue
+            # QML property writes force a scene re-sync; the drawer tabs are
+            # already hidden, so only push them once per canvas instance.
+            key = id(canvas)
+            if key in hidden:
+                continue
+            hidden.add(key)
+            canvas.set_drawer_state(False, False, force=True)
+            canvas.set_drawer_tabs_visible(False)
+
+    def _freeze_panel_animation_view(self):
+        """Pause the visible map while a panel slide re-lays out its viewport."""
+        if getattr(self, "_panel_animation_frozen_view", None) is not None:
+            return
+        view = self.views.currentWidget()
+        if view is None:
+            return
+        if view is not getattr(self, "map", None) and view is not getattr(
+            self, "log_map", None
+        ):
+            return
+        view.setUpdatesEnabled(False)
+        self._panel_animation_frozen_view = view
+
+    def _thaw_panel_animation_view(self):
+        view = getattr(self, "_panel_animation_frozen_view", None)
+        self._panel_animation_frozen_view = None
+        if view is None:
+            return
+        try:
+            view.setUpdatesEnabled(True)
+            view.update()
+        except RuntimeError:
+            # The underlying C++ object was deleted while frozen.
+            pass
 
     def _toggle_drawer(self, side):
         self._toggle_panel_stack(side)
@@ -815,6 +853,7 @@ class PreviewWindow(QMainWindow):
             self._panel_stack_animation.stop()
             self._panel_stack_animation.deleteLater()
             self._panel_stack_animation = None
+            self._thaw_panel_animation_view()
         opening = not self._panel_stack_open[side]
         self._panel_stack_open[side] = opening
         sizes = splitter.sizes()
@@ -848,6 +887,7 @@ class PreviewWindow(QMainWindow):
             lambda: self._finish_panel_stack_toggle(side, opening, animation)
         )
         self._panel_stack_animation = animation
+        self._freeze_panel_animation_view()
         animation.start()
         self._position_drawer_flags()
 
@@ -864,6 +904,8 @@ class PreviewWindow(QMainWindow):
         if self._panel_stack_animation is animation:
             self._panel_stack_animation = None
         animation.deleteLater()
+        # Unfreeze before repositioning so the final frame paints once.
+        self._thaw_panel_animation_view()
         stack = self._panel_stacks.get(side)
         if stack is None:
             return
