@@ -1,10 +1,53 @@
 """The Compare axis inputs use a Blender-style label/toggle/field row."""
 
 from PySide6.QtCore import QPoint
-from PySide6.QtWidgets import QCheckBox, QLineEdit
+from PySide6.QtWidgets import QCheckBox, QLabel, QLineEdit
 
-from sailworks.qt.dropdown import ToggleFieldRow
+from sailworks.qt.dropdown import TOGGLE_SLOT, ToggleFieldRow
 from test.qt_analysis_fakes import app
+
+
+def test_row_orders_label_then_reserved_checkbox_slot_then_field():
+    app()
+    field = QLineEdit()
+    row = ToggleFieldRow("Wind limit", field)
+    layout = row.layout()
+    assert isinstance(layout.itemAt(0).widget(), QLabel)
+    assert layout.itemAt(1).widget() is row.checkbox().parent()
+    assert layout.itemAt(2).widget() is field
+
+    plain_field = QLineEdit()
+    plain = ToggleFieldRow("Tack angle", plain_field, checkbox=False)
+    plain_layout = plain.layout()
+    plain.resize(400, 24)
+    plain.layout().activate()
+    assert isinstance(plain_layout.itemAt(0).widget(), QLabel)
+    assert plain_layout.itemAt(1).widget().width() == TOGGLE_SLOT
+    assert plain_layout.itemAt(2).widget() is plain_field
+
+
+def test_rows_share_label_right_edge_and_field_left_edge():
+    app()
+    toggled = ToggleFieldRow("Wind limit", QLineEdit())
+    plain = ToggleFieldRow("Tack angle", QLineEdit(), checkbox=False)
+    toggled.resize(400, 24)
+    toggled.layout().activate()
+    plain.resize(400, 24)
+    plain.layout().activate()
+
+    def edges(row):
+        label = row.layout().itemAt(0).widget()
+        field = row.layout().itemAt(2).widget()
+        return (
+            label.mapTo(row, QPoint(label.width(), 0)).x(),
+            field.mapTo(row, QPoint(0, 0)).x(),
+        )
+
+    toggled_label, toggled_field = edges(toggled)
+    plain_label, plain_field = edges(plain)
+    assert toggled_label == plain_label
+    assert toggled_field == plain_field
+    assert toggled_label < toggled_field
 
 
 def test_row_without_a_toggle_keeps_the_field_enabled_and_the_slot_reserved():

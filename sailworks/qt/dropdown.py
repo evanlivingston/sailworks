@@ -292,12 +292,14 @@ class ToggleFieldRow(QWidget):
             checkbox.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             slot_layout.addWidget(checkbox, 0, Qt.AlignmentFlag.AlignVCenter)
             self._checkbox = checkbox
-        layout.addWidget(slot, 0, Qt.AlignmentFlag.AlignVCenter)
         self._label = QLabel(label)
         self._label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
+        # Blender's order: the label owns the stretch, then the reserved
+        # checkbox column, then the field.
         layout.addWidget(self._label, 1)
+        layout.addWidget(slot, 0, Qt.AlignmentFlag.AlignVCenter)
         if field is not None:
             field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             layout.addWidget(field)

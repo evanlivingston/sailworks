@@ -3,10 +3,10 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QKeyEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QKeyEvent, QPalette
+from PySide6.QtWidgets import QApplication, QLineEdit
 
-from sailworks.qt.theme import MenuBuilder, ThemedMenu
+from sailworks.qt.theme import MenuBuilder, ThemedMenu, apply_theme
 
 
 def application():
@@ -22,6 +22,20 @@ def press(menu, key, text):
             text,
         )
     )
+
+
+def test_disabled_inputs_resolve_to_a_dimmed_palette():
+    app = application()
+    apply_theme(app)
+    palette = QLineEdit().palette()
+    roles = (
+        QPalette.ColorRole.Base,
+        QPalette.ColorRole.Text,
+    )
+    for role in roles:
+        enabled = palette.color(QPalette.ColorGroup.Active, role)
+        disabled = palette.color(QPalette.ColorGroup.Disabled, role)
+        assert disabled != enabled
 
 
 def test_menu_builder_assigns_unique_mnemonics_and_sections():
