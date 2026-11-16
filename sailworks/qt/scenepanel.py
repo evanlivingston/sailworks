@@ -1977,10 +1977,6 @@ class ScenePanel(QWidget):
             return None
         return element
 
-    def _point_target(self):
-        """The track that receives a point added outside the tree."""
-        return self._ensure_point_target()[0]
-
     def _ensure_point_target(self):
         """Return the target track and whether this call created it."""
         manager = self.core.trackManager

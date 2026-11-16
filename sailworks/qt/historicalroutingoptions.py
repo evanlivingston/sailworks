@@ -164,10 +164,6 @@ class HistoricalRoutingOptions(QWidget):
         self.values_changed.emit()
 
     # -- feedback --------------------------------------------------------
-    def set_estimate(self, text):
-        self.estimate.setText(text or "")
-        self.estimate.setVisible(bool(text))
-
     def set_preflight(self, items):
         items = list(items or [])
         self.preflight.setPlainText("\n".join(str(item) for item in items))

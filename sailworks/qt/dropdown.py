@@ -102,9 +102,6 @@ class Dropdown(QComboBox):
             self.setAccessibleName(text)
         self.update()
 
-    def valueInset(self):
-        return self._value_inset
-
     def set_column_gutter(self, pixels):
         """Reserve ``pixels`` at the row's right edge for a trailing widget.
 

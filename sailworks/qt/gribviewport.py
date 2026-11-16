@@ -1829,15 +1829,6 @@ def _prepare_wave_layer(viewport):
         setattr(viewport, name, default)
 
 
-def _viewport_window_class():
-    """Compatibility alias for the sole viewport host.
-
-    The native QQuickView is now the only host, so this name is retained for
-    callers that still refer to it; it returns the same class.
-    """
-    return _viewport_widget_class()
-
-
 def _viewport_widget_class():  # noqa: C901 - lazy factory
     """Build the native render-context class on demand.
 

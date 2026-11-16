@@ -30,7 +30,6 @@ from .forecastdownload import ModelListRow
 from .tables import make_table
 
 CDS_REQUESTS_URL = "https://cds.climate.copernicus.eu/requests"
-CDS_LIVE_URL = "https://cds.climate.copernicus.eu/live"
 
 
 class Era5DownloadTab(QWidget):

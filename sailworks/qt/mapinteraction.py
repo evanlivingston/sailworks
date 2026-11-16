@@ -479,12 +479,6 @@ class MapShapeDrawingMixin:
     def is_shape_drawing(self):
         return getattr(self, "_shape_draft_kind", None) is not None
 
-    def shape_drawing_kind(self):
-        return getattr(self, "_shape_draft_kind", None)
-
-    def shape_error(self):
-        return getattr(self, "_shape_error", "")
-
     def begin_shape_drawing(self, kind):
         """Start a polygon draft of ``kind``; the next click adds a vertex."""
         kind = KIND_AVOID if kind == KIND_AVOID else KIND_NOTE
@@ -537,9 +531,6 @@ class MapShapeDrawingMixin:
 
     def is_shape_editing(self):
         return getattr(self, "_shape_edit_uid", None) is not None
-
-    def shape_edit_uid(self):
-        return getattr(self, "_shape_edit_uid", None)
 
     def _shape_element(self, uid):
         """The stored element for ``uid``, or ``None`` when it is gone."""

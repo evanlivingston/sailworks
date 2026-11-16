@@ -195,12 +195,6 @@ class RoutingInspectorPanel(QWidget):
         """Surface an unavailable artifact instead of stale inspection data."""
         self.clear_result(message)
 
-    def pin_trace(self, trace_id):
-        if self._selection is None:
-            return False
-        self._selection.select_trace(trace_id)
-        return True
-
     @property
     def inspection_context(self):
         if self._selection is None:

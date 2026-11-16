@@ -61,9 +61,6 @@ class Slider(QSlider):
             self._column_gutter = gutter
             self.update()
 
-    def column_gutter(self):
-        return self._column_gutter
-
     def _column_width(self):
         return self.width() + self._column_gutter
 

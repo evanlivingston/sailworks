@@ -72,18 +72,6 @@ def _caption(text):
     return QLabel(text)
 
 
-def _compact_count(value):
-    try:
-        value = float(value)
-    except (TypeError, ValueError):
-        return ""
-    if value >= 1_000_000:
-        return f"{value / 1_000_000:.1f}m".replace(".0m", "m")
-    if value >= 1_000:
-        return f"{value / 1_000:.1f}k".replace(".0k", "k")
-    return f"{value:.0f}"
-
-
 class HistoricalProgress(QWidget):
     """Two-tier progress for one historical ensemble job.
 
