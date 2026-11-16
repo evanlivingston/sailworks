@@ -9,7 +9,7 @@ import time
 from zoneinfo import ZoneInfo
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QSplitter, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QMessageBox, QSplitter, QVBoxLayout, QWidget
 
 from sailworks.core.arco import ArcoDownloadService
 from sailworks.core.historicalcoordinator import HistoricalRoutingCoordinator
@@ -386,6 +386,19 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         return self.actions.routes_for_record(record)
 
     def delete_job(self):
+        record = self._record
+        if record is not None:
+            job_id = str(getattr(record, "job_id", "") or "")
+            subject = f"Job {job_id}" if job_id else "This job"
+            answer = QMessageBox.question(
+                self,
+                "Delete job",
+                f"{subject} and its routes will be removed.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         self.actions.delete_job()
 
     def _result_uids(self):

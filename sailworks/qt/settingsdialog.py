@@ -388,8 +388,20 @@ class SettingsDialog(QDialog):
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self.refresh_controls)
-        self.timer.start()
         self.reload()
+
+    def showEvent(self, event):  # noqa: N802 - Qt virtual method name
+        super().showEvent(event)
+        self.refresh_controls()
+        self.timer.start()
+
+    def hideEvent(self, event):  # noqa: N802 - Qt virtual method name
+        self.timer.stop()
+        super().hideEvent(event)
+
+    def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
+        self.timer.stop()
+        super().closeEvent(event)
 
     def reload(self):
         selected = self.connections.currentRow()
