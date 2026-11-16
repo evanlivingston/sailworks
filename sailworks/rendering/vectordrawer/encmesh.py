@@ -280,17 +280,38 @@ def _ordered_parts(geometry) -> tuple:
     return (("other", geometry),)
 
 
-#: Per-class line style: ``(width in pixels, dash (on, off) in pixels)``.
-#: Mirrors ``CM93ChartDrawer._render_line``: land lines are heavier, cables
-#: and routes are dashed, contours are hairlines.
+#: Per-class line style: ``(width in logical pixels, dash (on, off) in
+#: logical pixels)``.  Mirrors ``CM93ChartDrawer._render_line``: land lines are
+#: heavier, routes are dashed at 4.0/4.0, contours and cables are 0.5 hairlines.
+#: Cairo strokes in user units on a surface with ``set_device_scale(dpr)``, so
+#: its ``line_width`` and ``set_dash([4.0])`` are logical pixels too; the scene
+#: is assembled at ``dpr=1`` and Qt applies the device ratio.  The units match.
 LINE_STYLES = {
     "COALNE": (1.5, None),
     "SLCONS": (1.0, None),
-    "DEPCNT": (1.0, None),
-    "CBLSUB": (1.0, (6.0, 4.0)),
-    "FERYRT": (1.0, (6.0, 4.0)),
-    "NAVLNE": (1.0, (6.0, 4.0)),
-    "TSELNE": (1.0, (6.0, 4.0)),
+    "DEPCNT": (0.5, None),
+    "CBLSUB": (0.5, None),
+    "FERYRT": (0.8, (4.0, 4.0)),
+    "NAVLNE": (0.8, (4.0, 4.0)),
+    "TSELNE": (0.8, (4.0, 4.0)),
+}
+
+#: Cairo's ``DEFAULT_LINE``: every unlisted line class is a 0.5 px hairline.
+DEFAULT_LINE_STYLE = (0.5, None)
+
+#: Per-class area outline style: ``(width, dash)`` in logical pixels,
+#: mirroring ``CM93ChartDrawer._get_area_styles``.  ``land_stroke`` carries no
+#: Cairo ``line_width``, so ``LNDARE``/``BUAARE``/``BUISGL`` inherit whatever
+#: the context last set; they keep the caller's stroke width here.
+AREA_OUTLINE_STYLES = {
+    "DEPARE": (0.5, None),
+    "DRGARE": (0.5, None),
+    "LAKARE": (0.5, None),
+    "RIVERS": (0.5, None),
+    "ACHARE": (0.5, None),
+    "ANCBRT": (0.5, None),
+    "RESARE": (0.5, (3.0, 3.0)),
+    "CTNARE": (0.5, (3.0, 3.0)),
 }
 
 #: Area paint order, mirroring ``S57ChartDrawer.AREA_ORDER``: depth areas
@@ -846,7 +867,7 @@ def build_scene_mesh(
             line_pixels, line_dash = None, None
         else:
             line_pixels, line_dash = LINE_STYLES.get(
-                record.source_class, (stroke_pixels, None)
+                record.source_class, DEFAULT_LINE_STYLE
             )
 
         if simplify:
@@ -929,8 +950,17 @@ def build_scene_mesh(
             started = time.perf_counter()
             rings = _boundary_lines(fill_polygons)
             if rings:
+                if stroke_pixels is None:
+                    outline_pixels, outline_dash = None, None
+                else:
+                    outline_pixels, outline_dash = AREA_OUTLINE_STYLES.get(
+                        record.source_class, (stroke_pixels, None)
+                    )
                 outline_vertices = stroke(
-                    MultiLineString(rings), region=clip_geometry
+                    MultiLineString(rings),
+                    region=clip_geometry,
+                    pixels=outline_pixels,
+                    dash=outline_dash,
                 )
             _stage(timings, "stroke_outline", started)
 
