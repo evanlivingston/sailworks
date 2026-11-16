@@ -481,8 +481,10 @@ def apply_theme(app: QApplication):
         QTableWidget { border: none; gridline-color: #303030; }
         QTableWidget::item { padding: 0px; }
         QSplitter::handle { background: #454545; height: 5px; width: 5px; }
-        QSplitter#panel-stack-splitter::handle { background: #242424;
-                                                 width: 3px; }
+        QWidget#panel-resize-handle-left,
+        QWidget#panel-resize-handle-right { background: #303030; }
+        QWidget#panel-resize-handle-left:hover,
+        QWidget#panel-resize-handle-right:hover { background: #4a4a4a; }
         QTabWidget::pane { border: none; background: #242424;
                            margin: 0px; padding: 0px; }
         QTabBar { background: #242424; border: none; }

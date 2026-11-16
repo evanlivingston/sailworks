@@ -9,7 +9,16 @@ the cursor, the other panels open a gap where it will land, and releasing
 animates the panel back into that gap.
 """
 
-from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer, QVariantAnimation, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QPoint,
+    QRect,
+    QSize,
+    Qt,
+    QTimer,
+    QVariantAnimation,
+    Signal,
+)
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
@@ -75,9 +84,22 @@ class PanelStack(QWidget):
         self._settle_animation: QVariantAnimation | None = None
         self._shadow: QGraphicsDropShadowEffect | None = None
         self.peer: PanelStack | None = None
+        # A child timer instead of QTimer.singleShot: Qt destroys it with the
+        # stack, so a queued width sync cannot fire against a deleted scroll
+        # area during teardown.
+        self._width_sync = QTimer(self)
+        self._width_sync.setSingleShot(True)
+        self._width_sync.setInterval(0)
+        self._width_sync.timeout.connect(self._sync_container_width)
         self.scroll.verticalScrollBar().rangeChanged.connect(
-            lambda *_: QTimer.singleShot(0, self._sync_container_width)
+            lambda *_: self._width_sync.start()
         )
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt virtual method name
+        # setMinimumWidth is the source of truth for the open/closed floor, so the
+        # splitter can animate a closing stack all the way to zero instead of
+        # clamping at QScrollArea's 88px minimum hint. sizeHint is unchanged.
+        return QSize(0, 0)
 
     def set_peer(self, peer: "PanelStack"):
         self.peer = peer
@@ -113,7 +135,7 @@ class PanelStack(QWidget):
         self.stack.insertWidget(len(self._panels), panel)
         self._panels.append(panel)
         panel.show()
-        QTimer.singleShot(0, self._sync_container_width)
+        self._width_sync.start()
         self.changed.emit()
         return panel
 
@@ -130,7 +152,7 @@ class PanelStack(QWidget):
         # simply no longer part of the visible stack.
         panel.setParent(self)
         panel.hide()
-        QTimer.singleShot(0, self._sync_container_width)
+        self._width_sync.start()
         self.changed.emit()
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt virtual method name
