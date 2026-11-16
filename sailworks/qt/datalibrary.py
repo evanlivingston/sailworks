@@ -576,10 +576,41 @@ class DataLibrary(QDialog):
                 chart.enabled = item.checkState() == Qt.CheckState.Checked
                 self.data.redraw()
 
+    def _chart_display_name(self, chart):
+        name = str(getattr(chart, "name", "") or "").strip()
+        if not name:
+            name = str(getattr(chart, "path", "")).rstrip("/").rsplit("/", 1)[-1]
+        return name
+
+    def _confirm_remove_chart(self, chart):
+        name = self._chart_display_name(chart)
+        if name:
+            body = (
+                f"Remove '{name}' from the chart library?\n\n"
+                "The chart file is not deleted."
+            )
+        else:
+            body = (
+                "Remove this chart from the chart library?\n\n"
+                "The chart file is not deleted."
+            )
+        if (
+            QMessageBox.question(
+                self,
+                "Remove chart?",
+                body,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        self.attempt(lambda: self.data.remove_chart(chart))
+
     def remove_chart(self):
         chart = selected_row(self.charts, self.chart_entries)
         if chart is not None:
-            self.attempt(lambda: self.data.remove_chart(chart))
+            self._confirm_remove_chart(chart)
 
     def find_charts(self):
         self.data.list_charts(self.latitude.value(), self.longitude.value())

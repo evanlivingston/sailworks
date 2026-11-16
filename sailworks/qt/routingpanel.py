@@ -760,10 +760,9 @@ class RoutingPanel(QWidget):
         )
         self.parameters_box.layout().addLayout(priority_row)
 
-    @staticmethod
-    def _explain_priority():
+    def _explain_priority(self):
         QMessageBox.information(
-            None,
+            self,
             "Overlapping current models",
             "Finest detail (default): where models overlap, the finest grid "
             "serves — a 500 m regional forecast beats a 9 km global one. "
