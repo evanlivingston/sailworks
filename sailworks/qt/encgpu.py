@@ -304,6 +304,38 @@ def _project_positions(mesh, projection, origin) -> np.ndarray:
     return source
 
 
+#: How far past the item rect a triangle may reach and still be uploaded.
+#: A stroke is one logical pixel wide and a marker is a few; soundings are a
+#: separate glyph node.  A triangle whose bounding box misses the padded rect
+#: draws nothing on the item, so keeping it only costs projection and upload.
+CLIP_PAD = 32.0
+
+
+def _visible_triangle_mask(positions: np.ndarray, clip) -> np.ndarray:
+    """Mask over triangle-soup vertices: keep triangles near the item rect.
+
+    ``positions`` is an ``(N, 2)`` float array with three vertices per
+    triangle, and ``clip`` is ``(x0, y0, x1, y1)`` in item pixels.  A triangle
+    is kept when its bounding box intersects the rect, so a triangle too large
+    to have a vertex inside but still covering the item is never dropped.  The
+    mask preserves order and triangle boundaries, so what the buffer draws is
+    unchanged; the dropped vertices were entirely outside the item.
+    """
+    x0, y0, x1, y1 = (float(value) for value in clip)
+    if positions.shape[0] % 3:
+        raise ValueError("a triangle soup has three vertices per triangle")
+    triangles = positions.reshape(-1, 3, 2)
+    xs = triangles[:, :, 0]
+    ys = triangles[:, :, 1]
+    inside = (
+        (xs.max(axis=1) >= x0)
+        & (xs.min(axis=1) <= x1)
+        & (ys.max(axis=1) >= y0)
+        & (ys.min(axis=1) <= y1)
+    )
+    return np.repeat(inside, 3)
+
+
 #: ``QSGGeometry.defaultAttributes_TexturedPoint2D()`` layout: x/y and u/v as
 #: float32, 16 bytes per vertex.
 TEXT_VERTEX_DTYPE = np.dtype([("x", "<f4"), ("y", "<f4"), ("u", "<f4"), ("v", "<f4")])
@@ -366,7 +398,7 @@ def apply_glyph_labels(geometry: QSGGeometry, labels, atlas) -> int:
 
 
 def apply_mesh(
-    geometry: QSGGeometry, mesh: SceneMesh, projection=None, *, origin=None
+    geometry: QSGGeometry, mesh: SceneMesh, projection=None, *, origin=None, clip=None
 ) -> int:
     """Copy ``mesh`` triangles into ``geometry`` and return the vertex count.
 
@@ -376,6 +408,10 @@ def apply_mesh(
     ``(N, 2)`` ``float64`` source-position array to item-local positions.  A
     mesh with no vertices allocates zero vertices, which draws nothing and
     cannot keep a previous frame's content.
+
+    ``clip`` is an optional ``(x0, y0, x1, y1)`` item rect: triangles whose
+    bounding box misses it are dropped before the upload.  They draw nothing
+    on the item, so this changes the buffer, never the picture.
     """
     projected = _project_positions(mesh, projection, origin)
     if projected.shape[0] == 0:
@@ -385,6 +421,8 @@ def apply_mesh(
     output = np.ascontiguousarray(projected, dtype=np.float32)
     if output.shape != (mesh.vertex_count, 2):
         raise ValueError("positions must be an (N, 2) array")
+    if clip is not None:
+        output = output[_visible_triangle_mask(output, clip)]
     geometry.allocate(output.shape[0])
     _upload_vertices(geometry, output, POINT_STRIDE)
     return geometry.vertexCount()
@@ -397,6 +435,7 @@ def apply_colored_mesh(
     *,
     origin=None,
     default_color=NEUTRAL,
+    clip=None,
 ) -> int:
     """Write 12-byte ``ColoredPoint2D`` vertices for one coloured mesh.
 
@@ -405,6 +444,11 @@ def apply_colored_mesh(
     order and a single node can draw every feature without one node per
     feature.  Positions go through the same float64 origin/projection path as
     :func:`apply_mesh`.
+
+    ``clip`` is :func:`apply_mesh`'s optional item rect.  The plan and the
+    meshes stay padded, so dropping the off-item triangles here is what keeps
+    a pan from projecting, colouring and uploading the whole composed frame
+    for the half of it the item cannot show.
     """
     projected = _project_positions(mesh, projection, origin)
     if projected.shape[0] == 0:
@@ -425,6 +469,10 @@ def apply_colored_mesh(
     vertices["x"] = positions[:, 0]
     vertices["y"] = positions[:, 1]
     vertices["rgba"] = colors
+    if clip is not None:
+        # Fancy indexing returns a compacted copy, which ``_upload_vertices``
+        # requires; the triangle order and its colours are preserved.
+        vertices = vertices[_visible_triangle_mask(positions, clip)]
     geometry.allocate(vertices.shape[0])
     _upload_vertices(geometry, vertices, VERTEX_DTYPE.itemsize)
     return geometry.vertexCount()
@@ -690,6 +738,20 @@ class EncMeshItem(QQuickItem):
     def scale(self):
         return self._scale
 
+    def _visible_clip(self):
+        """The item rect padded for strokes and markers; ``None`` if unsized.
+
+        Item-local coordinates and no clipping on the item mean the padded
+        plan's off-item triangles would otherwise be drawn over whatever
+        surrounds the map, and would be projected and uploaded every frame.
+        An unsized item has no meaningful rect, so it keeps every vertex.
+        """
+        width = float(self.width())
+        height = float(self.height())
+        if width <= 0.0 or height <= 0.0:
+            return None
+        return (-CLIP_PAD, -CLIP_PAD, width + CLIP_PAD, height + CLIP_PAD)
+
     def _forget_scene_graph(self) -> None:
         """Drop Python references to scene-graph objects Qt may have deleted.
 
@@ -901,6 +963,7 @@ class EncMeshItem(QQuickItem):
             self._material_dirty = False
 
         if self._geometry_dirty:
+            clip = self._visible_clip()
             if self._built_colored:
                 apply_colored_mesh(
                     self._geometry,
@@ -908,10 +971,15 @@ class EncMeshItem(QQuickItem):
                     self._projection,
                     origin=self._origin,
                     default_color=self._default_rgba(),
+                    clip=clip,
                 )
             else:
                 apply_mesh(
-                    self._geometry, self._mesh, self._projection, origin=self._origin
+                    self._geometry,
+                    self._mesh,
+                    self._projection,
+                    origin=self._origin,
+                    clip=clip,
                 )
             self._upload_count += 1
             node.markDirty(QSGNode.DirtyStateBit.DirtyGeometry)

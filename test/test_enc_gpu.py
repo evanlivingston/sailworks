@@ -128,6 +128,48 @@ def test_apply_mesh_subtracts_origin_in_float64(qt_app):
     )
 
 
+def test_apply_colored_mesh_clips_to_the_item_rect(qt_app):
+    """Off-item triangles are dropped; every triangle reaching the item stays.
+
+    The plan and the meshes stay padded, so the adapter is what keeps a pan
+    from projecting and uploading the whole composed frame for the part the
+    item cannot show.  A triangle that spans the rect with no vertex inside it
+    must survive, or clipping would change the picture.
+    """
+    positions = np.array(
+        [
+            [10.0, 10.0],
+            [20.0, 10.0],
+            [10.0, 20.0],  # inside
+            [900.0, 900.0],
+            [910.0, 900.0],
+            [900.0, 910.0],  # outside
+            [-100.0, 5.0],
+            [400.0, 6.0],
+            [400.0, 7.0],  # spans the rect
+        ],
+        dtype=np.float64,
+    )
+    mesh = SceneMesh(
+        positions=positions,
+        parts=(MeshPart(0, "DEPARE", 0, 7, AREA_FILL, 0, 9, (1, 2, 3, 255)),),
+        unsupported=(),
+        bounds=None,
+        coverage_applied=True,
+    )
+    clip = (0.0, 0.0, 710.0, 743.0)
+
+    unclipped = QSGGeometry(encgpu._colored_attributes(), 0)
+    assert encgpu.apply_colored_mesh(unclipped, mesh) == 9
+
+    clipped = QSGGeometry(encgpu._colored_attributes(), 0)
+    assert encgpu.apply_colored_mesh(clipped, mesh, clip=clip) == 6
+    kept = _read_colored(clipped)
+    assert kept["x"].tolist() == pytest.approx([10.0, 20.0, 10.0, -100.0, 400.0, 400.0])
+    # The kept vertices keep their part colour: clipping reorders nothing.
+    assert kept["rgba"].tolist() == [[1, 2, 3, 255]] * 6
+
+
 def test_apply_mesh_projection_receives_float64_source(qt_app):
     mesh = SimpleNamespace(
         positions=np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32),
@@ -164,6 +206,42 @@ def test_apply_mesh_rejects_wrong_projection_shape(qt_app):
     geometry = QSGGeometry(encgpu._point2d_attributes(), 0)
     with pytest.raises(ValueError):
         encgpu.apply_mesh(geometry, mesh, lambda source: source[:2])
+
+
+def test_item_uploads_only_the_triangles_over_its_rect(qt_app):
+    """The paint path clips to the item rect; no item size means no clipping."""
+    positions = np.array(
+        [
+            [5.0, 5.0],
+            [15.0, 5.0],
+            [5.0, 15.0],
+            [500.0, 500.0],
+            [510.0, 500.0],
+            [500.0, 510.0],
+        ],
+        dtype=np.float64,
+    )
+    mesh = SceneMesh(
+        positions=positions,
+        parts=(MeshPart(0, "DEPARE", 0, 7, AREA_FILL, 0, 6, (1, 2, 3, 255)),),
+        unsupported=(),
+        bounds=None,
+        coverage_applied=True,
+    )
+
+    unsized = encgpu.EncMeshItem()
+    assert unsized.set_colored(True)
+    assert unsized.set_mesh(mesh)
+    unsized.updatePaintNode(None, None)
+    assert unsized._geometry.vertexCount() == 6
+
+    sized = encgpu.EncMeshItem()
+    assert sized.set_colored(True)
+    sized.setWidth(50.0)
+    sized.setHeight(50.0)
+    assert sized.set_mesh(mesh)
+    sized.updatePaintNode(None, None)
+    assert sized._geometry.vertexCount() == 3
 
 
 def test_unchanged_frame_skips_projection_and_upload(qt_app):

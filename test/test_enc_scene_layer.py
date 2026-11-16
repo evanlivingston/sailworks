@@ -194,6 +194,60 @@ def test_projection_for_maps_degrees_to_logical_pixels():
     assert empty.dtype == np.float64
 
 
+def test_published_projection_maps_the_camera_centre_to_the_item_centre(tmp_path):
+    """The published projection is the item's own frame, not the padded plan.
+
+    A 710x743 item has its camera centre at (355, 371.5) logical pixels.
+    Publishing the padded planning viewport's projection put that same point
+    at MARGIN (256) further right and down, which drew the whole chart off by
+    256 logical pixels.
+    """
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.rendering.overlayrenderer import MARGIN
+    from sailworks.qt.gribviewportchart import ChartCamera
+
+    camera = _Camera(lon=5.5, lat=5.5, zoom=10.0, width=710, height=743)
+    layer = _layer(tmp_path)
+    try:
+        scene, metadata = layer._compose(camera, threading.Event())
+
+        assert scene is None
+        centre = metadata["projection"](np.array([[5.5, 5.5]], dtype=np.float64))
+        assert np.allclose(centre, [[355.0, 371.5]], atol=1.0)
+
+        # The same camera through the padded planning viewport projects to the
+        # item centre plus the margin, which is the offset this dispatch fixes.
+        padded = encscenelayer.projection_for(
+            MapViewport(ChartCamera(camera, 1), MARGIN, lambda: None)
+        )
+        padded_centre = padded(np.array([[5.5, 5.5]], dtype=np.float64))
+        assert np.allclose(padded_centre, centre + MARGIN, atol=1.0)
+    finally:
+        layer._release()
+
+
+def test_compose_reuses_the_projection_for_an_unchanged_camera(tmp_path):
+    """A re-composition at the same camera must not invalidate geometry.
+
+    ``EncMeshItem.set_projection`` compares identity, and the projection is
+    baked into the vertex buffer rather than applied as a uniform, so a fresh
+    closure per composition forces a full re-upload of an unchanged view.
+    """
+    layer = _layer(tmp_path)
+    camera = _Camera(width=710, height=743)
+    try:
+        _, first = layer._compose(camera, threading.Event())
+        _, second = layer._compose(camera, threading.Event())
+        _, moved = layer._compose(
+            _Camera(lon=5.6, width=710, height=743), threading.Event()
+        )
+
+        assert second["projection"] is first["projection"]
+        assert moved["projection"] is not first["projection"]
+    finally:
+        layer._release()
+
+
 # ------------------------------------------------------------------ assembly
 def test_assemble_scene_keeps_plan_order_and_vertex_offsets(cell):
     scene = encscenelayer.assemble_scene(

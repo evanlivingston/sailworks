@@ -121,6 +121,33 @@ def projection_for(viewport):
     return project
 
 
+def screen_viewport_for(camera):
+    """The viewport the published projection describes: the item, unpadded.
+
+    Planning and meshing need :data:`sailworks.rendering.overlayrenderer.MARGIN`
+    (a cell whose envelope only reaches the padded area still belongs to the
+    view), but the QML item covers the camera view alone.  Building the
+    published projection from a padded viewport put every vertex ``MARGIN``
+    logical pixels right and down of where it belonged, so the drawing is
+    projected from this item-sized viewport while planning keeps its margin.
+    """
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.qt.gribviewportchart import ChartCamera
+
+    return MapViewport(ChartCamera(camera, 1), 0, lambda: None)
+
+
+def _view_key(camera):
+    """The camera fields a projection depends on."""
+    return (
+        float(camera.center_lon),
+        float(camera.center_lat),
+        float(camera.zoom),
+        float(camera.width),
+        float(camera.height),
+    )
+
+
 def _stored_loader(store):
     """A cell loader that reads the persisted store, building on a miss.
 
@@ -281,6 +308,10 @@ class EncSceneLayer:
         self._scene_cache = None
         self._scene_store = None
         self._mesh_cache = None
+        # ``(view key, projection)`` for the last published projection, so a
+        # composition at an unchanged camera hands the item the same callable
+        # and does not invalidate geometry that is already correct.
+        self._screen_projection = None
         # The device pixel ratio only invalidates a published scene; the
         # projection stays in logical pixels.
         self._dpr = max(1, int(round(float(dpr))))
@@ -659,6 +690,19 @@ class EncSceneLayer:
         # and the chart then loses that cell's features entirely.
         viewport = MapViewport(ChartCamera(camera, 1), MARGIN, lambda: None)
         viewport.render_cancelled = cancel.is_set
+        # The projection published with the scene is the item's own frame:
+        # screen logical pixels with 0,0 at the item's top-left, size
+        # camera.width x camera.height.  The padded viewport above plans and
+        # meshes; publishing its projection drew everything MARGIN logical
+        # pixels right and down.  Reusing the closure for an unchanged camera
+        # keeps ``EncMeshItem.set_projection`` a no-op, so a publication that
+        # only replaces the scene does not invalidate geometry already correct
+        # for this view.
+        key = _view_key(camera)
+        cached = self._screen_projection
+        if cached is None or cached[0] != key:
+            cached = (key, projection_for(screen_viewport_for(camera)))
+            self._screen_projection = cached
         metadata = {
             "camera": camera,
             "time": camera.stamp(),
@@ -668,7 +712,7 @@ class EncSceneLayer:
             # with the same view that produced this scene.  Without it the
             # item drew degrees, i.e. a chart at (-124, 48) and nothing on
             # screen.
-            "projection": projection_for(viewport),
+            "projection": cached[1],
         }
         # The generation this composition belongs to: a newer request bumps the
         # layer's generation and the progress callback then refuses to publish.
@@ -725,6 +769,7 @@ class EncSceneLayer:
         self._scene_cache = None
         self._scene_store = None
         self._mesh_cache = None
+        self._screen_projection = None
 
 
 def _same_view(left, right):
