@@ -461,3 +461,70 @@ def test_fixed_frame_meshes_are_still_byte_bounded(tmp_path):
     # The bound is enforced independently of the key shape.
     assert tiny.refused == 1
     assert tiny.resident_bytes == 0
+
+
+def test_repeated_identical_frame_tessellates_nothing_after_the_first(tmp_path):
+    cell = _cell(tmp_path, "same.000", _area(0, 0, 2, 2))
+    coverage = shapely.box(0, 0, 2, 2)
+    cache = encscene.SceneCache(1_000_000)
+    assert cache.put(cell)
+    mesh_cache = encview.MeshCache(1_000_000)
+    plan = (_plan(cell.path, cell.version, coverage, True, coverage),)
+
+    first = _build(plan, cache, mesh_cache, bounding=_box(0, 0, 2, 2))
+    assert first is not None
+    # The counters are the instrumentation: one build, then pure reuse.
+    assert first.mesh_built == 1 and first.mesh_hits == 0 and first.mesh_misses == 1
+    built = mesh_cache.triangulations
+
+    second = _build(plan, cache, mesh_cache, bounding=_box(0, 0, 2, 2))
+    assert second is not None
+    assert mesh_cache.triangulations == built
+    assert second.mesh_built == 0
+    assert second.mesh_hits == 1 and second.mesh_misses == 0
+    assert second.mesh_bytes > 0
+
+
+def test_pan_inside_the_granule_reuses_the_mesh(tmp_path):
+    # A cell far larger than the view: the whole-cell rule cannot apply, but
+    # the cell owns the inflated view, so the granule rule does.
+    cell = _cell(tmp_path, "granule.000", _area(0, 0, 10, 10))
+    coverage = shapely.box(0, 0, 10, 10)
+    cache = encscene.SceneCache(1_000_000)
+    assert cache.put(cell)
+    mesh_cache = encview.MeshCache(1_000_000)
+    planned = shapely.box(2.1, 2.1, 3.1, 3.1)
+    plan = (_plan(cell.path, cell.version, planned, True, coverage),)
+
+    first = _build(plan, cache, mesh_cache, bounding=_box(2.1, 2.1, 3.1, 3.1))
+    assert first is not None
+    assert first.mesh_built == 1 and mesh_cache.triangulations == 1
+
+    # A 2% pan keeps the quantised granule, so nothing is re-tessellated.
+    pan = shapely.box(2.12, 2.1, 3.12, 3.1)
+    pan_plan = (_plan(cell.path, cell.version, pan, True, coverage),)
+    second = _build(pan_plan, cache, mesh_cache, bounding=_box(2.12, 2.1, 3.12, 3.1))
+    assert second is not None
+    assert mesh_cache.triangulations == 1
+    assert second.mesh_hits == 1 and second.mesh_built == 0
+    np.testing.assert_array_equal(first.positions, second.positions)
+
+
+def test_granule_is_not_used_when_a_better_cell_owns_part_of_it(tmp_path):
+    lower = _cell(tmp_path, "lower.000", _area(0, 0, 10, 10))
+    coverage = shapely.box(0, 0, 10, 10)
+    cache = encscene.SceneCache(1_000_000)
+    assert cache.put(lower)
+    mesh_cache = encview.MeshCache(1_000_000)
+    # The planned clip is trimmed by a better-ranked cell, so it does not cover
+    # the visible granule: meshing the granule would add hidden geometry.
+    trimmed = shapely.box(2, 2, 3.0, 3.5)
+    plan = (_plan(lower.path, lower.version, trimmed, True, coverage),)
+
+    scene = _build(plan, cache, mesh_cache, bounding=_box(2.1, 2.1, 3.1, 3.1))
+    assert scene is not None
+    assert scene.mesh_built == 1
+    # Not cached: a repeated frame meshes it again, as before this change.
+    again = _build(plan, cache, mesh_cache, bounding=_box(2.1, 2.1, 3.1, 3.1))
+    assert again is not None
+    assert again.mesh_hits == 0 and again.mesh_built == 1

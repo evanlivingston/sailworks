@@ -226,10 +226,44 @@ class MeshCache:
         self.hits = self.misses = self.evictions = self.refused = 0
         #: Tessellations actually performed through this cache.
         self.triangulations = 0
+        #: The quantised rectangle each entry was clipped to, for distance
+        #: eviction.  Kept beside the entries, not in the mesh.
+        self._granules: dict[tuple, tuple] = {}
+        #: ``(lon, lat, span_degrees)`` of the newest view: granules farther
+        #: than twice this span are dropped before anything nearer, so a pan
+        #: keeps its margin of reused meshes and a zoom-out does not.
+        self._focus = None
+
+    def focus(self, lon, lat, span_degrees) -> None:
+        """Record the current view, for distance-based eviction."""
+        try:
+            span = float(span_degrees)
+        except (TypeError, ValueError):
+            return
+        if not np.isfinite(span) or span <= 0.0:
+            return
+        with self._lock:
+            self._focus = (float(lon), float(lat), span)
+
+    def _far(self, granule) -> bool:
+        """Whether ``granule`` is beyond twice the current view's span."""
+        focus = self._focus
+        if focus is None or granule is None:
+            return False
+        lon, lat, span = focus
+        x0, y0, x1, y1 = granule
+        distance = max(abs(0.5 * (x0 + x1) - lon), abs(0.5 * (y0 + y1) - lat))
+        return distance > 2.0 * span
 
     @staticmethod
     def key(
-        path, version, scale_bucket, tolerance, palette_key, stroke_pixels
+        path,
+        version,
+        scale_bucket,
+        tolerance,
+        palette_key,
+        stroke_pixels,
+        granule=None,
     ) -> tuple:
         """Identity of one reusable cell mesh.
 
@@ -238,6 +272,11 @@ class MeshCache:
         mesh does not depend on the view, so neither the display scale nor the
         simplification tolerance may be part of its identity - if they were,
         every zoom step would miss and re-tessellate every cell.
+
+        ``granule`` is the quantised rectangle the mesh was clipped to (see
+        :func:`_granule_region`).  It is part of the key because the geometry
+        really does depend on it, but it changes only on a grid step, so a pan
+        smaller than a step keeps the key and reuses the mesh.
         """
         return (
             os.path.abspath(os.fspath(path)),
@@ -246,6 +285,7 @@ class MeshCache:
             None if tolerance is None else float(tolerance),
             palette_key,
             float(stroke_pixels),
+            granule,
         )
 
     @property
@@ -268,7 +308,7 @@ class MeshCache:
             self._entries.move_to_end(key)
             return entry
 
-    def put(self, key, entry: CellMesh) -> bool:
+    def put(self, key, entry: CellMesh, granule=None) -> bool:
         nbytes = int(entry.nbytes)
         with self._lock:
             if nbytes > self.max_bytes:
@@ -278,9 +318,22 @@ class MeshCache:
             if previous is not None:
                 self._bytes -= previous.nbytes
             while self._bytes + nbytes > self.max_bytes and self._entries:
-                self._bytes -= self._entries.popitem(last=False)[1].nbytes
+                victim = next(
+                    (
+                        candidate
+                        for candidate, stored in self._granules.items()
+                        if candidate in self._entries and self._far(stored)
+                    ),
+                    None,
+                )
+                if victim is None:
+                    victim = next(iter(self._entries))
+                self._bytes -= self._entries.pop(victim).nbytes
+                self._granules.pop(victim, None)
                 self.evictions += 1
             self._entries[key] = entry
+            if granule is not None:
+                self._granules[key] = tuple(granule)
             self._bytes += nbytes
             return True
 
@@ -306,6 +359,9 @@ class ViewScene:
     #: Mesh cache hits and misses for this assembly.
     mesh_hits: int = 0
     mesh_misses: int = 0
+    #: Meshes actually tessellated for this assembly (cache misses that were
+    #: built, not misses that were refused or cancelled).
+    mesh_built: int = 0
     #: (N, 3) float64 source ``(x, y, depth)`` for every SOUNDG point, in plan
     #: then source order.  Kept unmaterialised as screen labels: the sounding
     #: scale gate and the 32x16 dedupe are per camera and must not be baked in.
@@ -473,7 +529,11 @@ def _reference_projection(projection, mesh_scale):
     if not np.isfinite(factor) or factor <= 0.0:
         return None
     if factor == 1.0:
-        return projection
+        # The caller's own frame: the mesh is still view-dependent (tolerance
+        # and stroke width are this zoom's), so it must keep the view's scale
+        # and tolerance in its key.  Measuring this beat the reference frame:
+        # meshing at MESH_REFERENCE_ZOOM costs 3x assembly time at chart zooms.
+        return None
 
     def project(points) -> np.ndarray:
         projected = np.asarray(projection(points), dtype=np.float64)
@@ -544,7 +604,9 @@ class _CellContribution:
     coverage_state: str
 
 
-def _assemble(contributions, skipped, owner, hits_before, misses_before):
+def _assemble(
+    contributions, skipped, owner, hits_before, misses_before, built_before=0
+):
     """One :class:`ViewScene` from the completed cells, worst-ranked first.
 
     ``contributions`` arrive in plan order (best-ranked first); reversing them
@@ -617,6 +679,7 @@ def _assemble(contributions, skipped, owner, hits_before, misses_before):
         mesh_bytes=owner.resident_bytes if owner is not None else 0,
         mesh_hits=owner.hits - hits_before if owner is not None else 0,
         mesh_misses=owner.misses - misses_before if owner is not None else 0,
+        mesh_built=(owner.triangulations - built_before if owner is not None else 0),
         soundings=soundings,
         colours=colours,
     )
@@ -646,6 +709,8 @@ class _CellTask:
     #: coverage, which is wider than ``clip_region`` wherever a better-ranked
     #: cell owns the ground.  ``None`` falls back to the fill clip.
     point_region: object = None
+    #: The quantised rectangle this mesh was clipped to, when it is cacheable.
+    granule: tuple | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -679,6 +744,105 @@ def _same_extent(left, right):
     )
 
 
+#: The planned view is snapped outward onto a grid this many times coarser than
+#: itself, so a pan smaller than one step reuses the same granule.
+GRANULE_STEPS = 4
+
+#: Source degrees a granule bound is rounded to, so two cameras on the same grid
+#: line produce the same key.
+GRANULE_DECIMALS = 9
+
+
+def _granule_region(region):
+    """The quantised rectangle a reusable mesh is clipped to.
+
+    The planned view snapped *outward* onto a grid a quarter of its own span, so
+    the granule always contains the planned view: clipping to it can never omit
+    a visible pixel.  Two cameras that land on the same grid lines share the
+    granule, so a pan of a few percent of the view keeps the same key and its
+    meshes stay resident.  ``None`` when ``region`` has no usable extent.
+    """
+    bounds = _bounds(region)
+    if bounds is None:
+        return None
+    x0, y0, x1, y1 = bounds
+    step_x = (x1 - x0) / GRANULE_STEPS
+    step_y = (y1 - y0) / GRANULE_STEPS
+    if not (step_x > 0.0 and step_y > 0.0):
+        return None
+    if not np.isfinite([x0, y0, x1, y1, step_x, step_y]).all():
+        return None
+    return shapely.box(
+        round(float(np.floor(x0 / step_x)) * step_x, GRANULE_DECIMALS),
+        round(float(np.floor(y0 / step_y)) * step_y, GRANULE_DECIMALS),
+        round(float(np.ceil(x1 / step_x)) * step_x, GRANULE_DECIMALS),
+        round(float(np.ceil(y1 / step_y)) * step_y, GRANULE_DECIMALS),
+    )
+
+
+def _granule_key(granule) -> tuple:
+    """The granule's identity in a mesh cache key."""
+    return tuple(round(float(value), GRANULE_DECIMALS) for value in granule.bounds)
+
+
+def _granule_owned(own, planned, view, granule) -> bool:
+    """Whether ``granule`` can be meshed for this cell without changing pixels.
+
+    Two conditions, and both are needed.  The planned clip must be exactly the
+    coverage intersected with the view - no ground subtracted for a better cell
+    - so a mesh over the granule adds no geometry an upper cell hides.  And
+    the cell must cover part of the granule.  The clip itself is then
+    ``coverage`` intersected with the granule: the same geometry the view needs,
+    plus the border the next pan step reaches into.
+    """
+    if not _untrimmed(own, planned, view):
+        return False
+    try:
+        return not shapely.intersection(own, granule).is_empty
+    except Exception:  # noqa: BLE001 - an untestable cell is just not cached
+        return False
+
+
+def _untrimmed(own, planned, view) -> bool:
+    """Whether ``planned`` is exactly ``coverage`` intersected with the view.
+
+    Bounds first, so almost every cell is rejected without a polygon op; the
+    area test then catches an interior subtraction that leaves the envelope
+    unchanged, which is the common case where a better cell holds a hole.
+    """
+    own_bounds = _bounds(own)
+    view_bounds = _bounds(view)
+    planned_bounds = _bounds(planned)
+    if own_bounds is None or view_bounds is None or planned_bounds is None:
+        return False
+    expected = (
+        max(own_bounds[0], view_bounds[0]),
+        max(own_bounds[1], view_bounds[1]),
+        min(own_bounds[2], view_bounds[2]),
+        min(own_bounds[3], view_bounds[3]),
+    )
+    if any(abs(left - right) > 1e-9 for left, right in zip(planned_bounds, expected)):
+        return False
+    try:
+        full = float(shapely.area(shapely.intersection(own, shapely.box(*view_bounds))))
+        return abs(float(shapely.area(planned)) - full) <= 1e-9 * max(1.0, full)
+    except Exception:  # noqa: BLE001 - an untestable cell is just not cached
+        return False
+
+
+def _focus_cache(owner, region) -> None:
+    """Point the cache's distance eviction at this assembly's view."""
+    bounds = _bounds(region)
+    if bounds is None:
+        return
+    x0, y0, x1, y1 = bounds
+    owner.focus(
+        0.5 * (x0 + x1),
+        0.5 * (y0 + y1),
+        max(x1 - x0, y1 - y0),
+    )
+
+
 def _prepare_cell(
     cell,
     index,
@@ -688,10 +852,12 @@ def _prepare_cell(
     stroke_pixels,
     owner,
     mesh_scale=None,
+    reuse_granules=True,
 ):
     """Resolve a cell's clip, query region and cache key, without touching it."""
     known = bool(cell.coverage_known)
     own = cell.coverage if known else None
+    granule = None
     if known and own is not None:
         # Mesh the region the view can see, not the whole cell.  Clipping to
         # ``cell.coverage`` makes the mesh view-independent, but at harbour
@@ -699,15 +865,28 @@ def _prepare_cell(
         # (measured: 14 degrees of source meshed for a 0.08 degree view,
         # 122,757 vertices and 1.7 s for one cell), and every one of those
         # triangles is uploaded to draw nothing.  The plan already carries the
-        # visible region, so use it and keep the mesh reusable only where the
-        # cell lies wholly inside the view and the two regions coincide.
-        clip_region = cell.clip if cell.clip is not None else own
+        # visible region, so use it - and clip to the *inflated* view's granule
+        # wherever this cell owns all of it, so a pan inside the composition
+        # margin keeps the same mesh instead of re-tessellating.
+        planned = cell.clip if cell.clip is not None else own
+        clip_region = planned
+        cacheable = False
+        if owner is not None and cell.clip is not None:
+            if _same_extent(own, cell.clip):
+                # The whole cell is visible, so its clip is already view-free:
+                # key the mesh on the cell and keep the previous behaviour.
+                granule = _granule_region(cell.clip)
+                clip_region = cell.clip
+                cacheable = granule is not None
+            elif reuse_granules and region is not None:
+                candidate = _granule_region(region)
+                if candidate is not None and _granule_owned(
+                    own, planned, region, candidate
+                ):
+                    granule = candidate
+                    clip_region = shapely.intersection(own, candidate)
+                    cacheable = not clip_region.is_empty
         query_region = clip_region
-        cacheable = (
-            owner is not None
-            and cell.clip is not None
-            and _same_extent(own, cell.clip)
-        )
     elif known:
         # A hand-built plan without its own coverage: only the view clip is
         # available, so this mesh is view-dependent and is not reused.
@@ -750,10 +929,12 @@ def _prepare_cell(
     tolerance = _tolerance_bucket(tolerance_projection, tolerance_region)
 
     key = None
-    if cacheable and tolerance is not None:
+    if cacheable and tolerance is not None and granule is not None:
+        granule_key = _granule_key(granule)
         if mesh_projection is not None:
-            # The mesh depends only on the cell, not on the view: scale and
-            # tolerance are not part of its identity, so a zoom is a hit.
+            # The mesh depends only on the cell and its granule, not on the
+            # exact view: scale and tolerance are not part of its identity, so
+            # a zoom is a hit and a pan inside the granule is a hit.
             key = MeshCache.key(
                 cell.path,
                 cell.version,
@@ -761,6 +942,7 @@ def _prepare_cell(
                 None,
                 palette_key,
                 stroke_pixels,
+                granule_key,
             )
         else:
             bucket = _scale_bucket(projection, clip_region)
@@ -772,6 +954,7 @@ def _prepare_cell(
                     tolerance,
                     palette_key,
                     stroke_pixels,
+                    granule_key,
                 )
     return _CellTask(
         index=index,
@@ -783,6 +966,7 @@ def _prepare_cell(
         key=key,
         projection=(mesh_projection if mesh_projection is not None else projection),
         point_region=point_region,
+        granule=None if granule is None else _granule_key(granule),
     )
 
 
@@ -933,7 +1117,7 @@ def _mesh_cell(
         if owner is not None:
             owner.note_triangulation()
             if task.key is not None:
-                owner.put(task.key, entry)
+                owner.put(task.key, entry, task.granule)
     if _cancelled(cancelled):
         return _CellOutcome(cancelled=True)
 
@@ -983,6 +1167,7 @@ def build_view_scene(
     on_cell=None,
     workers=None,
     mesh_scale=None,
+    reuse_granules=True,
 ):
     """Assemble one ordered scene from ``plan``.
 
@@ -1014,6 +1199,15 @@ def build_view_scene(
     (``SimplifyPreserveTopology``), which bounds the geometric error to the
     tolerance in source degrees and keeps the cold build proportional to the
     view, not to the source vertex count.
+
+    ``reuse_granules`` (default true) is what makes mesh reuse survive a pan.
+    When a cell's own coverage contains the whole planned (inflated) view, the
+    mesh is clipped to that view quantised onto a grid a quarter of its span -
+    a *granule* - and keyed on it.  A camera move smaller than one grid step
+    keeps the granule, its meshes and the key, so no cell re-tessellates; a
+    move across a step rebuilds only that cell's granule.  ``False`` restores
+    the view-clipped mesh, one per exact viewport, which is what the parity
+    check compares against.
 
     ``bounding`` is the view to query cells with: an OGR or shapely geometry, a
     viewport with ``get_bbox()``, or ``None`` to use the union of the plan's own
@@ -1080,6 +1274,9 @@ def build_view_scene(
     palette_key = _palette_key(palette)
     hits_before = owner.hits if owner is not None else 0
     misses_before = owner.misses if owner is not None else 0
+    built_before = owner.triangulations if owner is not None else 0
+    if owner is not None:
+        _focus_cache(owner, region)
 
     # What a cell needs is view-independent data plus its own plan entry, so it
     # is resolved here, once, before any worker exists.
@@ -1093,6 +1290,7 @@ def build_view_scene(
             stroke_pixels,
             owner,
             mesh_scale=mesh_scale,
+            reuse_granules=reuse_granules,
         )
         for index, cell in enumerate(plan)
     ]
@@ -1113,7 +1311,9 @@ def build_view_scene(
         """
         if on_cell is None:
             return True
-        snapshot = _assemble(contributions, skipped, owner, hits_before, misses_before)
+        snapshot = _assemble(
+            contributions, skipped, owner, hits_before, misses_before, built_before
+        )
         return on_cell(snapshot, done, len(plan)) is not False
 
     def _open_scene(cell):
@@ -1254,6 +1454,8 @@ def build_view_scene(
         return None
 
     started = time.perf_counter()
-    result = _assemble(contributions, skipped, owner, hits_before, misses_before)
+    result = _assemble(
+        contributions, skipped, owner, hits_before, misses_before, built_before
+    )
     _stage(timings, "assemble", started)
     return result

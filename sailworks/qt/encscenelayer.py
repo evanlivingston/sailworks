@@ -137,8 +137,11 @@ def assemble_scene(
     ``False`` from it refuses progress and yields ``None``.  ``workers`` is
     the per-cell mesh concurrency bound, also passed through; ``None`` uses
     :func:`encview._default_workers`.  ``mesh_scale`` is the fixed mesh frame
-    from :func:`mesh_scale_for`; the production path always supplies it, so a
-    zoom does not re-tessellate.
+    from :func:`mesh_scale_for`; production supplies the identity factor, so
+    the mesh stays in the view's own frame (see the call site for the
+    measurement that rejected the reference frame).  The meshes are in source
+    degrees, so the frame needs no view origin: what the factor encodes is the
+    reference zoom's tolerance and stroke width, not a position.
     """
     return encview.build_view_scene(
         plan,
@@ -168,6 +171,7 @@ def _scene_fields(scene):
         "mesh_cache_bytes": scene.mesh_bytes,
         "mesh_cache_hits": scene.mesh_hits,
         "mesh_cache_misses": scene.mesh_misses,
+        "mesh_cache_built": scene.mesh_built,
     }
 
 
@@ -655,9 +659,15 @@ class EncSceneLayer:
             self._palette,
             cancelled=cancel.is_set,
             mesh_cache=self._mesh_cache,
-            # One fixed reference frame for every view: the mesh does not
-            # depend on the camera, so a zoom is a cache hit.
-            mesh_scale=None,  # fixed frame needs a view origin; see #213
+            # The mesh frame is the view's own zoom: the geometry is in source
+            # degrees, so it needs no origin, and the scalar only fixes the
+            # tolerance and the stroke width.  Meshing at MESH_REFERENCE_ZOOM
+            # instead is measurably worse - 190,689 vertices and 600 ms of
+            # assembly at zoom 14.2, against 26,004 and 213 ms here - and only
+            # holds stroke parity at the reference zoom itself, so production
+            # passes the identity factor.  Pan reuse comes from the granule,
+            # not from a coarser frame.
+            mesh_scale=1.0,
             on_cell=lambda snapshot, done, total: self._publish_partial(
                 generation, snapshot, done, total, cancel, metadata
             ),
