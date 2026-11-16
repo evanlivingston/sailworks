@@ -28,7 +28,6 @@ from .vectorchartdrawer import VectorChartDrawer
 logger = logging.getLogger("sailworks")
 
 # Depth color styles
-DEPTH_SHALLOW = CairoStyle(color=(0.45, 0.71, 0.94, 1.0))  # Light blue
 DEPTH_MEDIUM = CairoStyle(color=(0.65, 0.85, 0.95, 1.0))  # Very light blue
 DEPTH_DEEP = CairoStyle(color=(0.83, 0.92, 0.93, 1.0))  # Near white-blue
 

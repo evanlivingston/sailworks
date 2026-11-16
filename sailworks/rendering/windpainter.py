@@ -513,11 +513,6 @@ class WindPainter:
         cr.restore()
 
     @staticmethod
-    def paint_wave_geometry(cr, geometry, opacity):
-        """Paint wave arrows with the wave-height buckets of the legend."""
-        WindPainter.paint_barb_geometry(cr, geometry, opacity, _WAVE_BUCKET_COLORS)
-
-    @staticmethod
     def live_geometry_for_view(
         flat,
         center_lat,

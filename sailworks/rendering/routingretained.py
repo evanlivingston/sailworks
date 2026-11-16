@@ -42,14 +42,6 @@ class RetainedRoutingLayer:
         self.counters = RetainedCounters()
         self._image = QImage()
 
-    @property
-    def counters_snapshot(self) -> RetainedCounters:
-        return RetainedCounters(
-            self.counters.geometry_builds,
-            self.counters.renders,
-            self.counters.style_changes,
-        )
-
     def set_model(self, model: RoutingOverlayModel) -> None:
         if not isinstance(model, RoutingOverlayModel):
             raise TypeError("model must be a RoutingOverlayModel")

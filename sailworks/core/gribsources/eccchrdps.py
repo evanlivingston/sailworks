@@ -38,7 +38,6 @@ logger = logging.getLogger("sailworks")
 # No server-side subsetting: each variable/hour is one full-domain file.
 DATAMART_URL = "https://dd.weather.gc.ca/"
 HRDPS_PATH = "WXO-DD/model_hrdps/continental/2.5km"
-HRDPS_CYCLES = ("00", "06", "12", "18")
 
 # Per-hour download sizes (continental domain, measured Oct 2026)
 UGRD_MB = 1.9

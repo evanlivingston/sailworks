@@ -375,15 +375,9 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         self.results.set_has_run(True)
         apply_results(self.results, record, self._outcomes)
 
-    def _publish_routes(self, record):
-        self.actions.publish_routes(record)
-
     # -- route actions ---------------------------------------------------
     def _collection(self):
         return self.actions.collection()
-
-    def _routes_for_record(self, record):
-        return self.actions.routes_for_record(record)
 
     def delete_job(self):
         record = self._record
@@ -400,12 +394,6 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
             if answer != QMessageBox.StandardButton.Yes:
                 return
         self.actions.delete_job()
-
-    def _result_uids(self):
-        return self.actions.result_uids()
-
-    def _apply_item_visibility(self, wanted):
-        return self.actions.apply_item_visibility(wanted)
 
     def _representatives(self):
         self.actions.representatives()

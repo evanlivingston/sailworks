@@ -1062,15 +1062,6 @@ class ViewportChartLayer:
         self._published_generations &= keep
         self._rejected_generations &= keep
 
-    def _await_stable(self, camera, cancel):
-        """Whether the view still matches the composed camera.
-
-        The layer does not wait here: the settle policy belongs to the
-        caller that asks for a composition, so the worker never polls and
-        never competes with the weather pipeline.
-        """
-        return not self._view_moved(camera)
-
     def _await_idle(self, cancel):
         """Whether the weather pipeline is idle.
 

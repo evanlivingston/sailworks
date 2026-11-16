@@ -200,7 +200,3 @@ def route_leg_colour(
 def route_legend_entries(mode, values=()):
     """Ordered ``(label, rgba)`` legend entries matching the segment palette."""
     return legend_for(mode, values)
-
-
-def route_legend_title(mode):
-    return metric_label(mode)

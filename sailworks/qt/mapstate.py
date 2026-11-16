@@ -214,12 +214,6 @@ class MapStateMixin:
         self._publish_route_overlay()
         self.update()
 
-    def select_route_point(self, row):
-        self.selected_route_point = row
-        self.invalidate_navigation()
-        self._publish_route_overlay()
-        self.update()
-
     def set_route_preview(self, coordinates):
         self.route_preview = tuple(coordinates)
         self.invalidate_navigation()

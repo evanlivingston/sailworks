@@ -19,7 +19,6 @@ import logging
 import math
 from typing import List, Optional, Tuple
 
-from weatherrouting import Polar
 from sailworks.core.polarperformance import PerformanceSample, wind_band
 
 logger = logging.getLogger("sailworks")
@@ -81,15 +80,6 @@ class PolarRenderer:
         else:
             self.isolated_wind = wind
         self.queue_draw()
-
-    def load_polar(self, polar_file):
-        polar = None
-        try:
-            polar = Polar(self.polar_manager.get_path(polar_file))
-        except Exception:
-            logger.error("Error loading polar file %s", polar_file)
-
-        self.set_polar(polar)
 
     def set_polar(self, polar):
         self.polar = polar
