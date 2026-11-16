@@ -36,8 +36,7 @@ Command-scroll also zooms, and a mouse wheel zooms as before.
 Load a forecast
 ---------------
 
-Open **File → Data Library** and switch to the **Forecasts** tab, or pick
-**Open forecast** from the File menu for a forecast file you already have. Choose the
+Open **File → Data Library** and switch to the **Forecasts** tab. Choose the
 weather model, the region and the time range, then start the download. When it finishes,
 step through the forecast with the toolbar time controls and choose the displayed fields
 in the **Weather** panel.

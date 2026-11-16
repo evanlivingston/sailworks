@@ -237,12 +237,12 @@ Forecast controls are independent of NMEA recording/playback and routing departu
 interval; opening the app never resumes forecast playback or restores an old selected time. Marine bounds and the overlays below use this same clock.
 
 Floating tool panels use compact dark headers with a left close button. Drag the header to move, double-click to dock, resize from the edges, or drag to a screen edge to preview a
-snap. Window lists the panels and offers Reset Panels to redock them and restore the default layout. Panel scrolling uses thin bars that appear briefly during activity; scrolling
+snap. View lists the panels and offers Reset panel layout to redock them and restore the default layout. Panel scrolling uses thin bars that appear briefly during activity; scrolling
 over an unfocused dropdown/spinner scrolls its panel instead of changing its value. Native filesystem dialogs remain enabled.
 
 ## Currents and tides
 
-On Charts, **Tides & currents** opens the separate Currents and Tides panels, matching GTK's organization. They also appear in the Window menu. They share the existing marine cache
+On Charts, **Tides & currents** opens the separate Currents and Tides panels, matching GTK's organization. They also appear in the View menu. They share the existing marine cache
 and source policies, and hide while viewing Logs or Polars. Their open state and independent display switches survive restart. Restoring a workspace never starts a download. Reset
 Panels closes both marine panels.
 
