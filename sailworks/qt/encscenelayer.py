@@ -29,7 +29,7 @@ from threading import Condition, Event, Thread
 import numpy as np
 
 from sailworks.rendering import encplan, encview
-from sailworks.rendering.vectordrawer import encscene
+from sailworks.rendering.vectordrawer import encscene, encscenestore
 
 STATE_IDLE = "idle"
 STATE_LOADING = "loading"
@@ -54,6 +54,12 @@ SCENE_CACHE_BYTES = 64 * 1024 * 1024
 #: hold one view's resident cells: each mesh is clipped to its cell's own
 #: coverage, so it is larger than the visible slice.
 MESH_CACHE_BYTES = 256 * 1024 * 1024
+
+#: Bounded on-disk store of built scenes, keyed by cell identity and schema.
+#: A cell is ~12.7 MB and ~309 ms to build; 256 MiB holds about twenty cells,
+#: so the realistic second launch reads the two cells it plans instead of
+#: re-parsing them.
+SCENE_STORE_BYTES = 256 * 1024 * 1024
 
 #: Screen-constant stroke width in logical pixels.
 STROKE_PIXELS = 1.0
@@ -115,6 +121,23 @@ def projection_for(viewport):
     return project
 
 
+def _stored_loader(store):
+    """A cell loader that reads the persisted store, building on a miss.
+
+    The store is a cache: a decode failure or an IO error is a miss and the
+    cell is built from GDAL exactly as before, so it can never break a scene.
+    """
+
+    def loader(path, version, cancelled=None):
+        return store.load_or_build(
+            path,
+            version,
+            lambda: encscene.open_cell_scene(path, version, cancelled),
+        )
+
+    return loader
+
+
 def assemble_scene(
     plan,
     viewport,
@@ -126,6 +149,7 @@ def assemble_scene(
     on_cell=None,
     workers=None,
     mesh_scale=None,
+    loader=encscene.open_cell_scene,
 ):
     """Assemble ``plan`` for ``viewport``; ``None`` when cancelled.
 
@@ -142,6 +166,11 @@ def assemble_scene(
     measurement that rejected the reference frame).  The meshes are in source
     degrees, so the frame needs no view origin: what the factor encodes is the
     reference zoom's tolerance and stroke width, not a position.
+
+    ``loader(path, version, cancelled)`` supplies a cell on a scene-cache miss.
+    Production passes one that reads the persisted scene store, so a cell built
+    by an earlier process is not parsed again; ``None`` keeps the in-memory
+    cache only.
     """
     return encview.build_view_scene(
         plan,
@@ -155,6 +184,7 @@ def assemble_scene(
         on_cell=on_cell,
         workers=workers,
         mesh_scale=mesh_scale,
+        loader=loader,
     )
 
 
@@ -216,8 +246,15 @@ class EncSceneLayer:
         on_state=None,
         dpr=1,
         catalog_factory=None,
+        cache_dir=None,
     ):
         self._data_dir = Path(data_dir)
+        # The persisted scene store lives in the app's cache directory, never
+        # in the repo or beside the fixture: co-located with the app's own data
+        # so it is cleared with it, and bounded by ``SCENE_STORE_BYTES``.
+        self._cache_dir = (
+            Path(cache_dir) if cache_dir is not None else self._data_dir / "cache"
+        )
         self._palette = palette
         # The ENC catalog is the caller's: ``catalog_factory(data_dir,
         # palette)`` returns the source object this layer refreshes and reads
@@ -242,6 +279,7 @@ class EncSceneLayer:
         # Worker-owned; created on the worker thread and released with it.
         self._catalog = None
         self._scene_cache = None
+        self._scene_store = None
         self._mesh_cache = None
         # The device pixel ratio only invalidates a published scene; the
         # projection stays in logical pixels.
@@ -608,6 +646,10 @@ class EncSceneLayer:
             self._catalog = self._catalog_factory(self._data_dir, self._palette)
         if self._scene_cache is None:
             self._scene_cache = encscene.SceneCache(SCENE_CACHE_BYTES)
+        if self._scene_store is None:
+            self._scene_store = encscenestore.SceneStore(
+                self._cache_dir / "enc-scenes", SCENE_STORE_BYTES
+            )
         if self._mesh_cache is None:
             self._mesh_cache = encview.MeshCache(MESH_CACHE_BYTES)
         # Logical pixels: the item lives in QQuickItem coordinates and Qt
@@ -668,6 +710,7 @@ class EncSceneLayer:
             # passes the identity factor.  Pan reuse comes from the granule,
             # not from a coarser frame.
             mesh_scale=1.0,
+            loader=_stored_loader(self._scene_store),
             on_cell=lambda snapshot, done, total: self._publish_partial(
                 generation, snapshot, done, total, cancel, metadata
             ),
@@ -680,6 +723,7 @@ class EncSceneLayer:
         """Release worker-owned handles; runs on the worker thread."""
         self._catalog = None
         self._scene_cache = None
+        self._scene_store = None
         self._mesh_cache = None
 
 

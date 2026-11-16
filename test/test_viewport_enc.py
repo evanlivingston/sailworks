@@ -309,6 +309,46 @@ def test_an_unreadable_cell_is_reported_and_never_pruned(tmp_path):
     assert catalog.sources[0].native_scale == 0
 
 
+def test_an_unchanged_cell_is_never_reopened(tmp_path):
+    """The cell's own identity keeps an unchanged chart from being read again."""
+    first = tmp_path / "US5AAAA.000"
+    second = tmp_path / "US5BBBB.000"
+    first.write_bytes(b"first cell")
+    second.write_bytes(b"second cell")
+    _settings(tmp_path, [_entry(str(first)), _entry(str(second))])
+
+    metadata = viewportenc.CatalogMetadata(viewportenc.cache_directory(tmp_path))
+    catalog = viewportenc.EncCatalog(tmp_path, metadata=metadata).refresh()
+    assert [source.path for source in catalog.sources] == [str(first), str(second)]
+    assert (metadata.reads, metadata.reuses) == (2, 0)
+
+    # The manifest did not change, so no cell is opened by this refresh.
+    assert catalog.refresh() is catalog
+    assert (metadata.reads, metadata.reuses) == (2, 0)
+    assert [source.path for source in catalog.sources] == [str(first), str(second)]
+
+    # A second launch reads the stored metadata, never the cells.
+    relaunched = viewportenc.CatalogMetadata(viewportenc.cache_directory(tmp_path))
+    viewportenc.EncCatalog(tmp_path, metadata=relaunched).refresh()
+    assert (relaunched.reads, relaunched.reuses) == (0, 2)
+
+
+def test_only_a_touched_cell_is_reopened(tmp_path):
+    """A changed cell identity reopens that cell and reuses its neighbour."""
+    first = tmp_path / "US5AAAA.000"
+    second = tmp_path / "US5BBBB.000"
+    first.write_bytes(b"first cell")
+    second.write_bytes(b"second cell")
+    _settings(tmp_path, [_entry(str(first)), _entry(str(second))])
+    viewportenc.EncCatalog(tmp_path).refresh()
+
+    first.write_bytes(b"the first cell was replaced by another one")
+    metadata = viewportenc.CatalogMetadata(viewportenc.cache_directory(tmp_path))
+    catalog = viewportenc.EncCatalog(tmp_path, metadata=metadata).refresh()
+    assert [source.path for source in catalog.sources] == [str(first), str(second)]
+    assert (metadata.reads, metadata.reuses) == (1, 1)
+
+
 # ------------------------------------------------------- the descriptors
 def test_the_source_descriptor_is_the_one_the_reference_renderer_expects():
     """The worker hands the reference the descriptors it already reads."""

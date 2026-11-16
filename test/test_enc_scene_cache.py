@@ -8,12 +8,13 @@ import os
 import pytest
 from osgeo import ogr
 
-from sailworks.rendering.vectordrawer import encscene
+from sailworks.rendering.vectordrawer import encscene, encscenestore
 from test.enc_scene_fixtures import (
     _bbox,
     _CancelAfter,
     _write_cell,
     cell,
+    scene,
 )
 
 
@@ -207,3 +208,121 @@ def test_oversized_version_is_marked_and_not_rebuilt(tmp_path):
     assert len(calls) == 2
     assert cache.is_oversized(path, version) is False
     assert cache.is_oversized(path, new_version)
+
+
+# ------------------------------------------------------- the persisted store
+def _store(tmp_path, max_bytes=10_000_000, schema=None):
+    return encscenestore.SceneStore(tmp_path / "store", max_bytes, schema)
+
+
+def test_a_stored_scene_round_trips_through_the_disk(tmp_path, scene):
+    """The file holds the whole scene, not an approximation of it."""
+    store = _store(tmp_path)
+    assert store.put(scene) is True
+
+    decoded = store.get(scene.path, scene.version)
+    assert decoded is not None
+    assert (store.hits, store.misses, store.errors) == (1, 0, 0)
+    assert decoded == scene
+
+    bounding = _bbox(4.0, 4.0, 6.0, 6.0)
+    original_ids = tuple(record.fid for record in scene.query(bounding))
+    assert original_ids
+    assert tuple(record.fid for record in decoded.query(bounding)) == original_ids
+    assert store.path_for(scene.path, scene.version).stat().st_size == (
+        store.size_bytes()
+    )
+
+
+def test_a_scene_of_another_schema_is_never_loaded(tmp_path, scene):
+    """A code change that alters the scene's meaning invalidates the file."""
+    store = _store(tmp_path)
+    target = store.path_for(scene.path, scene.version)
+    assert encscenestore.scene_key(
+        scene.path, scene.version, "an older build"
+    ) != encscenestore.scene_key(scene.path, scene.version)
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(encscenestore.encode_scene(scene, "an older build"))
+    assert store.get(scene.path, scene.version) is None
+    assert (store.hits, store.misses, store.errors) == (0, 1, 1)
+    assert not target.exists()
+
+
+def test_a_truncated_file_is_a_miss_and_is_removed(tmp_path, scene):
+    """A half-written file is a miss that is deleted, never a crash."""
+    store = _store(tmp_path)
+    assert store.put(scene)
+    target = store.path_for(scene.path, scene.version)
+    target.write_bytes(target.read_bytes()[:-16])
+
+    assert store.get(scene.path, scene.version) is None
+    assert (store.hits, store.misses, store.errors) == (0, 1, 1)
+    assert not target.exists()
+
+
+def test_a_garbage_file_is_a_miss_and_is_removed(tmp_path, scene):
+    """Bytes that are not a scene are deleted rather than retried forever."""
+    store = _store(tmp_path)
+    target = store.path_for(scene.path, scene.version)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"not a scene at all")
+
+    assert store.get(scene.path, scene.version) is None
+    assert (store.hits, store.misses, store.errors) == (0, 1, 1)
+    assert not target.exists()
+
+
+def test_a_file_stored_for_another_cell_is_a_miss(tmp_path):
+    """A decodable scene of another cell or version never satisfies a request."""
+    first, second = _two_cells(tmp_path)
+    store = _store(tmp_path)
+    target = store.path_for(first.path, first.version)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(encscenestore.encode_scene(second))
+
+    assert store.get(first.path, first.version) is None
+    assert (store.misses, store.errors) == (1, 1)
+    assert not target.exists()
+
+    version = first.version
+    stale = (version[0], version[1], version[2], version[3] + 1)
+    target = store.path_for(first.path, stale)
+    target.write_bytes(encscenestore.encode_scene(first))
+
+    assert store.get(first.path, stale) is None
+    assert (store.misses, store.errors) == (2, 2)
+    assert not target.exists()
+
+
+def test_the_least_recently_used_file_is_evicted_under_the_cap(tmp_path):
+    """The oldest file goes first and the directory ends up under the cap."""
+    first, second = _two_cells(tmp_path)
+    store = _store(tmp_path)
+    assert store.put(first) and store.put(second)
+    first_file = store.path_for(first.path, first.version)
+    second_file = store.path_for(second.path, second.version)
+    os.utime(first_file, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(second_file, ns=(2_000_000_000, 2_000_000_000))
+
+    cap = second_file.stat().st_size
+    bounded = encscenestore.SceneStore(store.directory, max_bytes=cap)
+    bounded.evict()
+
+    assert not first_file.exists()
+    assert second_file.exists()
+    assert bounded.evictions == 1
+    assert bounded.size_bytes() == cap
+
+
+def test_an_entry_larger_than_the_cap_is_never_written(tmp_path):
+    """A scene that cannot fit the budget is refused, not written and evicted."""
+    first, _ = _two_cells(tmp_path)
+    store = _store(tmp_path, max_bytes=64)
+
+    assert store.put(first) is False
+    assert (store.writes, store.evictions, store.errors) == (0, 0, 1)
+    assert not store.path_for(first.path, first.version).exists()
+    assert store.size_bytes() == 0
+    assert store.get(first.path, first.version) is None
+    assert (store.hits, store.misses) == (0, 1)
