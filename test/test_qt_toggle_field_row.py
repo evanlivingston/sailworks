@@ -3,7 +3,8 @@
 from PySide6.QtCore import QPoint
 from PySide6.QtWidgets import QCheckBox, QLabel, QLineEdit
 
-from sailworks.qt.dropdown import TOGGLE_SLOT, ToggleFieldRow
+from sailworks.qt.dropdown import FIELD_FRACTION, TOGGLE_SLOT, FieldRow, ToggleFieldRow
+from sailworks.qt.slider import Slider
 from test.qt_analysis_fakes import app
 
 
@@ -103,6 +104,45 @@ def test_row_accepts_supplied_widgets_and_owns_their_enablement():
 
     checkbox.setChecked(True)
     assert field.isEnabled()
+
+
+def test_plain_toggle_and_slider_rows_share_one_column_model():
+    application = app()
+    axis = ToggleFieldRow("Departure offsets (hours)", QLineEdit())
+    slider_row = ToggleFieldRow("Years", Slider(), checkbox=False)
+    plain = FieldRow("Shape", QLineEdit())
+    rows = (axis, slider_row, plain)
+    for row in rows:
+        row.resize(420, 28)
+        row.show()
+    application.processEvents()
+
+    def edges(row):
+        label = row.layout().itemAt(0).widget()
+        field = row.field()
+        return (
+            label.mapTo(row, QPoint(label.width(), 0)).x(),
+            field.mapTo(row, QPoint(0, 0)).x(),
+        )
+
+    lefts = [edges(row) for row in rows]
+    # One shared column model: equal label right edges and equal field left
+    # edges across a toggle row, a slider row and a plain row.
+    assert len({label for label, _ in lefts}) == 1
+    assert len({field for _, field in lefts}) == 1
+    assert lefts[0][0] < lefts[0][1]
+
+
+def test_slider_only_insets_its_track_when_it_paints_a_label():
+    app()
+    plain = Slider()
+    plain.resize(400, 24)
+    assert plain._field_rect().left() == 0
+    assert plain._field_rect().width() == 398
+
+    labelled = Slider("Keep off coast")
+    labelled.resize(400, 24)
+    assert labelled._field_rect().left() == round(400 * (1.0 - FIELD_FRACTION))
 
 
 def test_compare_page_builds_one_toggle_row_per_axis(qtbot, monkeypatch, tmp_path):

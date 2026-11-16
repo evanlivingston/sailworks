@@ -23,6 +23,21 @@ TOGGLE_SLOT = 15
 ROW_SPACING = 8
 
 
+def field_columns(width, *, toggle_slot=0):
+    """Label and field widths for a right-anchored Blender-style row.
+
+    Every row lays out the same columns: a label, a slot reserved for the
+    checkbox, and the field, with ``ROW_SPACING`` between neighbours. Both
+    row classes ask this one function so their arithmetic cannot drift, and a
+    stacking of rows shares one field left edge whether or not it has a
+    toggle.
+    """
+    available = max(0, width - toggle_slot - ROW_SPACING)
+    field_width = max(0, round(available * FIELD_FRACTION) - 2)
+    label_width = max(0, available - field_width - ROW_SPACING)
+    return label_width, field_width
+
+
 class _HoverItemDelegate(QStyledItemDelegate):
     """Paint a visible hover row without changing the combo's current index."""
 
@@ -212,19 +227,27 @@ class Dropdown(QComboBox):
 
 
 class FieldRow(QWidget):
-    """A dropdown-style label row around an arbitrary compact field."""
+    """A dropdown-style label row around an arbitrary compact field.
+
+    The checkbox column is reserved, empty, exactly as in ``ToggleFieldRow``,
+    so plain and toggle rows in one stack share a label right edge and a field
+    left edge.
+    """
 
     def __init__(self, label="", field=None, parent=None):
         super().__init__(parent)
         self._field = field
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(ROW_SPACING)
         self._label = QLabel(label)
         self._label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
+        slot = QWidget(self)
+        slot.setFixedWidth(TOGGLE_SLOT)
         layout.addWidget(self._label, 1)
+        layout.addWidget(slot, 0, Qt.AlignmentFlag.AlignVCenter)
         if field is not None:
             field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             layout.addWidget(field)
@@ -249,8 +272,7 @@ class FieldRow(QWidget):
         if self._field is None:
             return
         width = self.width()
-        field_width = max(0, round(width * FIELD_FRACTION) - 2)
-        label_width = max(0, width - field_width - 8)
+        label_width, field_width = field_columns(width, toggle_slot=TOGGLE_SLOT)
         if self._field.width() != field_width:
             self._field.setFixedWidth(field_width)
         if self._label.width() != label_width:
@@ -344,9 +366,7 @@ class ToggleFieldRow(QWidget):
         if self._field is None:
             return
         width = self.width()
-        available = max(0, width - TOGGLE_SLOT - ROW_SPACING)
-        field_width = max(0, round(available * FIELD_FRACTION) - 2)
-        label_width = max(0, available - field_width - ROW_SPACING)
+        label_width, field_width = field_columns(width, toggle_slot=TOGGLE_SLOT)
         if self._field.width() != field_width:
             self._field.setFixedWidth(field_width)
         if self._label.width() != label_width:

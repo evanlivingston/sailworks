@@ -100,7 +100,10 @@ class Slider(QSlider):
 
     def _field_rect(self) -> QRectF:
         width = self.width()
-        left = round(width * (1.0 - FIELD_FRACTION))
+        # A labelled slider paints its label in the left band, so the track
+        # starts after it. Without a label there is no band to reserve: the
+        # track spans the whole widget and lines up with the other fields.
+        left = round(width * (1.0 - FIELD_FRACTION)) if self._label else 0
         return QRectF(left, 2, max(0, width - left - 2), max(0, self.height() - 4))
 
     def _value_at(self, x) -> float:

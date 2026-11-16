@@ -32,7 +32,7 @@ from sailworks.core.historicalrouting import (
     MIN_YEARS,
 )
 
-from .dropdown import FieldRow
+from .dropdown import ToggleFieldRow
 from .historicalroutingprogress import HistoricalProgress
 from .slider import Slider
 
@@ -75,7 +75,7 @@ class HistoricalRoutingOptions(QWidget):
             "Number of calendar years replayed, ending at the departure year."
         )
         self.years.valueChanged.connect(lambda *_: self.values_changed.emit())
-        layout.addWidget(FieldRow("Years", self.years))
+        layout.addWidget(ToggleFieldRow("Years", self.years, checkbox=False))
 
         self.offset_days = Slider()
         self.offset_days.setDecimals(0)
@@ -87,7 +87,7 @@ class HistoricalRoutingOptions(QWidget):
             "Days before and after the departure date to test in each year."
         )
         self.offset_days.valueChanged.connect(lambda *_: self.values_changed.emit())
-        layout.addWidget(FieldRow("± days", self.offset_days))
+        layout.addWidget(ToggleFieldRow("± days", self.offset_days, checkbox=False))
 
         self.max_duration = Slider()
         self.max_duration.setDecimals(0)
@@ -98,7 +98,9 @@ class HistoricalRoutingOptions(QWidget):
         self.max_duration.setAccessibleName("Max passage hours")
         self.max_duration.setToolTip("Elapsed route time limit, in six-hour steps.")
         self.max_duration.valueChanged.connect(self._horizon_changed)
-        layout.addWidget(FieldRow("Max passage", self.max_duration))
+        layout.addWidget(
+            ToggleFieldRow("Max passage", self.max_duration, checkbox=False)
+        )
 
         self.use_currents = QCheckBox("Target-date currents (shared)")
         self.use_currents.setAccessibleName("Target-date currents (shared)")
