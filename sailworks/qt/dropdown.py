@@ -24,18 +24,21 @@ ROW_SPACING = 8
 
 
 def field_columns(width, *, toggle_slot=0):
-    """Label and field widths for a right-anchored Blender-style row.
+    """Label width, control-column x and field width for a Blender-style row.
 
-    Every row lays out the same columns: a label, a slot reserved for the
-    checkbox, and the field, with ``ROW_SPACING`` between neighbours. Both
-    row classes ask this one function so their arithmetic cannot drift, and a
-    stacking of rows shares one field left edge whether or not it has a
-    toggle.
+    The control column starts at the same x on every row, whether the row
+    carries a checkbox or not: ``width * (1.0 - FIELD_FRACTION)``. The label
+    ends ``ROW_SPACING`` before that column, so label right edges agree across
+    a stack of rows. A row with a checkbox keeps a ``TOGGLE_SLOT`` slot at the
+    control column and insets its field past the slot; a row without one
+    starts its field at the control column. Every field ends flush with the
+    row's right edge, which the caller gets back as a width.
     """
-    available = max(0, width - toggle_slot - ROW_SPACING)
-    field_width = max(0, round(available * FIELD_FRACTION) - 2)
-    label_width = max(0, available - field_width - ROW_SPACING)
-    return label_width, field_width
+    control_left = max(0, round(width * (1.0 - FIELD_FRACTION)))
+    label_width = max(0, control_left - ROW_SPACING)
+    inset = toggle_slot + ROW_SPACING if toggle_slot else 0
+    field_width = max(0, width - control_left - inset)
+    return label_width, control_left, field_width
 
 
 class _HoverItemDelegate(QStyledItemDelegate):
@@ -229,9 +232,9 @@ class Dropdown(QComboBox):
 class FieldRow(QWidget):
     """A dropdown-style label row around an arbitrary compact field.
 
-    The checkbox column is reserved, empty, exactly as in ``ToggleFieldRow``,
-    so plain and toggle rows in one stack share a label right edge and a field
-    left edge.
+    There is no checkbox, so the field starts at the control column itself:
+    the same x a checkbox sits at in ``ToggleFieldRow`` and a slider track
+    starts at in a checkbox-free row. Label right edges agree across a stack.
     """
 
     def __init__(self, label="", field=None, parent=None):
@@ -244,10 +247,7 @@ class FieldRow(QWidget):
         self._label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
-        slot = QWidget(self)
-        slot.setFixedWidth(TOGGLE_SLOT)
         layout.addWidget(self._label, 1)
-        layout.addWidget(slot, 0, Qt.AlignmentFlag.AlignVCenter)
         if field is not None:
             field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             layout.addWidget(field)
@@ -272,7 +272,7 @@ class FieldRow(QWidget):
         if self._field is None:
             return
         width = self.width()
-        label_width, field_width = field_columns(width, toggle_slot=TOGGLE_SLOT)
+        label_width, _control_left, field_width = field_columns(width)
         if self._field.width() != field_width:
             self._field.setFixedWidth(field_width)
         if self._label.width() != label_width:
@@ -280,10 +280,11 @@ class FieldRow(QWidget):
 
 
 class ToggleFieldRow(QWidget):
-    """Blender-style property row: label, small checkbox, then a field.
+    """Blender-style property row: label, optional checkbox, then a field.
 
-    The checkbox column is always reserved, even on rows without a toggle, so
-    every field in a stack starts at the same x. The row owns the enable and
+    The checkbox, when present, sits at the control column and insets the
+    field past its slot; a ``checkbox=False`` row has no slot widget at all,
+    so its control starts at that same column. The row owns the enable and
     disable behaviour: a row with a checkbox starts with its field disabled
     and enables it while the checkbox is checked. ``checked_changed`` relays
     that state instead of letting callers wire the checkbox themselves.
@@ -298,14 +299,20 @@ class ToggleFieldRow(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(ROW_SPACING)
-        slot = QWidget(self)
-        slot.setFixedWidth(TOGGLE_SLOT)
-        slot_layout = QHBoxLayout(slot)
-        slot_layout.setContentsMargins(0, 0, 0, 0)
-        slot_layout.setSpacing(0)
-        # ``checkbox=False`` asks for the empty column only; the field stays
-        # enabled and there is no toggle to report.
+        self._label = QLabel(label)
+        self._label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        # Blender's order: the label owns the stretch, then the checkbox
+        # column, then the field. ``checkbox=False`` asks for no column at
+        # all, so the field starts at the control column.
+        layout.addWidget(self._label, 1)
         if checkbox is not False:
+            slot = QWidget(self)
+            slot.setFixedWidth(TOGGLE_SLOT)
+            slot_layout = QHBoxLayout(slot)
+            slot_layout.setContentsMargins(0, 0, 0, 0)
+            slot_layout.setSpacing(0)
             if checkbox is None:
                 checkbox = QCheckBox(slot)
             if isinstance(checkbox, QCheckBox) and not checkbox.text():
@@ -314,14 +321,7 @@ class ToggleFieldRow(QWidget):
             checkbox.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             slot_layout.addWidget(checkbox, 0, Qt.AlignmentFlag.AlignVCenter)
             self._checkbox = checkbox
-        self._label = QLabel(label)
-        self._label.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
-        # Blender's order: the label owns the stretch, then the reserved
-        # checkbox column, then the field.
-        layout.addWidget(self._label, 1)
-        layout.addWidget(slot, 0, Qt.AlignmentFlag.AlignVCenter)
+            layout.addWidget(slot, 0, Qt.AlignmentFlag.AlignVCenter)
         if field is not None:
             field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             layout.addWidget(field)
@@ -366,7 +366,10 @@ class ToggleFieldRow(QWidget):
         if self._field is None:
             return
         width = self.width()
-        label_width, field_width = field_columns(width, toggle_slot=TOGGLE_SLOT)
+        toggle_slot = TOGGLE_SLOT if self._checkbox is not None else 0
+        label_width, _control_left, field_width = field_columns(
+            width, toggle_slot=toggle_slot
+        )
         if self._field.width() != field_width:
             self._field.setFixedWidth(field_width)
         if self._label.width() != label_width:

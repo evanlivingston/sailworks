@@ -3,12 +3,18 @@
 from PySide6.QtCore import QPoint
 from PySide6.QtWidgets import QCheckBox, QLabel, QLineEdit
 
-from sailworks.qt.dropdown import FIELD_FRACTION, TOGGLE_SLOT, FieldRow, ToggleFieldRow
+from sailworks.qt.dropdown import (
+    FIELD_FRACTION,
+    ROW_SPACING,
+    TOGGLE_SLOT,
+    FieldRow,
+    ToggleFieldRow,
+)
 from sailworks.qt.slider import Slider
 from test.qt_analysis_fakes import app
 
 
-def test_row_orders_label_then_reserved_checkbox_slot_then_field():
+def test_row_orders_label_then_checkbox_column_then_field():
     app()
     field = QLineEdit()
     row = ToggleFieldRow("Wind limit", field)
@@ -17,58 +23,63 @@ def test_row_orders_label_then_reserved_checkbox_slot_then_field():
     assert layout.itemAt(1).widget() is row.checkbox().parent()
     assert layout.itemAt(2).widget() is field
 
+    # ``checkbox=False`` adds no slot widget at all: label and field only.
     plain_field = QLineEdit()
     plain = ToggleFieldRow("Tack angle", plain_field, checkbox=False)
     plain_layout = plain.layout()
     plain.resize(400, 24)
     plain.layout().activate()
+    assert plain_layout.count() == 2
     assert isinstance(plain_layout.itemAt(0).widget(), QLabel)
-    assert plain_layout.itemAt(1).widget().width() == TOGGLE_SLOT
-    assert plain_layout.itemAt(2).widget() is plain_field
+    assert plain_layout.itemAt(1).widget() is plain_field
 
 
-def test_rows_share_label_right_edge_and_field_left_edge():
-    app()
+def test_rows_share_label_right_edge_and_control_left_edge():
+    application = app()
     toggled = ToggleFieldRow("Wind limit", QLineEdit())
     plain = ToggleFieldRow("Tack angle", QLineEdit(), checkbox=False)
-    toggled.resize(400, 24)
-    toggled.layout().activate()
-    plain.resize(400, 24)
-    plain.layout().activate()
+    for row in (toggled, plain):
+        row.resize(400, 24)
+        row.show()
+    application.processEvents()
 
-    def edges(row):
+    def label_right(row):
         label = row.layout().itemAt(0).widget()
-        field = row.layout().itemAt(2).widget()
-        return (
-            label.mapTo(row, QPoint(label.width(), 0)).x(),
-            field.mapTo(row, QPoint(0, 0)).x(),
-        )
+        return label.mapTo(row, QPoint(label.width(), 0)).x()
 
-    toggled_label, toggled_field = edges(toggled)
-    plain_label, plain_field = edges(plain)
-    assert toggled_label == plain_label
-    assert toggled_field == plain_field
-    assert toggled_label < toggled_field
+    def control_left(row):
+        control = row.checkbox() if row.checkbox() is not None else row.field()
+        return control.mapTo(row, QPoint(0, 0)).x()
+
+    assert label_right(toggled) == label_right(plain)
+    assert control_left(toggled) == control_left(plain)
+    toggled_field = toggled.field().mapTo(toggled, QPoint(0, 0)).x()
+    assert toggled_field == control_left(toggled) + TOGGLE_SLOT + ROW_SPACING
 
 
-def test_row_without_a_toggle_keeps_the_field_enabled_and_the_slot_reserved():
-    app()
+def test_row_without_a_toggle_keeps_the_field_enabled_and_has_no_slot():
+    application = app()
     field = QLineEdit("90, 100")
     plain = ToggleFieldRow("Polar efficiency", field, checkbox=False)
     assert plain.checkbox() is None
     assert plain.field() is field
     assert field.isEnabled()
+    # No empty column: the layout holds only the label and the field.
+    assert plain.layout().count() == 2
 
     toggled = ToggleFieldRow("Polar efficiency", QLineEdit("90, 100"))
-    toggled.resize(400, 24)
-    toggled.layout().activate()
-    plain.resize(400, 24)
-    plain.layout().activate()
+    for row in (toggled, plain):
+        row.resize(400, 24)
+        row.show()
+    application.processEvents()
 
-    # The empty column still shifts the label, so both fields start together.
+    # The checkbox-free row starts its control at the checkbox column, and the
+    # toggle row's field is inset past the checkbox slot.
     plain_x = field.mapTo(plain, QPoint(0, 0)).x()
+    checkbox_x = toggled.checkbox().mapTo(toggled, QPoint(0, 0)).x()
     toggled_x = toggled.field().mapTo(toggled, QPoint(0, 0)).x()
-    assert plain_x == toggled_x
+    assert plain_x == checkbox_x
+    assert toggled_x == checkbox_x + TOGGLE_SLOT + ROW_SPACING
 
 
 def test_row_checkbox_starts_disabled_and_reports_each_change_once():
@@ -117,20 +128,30 @@ def test_plain_toggle_and_slider_rows_share_one_column_model():
         row.show()
     application.processEvents()
 
-    def edges(row):
+    def label_right(row):
         label = row.layout().itemAt(0).widget()
-        field = row.field()
-        return (
-            label.mapTo(row, QPoint(label.width(), 0)).x(),
-            field.mapTo(row, QPoint(0, 0)).x(),
-        )
+        return label.mapTo(row, QPoint(label.width(), 0)).x()
 
-    lefts = [edges(row) for row in rows]
-    # One shared column model: equal label right edges and equal field left
-    # edges across a toggle row, a slider row and a plain row.
-    assert len({label for label, _ in lefts}) == 1
-    assert len({field for _, field in lefts}) == 1
-    assert lefts[0][0] < lefts[0][1]
+    def control_left(row):
+        checkbox = row.checkbox() if hasattr(row, "checkbox") else None
+        control = checkbox if checkbox is not None else row.field()
+        return control.mapTo(row, QPoint(0, 0)).x()
+
+    def field_left(row):
+        return row.field().mapTo(row, QPoint(0, 0)).x()
+
+    # One shared column model: equal label right edges and equal control left
+    # edges across a toggle row, a slider row and a plain row. The checkbox
+    # sits at the control column; only its own row's field is inset past it.
+    assert len({label_right(row) for row in rows}) == 1
+    assert len({control_left(row) for row in rows}) == 1
+    control = control_left(axis)
+    assert field_left(axis) == control + TOGGLE_SLOT + ROW_SPACING
+    assert field_left(slider_row) == control
+    assert field_left(plain) == control
+    # Every control ends flush with its row's right edge.
+    for row in rows:
+        assert field_left(row) + row.field().width() == row.width()
 
 
 def test_slider_only_insets_its_track_when_it_paints_a_label():
