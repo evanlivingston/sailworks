@@ -13,7 +13,6 @@ import unicodedata
 
 from sailworks.common import resource_path
 
-DATA_VERSION = 1
 DEFAULT_ZOOM = {"port": 14.0, "city": 10.0, "harbour": 15.0, "chart": 13.0}
 KIND_LABELS = {
     "port": "Port",

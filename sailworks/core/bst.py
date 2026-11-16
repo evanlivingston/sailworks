@@ -9,9 +9,8 @@ References (Actisense SDK, Apache-2.0):
 docs/DataFormats/Binary/BST.md and docs/DataFormats/Binary/bst-detail/.
 """
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import ClassVar, List
+from typing import List
 
 from .datasource import AISDataPacket, NMEADataPacket
 from .nmea2000 import N2KMessage
@@ -28,23 +27,6 @@ BST_N2K_D0 = 0xD0
 
 MAX_SENTENCE_LENGTH = 1024
 UNKNOWN_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
-
-
-@dataclass(frozen=True)
-class CanHeader:
-    """A decoded CAN frame whose payload was not materialised.
-
-    The replay builder only needs the PGN, source and direction to count
-    unsupported traffic; keeping the eight data bytes out of the common path
-    avoids one allocation per captured frame.
-    """
-
-    timestamp: datetime
-    pgn: int
-    source: int
-    direction: str
-    data_length: int
-    data: ClassVar[bytes] = b""
 
 
 def _pgn(data_page, pdu_format, pdu_specific):

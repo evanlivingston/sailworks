@@ -46,10 +46,6 @@ logger = logging.getLogger("sailworks")
 
 PRESSURE_ELEMENTS = _PRESSURE_ELEMENTS
 
-# Mean-sea-level pressure elements (Pa) used for isobars. GFS downloads
-# request PRMSL; other models may already carry one of these bands.
-PA_TO_HPA = 1.0 / 100.0
-
 
 def forecast_model_name(dataset, metadata):
     """Display identity only; never change the sampler's model-selection keys."""

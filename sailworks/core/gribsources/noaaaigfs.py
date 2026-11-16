@@ -26,12 +26,10 @@ from .ranged import HTTPStatusError, append_message, fetch_text, message_length
 from .parallel import MAX_CONCURRENT_FORECAST_REQUESTS, write_ordered_payloads
 
 AIGFS_ROOT = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigfs/prod/"
-AIGFS_MODEL_ID = "AIGFS"
 AIGFS_NAME = "NOAA AI-GFS"
 AIGFS_NATIVE_HOURS = tuple(range(0, 385, 6))
 _DATE_DIR = re.compile(r"^aigfs\.(\d{8})/?$")
 _CYCLE_DIR = re.compile(r"^(\d{2})/?$")
-_FILE = re.compile(r"^aigfs\.t(\d{2})z\.sfc\.f(\d{3})\.grib2$")
 MAX_INDEX_BYTES = 4 * 1024 * 1024
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 MAX_CATALOG_DAYS = 3

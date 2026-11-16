@@ -30,19 +30,6 @@ DEFAULT_REGION_PADDING_DEG = 5.0
 HORIZON_STEP_HOURS = 6
 
 
-class MemberState(str, Enum):
-    PLANNED = "planned"
-    WAITING_WEATHER = "waiting_weather"
-    READY = "ready"
-    RUNNING = "running"
-    FINISHED = "finished"
-    NO_FINISH_WITHIN_HORIZON = "no_finish_within_horizon"
-    BLOCKED_WEATHER = "blocked_weather"
-    FAILED_EXECUTION = "failed_execution"
-    CANCELLED = "cancelled"
-    INTERRUPTED = "interrupted"
-
-
 class JobState(str, Enum):
     PLANNED = "planned"
     PREFLIGHT = "preflight"

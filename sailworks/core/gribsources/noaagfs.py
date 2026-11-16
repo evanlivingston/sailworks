@@ -42,9 +42,6 @@ GFS_FORECAST_HOURS = GFS_FORECAST_HOURS_SHORT + GFS_FORECAST_HOURS_LONG
 # Keep the recovery/legacy schedule above unchanged.
 GFS_CUSTOM_HOURS = list(range(121)) + list(range(123, 385, 3))
 
-# GFS runs at 00, 06, 12, 18 UTC
-GFS_CYCLES = ["00", "06", "12", "18"]
-
 # Default forecast range presets (in hours)
 FORECAST_PRESETS = {
     "3 days": 72,

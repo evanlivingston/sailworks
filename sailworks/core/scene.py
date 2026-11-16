@@ -20,14 +20,6 @@ KIND_LOG = "log"
 KIND_SHAPE = "shape"
 KINDS = (KIND_TRACK, KIND_ROUTING, KIND_POI, KIND_LOG, KIND_SHAPE)
 
-TYPE_TITLES = {
-    KIND_TRACK: "Track",
-    KIND_ROUTING: "Routing",
-    KIND_POI: "Point of interest",
-    KIND_LOG: "Log",
-    KIND_SHAPE: "Shape",
-}
-
 DEFAULT_GROUPS = (
     (KIND_TRACK, "default-tracks", "Tracks"),
     (KIND_ROUTING, "default-routings", "Routings"),
