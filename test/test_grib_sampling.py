@@ -74,6 +74,172 @@ def test_streamline_value_blend_matches_sampler_without_provenance_side_effects(
         assert sampler.point_sources is provenance
 
 
+def _reference_side_scan(times, field, lats, lons, query, before, at_time):
+    """The old whole-axis mask scan, kept as the equivalence oracle."""
+    values = np.full((len(lats), 2 if field == "wind" else 1), np.nan)
+    stamps = np.full(len(lats), np.nan)
+    origins = np.full(len(lats), "", dtype=object)
+    for valid in (reversed(times) if before else times):
+        use = ~np.isfinite(stamps) & ((query >= valid) if before else (query <= valid))
+        if not use.any():
+            continue
+        candidate, names = at_time(valid, field, lats[use], lons[use])
+        good = np.isfinite(candidate).all(axis=1)
+        ids = np.flatnonzero(use)[good]
+        values[ids], stamps[ids], origins[ids] = candidate[good], valid, names[good]
+        if np.isfinite(stamps).all():
+            break
+    return values, stamps, origins
+
+
+def _pattern_at_time(holes=()):
+    """Deterministic finite samples except at ``holes``, which return all-NaN."""
+
+    def at_time(records, field, lats, lons, pairs=()):
+        valid = records
+        columns = 2 if field == "wind" else 1
+        candidate = np.full((len(lats), columns), np.nan)
+        names = np.full(len(lats), "", dtype=object)
+        if valid not in holes:
+            for column in range(columns):
+                candidate[:, column] = valid / 3600.0 + 10 * lats + lons + column
+            names[:] = ["model-b\x1fmodel-a" if lat > 0 else "model-c" for lat in lats]
+        return candidate, names
+
+    return at_time
+
+
+def test_side_matches_whole_axis_reference_scan():
+    identity = (0.0, "synthetic")
+    times = tuple(3600.0 * hour for hour in (0, 1, 3, 4, 7, 9))
+    holes = {times[2], times[4]}
+    sampler = WeatherSampler([])
+    sampler._times = {(identity, "wave_height"): times, (identity, "wind"): times}
+    sampler._pairs = {(identity, valid): () for valid in times}
+    at_time = _pattern_at_time(holes)
+    sampler._at_time = at_time
+    group = {valid: valid for valid in times}
+    rng = np.random.default_rng(20260101)
+    query = np.concatenate(
+        (
+            rng.uniform(-1800.0, times[-1] + 1800.0, 400),
+            np.asarray(times + (times[0] - 1.0, times[-1] + 1.0)),
+        )
+    )
+    lats = rng.uniform(-1, 1, query.size)
+    lons = rng.uniform(-1, 1, query.size)
+    for field in ("wave_height", "wind"):
+        for before in (True, False):
+            expected = _reference_side_scan(
+                times, field, lats, lons, query, before, at_time
+            )
+            actual = sampler._side(
+                identity, group, times, field, lats, lons, query, before, lambda: False
+            )
+            for left, right in zip(actual, expected):
+                np.testing.assert_array_equal(left, right)
+
+    # The nearest before/after time is all-NaN, so both sides must step outward.
+    hole_query = np.array([times[2], times[4] + 1.0])
+    before = sampler._side(
+        identity,
+        group,
+        times,
+        "wave_height",
+        np.zeros(2),
+        np.zeros(2),
+        hole_query,
+        True,
+        lambda: False,
+    )
+    after = sampler._side(
+        identity,
+        group,
+        times,
+        "wave_height",
+        np.zeros(2),
+        np.zeros(2),
+        hole_query,
+        False,
+        lambda: False,
+    )
+    np.testing.assert_array_equal(before[1], [times[1], times[3]])
+    np.testing.assert_array_equal(after[1], [times[3], times[5]])
+
+
+def test_provenance_matches_reference_expressions():
+    identity = (0.0, "synthetic")
+    times = tuple(3600.0 * hour for hour in (0, 1, 2, 4, 6))
+    holes = {times[3]}
+    sampler = WeatherSampler([])
+    sampler.groups = {identity: {valid: valid for valid in times}}
+    sampler.coverage = {identity: times[-1] + 3600.0}
+    sampler.order = [identity]
+    sampler._times = {(identity, "wave_height"): times}
+    sampler._pairs = {}
+    at_time = _pattern_at_time(holes)
+    sampler._at_time = at_time
+    query = np.concatenate(
+        ([-1.0], np.linspace(0.0, times[-1], 20), [times[-1] + 3600.0])
+    )
+    lats = np.linspace(-1, 1, query.size)
+    lons = np.linspace(0, 0.5, query.size)
+    result = sampler.sample_timestamps("wave_height", query, lats, lons)
+
+    use = (query >= identity[0]) & (query <= sampler.coverage[identity])
+    a, ta, sa = _reference_side_scan(
+        times, "wave_height", lats[use], lons[use], query[use], True, at_time
+    )
+    b, tb, sb = _reference_side_scan(
+        times, "wave_height", lats[use], lons[use], query[use], False, at_time
+    )
+    values, names = WeatherSampler._blend(
+        a, ta, sa, b, tb, sb, query[use], "wave_height"
+    )
+    expected = np.full_like(result, np.nan)
+    expected[use] = values
+    full_names = np.full(len(query), "", dtype=object)
+    full_names[use] = names
+    np.testing.assert_array_equal(result, expected)
+    assert sampler.last_sources == {
+        name for origin in full_names for name in origin.split("\x1f") if name
+    }
+    np.testing.assert_array_equal(
+        sampler.point_sources,
+        np.array(
+            [
+                ", ".join(origin.split("\x1f")) if origin else None
+                for origin in full_names
+            ],
+            dtype=object,
+        ),
+    )
+    assert any("\x1f" in origin for origin in full_names)
+    assert sampler.point_sources[0] is None
+
+
+def test_blend_label_memo_matches_reference_join():
+    a = np.array([[1.0], [2.0], [3.0], [4.0], [5.0], [6.0]])
+    b = np.array([[7.0], [8.0], [9.0], [10.0], [11.0], [12.0]])
+    ta = np.array([0.0, 0.0, np.nan, 0.0, 0.0, 0.0])
+    tb = np.array([10.0, 10.0, 10.0, np.nan, 0.0, 10.0])
+    sa = np.array(["a\x1fb", "a\x1fb", "solo", "left", "d\x1fc", ""], dtype=object)
+    sb = np.array(["b\x1fc", "b\x1fc", "solo", "right", "d", "new"], dtype=object)
+    _, names = WeatherSampler._blend(a, ta, sa, b, tb, sb, np.full(len(a), 5.0))
+    both = np.isfinite(ta) & np.isfinite(tb) & (tb > ta)
+    for i in range(len(a)):
+        expected = (
+            "\x1f".join(sorted(set(sa[i].split("\x1f")) | set(sb[i].split("\x1f"))))
+            if both[i]
+            else (sa[i] if np.isfinite(ta[i]) else sb[i])
+        )
+        assert names[i] == expected
+    assert names[0] == names[1] == "a\x1fb\x1fc"
+    assert names[3] == "left"
+    one_sided = "\x1f".join(sorted(set("".split("\x1f")) | set("new".split("\x1f"))))
+    assert names[5] == one_sided == "\x1fnew"
+
+
 class TestGribSampling(unittest.TestCase):
     def setUp(self):
         self.directory = TemporaryDirectory()
