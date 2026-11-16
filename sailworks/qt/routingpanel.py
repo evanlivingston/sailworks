@@ -38,7 +38,7 @@ from sailworks.core.routingoptions import (
 )
 from .historicalrouting import HistoricalRoutingPanel
 from .scrollchrome import style_scrollarea
-from .dropdown import Dropdown, FieldRow
+from .dropdown import Dropdown, FieldRow, ToggleFieldRow
 from .slider import Slider
 from .theme import TYPE_CAPTION, TYPE_DETAIL, section_label
 from .text import qt_text
@@ -621,14 +621,12 @@ class RoutingPanel(QWidget):
         compare = QVBoxLayout(compare_page)
         self.comparison_axes = {}
         for key, label, text, _ in AXES:
-            enabled, values = QCheckBox(label), QLineEdit(text)
-            values.setEnabled(False)
-            enabled.toggled.connect(values.setEnabled)
-            enabled.toggled.connect(lambda *_: self.options_changed.emit())
+            values = QLineEdit(text)
+            row = ToggleFieldRow(label, values)
+            row.checked_changed.connect(lambda *_: self.options_changed.emit())
             values.textChanged.connect(lambda *_: self.options_changed.emit())
-            compare.addWidget(enabled)
-            compare.addWidget(FieldRow("Values", values))
-            self.comparison_axes[key] = (enabled, values)
+            compare.addWidget(row)
+            self.comparison_axes[key] = (row.checkbox(), values)
         compare.addWidget(section_label("Historical years"))
         self.historical_enabled = QCheckBox("Run historical years")
         self.historical_enabled.setAccessibleName("Run historical years")
