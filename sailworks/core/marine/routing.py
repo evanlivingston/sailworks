@@ -179,23 +179,44 @@ class CurrentRoutingEnvironment:
         currents = self.selection.sample_many(
             [key[1] for key in missing], [routing_utc(key[2]) for key in missing]
         )
-        for key, current in zip(missing, currents):
+        resolve_many = getattr(type(self.wind), "wind_many", None)
+        winds = (
+            resolve_many(
+                self.wind, [key[2] for key in missing], [key[1] for key in missing]
+            )
+            if missing and resolve_many is not None
+            else None
+        )
+        if winds is not None and len(winds) != len(missing):
+            winds = None
+        if winds is not None and self.cancel.is_set():
+            raise DownloadCancelledError()
+        for index, (key, current) in enumerate(zip(missing, currents)):
             if self.cancel.is_set():
                 raise DownloadCancelledError()
             try:
-                value = self._wind_sample(current, key[1], key[2])
+                value = self._wind_sample(
+                    current,
+                    key[1],
+                    key[2],
+                    winds[index] if winds is not None else None,
+                )
                 found[key] = value
                 self._cache_sample(key, value)
             except RoutingDataGapError as error:
                 found[key] = error
         return [found[key] for key in keys]
 
-    def _wind_sample(self, current, position, instant):
+    def _wind_sample(self, current, position, instant, wind=None):
         if current.status != "available":
             raise RoutingDataGapError(
                 (DataGap(position, instant, "current", current.status),)
             )
-        wind = self.wind.get_wind_at(instant, *position)
+        if wind is None:
+            wind = self.wind.get_wind_at(instant, *position)
+        else:
+            self.wind.last_source = wind[2]
+            wind = wind[:2]
         if wind is None or not all(math.isfinite(v) for v in wind):
             raise RoutingDataGapError(
                 (DataGap(position, instant, "wind", "no_coverage"),)
@@ -338,6 +359,43 @@ class FrozenRoutingWind:
                     )
                 return result
         return None
+
+    def wind_many(self, instants, positions):
+        """Resolve many points in one vectorized sampler call.
+
+        Returns ``(direction, speed, source)`` per point, with ``None`` where
+        the point has no coverage. Returns ``None`` as a whole when no shared
+        sampler exists, so callers keep the scalar path unchanged.
+        """
+        sampler = self.sampler
+        if sampler is None or not len(positions):
+            return None
+        positions = np.asarray(positions, dtype=np.float64)
+        stamps = np.array([instant.timestamp() for instant in instants])
+        try:
+            uv = sampler.sample_timestamps(
+                "wind", stamps, positions[:, 0], positions[:, 1]
+            )
+        except (ValueError, RuntimeError, TypeError, IndexError):
+            return None
+        direction = (np.degrees(np.arctan2(-uv[:, 0], -uv[:, 1])) + 360) % 360
+        speed = np.hypot(uv[:, 0], uv[:, 1])
+        if self.override is not None:
+            direction = (direction + self.override._dir_offset) % 360
+            speed = speed * self.override._speed_factor
+        self.used.update(sampler.last_sources)
+        sources = sampler.point_sources
+        found = np.flatnonzero(np.isfinite(speed))
+        if len(found):
+            self.last_source = sources[found[-1]]
+        return [
+            (
+                (float(direction[i]), float(speed[i]), sources[i])
+                if math.isfinite(speed[i])
+                else None
+            )
+            for i in range(len(positions))
+        ]
 
     def provenance(self):
         return dict(
