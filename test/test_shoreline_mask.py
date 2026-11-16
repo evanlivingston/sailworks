@@ -45,3 +45,5 @@ def test_mask_only_skips_segments_that_are_definitely_water():
         assert masked._segments_are_water([0.5], [0.5], [0.6], [0.6]) is True
         assert masked._segments_are_water([0.0], [-0.05], [0.0], [0.05]) is False
         assert masked.lines_validity([(0.0, -0.05, 0.0, 0.05)]) == [False]
+        for segment in SEGMENTS:
+            assert masked.segment_allowed(*segment) == exact.segment_allowed(*segment)
