@@ -854,6 +854,85 @@ def test_fidelity_requires_equal_candidate_and_reference_shapes():
         )
 
 
+def _inked(lines=6, size=96):
+    """A chart-like reference: horizontal depth bands across the water."""
+    reference = np.zeros((size, size, 4), dtype=np.uint8)
+    for row in range(0, size, max(1, size // lines)):
+        reference[row : row + size // (lines * 2)] = (20, 60, 120, 255)
+    return reference
+
+
+def test_error_ratio_is_zero_for_identical_and_grows_with_noise():
+    module = tool()
+    reference = _inked()
+    background = np.zeros_like(reference)
+    exact = module._fidelity(reference, reference, background)
+    assert exact["error_ratio"] == 0
+    assert exact["ref_signal"] > 0  # the reference does carry ink
+
+    rng = np.random.default_rng(7)
+    ratios, maes = [], []
+    for amplitude in (4, 24):
+        noisy = np.clip(
+            reference.astype("int16")
+            + rng.integers(-amplitude, amplitude + 1, reference.shape),
+            0,
+            255,
+        ).astype(np.uint8)
+        metrics = module._fidelity(noisy, reference, background)
+        ratios.append(metrics["error_ratio"])
+        maes.append(metrics["mae_255"])
+    assert ratios[0] < ratios[1]
+    assert maes[0] < maes[1]
+
+
+def test_error_ratio_sees_a_translation_that_coverage_cannot():
+    """The regression behind measuring instead of trusting coverage."""
+    module = tool()
+    reference = _inked()
+    background = np.zeros_like(reference)
+    shifted = np.roll(reference, 4, axis=0)
+    exact = module._fidelity(reference, reference, background)
+    moved = module._fidelity(shifted, reference, background)
+    # Coverage is a ratio of summed absolutes, so a shift leaves it at ~1.
+    assert exact["coverage"] == pytest.approx(1.0)
+    assert moved["coverage"] == pytest.approx(1.0, abs=0.02)
+    # Error energy is not translation invariant: it grows with the shift,
+    # and MAE grows with it.
+    assert moved["error_ratio"] > 0.05
+    assert moved["error_ratio"] > exact["error_ratio"]
+    assert moved["mae_255"] > exact["mae_255"]
+    assert moved["mae_255"] > 0
+
+
+def test_ref_signal_is_near_zero_when_reference_has_no_ink():
+    module = tool()
+    reference = _inked()
+    empty = np.zeros_like(reference)
+    vacuous = module._fidelity(empty, empty, empty)
+    assert vacuous["ref_signal"] == 0
+    assert vacuous["error_ratio"] == 0
+    # Same candidate compared against a blank base has nothing to compare, so
+    # ref_signal, not the ratios, is what says the comparison is vacuous.
+    assert module._fidelity(reference, empty, empty)["ref_signal"] == 0
+    assert module._fidelity(reference, reference, empty)["ref_signal"] > 0
+
+
+def test_worst_tile_mae_exceeds_whole_frame_mae_for_localized_error():
+    module = tool()
+    reference = _inked()
+    background = np.zeros_like(reference)
+    wrong = reference.copy()
+    # Corrupt exactly one tile of the 6x6 grid, leaving the rest correct.
+    tile = reference.shape[0] // 6
+    wrong[:tile, :tile] = 255
+    metrics = module._fidelity(wrong, reference, background)
+    assert metrics["worst_tile_mae"] > metrics["mae_255"]
+    # A uniform error spreads evenly: the worst tile matches the frame mean.
+    constant = np.full(reference.shape, 7, dtype="int16")
+    assert module._worst_tile_mae(constant) == pytest.approx(7.0)
+
+
 def test_watchdog_dumps_stacks_and_exits_nonzero():
     """A wedged readback must fail loudly instead of hanging the process."""
     import subprocess

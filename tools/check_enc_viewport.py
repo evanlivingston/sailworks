@@ -431,6 +431,31 @@ def _registration(candidate, reference, max_shift=8):
     return {"dx": int(best_dx), "dy": int(best_dy), "score": float(best_score)}
 
 
+FIDELITY_TILES = 6
+
+
+def _worst_tile_mae(diff, tiles=FIDELITY_TILES):
+    """Maximum mean absolute error over a ``tiles`` x ``tiles`` grid.
+
+    A whole-frame mean hides a localized failure: a single wrong band or a
+    misplaced label averages away against the rest of a dense chart. The grid
+    keeps the same 0-255 units as ``mae_255`` so the two are comparable.
+    """
+    import numpy as np
+
+    rows = np.array_split(np.arange(diff.shape[0]), tiles)
+    cols = np.array_split(np.arange(diff.shape[1]), tiles)
+    worst = 0.0
+    for row in rows:
+        if not len(row):
+            continue
+        for col in cols:
+            if not len(col):
+                continue
+            worst = max(worst, float(diff[np.ix_(row, col)].mean()))
+    return worst
+
+
 def _fidelity(native, ref_on, ref_off):
     """Metrics of the native ENC layer against the reference, premultiplied BGRA."""
     import numpy as np
@@ -468,6 +493,14 @@ def _fidelity(native, ref_on, ref_off):
     return {
         "mae_255": float(diff.mean()),
         "p99_255": float(np.percentile(diff, 99)),
+        # How much ink the reference carries at all. Near zero means the
+        # comparison is vacuous, which the ratios below cannot say on their own.
+        "ref_signal": float(np.abs(on - off).mean()),
+        # Error energy over reference signal energy. Unlike ``coverage`` this
+        # is not translation invariant and cannot saturate at 1.0.
+        "error_ratio": float(np.abs(nat - on).sum() / max(np.abs(on - off).sum(), 1)),
+        # Localized failure detector: whole-frame means average a bad band away.
+        "worst_tile_mae": _worst_tile_mae(diff),
         "nonblank": bool(ref_mask.any() and native_mask.any() and nat[:, :, 3].any()),
         "native_visible_pixels": int((nat[:, :, 3] > 0).sum()),
         "precision": precision,
