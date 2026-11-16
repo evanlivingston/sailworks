@@ -47,3 +47,8 @@ def test_mask_only_skips_segments_that_are_definitely_water():
         assert masked.lines_validity([(0.0, -0.05, 0.0, 0.05)]) == [False]
         for segment in SEGMENTS:
             assert masked.segment_allowed(*segment) == exact.segment_allowed(*segment)
+        payload = masked.native_mask()
+        assert payload is not None
+        assert payload["mask"].dtype.name == "uint8"
+        assert payload["mask"].any()
+        assert payload["resolution"] > 0

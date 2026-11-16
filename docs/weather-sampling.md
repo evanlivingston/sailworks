@@ -130,9 +130,11 @@ uses the exact GSHHS geometry. The mask is a skip test, never a replacement
 coastline check: it cannot accept a segment the exact predicate rejects. It is
 built once per worker and bounded by the forecast region. Zero-clearance scalar
 segment checks use the same mask before allocating arrays; ambiguous segments
-call the exact predicate. Exact distance queries are cached by coordinate on
-the same handle; repeated queries return the same value without repeating the
-expanding-radius search.
+call the exact predicate. The native land adapter can evaluate this mask in the
+bridge before crossing into Python; ambiguous segments still call the exact
+predicate. Exact distance queries are cached by coordinate on the same handle;
+repeated queries return the same value without repeating the expanding-radius
+search.
 
 On `gfs_20261014_12z_72h.grib2` (61 by 61 nodes), a 200-query local benchmark
 measured median warm point queries of 0.23 ms versus 0.43 ms on `dev`. The first
