@@ -1,10 +1,14 @@
+#include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -625,6 +629,300 @@ class PythonWeatherProvider final : public wr::WeatherProvider {
   wr::EnvironmentalSource source_;
 };
 
+struct DoubleLength {
+  double hi;
+  double lo;
+};
+
+DoubleLength dlMul(double x, double y) {
+  const double z = x * y;
+  return {z, std::fma(x, y, -z)};
+}
+
+DoubleLength dlFastSum(double a, double b) {
+  const double x = a + b;
+  return {x, (a - x) + b};
+}
+
+// CPython 3.12 math.hypot uses this two-element vector_norm: compensated
+// double-length squaring plus one square-root correction. std::hypot is a
+// different correctly-rounded implementation and differs by one ULP.
+double pythonHypot(double u, double v) {
+  const double maximum = std::max(std::fabs(u), std::fabs(v));
+  if (!std::isfinite(maximum)) return maximum;
+  if (maximum == 0.0) return 0.0;
+  int exponent = 0;
+  std::frexp(maximum, &exponent);
+  if (exponent < -1023) return std::hypot(u, v);
+  const double scale = std::ldexp(1.0, -exponent);
+  double csum = 1.0;
+  double frac1 = 0.0;
+  double frac2 = 0.0;
+  const double values[2] = {u * scale, v * scale};
+  for (const double value : values) {
+    const DoubleLength product = dlMul(value, value);
+    const DoubleLength sum = dlFastSum(csum, product.hi);
+    csum = sum.hi;
+    frac1 += product.lo;
+    frac2 += sum.lo;
+  }
+  double h = std::sqrt(csum - 1.0 + (frac1 + frac2));
+  const DoubleLength product = dlMul(-h, h);
+  const DoubleLength sum = dlFastSum(csum, product.hi);
+  csum = sum.hi;
+  frac1 += product.lo;
+  frac2 += sum.lo;
+  const double correction = csum - 1.0 + (frac1 + frac2);
+  h += correction / (2.0 * h);
+  return h / scale;
+}
+
+// Experimental prepared-array wind provider. It mirrors the established
+// geographic scalar sampler exactly for one earth-relative U/V grid: same
+// bilinear weights and order, same compensated float summation as Python
+// 3.12's sum(), same time-bracket fallback and the same scenario offset/scale.
+// Unsupported grids or multi-source selections must keep the Python provider.
+class PreparedWindProvider final : public wr::WeatherProvider {
+ public:
+  PreparedWindProvider(const py::dict& data, wr::ParameterCoverage coverage,
+                       wr::ParameterCoverage waveCoverage,
+                       std::string identity, wr::EnvironmentalSource source)
+      : coverage_(std::move(coverage)),
+        waveCoverage_(std::move(waveCoverage)),
+        identity_(std::move(identity)),
+        source_(source) {
+    if (!py::cast<bool>(data["geographic"]))
+      throw py::value_error(
+          "native wind prototype supports only geographic grids");
+    periodic_ = py::cast<bool>(data["periodic"]);
+    width_ = py::cast<int>(data["width"]);
+    height_ = py::cast<int>(data["height"]);
+    if (width_ <= 0 || height_ <= 0)
+      throw py::value_error("native wind grid dimensions must be positive");
+    const auto transform = py::cast<std::vector<double>>(data["transform"]);
+    const auto inverse = py::cast<std::vector<double>>(data["inverse"]);
+    if (transform.size() != 6 || inverse.size() != 6)
+      throw py::value_error("native wind transform must have six coefficients");
+    std::copy(transform.begin(), transform.end(), gt_.begin());
+    std::copy(inverse.begin(), inverse.end(), inv_.begin());
+    times_ = py::cast<std::vector<double>>(data["times"]);
+    if (times_.empty())
+      throw py::value_error("native wind needs at least one valid time");
+    if (!std::is_sorted(times_.begin(), times_.end()) ||
+        !std::all_of(times_.begin(), times_.end(),
+                     [](double value) { return std::isfinite(value); }))
+      throw py::value_error("native wind times must be finite and sorted");
+    windOffset_ = data.contains("wind_dir_offset")
+                      ? py::cast<double>(data["wind_dir_offset"])
+                      : 0.0;
+    windFactor_ = data.contains("wind_speed_factor")
+                      ? py::cast<double>(data["wind_speed_factor"])
+                      : 1.0;
+    u_ = copyArray(data["u"], times_.size(), "u");
+    v_ = copyArray(data["v"], times_.size(), "v");
+    const auto expected = times_.size() * static_cast<std::size_t>(width_) *
+                          static_cast<std::size_t>(height_);
+    if (u_.size() != expected || v_.size() != expected)
+      throw py::value_error(
+          "native wind arrays must match times, height and width");
+  }
+
+  [[nodiscard]] wr::ParameterCoverage windCoverage() const override {
+    return coverage_;
+  }
+  [[nodiscard]] wr::ParameterCoverage currentCoverage() const override {
+    return coverage_;
+  }
+  [[nodiscard]] wr::ParameterCoverage waveCoverage() const override {
+    return waveCoverage_;
+  }
+
+  [[nodiscard]] wr::WindSample wind(wr::GeoPoint position,
+                                    wr::TimePoint time) const override {
+    const double stamp = static_cast<double>(seconds(time));
+    auto before = side(stamp, true, position);
+    std::optional<std::pair<std::size_t, std::pair<double, double>>> after;
+    if (before && times_[before->first] == stamp) {
+      after = before;
+    } else {
+      after = side(stamp, false, position);
+    }
+    if (!before && !after) return {};
+    auto chosen = before ? before : after;
+    double u = chosen->second.first;
+    double v = chosen->second.second;
+    if (before && after && times_[after->first] > times_[before->first]) {
+      const double weight = (stamp - times_[before->first]) /
+                            (times_[after->first] - times_[before->first]);
+      u = before->second.first +
+          (after->second.first - before->second.first) * weight;
+      v = before->second.second +
+          (after->second.second - before->second.second) * weight;
+    }
+    const double pi = 3.14159265358979323846;
+    // Match Python's math.degrees(), then the bridge's existing radians
+    // expression, operation order included: (degrees * pi) / 180.
+    double fromDegrees =
+        std::fmod(std::atan2(-u, -v) * (180.0 / pi) + 360.0, 360.0);
+    double speed = pythonHypot(u, v);
+    fromDegrees = std::fmod(fromDegrees + windOffset_, 360.0);
+    if (fromDegrees < 0.0) fromDegrees += 360.0;
+    speed *= windFactor_;
+    const double radians = fromDegrees * pi / 180.0;
+    wr::WindSample sample;
+    sample.available = true;
+    sample.velocity = wr::Vector2{-speed * std::sin(radians) *
+                                      kKnotsPerMetreSecond,
+                                  -speed * std::cos(radians) *
+                                      kKnotsPerMetreSecond};
+    sample.metadata = metadata(time);
+    return sample;
+  }
+
+  [[nodiscard]] wr::CurrentSample current(wr::GeoPoint,
+                                          wr::TimePoint) const override {
+    return {};
+  }
+
+  [[nodiscard]] wr::WaveSample waves(wr::GeoPoint,
+                                     wr::TimePoint) const override {
+    return {};
+  }
+
+  [[nodiscard]] std::string identity() const override { return identity_; }
+
+ private:
+  static std::int64_t seconds(wr::TimePoint time) {
+    return static_cast<std::int64_t>(time.time_since_epoch().count());
+  }
+
+  [[nodiscard]] wr::EnvironmentalSourceMetadata metadata(
+      wr::TimePoint time) const {
+    wr::EnvironmentalSourceMetadata value;
+    value.source = source_;
+    value.datasetIdentity = identity_;
+    value.modelIdentity = identity_;
+    value.sourceTimestamp = time;
+    return value;
+  }
+
+  static void addCompensated(double& total, double& compensation,
+                             double value) {
+    const double next = total + value;
+    if (std::fabs(total) >= std::fabs(value)) {
+      compensation += (total - next) + value;
+    } else {
+      compensation += (value - next) + total;
+    }
+    total = next;
+  }
+
+  static std::vector<double> copyArray(const py::handle& value,
+                                       std::size_t times,
+                                       const char* label) {
+    const auto array =
+        py::cast<py::array_t<double, py::array::c_style |
+                                      py::array::forcecast>>(value);
+    const auto info = array.request();
+    if (info.ndim != 3 || static_cast<std::size_t>(info.shape[0]) != times)
+      throw py::value_error(std::string("native wind ") + label +
+                            " shape must be (times, height, width)");
+    const auto count = static_cast<std::size_t>(info.size);
+    const auto* source = static_cast<const double*>(info.ptr);
+    return std::vector<double>(source, source + count);
+  }
+
+  [[nodiscard]] std::optional<std::pair<double, double>> sampleTime(
+      std::size_t timeIndex, wr::GeoPoint position) const {
+    const double width = static_cast<double>(width_);
+    const double height = static_cast<double>(height_);
+    const double center =
+        gt_[0] + width_ / 2.0 * gt_[1] + height_ / 2.0 * gt_[2];
+    double x = position.longitude +
+               360.0 * std::nearbyint((center - position.longitude) / 360.0);
+    const double y0 = position.latitude;
+    const double newX = inv_[0] + inv_[1] * x + inv_[2] * y0 - 0.5;
+    const double newY = inv_[3] + inv_[4] * x + inv_[5] * y0 - 0.5;
+    x = newX;
+    double y = newY;
+    if (!std::isfinite(x) || !std::isfinite(y)) return std::nullopt;
+    if (periodic_) {
+      x = std::fmod(x, width);
+      if (x < 0.0) x += width;
+    }
+    if (y < -1e-7 || y > height - 1.0 + 1e-7) return std::nullopt;
+    if (!periodic_ && (x < -1e-7 || x > width - 1.0 + 1e-7))
+      return std::nullopt;
+    if (periodic_) {
+      if (x >= width) x = 0.0;
+    } else {
+      x = std::clamp(x, 0.0, width - 1.0);
+    }
+    y = std::clamp(y, 0.0, height - 1.0);
+    const int x0 = static_cast<int>(std::floor(x));
+    const int y0i = static_cast<int>(std::floor(y));
+    const int x1 = periodic_ ? (x0 + 1) % width_
+                             : std::min(x0 + 1, width_ - 1);
+    const int y1 = std::min(y0i + 1, height_ - 1);
+    const double dx = x - x0;
+    const double dy = y - y0i;
+    const std::size_t offset =
+        timeIndex * static_cast<std::size_t>(width_) * height_;
+    double uTotal = 0.0, uCompensation = 0.0;
+    double vTotal = 0.0, vCompensation = 0.0;
+    const auto add = [&](int xx, int yy, double weight) {
+      if (!(weight > 1e-12)) return true;
+      const std::size_t index =
+          offset + static_cast<std::size_t>(yy) * width_ + xx;
+      const double uValue = u_[index];
+      const double vValue = v_[index];
+      if (!std::isfinite(uValue) || !std::isfinite(vValue)) return false;
+      addCompensated(uTotal, uCompensation, uValue * weight);
+      addCompensated(vTotal, vCompensation, vValue * weight);
+      return true;
+    };
+    if (!add(x0, y0i, (1.0 - dx) * (1.0 - dy)) ||
+        !add(x1, y0i, dx * (1.0 - dy)) ||
+        !add(x0, y1, (1.0 - dx) * dy) || !add(x1, y1, dx * dy))
+      return std::nullopt;
+    return std::make_pair(uTotal + uCompensation, vTotal + vCompensation);
+  }
+
+  [[nodiscard]] std::optional<
+      std::pair<std::size_t, std::pair<double, double>>>
+  side(double stamp, bool backward, wr::GeoPoint position) const {
+    if (backward) {
+      for (std::size_t i = times_.size(); i-- > 0;) {
+        if (times_[i] > stamp) continue;
+        if (auto sample = sampleTime(i, position))
+          return std::make_pair(i, *sample);
+      }
+    } else {
+      for (std::size_t i = 0; i < times_.size(); ++i) {
+        if (times_[i] < stamp) continue;
+        if (auto sample = sampleTime(i, position))
+          return std::make_pair(i, *sample);
+      }
+    }
+    return std::nullopt;
+  }
+
+  std::array<double, 6> gt_{};
+  std::array<double, 6> inv_{};
+  std::vector<double> times_;
+  std::vector<double> u_;
+  std::vector<double> v_;
+  int width_ = 0;
+  int height_ = 0;
+  bool periodic_ = false;
+  double windOffset_ = 0.0;
+  double windFactor_ = 1.0;
+  wr::ParameterCoverage coverage_;
+  wr::ParameterCoverage waveCoverage_;
+  std::string identity_;
+  wr::EnvironmentalSource source_;
+};
+
 wr::ParameterCoverage coverageFromDict(const py::dict& value,
                                        const std::string& identity) {
   wr::ParameterCoverage coverage;
@@ -973,7 +1271,8 @@ py::dict runUserBridge(py::function wind, py::function current,
                            const std::string& polarIdentity,
                            const std::string& engine,
                            const py::object& progress,
-                           const py::object& cancelEvent) {
+                           const py::object& cancelEvent,
+                           const py::object& nativeWind) {
   const std::set<std::string> required{
       "start", "destination", "departure_epoch_s", "use_currents",
       "polar_efficiency", "tws_max_kn", "min_sailing_speed_kn",
@@ -1156,10 +1455,19 @@ py::dict runUserBridge(py::function wind, py::function current,
   // still gets the engine's ~1 s cooperative checkpoints.
   request.progress = makeProgressCallback(progress, cancellation, cancelEvent);
   wr::RoutingEnvironment environment;
-  environment.grib = std::make_shared<PythonWeatherProvider>(
-      std::move(wind), std::move(current), std::move(waves),
-      waveFieldsCoverage, windCoverage, providerIdentity,
-      wr::EnvironmentalSource::GribForecast);
+  if (!nativeWind.is_none()) {
+    if (input.useCurrents || input.useWaves)
+      throw py::value_error(
+          "native wind prototype does not support currents or waves");
+    environment.grib = std::make_shared<PreparedWindProvider>(
+        py::cast<py::dict>(nativeWind), windCoverage, waveFieldsCoverage,
+        providerIdentity, wr::EnvironmentalSource::GribForecast);
+  } else {
+    environment.grib = std::make_shared<PythonWeatherProvider>(
+        std::move(wind), std::move(current), std::move(waves),
+        waveFieldsCoverage, windCoverage, providerIdentity,
+        wr::EnvironmentalSource::GribForecast);
+  }
   // A no-zone run keeps the exact shoreline adapter (or open water) of the base
   // revision: no polygon provider is constructed, no zone predicate runs and
   // the land identity is unchanged. Zones are composed only when frozen in.
@@ -1490,7 +1798,8 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
       "fixture; no GUI, forecast acquisition or bundled shoreline data.";
   module.attr("__version__") = SAILWORKS_NATIVE_ROUTING_BRIDGE_VERSION;
 
-  module.def("identity", &identityDict,
+
+module.def("identity", &identityDict,
              "Pinned source identity, versions, licences and capability gaps");
   module.def("synthetic_observables", &observablesDict,
              "Synthetic fixture samples evaluated by the native provider");
@@ -1579,12 +1888,12 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
                 const std::string& polarIdentity,
                 const std::string& engine, py::object waves,
                 py::object waveCoverage, const py::object& progress,
-                const py::object& cancelEvent) {
+                const py::object& cancelEvent, const py::object& nativeWind) {
                return runUserBridge(std::move(wind), std::move(current),
                                     std::move(waves), waveCoverage, coverage,
                                     polar, settings, land, providerIdentity,
                                     polarIdentity, engine, progress,
-                                    cancelEvent);
+                                    cancelEvent, nativeWind);
              },
              py::arg("wind"), py::arg("current"), py::arg("coverage"),
              py::arg("polar"), py::arg("settings"), py::arg("land"),
@@ -1593,6 +1902,7 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
              py::arg("wave_coverage") = py::none(),
              py::arg("progress") = py::none(),
              py::arg("cancel_event") = py::none(),
+             py::arg("native_wind") = py::none(),
              "Run a selected request, including its waypoint chain, through the "
              "native engine; reject unsupported settings rather than "
              "inheriting synthetic fixture defaults. Optional waves returns "

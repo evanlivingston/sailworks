@@ -88,6 +88,12 @@ if(pybind11_FOUND AND Python3_Development.Module_FOUND)
     "${_routing_identity_header}")
   target_link_libraries(sailworks_native_routing
     PRIVATE sailworks_native_routing_core)
+  if(NOT MSVC)
+    # The prepared-array sampler mirrors Python's float operation order. Keep
+    # the compiler from contracting a multiply-add into one FMA, which changes
+    # the last bit of the direction conversion.
+    target_compile_options(sailworks_native_routing PRIVATE -ffp-contract=off)
+  endif()
   set_target_properties(sailworks_native_routing PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/python"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/python"

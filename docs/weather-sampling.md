@@ -93,12 +93,44 @@ routing sample the continuous numerical field at their exact locations.
 ## Performance and validation
 
 Each private handle caches at most six decoded bands and 4096 exact-coordinate
-spatial stencils; coordinates are not quantized. Scalar point queries avoid
-constructing display arrays. Frontier batches sample positions/timestamps in
-arrays using the same weights and source rules, with cancellation checks between
-record groups. Workers retain private GDAL handles. Evicted handles stay alive until the
-cross-file query completes, then close explicitly; idle renderers release their
-remaining cached handles when their last map is forgotten.
+spatial stencils; coordinates are not quantized. Scalar point queries on grids
+at or below roughly 400,000 cells also keep flat Python copies of decoded bands
+in a per-handle 16 MiB cache; larger grids stay on the NumPy scalar path. The
+flat copy is an exact float64 copy and does not change selection, masks, or
+interpolation order. Scalar point queries avoid constructing display arrays.
+
+Frontier batches sample positions/timestamps in arrays using the same weights
+and source rules, with cancellation checks between record groups. Workers
+retain private GDAL handles. Evicted handles stay alive until the cross-file
+query completes, then close explicitly; idle renderers release their remaining
+cached handles when their last map is forgotten.
+
+### Native prepared wind path
+
+When a worker's selected wind is one geographic, earth-relative grid with one
+complete U/V pair per valid time and a prepared payload of at most 64 MiB, the
+worker can hand prepared U/V arrays to the native bridge. The native scalar
+sampler applies the same grid transform, bilinear weights and order, masks,
+time brackets, provenance, scenario offset and speed factor as the Python
+sampler. It reproduces Python 3.12's operation order (compensated `sum()`,
+`math.degrees`, `math.hypot`) and disables implicit FMA contraction so the
+values match exactly. Multiple sources, projected or grid-relative grids,
+split U/V components, currents, waves, and oversized payloads stay on the
+Python sampler. The Python sampler remains the reference and fallback; source
+selection, fallback rules, and interpolation are unchanged.
+
+### Routing shoreline mask
+
+For routing, a worker with a selected forecast region builds a conservative
+0.005-degree touched-cell land mask from the selected high-resolution GSHHS
+layer. A zero-clearance segment whose bounding box, expanded by one cell, is
+entirely unmarked may skip the exact intersection predicate. Any marked cell,
+out-of-region query, point query, clearance query, or distance query still
+uses the exact GSHHS geometry. The mask is a skip test, never a replacement
+coastline check: it cannot accept a segment the exact predicate rejects. It is
+built once per worker and bounded by the forecast region. Exact distance
+queries are cached by coordinate on the same handle; repeated queries return
+the same value without repeating the expanding-radius search.
 
 On `gfs_20261014_12z_72h.grib2` (61 by 61 nodes), a 200-query local benchmark
 measured median warm point queries of 0.23 ms versus 0.43 ms on `dev`. The first
