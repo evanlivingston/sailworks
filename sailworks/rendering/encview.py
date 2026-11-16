@@ -830,8 +830,12 @@ def _mesh_cell(
             marker_scale = 2.0 * task.tolerance if task.tolerance else 1e-9
         mesh = encmesh.build_scene_mesh(
             _ScopedRecords(records),
-            coverage=task.clip_region if task.known else None,
-            clip=True if task.known else None,
+            # Clip to whatever region the plan gave this cell.  Cells without
+            # one are already passed unclipped; the case this changes is a
+            # known cell whose plan carries no coverage, which used to reach
+            # build_scene_mesh as clip=True with coverage=None and raise.
+            coverage=task.clip_region,
+            clip=True if task.clip_region is not None else None,
             stroke_pixels=stroke_pixels,
             projection=task.projection,
             palette=palette,
