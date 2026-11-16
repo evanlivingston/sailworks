@@ -29,6 +29,7 @@ from .mapdatasetup import MapDataSetup
 from sailworks.core.polarfiles import orc_filename
 from sailworks.rendering.style import Style
 from .tables import fit_columns, make_table, make_view
+from .filedialogpaths import remembered_dir, remember_dir
 from .text import qt_text
 
 
@@ -299,9 +300,7 @@ class DataLibrary(QDialog):
         )
         actions.addStretch(1)
         layout.addLayout(actions)
-        self.polar_empty = QLabel(
-            "No catalog yet. Use Update catalog to download it."
-        )
+        self.polar_empty = QLabel("No catalog yet. Use Update catalog to download it.")
         self.polar_empty.setWordWrap(True)
         layout.addWidget(self.polar_empty)
         self.tabs.addTab(page, "Polars")
@@ -419,9 +418,7 @@ class DataLibrary(QDialog):
         index = self.polar_table.currentIndex()
         if not index.isValid():
             return ""
-        item = self.polar_model.item(
-            self.polar_filter.mapToSource(index).row(), 0
-        )
+        item = self.polar_model.item(self.polar_filter.mapToSource(index).row(), 0)
         return item.data(Qt.ItemDataRole.UserRole) if item else ""
 
     def polar_selected(self, *_):
@@ -518,32 +515,49 @@ class DataLibrary(QDialog):
         super().hideEvent(event)
 
     def import_vector(self):
+        settings = getattr(self.controller, "settings", None)
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Import vector chart",
-            "",
+            remembered_dir(settings, "vector-charts"),
             "Vector charts (*.000 *.geojson *.shp *.pbf *.osm);;All files (*)",
         )
         if path:
+            remember_dir(settings, "vector-charts", path)
             self.data.import_chart(path, "vector")
 
     def import_vector_folder(self):
+        settings = getattr(self.controller, "settings", None)
         path = QFileDialog.getExistingDirectory(
-            self, "Import vector chart folder (CM93)"
+            self,
+            "Import vector chart folder (CM93)",
+            remembered_dir(settings, "vector-charts"),
         )
         if path:
+            remember_dir(settings, "vector-charts", path)
             self.data.import_chart(path + "/", "vector")
 
     def import_raster(self):
-        path = QFileDialog.getExistingDirectory(self, "Import raster chart folder")
+        settings = getattr(self.controller, "settings", None)
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "Import raster chart folder",
+            remembered_dir(settings, "raster-charts"),
+        )
         if path:
+            remember_dir(settings, "raster-charts", path)
             self.data.import_chart(path, "raster")
 
     def import_mbtiles(self):
+        settings = getattr(self.controller, "settings", None)
         path, _ = QFileDialog.getOpenFileName(
-            self, "Import offline raster MBTiles", "", "MBTiles charts (*.mbtiles)"
+            self,
+            "Import offline raster MBTiles",
+            remembered_dir(settings, "mbtiles"),
+            "MBTiles charts (*.mbtiles)",
         )
         if path:
+            remember_dir(settings, "mbtiles", path)
             self.data.import_chart(path, "mbtiles")
 
     def toggle_chart(self, item):

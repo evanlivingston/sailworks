@@ -29,6 +29,7 @@ from sailworks.core.race import (
 )
 from sailworks.core.geo.track import Track
 from sailworks.core.timecontrol import utc_to_wall, wall_to_utc
+from .filedialogpaths import remembered_dir, remember_dir
 from .tables import make_table
 
 from sailworks.qt.ybracedialog import YBRaceDialog
@@ -155,11 +156,16 @@ class RacesPanel(QWidget):
         if race is not None:
             self._add_race(race)
             return
+        settings = getattr(self.controller, "settings", None)
         path, _ = QFileDialog.getOpenFileName(
-            self, "Import local race JSON", "", "Race data (*.json);;All files (*)"
+            self,
+            "Import local race JSON",
+            remembered_dir(settings, "races"),
+            "Race data (*.json);;All files (*)",
         )
         if not path:
             return
+        remember_dir(settings, "races", path)
         try:
             race = parse_race(path)
         except Exception as exc:

@@ -24,6 +24,7 @@ from sailworks.core.w2kapi import DEFAULT_HOST, W2KClient, W2KError, base_url
 from sailworks.core.w2ksync import ACTIVE, NEW, PRESENT, W2KSync, W2KSyncCancelled
 
 from .backgroundtask import BackgroundTask
+from .filedialogpaths import remembered_dir, remember_dir
 
 SERVICE = "org.sailworks.ActisenseW2K"
 _SYNC_LOCK = threading.Lock()
@@ -206,11 +207,15 @@ class W2KImportDialog(QDialog):
         self.task.start("Syncing", self._locked(operation))
 
     def use_local_copy(self):
+        settings = getattr(self.controller, "settings", None)
         folder = QFileDialog.getExistingDirectory(
-            self, "Choose the copied W2K-1 log folder"
+            self,
+            "Choose the copied W2K-1 log folder",
+            remembered_dir(settings, "w2k"),
         )
         if not folder:
             return
+        remember_dir(settings, "w2k", folder)
         try:
             client, sync = self._build()
         except ValueError as exc:

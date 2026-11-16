@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from sailworks.core.loglibrary import LOG_SUFFIXES
 from .loginfo import LogInfoDialog
 from .tables import make_table
+from .filedialogpaths import remembered_dir, remember_dir
 from .theme import MenuBuilder, ThemedMenu
 
 LOG_FILTER = "Instrument logs (*.log *.nmea *.txt *.ebl *.EBL);;All files (*)"
@@ -241,18 +242,27 @@ class LogLibraryDialog(QDialog):
         return True
 
     def import_logs(self):
+        settings = getattr(self.controller, "settings", None)
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Import instrument logs", "", LOG_FILTER
+            self,
+            "Import instrument logs",
+            remembered_dir(settings, "logs"),
+            LOG_FILTER,
         )
         if paths:
+            remember_dir(settings, "logs", paths[0])
             self.controller.load_paths(paths)
 
     def import_folder(self):
+        settings = getattr(self.controller, "settings", None)
         folder = QFileDialog.getExistingDirectory(
-            self, "Import a folder of instrument logs"
+            self,
+            "Import a folder of instrument logs",
+            remembered_dir(settings, "logs"),
         )
         if not folder:
             return
+        remember_dir(settings, "logs", folder)
         root = Path(folder)
         paths = sorted(
             str(path)

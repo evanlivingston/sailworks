@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
 )
 
 from sailworks import build_label
+from sailworks.qt.filedialogpaths import remembered_dir, remember_dir
 from sailworks.core.timecontrol import (
     TimeControl,
     naive_wall_time,
@@ -2218,11 +2219,16 @@ class PreviewWindow(QMainWindow):
         self._show_saved_routing_route(routes[index])
 
     def show_native_routing_result(self):
+        settings = getattr(self.controller, "settings", None)
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open native routing result", "", "Routing result (*.json)"
+            self,
+            "Open native routing result",
+            remembered_dir(settings, "routing-results"),
+            "Routing result (*.json)",
         )
         if not path:
             return
+        remember_dir(settings, "routing-results", path)
         try:
             model = self.controller.routing.show_native_result_file(path)
         except (OSError, ValueError) as exc:
