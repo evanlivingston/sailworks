@@ -84,57 +84,7 @@ def test_app_constructs_enc_only_viewport_by_default(presenter, monkeypatch):
     kwargs = factory.call_args.kwargs
     assert kwargs["chart_layer"] and kwargs["enc_chart_layer"] and kwargs["enc_only"]
     assert kwargs["chart_palette"] == "dark"
-    # The GPU ENC scene is opt-in: the default construction is the raster path.
-    assert kwargs["enc_scene_layer"] is False
     assert presenter.enc_active
-
-
-def test_the_scene_setting_reaches_the_viewport(presenter, monkeypatch):
-    presenter.canvas.controller.settings.chartENCScene = True
-    factory = Mock()
-    monkeypatch.setattr(weatherpresenter, "_viewport_widget_class", lambda: factory)
-    monkeypatch.setattr(presenter, "_model", Mock(return_value=Mock()))
-
-    presenter._create(None)
-
-    kwargs = factory.call_args.kwargs
-    assert kwargs["enc_scene_layer"] is True
-    # The raster source is still requested; the viewport's mode resolution is
-    # what turns it off, so the scene supersedes it instead of drawing twice.
-    assert kwargs["enc_chart_layer"]
-
-
-def test_an_unset_scene_setting_leaves_the_raster_path_unchanged(
-    presenter, monkeypatch
-):
-    # No ``chartENCScene`` attribute at all: what an older settings object
-    # looks like before the key exists.
-    factory = Mock()
-    monkeypatch.setattr(weatherpresenter, "_viewport_widget_class", lambda: factory)
-    monkeypatch.setattr(presenter, "_model", Mock(return_value=Mock()))
-
-    presenter._create(None)
-
-    kwargs = factory.call_args.kwargs
-    assert kwargs["enc_scene_layer"] is False
-    assert kwargs["enc_chart_layer"]
-    assert kwargs["enc_only"]
-
-
-def test_enc_scene_setting_defaults_off_and_round_trips(tmp_path, monkeypatch):
-    from sailworks.core import storage
-    from sailworks.core.settings import SettingsManager
-
-    settings_dir = tmp_path / "config"
-    settings_dir.mkdir()
-    monkeypatch.setattr(storage, "DATA_DIR", str(settings_dir))
-
-    settings = SettingsManager()
-    assert settings["chartENCScene"] is False
-    settings.chartENCScene = True
-    assert settings["chartENCScene"] is True
-    # A restart reads the same file, so the opt-in survives it.
-    assert SettingsManager()["chartENCScene"] is True
 
 
 def test_desktop_map_uses_world_chart_layer_with_enc(presenter, monkeypatch):

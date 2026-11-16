@@ -148,7 +148,4 @@ build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-markers = [
-    "network: opt-in tests downloading live forecasts (GWR_NETWORK_TESTS=1)",
-    "qt: PySide6/QSG tests that must run in a separate pytest process because combined-process runs hit a native SIGTRAP",
-]
+markers = ["network: opt-in tests downloading live forecasts (GWR_NETWORK_TESTS=1)"]
