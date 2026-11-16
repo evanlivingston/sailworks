@@ -15,9 +15,11 @@ not GPU time, and they are never thresholded.
 """
 
 import argparse
+import faulthandler
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
 import socket
 import sys
@@ -1349,6 +1351,31 @@ def _camera_scale(camera):
     return MapViewport(ChartCamera(camera, 1), MARGIN, lambda: None).get_scale()
 
 
+def _arm_watchdog(seconds):
+    """Hard-exit if the gate wedges, dumping every stack first.
+
+    The GUI readback can block inside Qt's C++ event loop, where an orderly
+    shutdown would hang as well, so this exits the process directly.  The
+    timer is a daemon and dies with the interpreter, so it needs no explicit
+    disarm on the success path, but callers should cancel it anyway.
+    """
+    from threading import Timer
+
+    def fire():
+        sys.stderr.write(
+            f"WATCHDOG: exceeded {seconds:.0f}s, dumping stacks and exiting\n"
+        )
+        sys.stderr.flush()
+        faulthandler.dump_traceback(all_threads=True)
+        sys.stderr.flush()
+        os._exit(1)
+
+    timer = Timer(seconds, fire)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--snapshot", required=True, type=Path)
@@ -1357,15 +1384,28 @@ def main(argv=None):
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--frames", type=int, default=10)
     parser.add_argument("--experience-only", action="store_true")
-    args = parser.parse_args(argv)
-    report = run(
-        args.snapshot,
-        args.output,
-        tuple(name for name in args.scenarios.split(",") if name),
-        args.repeats,
-        args.frames,
-        args.experience_only,
+    parser.add_argument(
+        "--watchdog-seconds",
+        type=float,
+        default=None,
+        help="hard-exit deadline; defaults to the gate budget plus slack",
     )
+    args = parser.parse_args(argv)
+    deadline = args.watchdog_seconds
+    if deadline is None:
+        deadline = BUDGET_S + 25
+    watchdog = _arm_watchdog(deadline)
+    try:
+        report = run(
+            args.snapshot,
+            args.output,
+            tuple(name for name in args.scenarios.split(",") if name),
+            args.repeats,
+            args.frames,
+            args.experience_only,
+        )
+    finally:
+        watchdog.cancel()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, default=str))
     return 0

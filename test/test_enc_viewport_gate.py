@@ -831,3 +831,34 @@ def test_fidelity_requires_equal_candidate_and_reference_shapes():
             np.zeros((5, 4, 4), dtype=np.uint8),
             np.zeros((4, 4, 4), dtype=np.uint8),
         )
+
+
+def test_watchdog_dumps_stacks_and_exits_nonzero():
+    """A wedged readback must fail loudly instead of hanging the process."""
+    import subprocess
+    import sys
+    import textwrap
+
+    if not sys.executable:
+        pytest.skip("no interpreter to spawn")
+    path = Path(__file__).resolve().parents[1] / "tools/check_enc_viewport.py"
+    script = textwrap.dedent("""
+        import importlib.util, sys, time
+        from pathlib import Path
+
+        spec = importlib.util.spec_from_file_location(
+            "enc_gate_helpers", Path(sys.argv[1])
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module._arm_watchdog(1)
+        time.sleep(60)
+        """)
+    proc = subprocess.run(
+        [sys.executable, "-c", script, str(path)],
+        capture_output=True,
+        text=True,
+        timeout=25,
+    )
+    assert proc.returncode != 0, proc.stderr
+    assert "WATCHDOG:" in proc.stderr, proc.stderr
