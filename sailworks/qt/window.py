@@ -68,6 +68,7 @@ from sailworks.core.scene import (
 )
 from sailworks.common import resource_path
 from .theme import MenuBuilder, section_label, symbol_icon, ThemedMenu
+from .paneloverlay import PANEL_MAX_WIDTH, PANEL_MIN_WIDTH, PanelOverlay
 from .dropdown import Dropdown
 from .scrollchrome import style_scrollarea
 from .collapsiblepanel import (
@@ -479,8 +480,10 @@ class PreviewWindow(QMainWindow):
         left_stack = PanelStack(self)
         right_stack = PanelStack(self)
         for stack in (left_stack, right_stack):
-            stack.setMinimumWidth(300)
-            stack.setMaximumWidth(560)
+            # The overlay owns the open width; minimumWidth stays 0 so a
+            # closing animation can shrink the stack all the way to zero.
+            stack.setMinimumWidth(0)
+            stack.setMaximumWidth(PANEL_MAX_WIDTH)
         left_stack.set_peer(right_stack)
         right_stack.set_peer(left_stack)
         left_stack.changed.connect(self._panel_layout_changed)
@@ -518,24 +521,16 @@ class PreviewWindow(QMainWindow):
             )
             self.panel_actions[name] = action
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setObjectName("panel-stack-splitter")
-        splitter.setHandleWidth(3)
-        splitter.setChildrenCollapsible(False)
-        splitter.addWidget(left_stack)
-        splitter.addWidget(self.views)
-        splitter.addWidget(right_stack)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 0)
-        splitter.setSizes([480, 520, 380])
-        self.setCentralWidget(splitter)
-        self._panel_splitter = splitter
-        self._watch_drawer_flags(splitter)
         self._panel_stacks = {"left": left_stack, "right": right_stack}
         self._panel_stack_width = {"left": 480, "right": 380}
         self._panel_stack_open = {"left": True, "right": True}
         self._panel_stack_animation = None
+        overlay = PanelOverlay(self.views, left_stack, right_stack, self)
+        overlay.set_side_width("left", self._panel_stack_width["left"])
+        overlay.set_side_width("right", self._panel_stack_width["right"])
+        self._panel_overlay = overlay
+        self.setCentralWidget(overlay)
+        self._watch_drawer_flags(overlay)
         self.panel_stack = right_stack
         self._default_panel_state = self.panel_state()
         self._position_drawer_flags()
@@ -621,7 +616,6 @@ class PreviewWindow(QMainWindow):
                     }
                 )
         return {
-            "splitter": self._panel_splitter.sizes(),
             "open": dict(self._panel_stack_open),
             "width": dict(self._panel_stack_width),
             "panels": panels,
@@ -664,27 +658,42 @@ class PreviewWindow(QMainWindow):
                     action.setChecked(self._panel_visible(name))
 
         sizes = state.get("splitter")
+        legacy = None
         if (
             isinstance(sizes, list)
             and len(sizes) == 3
             and all(isinstance(value, int) and value >= 0 for value in sizes)
         ):
-            self._panel_splitter.setSizes(sizes)
+            legacy = {"left": sizes[0], "right": sizes[2]}
         open_states = state.get("open")
         if isinstance(open_states, dict):
             self._panel_stack_open.update(
                 {side: bool(open_states.get(side, True)) for side in ("left", "right")}
             )
         widths = state.get("width")
+        applied = dict(self._panel_stack_width)
         if isinstance(widths, dict):
             for side in ("left", "right"):
                 value = widths.get(side)
                 if isinstance(value, int) and value > 0:
-                    self._panel_stack_width[side] = value
-        for side, stack in self._panel_stacks.items():
-            opened = self._panel_stack_open[side]
-            stack.setMinimumWidth(300 if opened else 0)
-            stack.setVisible(opened)
+                    applied[side] = value
+        elif legacy is not None:
+            # Workspace files written before the overlay keep only splitter
+            # sizes; the outer panes carry the panel widths.
+            for side in ("left", "right"):
+                if legacy[side] > 0:
+                    applied[side] = legacy[side]
+        overlay = getattr(self, "_panel_overlay", None)
+        for side in ("left", "right"):
+            self._panel_stack_width[side] = applied[side]
+            stack = self._panel_stacks.get(side)
+            if stack is not None:
+                stack.setMinimumWidth(0)
+            if overlay is not None:
+                overlay.set_side_open(side, self._panel_stack_open[side])
+                overlay.set_side_width(side, applied[side])
+            elif stack is not None:
+                stack.setVisible(self._panel_stack_open[side])
         self._position_drawer_flags()
 
     def _show_startup_status(self, controller):
@@ -756,17 +765,31 @@ class PreviewWindow(QMainWindow):
         self._position_drawer_flags()
         QTimer.singleShot(0, self._position_drawer_flags)
 
-    def _watch_drawer_flags(self, splitter):
-        """Keep the drawer tabs on the panel edges as the splitter is dragged."""
-        splitter.splitterMoved.connect(self._position_drawer_flags)
+    def _watch_drawer_flags(self, overlay):
+        """Keep the drawer tabs on the panel edges as their widths change."""
+        overlay.widths_changed.connect(self._position_drawer_flags)
+        overlay.widths_changed.connect(self._panel_layout_changed)
+        for side, handle in overlay.handles.items():
+            handle.resized.connect(
+                lambda width, side=side: self._panel_width_dragged(side, width)
+            )
+
+    def _panel_width_dragged(self, side, width):
+        self._panel_stack_width[side] = width
+        self._position_drawer_flags()
 
     def _position_drawer_flags(self, *_):
         if not self.drawer_flags:
             return
-        stacks = getattr(self, "_panel_stacks", {})
         states = getattr(self, "_panel_stack_open", {})
-        left_stack = stacks.get("left")
-        right_stack = stacks.get("right")
+        widths = getattr(self, "_panel_stack_width", {})
+        overlay = getattr(self, "_panel_overlay", None)
+
+        def _extent(side):
+            if overlay is not None:
+                return overlay.side_width(side)
+            return widths.get(side, 0)
+
         left_open = states.get("left", True)
         right_open = states.get("right", True)
         origin = self.views.mapTo(self, self.views.rect().topLeft())
@@ -777,11 +800,11 @@ class PreviewWindow(QMainWindow):
             left.setToolTip(
                 "Collapse left panels" if left_open else "Expand left panels"
             )
-            if left_stack is not None and left_stack.isVisible():
-                x = (
-                    left_stack.mapTo(self, left_stack.rect().topLeft()).x()
-                    + left_stack.width()
-                )
+            left_visible = (
+                overlay.is_open("left") if overlay is not None else left_open
+            ) and _extent("left") > 0
+            if left_visible:
+                x = origin.x() + _extent("left")
             else:
                 x = origin.x()
             left.setGeometry(max(0, min(self.width() - 18, x)), top, 18, 64)
@@ -793,8 +816,11 @@ class PreviewWindow(QMainWindow):
             right.setToolTip(
                 "Collapse right panels" if right_open else "Expand right panels"
             )
-            if right_stack is not None and right_stack.isVisible():
-                x = right_stack.mapTo(self, right_stack.rect().topLeft()).x() - 18
+            right_visible = (
+                overlay.is_open("right") if overlay is not None else right_open
+            ) and _extent("right") > 0
+            if right_visible:
+                x = origin.x() + self.views.width() - 18 - _extent("right")
             else:
                 x = origin.x() + self.views.width() - 18
             right.setGeometry(max(0, min(self.width() - 18, x)), top, 18, 64)
@@ -815,106 +841,68 @@ class PreviewWindow(QMainWindow):
             canvas.set_drawer_state(False, False, force=True)
             canvas.set_drawer_tabs_visible(False)
 
-    def _freeze_panel_animation_view(self):
-        """Pause the visible map while a panel slide re-lays out its viewport."""
-        if getattr(self, "_panel_animation_frozen_view", None) is not None:
-            return
-        view = self.views.currentWidget()
-        if view is None:
-            return
-        if view is not getattr(self, "map", None) and view is not getattr(
-            self, "log_map", None
-        ):
-            return
-        view.setUpdatesEnabled(False)
-        self._panel_animation_frozen_view = view
-
-    def _thaw_panel_animation_view(self):
-        view = getattr(self, "_panel_animation_frozen_view", None)
-        self._panel_animation_frozen_view = None
-        if view is None:
-            return
-        try:
-            view.setUpdatesEnabled(True)
-            view.update()
-        except RuntimeError:
-            # The underlying C++ object was deleted while frozen.
-            pass
-
     def _toggle_drawer(self, side):
         self._toggle_panel_stack(side)
 
     def _toggle_panel_stack(self, side):
         stack = self._panel_stacks.get(side)
-        splitter = getattr(self, "_panel_splitter", None)
-        if stack is None or splitter is None:
+        overlay = getattr(self, "_panel_overlay", None)
+        if stack is None or overlay is None:
             return
         if self._panel_stack_animation is not None:
             self._panel_stack_animation.stop()
             self._panel_stack_animation.deleteLater()
             self._panel_stack_animation = None
-            self._thaw_panel_animation_view()
         opening = not self._panel_stack_open[side]
-        self._panel_stack_open[side] = opening
-        sizes = splitter.sizes()
-        total = max(1, sum(sizes))
         if opening:
-            stack.show()
-            stack.setMinimumWidth(0)
-            # show() restores the remembered width before the first animation
-            # tick, so reapply the closed-start layout to avoid a one-frame flash.
-            splitter.setSizes(sizes)
-            width = max(300, min(self._panel_stack_width.get(side, 300), total - 300))
-            if side == "left":
-                target = [width, max(0, total - width - sizes[2]), sizes[2]]
-            else:
-                target = [sizes[0], max(0, total - sizes[0] - width), width]
+            start = 0
+            target = overlay.clamp_side_width(
+                side, self._panel_stack_width.get(side, PANEL_MIN_WIDTH)
+            )
+            self._panel_stack_open[side] = True
+            overlay.set_side_open(side, True)
+            # Start the slide at zero so the recalled width cannot flash.
+            overlay.set_side_width(side, 0, clamp=False)
         else:
-            self._panel_stack_width[side] = sizes[0] if side == "left" else sizes[2]
-            stack.setMinimumWidth(0)
-            if side == "left":
-                target = [0, max(0, total - sizes[2]), sizes[2]]
-            else:
-                target = [sizes[0], max(0, total - sizes[0]), 0]
+            start = max(0, stack.width())
+            target = 0
+            self._panel_stack_open[side] = False
         animation = QVariantAnimation(self)
         animation.setStartValue(0.0)
         animation.setEndValue(1.0)
         animation.setDuration(PANEL_ANIMATION_MS)
         animation.valueChanged.connect(
-            lambda progress: self._animate_panel_stack(sizes, target, progress)
+            lambda progress: self._animate_panel_stack(side, start, target, progress)
         )
         animation.finished.connect(
             lambda: self._finish_panel_stack_toggle(side, opening, animation)
         )
         self._panel_stack_animation = animation
-        self._freeze_panel_animation_view()
         animation.start()
         self._position_drawer_flags()
 
-    def _animate_panel_stack(self, start, target, progress):
-        eased = blender_panel_ease(progress)
-        sizes = [
-            round(start[index] + (target[index] - start[index]) * eased)
-            for index in range(3)
-        ]
-        self._panel_splitter.setSizes(sizes)
+    def _animate_panel_stack(self, side, start, target, progress):
+        width = round(start + (target - start) * blender_panel_ease(progress))
+        overlay = getattr(self, "_panel_overlay", None)
+        if overlay is not None:
+            overlay.set_side_width(side, width, clamp=False)
         self._position_drawer_flags()
 
     def _finish_panel_stack_toggle(self, side, opening, animation):
         if self._panel_stack_animation is animation:
             self._panel_stack_animation = None
         animation.deleteLater()
-        # Unfreeze before repositioning so the final frame paints once.
-        self._thaw_panel_animation_view()
-        stack = self._panel_stacks.get(side)
-        if stack is None:
-            return
-        if opening:
-            stack.setMinimumWidth(300)
-            stack.show()
-        else:
-            stack.hide()
-            stack.setMinimumWidth(0)
+        overlay = getattr(self, "_panel_overlay", None)
+        if overlay is not None:
+            if opening:
+                width = overlay.clamp_side_width(
+                    side, self._panel_stack_width.get(side, PANEL_MIN_WIDTH)
+                )
+                overlay.set_side_open(side, True)
+                overlay.set_side_width(side, width)
+            else:
+                overlay.set_side_width(side, 0, clamp=False)
+                overlay.set_side_open(side, False)
         self._position_drawer_flags()
         QTimer.singleShot(0, self._position_drawer_flags)
 
