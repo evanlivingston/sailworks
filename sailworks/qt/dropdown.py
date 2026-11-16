@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QSizePolicy,
     QStyle,
+    QStyleOptionButton,
     QStyledItemDelegate,
     QWidget,
 )
@@ -313,6 +314,26 @@ class FieldRow(QWidget):
             self._label.setFixedWidth(label_width)
 
 
+class _ElidedLabel(QLabel):
+    """Right-aligned row label that elides instead of clipping its text.
+
+    A label column is fixed, so a long label must shorten the way the painted
+    labels on ``Dropdown`` and ``Slider`` do. Clipping would hide the start of
+    the text, which is the readable part.
+    """
+
+    def paintEvent(self, event):  # noqa: N802 - Qt virtual method name
+        painter = QPainter(self)
+        painter.setPen(self.palette().color(self.foregroundRole()))
+        painter.drawText(
+            self.rect(),
+            int(self.alignment()),
+            self.fontMetrics().elidedText(
+                self.text(), Qt.TextElideMode.ElideRight, max(0, self.width())
+            ),
+        )
+
+
 class ToggleFieldRow(QWidget):
     """Blender-style property row: label, optional checkbox, then a field.
 
@@ -322,6 +343,11 @@ class ToggleFieldRow(QWidget):
     disable behaviour: a row with a checkbox starts with its field disabled
     and enables it while the checkbox is checked. ``checked_changed`` relays
     that state instead of letting callers wire the checkbox themselves.
+
+    ``field=None`` builds a boolean row: a visible label and a text-less
+    checkbox in the shared control column, with no field to enable. It keeps
+    the label column of every other row, so a plain boolean is aligned with
+    the labelled fields around it.
     """
 
     checked_changed = Signal(bool)
@@ -330,10 +356,11 @@ class ToggleFieldRow(QWidget):
         super().__init__(parent)
         self._field = field
         self._checkbox = None
+        self._column_gutter = 0
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(ROW_SPACING)
-        self._label = QLabel(label)
+        self._label = _ElidedLabel(label)
         self._label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
@@ -350,8 +377,9 @@ class ToggleFieldRow(QWidget):
             if checkbox is None:
                 checkbox = QCheckBox(slot)
             if isinstance(checkbox, QCheckBox) and not checkbox.text():
-                if not checkbox.accessibleName():
-                    checkbox.setAccessibleName(f"Enable {label}" if label else "Enable")
+                if not checkbox.accessibleName() and label:
+                    # The label is visible, so it is also the checkbox's name.
+                    checkbox.setAccessibleName(label)
             checkbox.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             slot_layout.addWidget(checkbox, 0, Qt.AlignmentFlag.AlignVCenter)
             self._checkbox = checkbox
@@ -359,6 +387,12 @@ class ToggleFieldRow(QWidget):
         if field is not None:
             field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             layout.addWidget(field)
+        elif self._checkbox is not None:
+            # A boolean row has nothing to the right of the checkbox. The
+            # spacer absorbs the leftover width so the layout keeps the label
+            # at its column instead of stretching it.
+            layout.addStretch(1)
+            self.setMinimumHeight(self._labelled_checkbox_height(label))
         if self._checkbox is not None:
             self._checkbox.toggled.connect(self._toggle_changed)
             if field is not None:
@@ -369,8 +403,43 @@ class ToggleFieldRow(QWidget):
     def checkbox(self):
         return self._checkbox
 
+    def _labelled_checkbox_height(self, label):
+        """Height a checkbox takes with ``label`` beside its indicator.
+
+        A boolean row used to be a text-bearing ``QCheckBox``. Keeping that
+        height means swapping in a labelled, text-less row does not reflow
+        the form around it.
+        """
+        option = QStyleOptionButton()
+        option.initFrom(self._checkbox)
+        option.text = label
+        metrics = self._checkbox.fontMetrics()
+        contents = QSize(metrics.horizontalAdvance(label), metrics.height())
+        return (
+            self._checkbox.style()
+            .sizeFromContents(
+                QStyle.ContentsType.CT_CheckBox, option, contents, self._checkbox
+            )
+            .height()
+        )
+
     def field(self):
         return self._field
+
+    def set_column_gutter(self, pixels):
+        """Reserve ``pixels`` at the row's right edge for a trailing widget.
+
+        Same contract as :meth:`Dropdown.set_column_gutter`: the label and
+        control columns come from the full row width, so a row that ends in
+        an info button keeps the same column edges as a row without one.
+        """
+        gutter = max(0, int(pixels))
+        if gutter != self._column_gutter:
+            self._column_gutter = gutter
+            self._align_columns()
+
+    def column_gutter(self):
+        return self._column_gutter
 
     def is_checked(self):
         return self._checkbox is not None and self._checkbox.isChecked()
@@ -397,14 +466,20 @@ class ToggleFieldRow(QWidget):
 
     def resizeEvent(self, event):  # noqa: N802 - Qt virtual method name
         super().resizeEvent(event)
-        if self._field is None:
-            return
-        width = self.width()
+        self._align_columns()
+
+    def _align_columns(self):
+        """Pin the label (and field) to the shared column model.
+
+        Runs for boolean rows too: with no field, only the label needs its
+        width fixed so the checkbox keeps the control column.
+        """
+        width = self.width() + self._column_gutter
         toggle_slot = TOGGLE_SLOT if self._checkbox is not None else 0
         label_width, _control_left, field_width = field_columns(
             width, toggle_slot=toggle_slot
         )
-        if self._field.width() != field_width:
-            self._field.setFixedWidth(field_width)
         if self._label.width() != label_width:
             self._label.setFixedWidth(label_width)
+        if self._field is not None and self._field.width() != field_width:
+            self._field.setFixedWidth(field_width)

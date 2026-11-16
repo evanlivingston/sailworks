@@ -36,6 +36,72 @@ def test_row_orders_label_then_checkbox_column_then_field():
     assert plain_layout.itemAt(1).widget() is plain_field
 
 
+def test_boolean_row_uses_the_shared_columns_and_has_no_field():
+    application = app()
+    boolean = ToggleFieldRow("Check coastlines")
+    labelled = ToggleFieldRow("Wind limit", QLineEdit())
+    for row in (boolean, labelled):
+        row.resize(400, 24)
+        row.show()
+    application.processEvents()
+    for row in (boolean, labelled):
+        row.layout().activate()
+
+    def label_right(row):
+        label = row.layout().itemAt(0).widget()
+        return label.mapTo(row, QPoint(label.width(), 0)).x()
+
+    def control_left(row):
+        control = row.checkbox() if row.checkbox() is not None else row.field()
+        return control.mapTo(row, QPoint(0, 0)).x()
+
+    assert boolean.field() is None
+    assert isinstance(boolean.checkbox(), QCheckBox)
+    # The label is visible, so the checkbox carries it as its name only.
+    assert boolean.checkbox().text() == ""
+    assert boolean.checkbox().accessibleName() == "Check coastlines"
+
+    control = round(400 * (1.0 - FIELD_FRACTION))
+    assert label_right(boolean) == control - ROW_SPACING
+    assert control_left(boolean) == control
+    # Alignment is the labelled row's, not a flush-left standalone checkbox.
+    assert label_right(boolean) == label_right(labelled)
+    assert control_left(boolean) == control_left(labelled)
+
+    # No field widget joins the layout: label, checkbox slot, then a spacer.
+    assert boolean.findChildren(QLineEdit) == []
+    assert boolean.findChildren(Slider) == []
+
+    seen = []
+    boolean.checked_changed.connect(seen.append)
+    boolean.set_checked(True)
+    assert seen == [True]
+    assert boolean.is_checked()
+
+
+def test_boolean_row_keeps_its_columns_before_an_info_button():
+    application = app()
+    plain = ToggleFieldRow("Check coastlines")
+    with_button = ToggleFieldRow("Check coastlines")
+    plain.resize(500, 24)
+    with_button.resize(478, 24)
+    with_button.set_column_gutter(22)
+    for row in (plain, with_button):
+        row.show()
+        row.layout().activate()
+    application.processEvents()
+
+    def label_right(row):
+        label = row.layout().itemAt(0).widget()
+        return label.mapTo(row, QPoint(label.width(), 0)).x()
+
+    def control_left(row):
+        return row.checkbox().mapTo(row, QPoint(0, 0)).x()
+
+    assert label_right(with_button) == label_right(plain)
+    assert control_left(with_button) == control_left(plain)
+
+
 def test_rows_share_label_right_edge_and_control_left_edge():
     application = app()
     toggled = ToggleFieldRow("Wind limit", QLineEdit())
@@ -91,7 +157,7 @@ def test_row_checkbox_starts_disabled_and_reports_each_change_once():
     checkbox = row.checkbox()
     assert isinstance(checkbox, QCheckBox)
     assert checkbox.text() == ""
-    assert checkbox.accessibleName() == "Enable Wind limit"
+    assert checkbox.accessibleName() == "Wind limit"
     assert not field.isEnabled()
     assert not row.is_checked()
 
@@ -221,7 +287,7 @@ def test_compare_page_builds_one_toggle_row_per_axis(qtbot, monkeypatch, tmp_pat
     for checkbox, values in panel.comparison_axes.values():
         assert checkbox is not None
         assert checkbox.text() == ""
-        assert checkbox.accessibleName().startswith("Enable ")
+        assert checkbox.accessibleName()
         assert not values.isEnabled()
         checkbox.setChecked(True)
         assert values.isEnabled()

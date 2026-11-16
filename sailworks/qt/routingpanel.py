@@ -267,9 +267,9 @@ class RoutingPanel(QWidget):
         self.start_mode.currentIndexChanged.connect(self._plan_changed)
         form.addRow(self.destination)
         form.addRow(self.start_mode)
-        self.coastlines = QCheckBox("Check coastlines")
+        self.coastlines = QCheckBox()
         self.coastlines.setChecked(True)
-        form.addRow(self.coastlines)
+        form.addRow(ToggleFieldRow("Check coastlines", checkbox=self.coastlines))
         self.coastline_clearance = Slider("Keep off coast")
         self.coastline_clearance.setDecimals(1)
         self.coastline_clearance.setRange(0, 100)
@@ -338,22 +338,30 @@ class RoutingPanel(QWidget):
         self.safety_form.setContentsMargins(0, 0, 0, 0)
         self.safety_form.setHorizontalSpacing(0)
         self.safety_form.addRow(section_label("Routing limits"))
-        self.limit_wind = QCheckBox("Limit maximum true wind")
+        self.limit_wind = QCheckBox()
         self.limit_wind.setAccessibleDescription(SAFETY_HELP["limit_wind"])
         self.maximum_wind = self._speed_control(30, 100, "Maximum wind")
         self.maximum_wind.setAccessibleDescription(SAFETY_HELP["limit_wind"])
         self.safety_form.addRow(
-            self._row_with_info(self.limit_wind, SAFETY_HELP["limit_wind"])
+            self._row_with_info(
+                ToggleFieldRow("Limit maximum true wind", checkbox=self.limit_wind),
+                SAFETY_HELP["limit_wind"],
+            )
         )
         self.safety_form.addRow(self.maximum_wind)
-        self.motor_fallback = QCheckBox("Use motor below sailing speed")
+        self.motor_fallback = QCheckBox()
         self.motor_fallback.setAccessibleDescription(SAFETY_HELP["motor_fallback"])
         self.minimum_sailing_speed = self._speed_control(3, 30, "Sailing speed")
         self.minimum_sailing_speed.setAccessibleDescription(
             SAFETY_HELP["motor_fallback"]
         )
         self.safety_form.addRow(
-            self._row_with_info(self.motor_fallback, SAFETY_HELP["motor_fallback"])
+            self._row_with_info(
+                ToggleFieldRow(
+                    "Use motor below sailing speed", checkbox=self.motor_fallback
+                ),
+                SAFETY_HELP["motor_fallback"],
+            )
         )
         self.safety_form.addRow(self.minimum_sailing_speed)
         self.motor_speed = self._speed_control(5, 30, "Motoring speed")
@@ -361,10 +369,15 @@ class RoutingPanel(QWidget):
         self.safety_form.addRow(
             self._row_with_info(self.motor_speed, SAFETY_HELP["motor_speed"])
         )
-        self.wave_proxy = QCheckBox("Wind-based speed reduction (wave proxy)")
+        self.wave_proxy = QCheckBox()
         self.wave_proxy.setAccessibleDescription(SAFETY_HELP["wave_proxy"])
         self.safety_form.addRow(
-            self._row_with_info(self.wave_proxy, SAFETY_HELP["wave_proxy"])
+            self._row_with_info(
+                ToggleFieldRow(
+                    "Wind-based speed reduction (wave proxy)", checkbox=self.wave_proxy
+                ),
+                SAFETY_HELP["wave_proxy"],
+            )
         )
         self.parameters_box.layout().addLayout(self.safety_form)
         for control in (self.limit_wind, self.motor_fallback, self.wave_proxy):
@@ -599,8 +612,9 @@ class RoutingPanel(QWidget):
             widget.setAccessibleName(param.name)
             label = qt_text(param.name)
             if isinstance(widget, QCheckBox):
-                widget.setText(label)
-                row = self._row_with_info(widget, help_text)
+                row = self._row_with_info(
+                    ToggleFieldRow(label, checkbox=widget), help_text
+                )
             else:
                 widget.setLabel(label)
                 row = self._row_with_info(widget, help_text)
