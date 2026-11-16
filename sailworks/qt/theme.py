@@ -18,6 +18,9 @@ TEXT = "#e6e6e6"
 MUTED = "#b0b0ad"
 ACCENT = "#3584e4"
 BORDER = "#454545"
+DISABLED_SURFACE = "#292929"
+DISABLED_TEXT = "#777774"
+DISABLED_BORDER = "#3a3a3a"
 
 # Alternating row tint for dense lists such as the scene tree. Blender's
 # outliner separates rows with a barely visible band rather than a stripe, so
@@ -226,8 +229,15 @@ def apply_theme(app: QApplication):
         QPalette.ColorRole.Text,
         QPalette.ColorRole.WindowText,
         QPalette.ColorRole.ButtonText,
+        QPalette.ColorRole.PlaceholderText,
     ):
-        palette.setColor(QPalette.ColorGroup.Disabled, role, QColor("#777774"))
+        palette.setColor(QPalette.ColorGroup.Disabled, role, QColor(DISABLED_TEXT))
+    for role in (
+        QPalette.ColorRole.Base,
+        QPalette.ColorRole.Button,
+        QPalette.ColorRole.AlternateBase,
+    ):
+        palette.setColor(QPalette.ColorGroup.Disabled, role, QColor(DISABLED_SURFACE))
     app.setPalette(palette)
     install_wheel_guard(app)
     app.setStyleSheet(
@@ -377,11 +387,19 @@ def apply_theme(app: QApplication):
         QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
             background: none; }
         QStatusBar { border-top: 1px solid #454545; }
+        QLineEdit:disabled, QLineEdit#placeSearchEdit:disabled,
+        QComboBox:disabled, QDateTimeEdit:disabled,
+        QDoubleSpinBox:disabled, QAbstractSpinBox:disabled {
+            background: $disabled_surface; color: $disabled_text;
+            border-color: $disabled_border; }
     """).substitute(
             caption=TYPE_CAPTION,
             detail=TYPE_DETAIL,
             disclosure=TYPE_DISCLOSURE,
             semibold=TYPE_WEIGHT_SEMIBOLD,
+            disabled_surface=DISABLED_SURFACE,
+            disabled_text=DISABLED_TEXT,
+            disabled_border=DISABLED_BORDER,
         )
     )
 

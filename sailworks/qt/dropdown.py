@@ -1,8 +1,9 @@
 """Blender-style dropdown rows: label left, compact field on the right."""
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -17,6 +18,9 @@ FIELD_FRACTION = 0.55
 # Padding before the value text and space reserved for the chevron.
 VALUE_INSET = 8
 CHEVRON_WIDTH = 26
+# Width of the checkbox column in a Blender-style toggle row.
+TOGGLE_SLOT = 15
+ROW_SPACING = 8
 
 
 class _HoverItemDelegate(QStyledItemDelegate):
@@ -247,6 +251,102 @@ class FieldRow(QWidget):
         width = self.width()
         field_width = max(0, round(width * FIELD_FRACTION) - 2)
         label_width = max(0, width - field_width - 8)
+        if self._field.width() != field_width:
+            self._field.setFixedWidth(field_width)
+        if self._label.width() != label_width:
+            self._label.setFixedWidth(label_width)
+
+
+class ToggleFieldRow(QWidget):
+    """Blender-style property row: label, small checkbox, then a field.
+
+    The checkbox column is always reserved, even on rows without a toggle, so
+    every field in a stack starts at the same x. The row owns the enable and
+    disable behaviour: a row with a checkbox starts with its field disabled
+    and enables it while the checkbox is checked. ``checked_changed`` relays
+    that state instead of letting callers wire the checkbox themselves.
+    """
+
+    checked_changed = Signal(bool)
+
+    def __init__(self, label="", field=None, checkbox=None, parent=None):
+        super().__init__(parent)
+        self._field = field
+        self._checkbox = None
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(ROW_SPACING)
+        slot = QWidget(self)
+        slot.setFixedWidth(TOGGLE_SLOT)
+        slot_layout = QHBoxLayout(slot)
+        slot_layout.setContentsMargins(0, 0, 0, 0)
+        slot_layout.setSpacing(0)
+        # ``checkbox=False`` asks for the empty column only; the field stays
+        # enabled and there is no toggle to report.
+        if checkbox is not False:
+            if checkbox is None:
+                checkbox = QCheckBox(slot)
+            if isinstance(checkbox, QCheckBox) and not checkbox.text():
+                if not checkbox.accessibleName():
+                    checkbox.setAccessibleName(f"Enable {label}" if label else "Enable")
+            checkbox.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            slot_layout.addWidget(checkbox, 0, Qt.AlignmentFlag.AlignVCenter)
+            self._checkbox = checkbox
+        self._label = QLabel(label)
+        self._label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        # Blender's order: the label owns the stretch, then the reserved
+        # checkbox column, then the field.
+        layout.addWidget(self._label, 1)
+        layout.addWidget(slot, 0, Qt.AlignmentFlag.AlignVCenter)
+        if field is not None:
+            field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            layout.addWidget(field)
+        if self._checkbox is not None:
+            self._checkbox.toggled.connect(self._toggle_changed)
+            if field is not None:
+                field.setEnabled(self._checkbox.isChecked())
+        if label:
+            self.setAccessibleName(label)
+
+    def checkbox(self):
+        return self._checkbox
+
+    def field(self):
+        return self._field
+
+    def is_checked(self):
+        return self._checkbox is not None and self._checkbox.isChecked()
+
+    def set_checked(self, checked):
+        if self._checkbox is None:
+            return
+        self._checkbox.setChecked(bool(checked))
+
+    def _toggle_changed(self, checked):
+        if self._field is not None:
+            self._field.setEnabled(checked)
+        self.checked_changed.emit(checked)
+
+    def minimumSizeHint(self):  # noqa: N802 - Qt virtual method name
+        """Report only a height minimum; the parent layout sets the width.
+
+        ``resizeEvent`` pins the label and field to fractions of the row
+        width. Fixed widths feed back into the layout's minimum size, so the
+        row's minimum width would track its current width and grow on every
+        resize, keeping the enclosing scroll areas from ever settling.
+        """
+        return QSize(0, super().minimumSizeHint().height())
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt virtual method name
+        super().resizeEvent(event)
+        if self._field is None:
+            return
+        width = self.width()
+        available = max(0, width - TOGGLE_SLOT - ROW_SPACING)
+        field_width = max(0, round(available * FIELD_FRACTION) - 2)
+        label_width = max(0, available - field_width - ROW_SPACING)
         if self._field.width() != field_width:
             self._field.setFixedWidth(field_width)
         if self._label.width() != label_width:
