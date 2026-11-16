@@ -366,7 +366,13 @@ def worker(config):
     if window.views.tabText(window.views.currentIndex()) == "Charts":
         canvas = window.map
     elif window.views.tabText(window.views.currentIndex()) == "Logs":
-        canvas = window.log_map
+        # The Logs viewport is lazy; never construct it for a startup sample.
+        canvas = window.current_log_map
+        if canvas is None:
+            window.close()
+            raise ValueError(
+                "The Logs viewport is not built yet; open the Logs view first"
+            )
     else:
         window.close()
         raise ValueError(
