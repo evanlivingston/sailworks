@@ -50,6 +50,25 @@ Empty meshes allocate zero vertices, so a cleared or clipped-away cell leaves
 no stale triangles behind.  Unsupported features stay visible through
 ``unsupported_count`` rather than being drawn wrong.
 
+Static frame (default for a presented view scene)
+-------------------------------------------------
+A camera pan changes only the projection callable, and re-projecting every
+vertex for it cost 6.3 ms of a 8.5 ms frame at 106k vertices.  The vertices are
+therefore projected **once** per scene change into a *reference screen frame*:
+the float64 projection runs at upload, the result is stored as ``float32``
+offsets from the scene's own bbox centre, and each contributing cell becomes
+one child ``QSGGeometryNode``.  A single ``QSGTransformNode`` then carries a
+``QMatrix4x4`` from the reference frame to the current item pixels, recomputed
+on the CPU from three probe vertices per frame (pan and zoom are affine in
+screen pixels, so the matrix is exact: the Mercator warp happened once, at
+upload, in ``float64``).  A fourth probe validates the map; a projection that
+is not affine for this scene rebuilds the reference frame instead of drawing an
+approximation, which is the only way the picture can differ from the CPU path.
+
+Per frame the cost is four probe projections, one matrix write and one bbox
+test per cell — independent of the vertex count.  ``ENC_LEGACY_CPU_PROJECT=1``
+restores the original per-frame float64 re-projection for A/B comparison.
+
 Colour mode
 -----------
 ``colored=True`` uploads ``QSGGeometry.defaultAttributes_ColoredPoint2D()``
@@ -78,9 +97,10 @@ does not use it.
 from __future__ import annotations
 
 import ctypes
+import os
 
 import numpy as np
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QMatrix4x4
 from PySide6.QtQuick import (
     QQuickItem,
     QSGFlatColorMaterial,
@@ -89,6 +109,7 @@ from PySide6.QtQuick import (
     QSGMaterial,
     QSGNode,
     QSGTextureMaterial,
+    QSGTransformNode,
     QSGVertexColorMaterial,
 )
 
@@ -428,6 +449,20 @@ def apply_mesh(
     return geometry.vertexCount()
 
 
+def _premultiplied_colours(colors: np.ndarray) -> np.ndarray:
+    """Return a premultiplied copy of straight ``(N, 4)`` uint8 RGBA.
+
+    Qt Quick's vertex colours are premultiplied.  Straight RGBA makes every
+    translucent fill additive, and a chart's overlapping areas then saturate to
+    white.
+    """
+    colors = np.array(colors, dtype=np.uint8, copy=True)
+    colors[:, :3] = (
+        colors[:, :3].astype(np.uint16) * colors[:, 3:4].astype(np.uint16) // 255
+    ).astype(np.uint8)
+    return colors
+
+
 def apply_colored_mesh(
     geometry: QSGGeometry,
     mesh: SceneMesh,
@@ -457,14 +492,9 @@ def apply_colored_mesh(
 
     positions = np.ascontiguousarray(projected, dtype=np.float32)
     pieces = getattr(mesh, "parts", ())
-    colors = vertex_colours(pieces, positions.shape[0], default_color)
-    # Qt Quick's vertex colours are premultiplied.  Straight RGBA makes every
-    # translucent fill additive, and a chart's overlapping areas then saturate
-    # to white.
-    colors = colors.copy()
-    colors[:, :3] = (
-        colors[:, :3].astype(np.uint16) * colors[:, 3:4].astype(np.uint16) // 255
-    ).astype(np.uint8)
+    colors = _premultiplied_colours(
+        vertex_colours(pieces, positions.shape[0], default_color)
+    )
     vertices = np.empty(positions.shape[0], dtype=VERTEX_DTYPE)
     vertices["x"] = positions[:, 0]
     vertices["y"] = positions[:, 1]
@@ -476,6 +506,172 @@ def apply_colored_mesh(
     geometry.allocate(vertices.shape[0])
     _upload_vertices(geometry, vertices, VERTEX_DTYPE.itemsize)
     return geometry.vertexCount()
+
+
+#: ``ENC_LEGACY_CPU_PROJECT=1`` keeps the original per-frame ``float64``
+#: re-projection for the presented view-scene path, so the two paths can be
+#: A/B compared and the old behaviour stays reachable.
+LEGACY_CPU_PROJECT = os.environ.get("ENC_LEGACY_CPU_PROJECT", "").strip() not in (
+    "",
+    "0",
+)
+
+#: Largest disagreement, in item pixels, allowed between the reference-frame
+#: matrix and the ``float64`` CPU projection before the frame is re-projected
+#: instead.  Pan and zoom are affine in screen pixels, so a healthy frame
+#: agrees to ``float64`` rounding (``~1e-9``); anything above this means the
+#: projection is not affine over the scene and a matrix would be wrong.
+AFFINE_TOLERANCE = 0.005
+
+
+def _affine_from_probes(reference: np.ndarray, current: np.ndarray):
+    """Solve the affine map taking three ``reference`` points to ``current``.
+
+    Both are ``(3, 2)`` ``float64`` arrays.  Returns ``(a, b, c, d, e, f)`` with
+    ``x' = a*x + b*y + c`` and ``y' = d*x + e*y + f``, or ``None`` when the
+    probes are collinear and the map is not determined.  The solve runs in
+    ``float64``; only the resulting ``QMatrix4x4`` is ``float32``.
+    """
+    reference = np.asarray(reference, dtype=np.float64)
+    current = np.asarray(current, dtype=np.float64)
+    if reference.shape[0] < 3 or current.shape != reference.shape:
+        return None
+    design = np.column_stack((reference[:3], np.ones(3)))
+    determinant = float(np.linalg.det(design))
+    scale = float(np.max(np.abs(reference[:3]))) or 1.0
+    if not abs(determinant) > 1e-9 * scale * scale:
+        return None
+    solution = np.linalg.solve(design, current[:3])
+    return (
+        float(solution[0, 0]),
+        float(solution[1, 0]),
+        float(solution[2, 0]),
+        float(solution[0, 1]),
+        float(solution[1, 1]),
+        float(solution[2, 1]),
+    )
+
+
+def _apply_affine(coeffs, points: np.ndarray) -> np.ndarray:
+    """Map ``(N, 2)`` points through the ``(a, b, c, d, e, f)`` affine."""
+    a, b, c, d, e, f = coeffs
+    points = np.asarray(points, dtype=np.float64)
+    return np.column_stack(
+        (
+            a * points[:, 0] + b * points[:, 1] + c,
+            d * points[:, 0] + e * points[:, 1] + f,
+        )
+    )
+
+
+def _affine_bounds(coeffs, bounds):
+    """Map an axis-aligned ``(x0, y0, x1, y1)`` box; return its new box."""
+    x0, y0, x1, y1 = bounds
+    corners = np.array(((x0, y0), (x1, y0), (x0, y1), (x1, y1)), dtype=np.float64)
+    mapped = _apply_affine(coeffs, corners)
+    return (
+        float(mapped[:, 0].min()),
+        float(mapped[:, 1].min()),
+        float(mapped[:, 0].max()),
+        float(mapped[:, 1].max()),
+    )
+
+
+class _CellGeometry:
+    """One static vertex buffer: a cell's vertices and their reference bbox."""
+
+    __slots__ = ("vertices", "bounds")
+
+    def __init__(self, vertices: np.ndarray, bounds):
+        self.vertices = vertices
+        self.bounds = bounds
+
+
+class _StaticFrame:
+    """A presented scene projected once into a reference screen frame.
+
+    ``cells`` holds one :class:`_CellGeometry` per contributing cell in
+    composite order.  ``reference`` holds the reference-frame positions of up
+    to four probe vertices and ``samples`` their source positions, which is all
+    a later frame needs to recover the pan/zoom matrix.
+    """
+
+    __slots__ = ("cells", "reference", "samples")
+
+    def __init__(self, cells, reference, samples):
+        self.cells = cells
+        self.reference = reference
+        self.samples = samples
+
+
+def build_static_frame(
+    mesh, projection=None, *, origin=None, default_color=NEUTRAL
+) -> "_StaticFrame | None":
+    """Project ``mesh`` once and return its reference-frame vertex buffers.
+
+    The projection (which for ENC is Web Mercator plus the camera offset) runs
+    here, in ``float64``, and never again while the scene and camera stay
+    related by an affine map.  Vertices are stored as ``float32`` offsets from
+    the scene's own bbox centre, so a stored coordinate stays within a few
+    thousand pixels: the ``float32`` ulp there is ~``2e-4`` px, well inside the
+    ``0.01`` px the matrix path is required to preserve.  Baking the warp at
+    upload is what makes the residual transform exactly affine.
+    """
+    positions = _project_positions(mesh, projection, origin)
+    count = int(positions.shape[0])
+    if count == 0:
+        return None
+    colours = _premultiplied_colours(
+        vertex_colours(getattr(mesh, "parts", ()), count, default_color)
+    )
+    base = (positions.min(axis=0) + positions.max(axis=0)) / 2.0
+    local = np.ascontiguousarray(positions - base, dtype=np.float32)
+
+    spans = tuple(getattr(mesh, "cells", ()))
+    ranges = [(int(span.first_vertex), int(span.vertex_count)) for span in spans] or [
+        (0, count)
+    ]
+    cells = []
+    for first, length in ranges:
+        if length <= 0:
+            cells.append(_CellGeometry(np.empty(0, dtype=VERTEX_DTYPE), None))
+            continue
+        chunk = np.empty(length, dtype=VERTEX_DTYPE)
+        chunk["x"] = local[first : first + length, 0]
+        chunk["y"] = local[first : first + length, 1]
+        chunk["rgba"] = colours[first : first + length]
+        window = local[first : first + length].astype(np.float64)
+        cells.append(
+            _CellGeometry(
+                chunk,
+                (
+                    float(window[:, 0].min()),
+                    float(window[:, 1].min()),
+                    float(window[:, 0].max()),
+                    float(window[:, 1].max()),
+                ),
+            )
+        )
+
+    # Probes: the extreme vertices of the reference frame, which are the
+    # best-conditioned triple for the solve and the widest baseline for the
+    # residual check.
+    xs, ys = local[:, 0], local[:, 1]
+    probes = []
+    for index in (
+        int(np.argmin(xs)),
+        int(np.argmax(xs)),
+        int(np.argmin(ys)),
+        int(np.argmax(ys)),
+        int(np.argmax(xs.astype(np.float64) + ys.astype(np.float64))),
+    ):
+        if index not in probes:
+            probes.append(index)
+        if len(probes) == 4:
+            break
+    reference = (positions[probes] - base).astype(np.float64)
+    sources = np.asarray(mesh.positions, dtype=np.float64)[probes]
+    return _StaticFrame(tuple(cells), reference, sources)
 
 
 class EncMeshItem(QQuickItem):
@@ -511,9 +707,15 @@ class EncMeshItem(QQuickItem):
         glyph_pixel_size=11.0,
         texture_factory=None,
         text_enabled=True,
+        legacy_project=None,
     ):
         super().__init__(parent)
         self.setFlag(QQuickItem.Flag.ItemHasContents, True)
+        #: Per-item override of :data:`LEGACY_CPU_PROJECT`: ``True`` keeps the
+        #: per-frame float64 re-projection, ``None`` follows the module setting.
+        self._legacy_project = (
+            LEGACY_CPU_PROJECT if legacy_project is None else bool(legacy_project)
+        )
         self._mesh = EMPTY_MESH
         #: The assembled multi-cell scene currently presented, if any.  Kept by
         #: reference so cell spans and skipped-cell reasons stay inspectable.
@@ -536,6 +738,14 @@ class EncMeshItem(QQuickItem):
         self._material = None
         self._geometry_dirty = True
         self._material_dirty = True
+        # Static reference frame: the projected scene, the transform node that
+        # carries its matrix, and one geometry node per cell.
+        self._static = None
+        self._built_static = False
+        self._content_node = None
+        self._cell_nodes = []
+        self._cell_visible = ()
+        self._matrix_count = 0
 
         # Sounding text state.  The atlas image is CPU-side and reusable; the
         # texture and text node belong to whatever node Qt currently owns.
@@ -599,6 +809,21 @@ class EncMeshItem(QQuickItem):
         return self._upload_count
 
     @property
+    def matrix_update_count(self) -> int:
+        """Number of matrix writes on the static path (one per presented frame)."""
+        return self._matrix_count
+
+    @property
+    def static_mode(self) -> bool:
+        """True when this item is drawing static buffers through a matrix."""
+        return self._built_static
+
+    @property
+    def visible_cells(self) -> tuple:
+        """Per-cell visibility from the last cull, in composite order."""
+        return self._cell_visible
+
+    @property
     def text_upload_count(self) -> int:
         """Number of glyph-quad uploads performed for this item."""
         return self._text_upload_count
@@ -629,6 +854,7 @@ class EncMeshItem(QQuickItem):
             return False
         self._mesh = mesh
         self._view_scene = None
+        self._static = None
         self._generation += 1
         self._geometry_dirty = True
         self._text_dirty = True
@@ -661,6 +887,7 @@ class EncMeshItem(QQuickItem):
         self._view_scene = view_scene
         self._mesh = mesh
         self._colored = True
+        self._static = None
         self._generation += 1
         self._geometry_dirty = True
         self._material_dirty = True
@@ -675,6 +902,7 @@ class EncMeshItem(QQuickItem):
         if colored == self._colored:
             return False
         self._colored = colored
+        self._static = None
         self._geometry_dirty = True
         self._material_dirty = True
         self.update()
@@ -688,6 +916,7 @@ class EncMeshItem(QQuickItem):
         if self._colored:
             # The flat colour is the fallback baked into vertices for parts
             # without palette metadata, so it is a geometry change here.
+            self._static = None
             self._geometry_dirty = True
         else:
             self._material_dirty = True
@@ -698,7 +927,11 @@ class EncMeshItem(QQuickItem):
         if projection is self._projection:
             return False
         self._projection = projection
-        self._geometry_dirty = True
+        if not self._static_mode():
+            # The legacy path bakes the projection into the vertex buffer.  The
+            # static frame keeps the vertices and moves a matrix instead, so a
+            # pan only costs one uniform write.
+            self._geometry_dirty = True
         self._text_dirty = True
         self.update()
         return True
@@ -707,13 +940,17 @@ class EncMeshItem(QQuickItem):
         """Set the local camera origin subtracted before projection.
 
         Changing it re-uploads on the next frame; the subtraction itself runs
-        in ``float64`` so scene-scale coordinates keep their precision.
+        in ``float64`` so scene-scale coordinates keep their precision.  It
+        also invalidates the static reference frame: the origin is an argument
+        of the projection, not a screen-space offset, so the reference vertices
+        no longer describe the same map.
         """
         if origin is not None:
             origin = (float(origin[0]), float(origin[1]))
         if origin == self._origin:
             return False
         self._origin = origin
+        self._static = None
         self._geometry_dirty = True
         self._text_dirty = True
         self.update()
@@ -761,6 +998,8 @@ class EncMeshItem(QQuickItem):
         self._node = None
         self._geometry = None
         self._material = None
+        self._content_node = None
+        self._cell_nodes = []
         self._text_node = None
         self._text_geometry = None
         self._text_material = None
@@ -912,10 +1151,216 @@ class EncMeshItem(QQuickItem):
         self._forget_scene_graph()
         super().releaseResources()
 
-    def _children_are_usable(self, node) -> bool:
+    def _static_mode(self) -> bool:
+        """True when the scene is presented as a static frame plus a matrix.
+
+        Only a presented :class:`encview.ViewScene` on the coloured layout uses
+        the reference frame; the flat ``set_mesh`` path keeps its original
+        single-node behaviour, and :data:`LEGACY_CPU_PROJECT` (or the item's
+        ``legacy_project``) forces the original per-frame re-projection.
+        """
         return (
-            self._node is node
-            and self._built_colored == self._colored
+            not self._legacy_project and self._colored and self._view_scene is not None
+        )
+
+    def _frame_coeffs(self):
+        """The reference frame -> current item-pixel affine, or ``None``.
+
+        Four probe vertices are projected with the *current* projection: three
+        solve the map and the fourth measures how far the true projection is
+        from affine over this scene.  A healthy pan/zoom agrees to float64
+        rounding because the Mercator warp is already baked into the reference
+        frame; anything above :data:`AFFINE_TOLERANCE` returns ``None`` and the
+        caller re-projects instead.
+        """
+        frame = self._static
+        if frame is None:
+            return None
+        source = frame.samples
+        if self._origin is not None:
+            source = source - np.asarray(self._origin, dtype=np.float64).reshape(1, 2)
+        if self._projection is None:
+            current = source
+        else:
+            current = np.asarray(self._projection(source), dtype=np.float64)
+            if current.shape != frame.reference.shape:
+                return None
+        coeffs = _affine_from_probes(frame.reference, current)
+        if coeffs is None:
+            return None
+        if current.shape[0] > 3:
+            deviation = float(
+                np.abs(_apply_affine(coeffs, frame.reference[3:]) - current[3:]).max()
+            )
+            if not deviation <= AFFINE_TOLERANCE:
+                return None
+        return coeffs
+
+    def _apply_matrix(self, coeffs) -> None:
+        """Write the cell-local -> item-pixel matrix onto the content node."""
+        content = self._content_node
+        if content is None:
+            return
+        a, b, c, d, e, f = coeffs
+        content.setMatrix(
+            QMatrix4x4(
+                a,
+                b,
+                0.0,
+                c,
+                d,
+                e,
+                0.0,
+                f,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            )
+        )
+        self._matrix_count += 1
+
+    def _cull_cells(self, coeffs) -> None:
+        """Keep only cells whose transformed bbox reaches the item; O(cells).
+
+        Qt 6 has no ``Invisible`` scene-graph flag, so a culled cell is simply
+        detached from the content node and re-attached in scene order when it
+        comes back.  Buffers are never reallocated, and the mask is only
+        reapplied when it changes, which a pan does at most a few times.
+        """
+        frame = self._static
+        content = self._content_node
+        if frame is None or content is None:
+            return
+        clip = self._visible_clip()
+        mask = []
+        for cell in frame.cells:
+            if cell.bounds is None:
+                mask.append(False)
+                continue
+            if clip is None:
+                mask.append(True)
+                continue
+            x0, y0, x1, y1 = _affine_bounds(coeffs, cell.bounds)
+            outside = x1 < clip[0] or x0 > clip[2] or y1 < clip[1] or y0 > clip[3]
+            mask.append(not outside)
+        mask = tuple(mask)
+        if mask == self._cell_visible:
+            return
+        self._cell_visible = mask
+        for node in self._cell_nodes:
+            try:
+                content.removeChildNode(node)
+            except Exception:  # pragma: no cover - already detached
+                pass
+        for node, visible in zip(self._cell_nodes, mask):
+            if visible:
+                content.appendChildNode(node)
+
+    def _ensure_content(self) -> bool:
+        """Attach the cell transform node once there is a cell to draw."""
+        if self._content_node is not None:
+            return True
+        frame = self._static
+        if frame is None or not any(cell.vertices.shape[0] for cell in frame.cells):
+            return False
+        content = QSGTransformNode()
+        text_node = self._text_node
+        if text_node is not None and _wrapper_is_valid(text_node):
+            # Labels paint on top of the chart, never under it.
+            self._node.insertChildNodeBefore(content, text_node)
+        else:
+            self._node.appendChildNode(content)
+        self._content_node = content
+        return True
+
+    def _upload_cells(self) -> None:
+        """Create one static-pattern geometry node per cell under the content."""
+        content = self._content_node
+        if content is None:
+            return
+        for child in self._cell_nodes:
+            try:
+                content.removeChildNode(child)
+            except Exception:  # pragma: no cover - Qt already dropped it
+                pass
+        self._cell_nodes = []
+        self._cell_visible = ()
+        self._geometry = None
+        self._material = None
+        frame = self._static
+        if frame is None:
+            return
+        for cell in frame.cells:
+            geometry = QSGGeometry(_colored_attributes(), 0)
+            geometry.setDrawingMode(QSGGeometry.DrawingMode.DrawTriangles)
+            # StaticPattern: the buffer is written once per scene change and
+            # never in the steady state, so Qt may keep it resident.
+            geometry.setVertexDataPattern(QSGGeometry.DataPattern.StaticPattern)
+            material = _blended_vertex_color_material()
+            cell_node = QSGGeometryNode()
+            cell_node.setGeometry(geometry)
+            cell_node.setMaterial(material)
+            cell_node.setFlag(QSGNode.Flag.OwnsGeometry)
+            cell_node.setFlag(QSGNode.Flag.OwnsMaterial)
+            if cell.vertices.shape[0]:
+                geometry.allocate(cell.vertices.shape[0])
+                _upload_vertices(geometry, cell.vertices, VERTEX_DTYPE.itemsize)
+            content.appendChildNode(cell_node)
+            self._cell_nodes.append(cell_node)
+            if self._geometry is None and cell.vertices.shape[0]:
+                # Kept inspectable: the first cell's buffer stands for the
+                # scene in diagnostics, as the single node did before.
+                self._geometry = geometry
+                self._material = material
+        self._upload_count += 1
+
+    def _update_static(self) -> None:
+        """Present the scene through the reference frame, uploading on change."""
+        if self._static is None or not self._cell_nodes:
+            self._static = build_static_frame(
+                self._mesh,
+                self._projection,
+                origin=self._origin,
+                default_color=self._default_rgba(),
+            )
+            self._ensure_content()
+            self._upload_cells()
+        self._geometry_dirty = False
+        coeffs = self._frame_coeffs()
+        if coeffs is None and self._static is not None:
+            # The projection is not affine over this scene: re-project into the
+            # current frame rather than draw a warped approximation.  This is
+            # the legacy cost, paid only where the matrix would be wrong.
+            self._static = build_static_frame(
+                self._mesh,
+                self._projection,
+                origin=self._origin,
+                default_color=self._default_rgba(),
+            )
+            self._ensure_content()
+            self._upload_cells()
+            coeffs = self._frame_coeffs()
+        if coeffs is None:
+            # Nothing to transform (empty scene, or a degenerate probe set that
+            # already rebuilt above): the buffers are already current.
+            if self._content_node is not None:
+                self._content_node.setMatrix(QMatrix4x4())
+            return
+        self._apply_matrix(coeffs)
+        self._cull_cells(coeffs)
+
+    def _children_are_usable(self, node, static: bool) -> bool:
+        if node is not self._node or self._built_static != static:
+            return False
+        if static:
+            return self._content_node is None or _wrapper_is_valid(self._content_node)
+        return (
+            self._built_colored == self._colored
             and self._geometry is not None
             and self._material is not None
             and _wrapper_is_valid(self._geometry)
@@ -923,11 +1368,12 @@ class EncMeshItem(QQuickItem):
         )
 
     def updatePaintNode(self, node, _data):  # noqa: N802 - Qt override
+        static = self._static_mode()
         if node is None:
             node = QSGGeometryNode()
             self._forget_scene_graph()
 
-        if not self._children_are_usable(node):
+        if not self._children_are_usable(node, static):
             self._detach_text_node(node)
             self._forget_scene_graph()
             self._node = node
@@ -954,6 +1400,7 @@ class EncMeshItem(QQuickItem):
             self._geometry = geometry
             self._material = material
             self._built_colored = self._colored
+            self._built_static = static
 
         if self._material_dirty:
             # QSGVertexColorMaterial has no uniform colour to update.
@@ -962,7 +1409,11 @@ class EncMeshItem(QQuickItem):
             node.markDirty(QSGNode.DirtyStateBit.DirtyMaterial)
             self._material_dirty = False
 
-        if self._geometry_dirty:
+        if static:
+            # Runs every presented frame: four probes and one matrix write,
+            # independent of the vertex count.
+            self._update_static()
+        elif self._geometry_dirty:
             clip = self._visible_clip()
             if self._built_colored:
                 apply_colored_mesh(

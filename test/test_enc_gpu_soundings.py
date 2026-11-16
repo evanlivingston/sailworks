@@ -83,7 +83,10 @@ def test_item_builds_textured_glyph_quads_after_the_triangle_node(qt_app):
 
     node = item.updatePaintNode(None, None)
 
-    assert node.childCount() == 1
+    # The static frame's transform node (the chart) plus the label node, which
+    # must be last so soundings paint on top of the triangles.
+    assert node.childCount() == 2
+    assert node.lastChild() is item.text_node
     assert item.text_node is not None
     assert [label.text for label in item.labels] == ["3.5", "9.9"]
     assert item.text_upload_count == 1
@@ -153,18 +156,19 @@ def test_scale_gate_hides_and_restores_without_a_new_texture(qt_app):
     item = _item(factory)
     item.set_view_scene(_view_scene([[10.0, 10.0, 3.5]]))
     node = item.updatePaintNode(None, None)
-    assert node.childCount() == 1
+    assert node.childCount() == 2
 
     item.set_scale(150.0)
     item.updatePaintNode(node, None)
     assert item.labels == ()
     assert item.text_node is None
-    assert node.childCount() == 0
+    # Only the static frame's transform node is left.
+    assert node.childCount() == 1
 
     item.set_scale(50.0)
     item.updatePaintNode(node, None)
     assert [label.text for label in item.labels] == ["3.5"]
-    assert node.childCount() == 1
+    assert node.childCount() == 2
     assert len(calls) == 1
 
 
@@ -184,7 +188,8 @@ def test_teardown_and_reattach_rebuilds_text_node_and_texture(qt_app):
     rebuilt = item.updatePaintNode(None, None)
 
     assert rebuilt is not node
-    assert rebuilt.childCount() == 1
+    # The chart's transform node plus the rebuilt label node.
+    assert rebuilt.childCount() == 2
     assert item._text_geometry is not first_geometry
     assert len(calls) == 2
     assert item.text_upload_count == 2
@@ -202,6 +207,6 @@ def test_scene_without_soundings_creates_no_text_node_or_texture(qt_app):
 
     node = item.updatePaintNode(None, None)
 
-    assert node.childCount() == 0
+    assert node.childCount() == 1  # the chart's transform node, no text node
     assert item.text_node is None
     assert calls == []
