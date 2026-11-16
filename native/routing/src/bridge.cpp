@@ -456,6 +456,99 @@ class PythonLandProvider final : public wr::LandAndBoundaryProvider {
   std::string identity_;
 };
 
+// Native mask fast path for zero-clearance shoreline segments. The mask is
+// the same conservative touched-cell raster built by Python: an all-water
+// bounding box returns allowed without crossing into Python; every ambiguous
+// segment and every point, clearance or distance query still uses the exact
+// Python GSHHS predicate.
+class MaskedLandProvider final : public wr::LandAndBoundaryProvider {
+ public:
+  MaskedLandProvider(
+      std::shared_ptr<const wr::LandAndBoundaryProvider> inner,
+      const py::dict& data)
+      : inner_(std::move(inner)) {
+    const auto mask =
+        py::cast<py::array_t<std::uint8_t, py::array::c_style |
+                                                 py::array::forcecast>>(
+            data["mask"]);
+    const auto info = mask.request();
+    if (info.ndim != 2)
+      throw py::value_error("land mask must be a two-dimensional array");
+    height_ = static_cast<int>(info.shape[0]);
+    width_ = static_cast<int>(info.shape[1]);
+    south_ = py::cast<double>(data["south"]);
+    west_ = py::cast<double>(data["west"]);
+    north_ = py::cast<double>(data["north"]);
+    east_ = py::cast<double>(data["east"]);
+    resolution_ = py::cast<double>(data["resolution"]);
+    if (width_ <= 0 || height_ <= 0 || !(resolution_ > 0.0) ||
+        !(west_ < east_) || !(south_ < north_))
+      throw py::value_error("land mask bounds or resolution are invalid");
+    const auto expected_width =
+        static_cast<int>(std::ceil((east_ - west_) / resolution_));
+    const auto expected_height =
+        static_cast<int>(std::ceil((north_ - south_) / resolution_));
+    if (expected_width != width_ || expected_height != height_)
+      throw py::value_error("land mask shape does not match its bounds");
+    const auto count = static_cast<std::size_t>(info.size);
+    const auto* source = static_cast<const std::uint8_t*>(info.ptr);
+    mask_.assign(source, source + count);
+  }
+
+  [[nodiscard]] bool pointForbidden(wr::GeoPoint point) const override {
+    return inner_->pointForbidden(point);
+  }
+
+  [[nodiscard]] bool segmentForbidden(wr::GeoPoint start, wr::GeoPoint end,
+                                      double safetyMarginNm) const override {
+    if (safetyMarginNm == 0.0 && definitelyWater(start, end)) return false;
+    return inner_->segmentForbidden(start, end, safetyMarginNm);
+  }
+
+  [[nodiscard]] double distanceToForbiddenNm(wr::GeoPoint point) const override {
+    return inner_->distanceToForbiddenNm(point);
+  }
+
+  [[nodiscard]] std::string identity() const override {
+    return inner_->identity();
+  }
+
+ private:
+  [[nodiscard]] bool definitelyWater(wr::GeoPoint start,
+                                     wr::GeoPoint end) const {
+    const double left = std::min(start.longitude, end.longitude);
+    const double right = std::max(start.longitude, end.longitude);
+    const double bottom = std::min(start.latitude, end.latitude);
+    const double top = std::max(start.latitude, end.latitude);
+    const int x0 =
+        static_cast<int>(std::floor((left - west_) / resolution_)) - 1;
+    const int x1 =
+        static_cast<int>(std::ceil((right - west_) / resolution_)) + 1;
+    const int y0 =
+        static_cast<int>(std::floor((north_ - top) / resolution_)) - 1;
+    const int y1 =
+        static_cast<int>(std::ceil((north_ - bottom) / resolution_)) + 1;
+    if (x0 < 0 || y0 < 0 || x1 >= width_ || y1 >= height_) return false;
+    for (int y = y0; y <= y1; ++y) {
+      const auto row = static_cast<std::size_t>(y) * width_;
+      for (int x = x0; x <= x1; ++x) {
+        if (mask_[row + static_cast<std::size_t>(x)] != 0) return false;
+      }
+    }
+    return true;
+  }
+
+  std::shared_ptr<const wr::LandAndBoundaryProvider> inner_;
+  std::vector<std::uint8_t> mask_;
+  int width_ = 0;
+  int height_ = 0;
+  double south_ = 0.0;
+  double west_ = 0.0;
+  double north_ = 0.0;
+  double east_ = 0.0;
+  double resolution_ = 0.0;
+};
+
 // Weather supplied by Python callables so ordinary Sailworks sampling can drive
 // the native solver. The route call keeps the GIL, so callbacks execute on the
 // calling thread; no native concurrency is enabled by this adapter.
@@ -1272,7 +1365,8 @@ py::dict runUserBridge(py::function wind, py::function current,
                            const std::string& engine,
                            const py::object& progress,
                            const py::object& cancelEvent,
-                           const py::object& nativeWind) {
+                           const py::object& nativeWind,
+                           const py::object& landMask) {
   const std::set<std::string> required{
       "start", "destination", "departure_epoch_s", "use_currents",
       "polar_efficiency", "tws_max_kn", "min_sailing_speed_kn",
@@ -1475,6 +1569,10 @@ py::dict runUserBridge(py::function wind, py::function current,
   if (input.coastlineChecks) {
     coastline = std::make_shared<PythonLandProvider>(
         std::move(land), providerIdentity + "-shoreline");
+    if (!landMask.is_none()) {
+      coastline = std::make_shared<MaskedLandProvider>(
+          coastline, py::cast<py::dict>(landMask));
+    }
   }
   if (avoidZoneProvider) {
     environment.landAndBoundaries = sailworks::native_routing::composeAvoidZones(
@@ -1888,12 +1986,13 @@ module.def("identity", &identityDict,
                 const std::string& polarIdentity,
                 const std::string& engine, py::object waves,
                 py::object waveCoverage, const py::object& progress,
-                const py::object& cancelEvent, const py::object& nativeWind) {
+                const py::object& cancelEvent, const py::object& nativeWind,
+                const py::object& landMask) {
                return runUserBridge(std::move(wind), std::move(current),
                                     std::move(waves), waveCoverage, coverage,
                                     polar, settings, land, providerIdentity,
                                     polarIdentity, engine, progress,
-                                    cancelEvent, nativeWind);
+                                    cancelEvent, nativeWind, landMask);
              },
              py::arg("wind"), py::arg("current"), py::arg("coverage"),
              py::arg("polar"), py::arg("settings"), py::arg("land"),
@@ -1903,6 +2002,7 @@ module.def("identity", &identityDict,
              py::arg("progress") = py::none(),
              py::arg("cancel_event") = py::none(),
              py::arg("native_wind") = py::none(),
+             py::arg("land_mask") = py::none(),
              "Run a selected request, including its waypoint chain, through the "
              "native engine; reject unsupported settings rather than "
              "inheriting synthetic fixture defaults. Optional waves returns "

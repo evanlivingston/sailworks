@@ -73,6 +73,10 @@ class SelectedShoreline:
     def distance_nm(self, latitude, longitude):
         return self.provider.distance_to_forbidden_nm(latitude, longitude)
 
+    def native_mask(self):
+        builder = getattr(self.provider, "native_mask", None)
+        return builder() if builder is not None else None
+
 
 def _shoreline(job):
     if not job.provider_descriptors:
@@ -145,6 +149,11 @@ def run_native_request(
     if job.provider_descriptors and not job.coastline_checks:
         raise ValueError("Shoreline providers were supplied with coastline checks off")
     land = _shoreline(job) if job.coastline_checks else None
+    land_mask = (
+        land.native_mask()
+        if land is not None and hasattr(land, "native_mask")
+        else None
+    )
     if job.use_currents and (not job.marine_directory or not job.current_field_ids):
         raise ValueError("Selected local current inputs are missing")
     if job.current_field_ids and not job.use_currents:
@@ -269,6 +278,8 @@ def run_native_request(
         native_options = {}
         if native_wind is not None:
             native_options["native_wind"] = native_wind
+        if land_mask is not None:
+            native_options["land_mask"] = land_mask
         run = bridge.route_user_request(
             selected_wind,
             current,

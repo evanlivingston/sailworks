@@ -112,6 +112,21 @@ class ShorelineValidity:
             return True
         return self.lines_validity([(start_lat, start_lon, end_lat, end_lon)])[0]
 
+    def native_mask(self):
+        """Conservative mask payload for the native land fast path, or None."""
+        result = self._routing_mask()
+        if result is None:
+            return None
+        mask, (south, west, north, east, resolution) = result
+        return {
+            "mask": np.ascontiguousarray(mask, dtype=np.uint8),
+            "south": float(south),
+            "west": float(west),
+            "north": float(north),
+            "east": float(east),
+            "resolution": float(resolution),
+        }
+
     def _routing_source(self, layer_index, feature):
         key = (layer_index, feature.GetFID())
         if key not in self._routing_sources:
