@@ -43,6 +43,22 @@ from osgeo import gdal
 
 logger = logging.getLogger("sailworks")
 
+# ``gribsampling`` is imported on first use so importing ``grib`` stays cheap.
+# The resolved class is cached so routing's per-candidate ``get_wind_at`` calls
+# do not repeat import machinery for every sample.
+_WEATHER_SAMPLER_CLASS = None
+
+
+def _weather_sampler_class():
+    """Return ``WeatherSampler``, importing ``gribsampling`` once."""
+    global _WEATHER_SAMPLER_CLASS
+    if _WEATHER_SAMPLER_CLASS is None:
+        from .gribsampling import WeatherSampler
+
+        _WEATHER_SAMPLER_CLASS = WeatherSampler
+    return _WEATHER_SAMPLER_CLASS
+
+
 PRESSURE_ELEMENTS = _PRESSURE_ELEMENTS
 
 
@@ -183,10 +199,9 @@ class Grib(weatherrouting.Grib):
         return self._sampling
 
     def sampler(self):
-        from .gribsampling import WeatherSampler
-
         if "_sampler" not in self.__dict__:
-            self._sampler = WeatherSampler((self,))
+            sampler_class = _weather_sampler_class()
+            self._sampler = sampler_class((self,))
         return self._sampler
 
     def get_pressure(self, tt, bounds):

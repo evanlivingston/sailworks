@@ -15,32 +15,9 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
 # isort:skip_file
-from importlib import import_module
-
-# Re-exports that pull a heavy module are resolved on first use (PEP 562) so
-# importing ``sailworks.core`` does not pay for them at import time.  The hook
-# is defined before the imports below because ``.core`` itself imports from
-# this package while it is still initialising.
-_LAZY_EXPORTS = {"PolarManager": ".polarmanager"}
-
-
-def __getattr__(name):
-    """Import one deferred re-export on first access."""
-    module = _LAZY_EXPORTS.get(name)
-    if module is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    value = getattr(import_module(module, __name__), name)
-    globals()[name] = value
-    return value
-
-
-def __dir__():
-    """Keep deferred re-exports visible to attribute discovery."""
-    return sorted(set(globals()) | set(_LAZY_EXPORTS))
-
-
 from .grib import Grib  # noqa: F401
 from .gribmanager import GribManager  # noqa: F401
+from .polarmanager import PolarManager  # noqa: F401
 from .timecontrol import TimeControl  # noqa: F401
 from .datasource import DataSource  # noqa: F401
 from .datasource import NMEADataPacket  # noqa: F401

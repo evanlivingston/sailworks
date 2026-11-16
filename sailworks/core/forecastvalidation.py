@@ -154,13 +154,13 @@ def _decode_band(band, dataset, index, cancel=None):
 
 
 def inspect_download(path, planned, cancel=None, *, opener=None, vector_reader=None):
-    from .gribsampling import model_key
-
     """Inspect every supported band and reject incomplete or incoherent files.
 
     Region containment is checked on 64 samples per requested boundary edge;
     this validates geometric extent, not every interior cell's nodata mask.
     """
+    from .gribsampling import model_key
+
     config = _planned_model(planned)
     model = config.model_id
     fields = tuple(config.fields)
