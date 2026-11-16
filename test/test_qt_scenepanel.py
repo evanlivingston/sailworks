@@ -16,7 +16,14 @@ from PySide6.QtGui import (
     QUndoStack,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QApplication, QDialog, QFrame, QPushButton, QToolTip
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QDialog,
+    QFrame,
+    QPushButton,
+    QToolTip,
+)
 
 from sailworks.core.geo.elementmultipoint import NamedPoint
 from sailworks.core.geo.rounding import (
@@ -655,6 +662,86 @@ def test_drop_on_legs_does_not_move_a_scene_item_to_root(tmp_path):
     panel.drop_scene_items(Event())
 
     assert calls == ["ignored"]
+
+
+def test_drop_on_group_defers_the_move_until_the_drag_ends(tmp_path):
+    application()
+    panel = panel_for(tmp_path, routes=[FakeRoute("r1", "Route")])
+    source = panel.scene.item(KIND_ROUTING, "r1").group
+    destination = next(
+        group.id for group in panel.scene.groups.values() if group.id != source
+    )
+    panel.tree.clearSelection()
+    row = panel.item_row(KIND_ROUTING, "r1")
+    row.setSelected(True)
+    root = panel.tree.topLevelItem(0)
+    panel.tree.itemAt = lambda _position: panel.group_row(destination)
+
+    accepted = []
+
+    class Event:
+        def source(self):
+            return panel.tree
+
+        def position(self):
+            return SimpleNamespace(toPoint=lambda: None)
+
+        def ignore(self):
+            raise AssertionError("drop onto a group should be accepted")
+
+        def acceptProposedAction(self):
+            accepted.append(True)
+
+    panel.drop_scene_items(Event())
+
+    assert accepted == [True]
+    # The drop callback must not rebuild the tree or move the item yet.
+    assert panel.tree.topLevelItem(0) is root
+    assert panel.tree_item(("item", KIND_ROUTING, "r1")) is row
+    assert panel.scene.item(KIND_ROUTING, "r1").group == source
+
+    application().processEvents()
+    application().processEvents()
+
+    assert panel.scene.item(KIND_ROUTING, "r1").group == destination
+    assert panel.tree_item(("item", KIND_ROUTING, "r1")) is not row
+
+
+def test_refresh_and_rebuild_defer_while_a_drag_is_active(tmp_path):
+    application()
+    panel = panel_for(tmp_path, routes=[FakeRoute("r1", "Route")])
+    root = panel.tree.topLevelItem(0)
+    row = panel.item_row(KIND_ROUTING, "r1")
+
+    panel._refresh_timer.start(0)
+    panel._begin_drag()
+    assert not panel._refresh_timer.isActive()
+
+    panel.refresh()
+    panel._rebuild()
+    panel._deferred_change()
+
+    assert panel.tree.topLevelItem(0) is root
+    assert panel.tree_item(("item", KIND_ROUTING, "r1")) is row
+
+    panel._end_drag()
+    assert panel._refresh_timer.isActive()
+
+    application().processEvents()
+    application().processEvents()
+
+    assert panel.tree.topLevelItem(0) is not root
+    assert panel.tree_item(("item", KIND_ROUTING, "r1")) is not None
+
+
+def test_tree_drop_configuration_matches_the_move_handler(tmp_path):
+    application()
+    panel = panel_for(tmp_path, routes=[FakeRoute("r1", "Route")])
+
+    assert panel.tree.defaultDropAction() == Qt.DropAction.MoveAction
+    assert panel.tree.dragDropMode() == QAbstractItemView.DragDropMode.InternalMove
+    row = panel.item_row(KIND_ROUTING, "r1")
+    assert row.flags() & Qt.ItemFlag.ItemIsDropEnabled
 
 
 def test_expanding_legs_reads_calculated_result_legs(tmp_path):

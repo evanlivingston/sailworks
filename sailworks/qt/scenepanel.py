@@ -636,8 +636,31 @@ class SceneTree(QTreeWidget):
         self.verticalScrollBar().valueChanged.connect(self.tooltip.hide)
         self.horizontalScrollBar().valueChanged.connect(self.tooltip.hide)
 
+    def startDrag(self, supported_actions):  # noqa: N802 - Qt virtual method name
+        # QDrag.exec() runs a native nested loop that can deliver a queued
+        # refresh, and therefore a tree rebuild, before it returns. Mark the
+        # drag so the panel defers that rebuild instead of clearing the rows
+        # that are currently the drag source.
+        self.panel._begin_drag()
+        try:
+            super().startDrag(supported_actions)
+        finally:
+            self.panel._end_drag()
+
     def dropEvent(self, event):  # noqa: N802 - Qt virtual method name
         self.panel.drop_scene_items(event)
+        if not event.isAccepted():
+            return
+        # Do the teardown the base class performs on an accepted drop. Calling
+        # super().dropEvent() would also run the view's own model drop, which
+        # in InternalMove mode would move the rows a second time and desync
+        # them from the scene, so close the interaction explicitly instead.
+        stop_autoscroll = getattr(self, "stopAutoScroll", None)
+        if callable(stop_autoscroll):
+            stop_autoscroll()
+        reset_state = getattr(self, "setState", None)
+        if callable(reset_state):
+            reset_state(QAbstractItemView.State.NoState)
 
     def _hide_tooltip(self):
         # Qt can deliver viewport events while the base class is still being
@@ -906,6 +929,12 @@ class ScenePanel(QWidget):
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.timeout.connect(self._deferred_change)
+        # Rebuilding the tree while a native drag is live destroys the drag
+        # source items and hangs the drag session, so refresh-style work is
+        # deferred until the drag returns.
+        self._drag_active = False
+        self._refresh_pending = False
+        self._pending_drop = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 12)
@@ -923,7 +952,11 @@ class ScenePanel(QWidget):
         self.tree.setDragEnabled(True)
         self.tree.setAcceptDrops(True)
         self.tree.setDropIndicatorShown(True)
-        self.tree.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        # The handler moves scene items, and it rejects drops from any other
+        # source, so the view configuration should say so rather than inherit
+        # CopyAction from the base class.
+        self.tree.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.tree.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.setStyleSheet(_visibility_style())
         self.tree.header().setStretchLastSection(False)
@@ -1072,6 +1105,9 @@ class ScenePanel(QWidget):
     def refresh(self):
         if self.syncing:
             return
+        if self._drag_active:
+            self._refresh_pending = True
+            return
         self.syncing = True
         try:
             library_entries = {
@@ -1113,6 +1149,9 @@ class ScenePanel(QWidget):
     # Tree construction
 
     def _rebuild(self):
+        if self._drag_active:
+            self._refresh_pending = True
+            return
         selected = self._selected_nodes()
         with QSignalBlocker(self.tree):
             self.tree.clear()
@@ -1228,6 +1267,7 @@ class ScenePanel(QWidget):
                 Qt.ItemFlag.ItemIsEnabled
                 | Qt.ItemFlag.ItemIsSelectable
                 | Qt.ItemFlag.ItemIsDragEnabled
+                | Qt.ItemFlag.ItemIsDropEnabled
             )
             if entry.kind in (KIND_TRACK, KIND_ROUTING, KIND_POI, KIND_SHAPE):
                 flags |= Qt.ItemFlag.ItemIsUserCheckable
@@ -1734,7 +1774,26 @@ class ScenePanel(QWidget):
                     # repaint the canvas overlay without touching the switch.
                     self.changed.emit()
 
+    def _begin_drag(self):
+        self._drag_active = True
+        if self._refresh_timer.isActive():
+            self._refresh_timer.stop()
+            self._refresh_pending = True
+
+    def _end_drag(self):
+        self._drag_active = False
+        pending_drop, self._pending_drop = self._pending_drop, None
+        if pending_drop is not None:
+            QTimer.singleShot(0, lambda: self._drop_scene_selection(*pending_drop))
+        if self._refresh_pending:
+            self._refresh_pending = False
+            # Run after the native drag has fully returned to the event loop.
+            self._refresh_timer.start(0)
+
     def _deferred_change(self):
+        if self._drag_active:
+            self._refresh_pending = True
+            return
         self.syncing = True
         try:
             self._rebuild()
@@ -2498,5 +2557,29 @@ class ScenePanel(QWidget):
             return
         else:
             target = None
-        self._move_to(self._selected_item_keys(), self._selected_groups(), target)
+        keys = self._selected_item_keys()
+        groups = self._selected_groups()
         event.acceptProposedAction()
+        # Never mutate the tree inside the native drop callback: rebuilding
+        # there deletes the drag source items while the drag session is still
+        # live. Resolve the selection now and move once the drag has ended.
+        QTimer.singleShot(0, lambda: self._drop_scene_selection(keys, groups, target))
+
+    def _drop_scene_selection(self, keys, groups, target):
+        if self._drag_active:
+            # The timer fired inside the native drag loop; run after teardown.
+            self._pending_drop = (keys, groups, target)
+            return
+        # The scene may have changed while the drop was deferred, so re-validate
+        # the target and drop anything that no longer exists.
+        if target is not None and self.scene.group(target) is None:
+            return
+        keys = [key for key in keys if self.scene.item(*key) is not None]
+        groups = [
+            identifier
+            for identifier in groups
+            if self.scene.group(identifier) is not None
+        ]
+        if not keys and not groups:
+            return
+        self._move_to(keys, groups, target)

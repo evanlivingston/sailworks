@@ -114,7 +114,9 @@ class RoutingController(QObject):
         self.progress_indeterminate = False
         self.native_started_at = None
         self.native_counters = {}
-        self.message = "Wind-only routing"
+        # Idle status carries no message: the panel shows nothing until a run
+        # reports what it is doing.
+        self.message = ""
         self.error = ""
         self.request = None
         self.worker_thread = None

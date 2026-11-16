@@ -10,10 +10,8 @@ specification the engine would reject anyway.
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
-    QHBoxLayout,
     QLabel,
     QPlainTextEdit,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -32,7 +30,7 @@ from sailworks.core.historicalrouting import (
     MIN_YEARS,
 )
 
-from .dropdown import FieldRow
+from .dropdown import ToggleFieldRow
 from .historicalroutingprogress import HistoricalProgress
 from .slider import Slider
 
@@ -48,7 +46,6 @@ def _caption(text):
 class HistoricalRoutingOptions(QWidget):
     """Inputs for historical-year ensemble routing."""
 
-    cancel_requested = Signal()
     values_changed = Signal()
 
     def __init__(self, parent=None):
@@ -57,7 +54,6 @@ class HistoricalRoutingOptions(QWidget):
         self._available_reason = ""
         self._running = False
         self._build()
-        self._sync_buttons()
 
     # -- construction ----------------------------------------------------
     def _build(self):
@@ -75,7 +71,7 @@ class HistoricalRoutingOptions(QWidget):
             "Number of calendar years replayed, ending at the departure year."
         )
         self.years.valueChanged.connect(lambda *_: self.values_changed.emit())
-        layout.addWidget(FieldRow("Years", self.years))
+        layout.addWidget(ToggleFieldRow("Years", self.years, checkbox=False))
 
         self.offset_days = Slider()
         self.offset_days.setDecimals(0)
@@ -87,7 +83,7 @@ class HistoricalRoutingOptions(QWidget):
             "Days before and after the departure date to test in each year."
         )
         self.offset_days.valueChanged.connect(lambda *_: self.values_changed.emit())
-        layout.addWidget(FieldRow("± days", self.offset_days))
+        layout.addWidget(ToggleFieldRow("± days", self.offset_days, checkbox=False))
 
         self.max_duration = Slider()
         self.max_duration.setDecimals(0)
@@ -98,7 +94,9 @@ class HistoricalRoutingOptions(QWidget):
         self.max_duration.setAccessibleName("Max passage hours")
         self.max_duration.setToolTip("Elapsed route time limit, in six-hour steps.")
         self.max_duration.valueChanged.connect(self._horizon_changed)
-        layout.addWidget(FieldRow("Max passage", self.max_duration))
+        layout.addWidget(
+            ToggleFieldRow("Max passage", self.max_duration, checkbox=False)
+        )
 
         self.use_currents = QCheckBox("Target-date currents (shared)")
         self.use_currents.setAccessibleName("Target-date currents (shared)")
@@ -135,16 +133,6 @@ class HistoricalRoutingOptions(QWidget):
         self.progress_widget = HistoricalProgress()
         self.progress_widget.setAccessibleName("Historical routing progress")
         layout.addWidget(self.progress_widget)
-
-        buttons = QHBoxLayout()
-        buttons.setSpacing(8)
-        self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.setAccessibleName("Cancel historical run")
-        self.cancel_button.setEnabled(False)
-        self.cancel_button.clicked.connect(lambda *_: self.cancel_requested.emit())
-        buttons.addWidget(self.cancel_button)
-        buttons.addStretch(1)
-        layout.addLayout(buttons)
         layout.addStretch(1)
 
     # -- values ----------------------------------------------------------
@@ -204,16 +192,10 @@ class HistoricalRoutingOptions(QWidget):
             self.progress_widget.start()
         else:
             self.progress_widget.stop()
-        self._sync_buttons()
 
     def set_available(self, available, reason=""):
         self._available = bool(available)
         self._available_reason = reason or ""
-        self._sync_buttons()
-
-    def _sync_buttons(self):
-        # Starting belongs to Calculate route; only a running job can be cancelled.
-        self.cancel_button.setEnabled(self._running)
 
     # -- validation ------------------------------------------------------
     def validation_message(self):

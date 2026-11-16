@@ -189,6 +189,45 @@ def test_happy_path_checkpoints_every_stage(monkeypatch, tmp_path):
     assert record.last_checkpoint_utc
 
 
+def test_cancel_between_members_stops_scheduling_and_stays_resumable(
+    monkeypatch, tmp_path
+):
+    """A cancel after the first member leaves the rest unstarted, not failed."""
+    store = HistoricalRoutingStore(tmp_path / "store")
+    spec = _spec()
+    plans = plan_members(spec)
+    by_member = {outcome.member_id: outcome for outcome in _outcomes(spec)}
+    cancelling = []
+
+    def runner(executions, *, on_outcome=None, concurrency=None):
+        assert len(executions) == 1, "a cancel handle makes members run one at a time"
+        outcome = by_member[executions[0].member_id]
+        on_outcome(outcome)
+        cancelling.append(True)
+        return [outcome]
+
+    coordinator, job_id, wind, used_runner = _start(
+        monkeypatch,
+        store,
+        spec,
+        run_bound=runner,
+        cancel=lambda: bool(cancelling),
+    )
+
+    assert used_runner is runner
+    record = store.load(job_id)
+    assert record.state == "cancelled"
+    finished = record.members[plans[0].member_id]
+    assert finished.state == "finished"
+    assert finished.outcome == "finished"
+    for plan in plans[1:]:
+        member = record.members[plan.member_id]
+        assert member.state != "finished"
+        assert member.attempts == 0
+    assert record.spec["summary"]["finished"] == 1
+    assert len(record.attempt_history) == 1
+
+
 def test_one_unavailable_year_is_excluded_whole(monkeypatch, tmp_path):
     store = HistoricalRoutingStore(tmp_path / "store")
     spec = _spec()

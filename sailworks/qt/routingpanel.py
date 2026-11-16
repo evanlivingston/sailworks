@@ -38,7 +38,7 @@ from sailworks.core.routingoptions import (
 )
 from .historicalrouting import HistoricalRoutingPanel
 from .scrollchrome import style_scrollarea
-from .dropdown import Dropdown, FieldRow
+from .dropdown import Dropdown, FieldRow, ToggleFieldRow
 from .slider import Slider
 from .theme import TYPE_CAPTION, TYPE_DETAIL, section_label
 from .text import qt_text
@@ -217,6 +217,11 @@ class RoutingPanel(QWidget):
         setup_layout.addWidget(section_label("Route setup"))
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        # Every row here is one full-width widget, so the form must not inset
+        # it: zero margins and no label/field gap keep the widget spanning the
+        # same width as a Blender-style row on the Compare page.
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setHorizontalSpacing(0)
         self.backend = Dropdown("Calculation")
         self.backend.addItem("Legacy (default)", "legacy")
         self.backend.addItem("Native (experimental)", "native")
@@ -262,9 +267,9 @@ class RoutingPanel(QWidget):
         self.start_mode.currentIndexChanged.connect(self._plan_changed)
         form.addRow(self.destination)
         form.addRow(self.start_mode)
-        self.coastlines = QCheckBox("Check coastlines")
+        self.coastlines = QCheckBox()
         self.coastlines.setChecked(True)
-        form.addRow(self.coastlines)
+        form.addRow(ToggleFieldRow("Check coastlines", checkbox=self.coastlines))
         self.coastline_clearance = Slider("Keep off coast")
         self.coastline_clearance.setDecimals(1)
         self.coastline_clearance.setRange(0, 100)
@@ -287,7 +292,7 @@ class RoutingPanel(QWidget):
         self.calculate.setProperty("primary", True)
         self.calculate.clicked.connect(self._calculate)
         self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.clicked.connect(self.routing.cancel)
+        self.cancel_button.clicked.connect(self._cancel_run)
         actions.addWidget(self.calculate)
         actions.addWidget(self.cancel_button)
 
@@ -330,23 +335,33 @@ class RoutingPanel(QWidget):
     def _build_safety_controls(self):
         self.safety_form = QFormLayout()
         self.safety_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        self.safety_form.setContentsMargins(0, 0, 0, 0)
+        self.safety_form.setHorizontalSpacing(0)
         self.safety_form.addRow(section_label("Routing limits"))
-        self.limit_wind = QCheckBox("Limit maximum true wind")
+        self.limit_wind = QCheckBox()
         self.limit_wind.setAccessibleDescription(SAFETY_HELP["limit_wind"])
         self.maximum_wind = self._speed_control(30, 100, "Maximum wind")
         self.maximum_wind.setAccessibleDescription(SAFETY_HELP["limit_wind"])
         self.safety_form.addRow(
-            self._row_with_info(self.limit_wind, SAFETY_HELP["limit_wind"])
+            self._row_with_info(
+                ToggleFieldRow("Limit maximum true wind", checkbox=self.limit_wind),
+                SAFETY_HELP["limit_wind"],
+            )
         )
         self.safety_form.addRow(self.maximum_wind)
-        self.motor_fallback = QCheckBox("Use motor below sailing speed")
+        self.motor_fallback = QCheckBox()
         self.motor_fallback.setAccessibleDescription(SAFETY_HELP["motor_fallback"])
         self.minimum_sailing_speed = self._speed_control(3, 30, "Sailing speed")
         self.minimum_sailing_speed.setAccessibleDescription(
             SAFETY_HELP["motor_fallback"]
         )
         self.safety_form.addRow(
-            self._row_with_info(self.motor_fallback, SAFETY_HELP["motor_fallback"])
+            self._row_with_info(
+                ToggleFieldRow(
+                    "Use motor below sailing speed", checkbox=self.motor_fallback
+                ),
+                SAFETY_HELP["motor_fallback"],
+            )
         )
         self.safety_form.addRow(self.minimum_sailing_speed)
         self.motor_speed = self._speed_control(5, 30, "Motoring speed")
@@ -354,10 +369,15 @@ class RoutingPanel(QWidget):
         self.safety_form.addRow(
             self._row_with_info(self.motor_speed, SAFETY_HELP["motor_speed"])
         )
-        self.wave_proxy = QCheckBox("Wind-based speed reduction (wave proxy)")
+        self.wave_proxy = QCheckBox()
         self.wave_proxy.setAccessibleDescription(SAFETY_HELP["wave_proxy"])
         self.safety_form.addRow(
-            self._row_with_info(self.wave_proxy, SAFETY_HELP["wave_proxy"])
+            self._row_with_info(
+                ToggleFieldRow(
+                    "Wind-based speed reduction (wave proxy)", checkbox=self.wave_proxy
+                ),
+                SAFETY_HELP["wave_proxy"],
+            )
         )
         self.parameters_box.layout().addLayout(self.safety_form)
         for control in (self.limit_wind, self.motor_fallback, self.wave_proxy):
@@ -401,6 +421,8 @@ class RoutingPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         self.parameter_form = QFormLayout()
         self.parameter_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        self.parameter_form.setContentsMargins(0, 0, 0, 0)
+        self.parameter_form.setHorizontalSpacing(0)
         layout.addLayout(self.parameter_form)
 
         self.parameters_header = QToolButton()
@@ -552,8 +574,16 @@ class RoutingPanel(QWidget):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
+        button = self._info_button(text)
         layout.addWidget(widget, 1)
-        layout.addWidget(self._info_button(text))
+        layout.addWidget(button)
+        # The trailing button shortens the widget. A row that paints its own
+        # columns takes them from the full width instead, so the control keeps
+        # the same left edge as a row without a button and only its right edge
+        # stops before the button.
+        set_gutter = getattr(widget, "set_column_gutter", None)
+        if set_gutter is not None:
+            set_gutter(layout.spacing() + button.width())
         return row
 
     def _read_parameters(self):
@@ -582,8 +612,9 @@ class RoutingPanel(QWidget):
             widget.setAccessibleName(param.name)
             label = qt_text(param.name)
             if isinstance(widget, QCheckBox):
-                widget.setText(label)
-                row = self._row_with_info(widget, help_text)
+                row = self._row_with_info(
+                    ToggleFieldRow(label, checkbox=widget), help_text
+                )
             else:
                 widget.setLabel(label)
                 row = self._row_with_info(widget, help_text)
@@ -616,19 +647,29 @@ class RoutingPanel(QWidget):
         scroll.setWidget(content)
         return scroll
 
+    def _active_track_name(self):
+        """The selected track's name, for the historical job's collection.
+
+        The panel is built without a window or track manager reference, so a
+        missing core or track simply means the job is not track-specific.
+        """
+        core = getattr(self.controller, "core", None)
+        tracks = getattr(core, "trackManager", None)
+        get_active = getattr(tracks, "get_active", None)
+        track = get_active() if callable(get_active) else None
+        return str(getattr(track, "name", "") or "")
+
     def _build_option_pages(self):
         compare_page = QWidget()
         compare = QVBoxLayout(compare_page)
         self.comparison_axes = {}
         for key, label, text, _ in AXES:
-            enabled, values = QCheckBox(label), QLineEdit(text)
-            values.setEnabled(False)
-            enabled.toggled.connect(values.setEnabled)
-            enabled.toggled.connect(lambda *_: self.options_changed.emit())
+            values = QLineEdit(text)
+            row = ToggleFieldRow(label, values)
+            row.checked_changed.connect(lambda *_: self.options_changed.emit())
             values.textChanged.connect(lambda *_: self.options_changed.emit())
-            compare.addWidget(enabled)
-            compare.addWidget(FieldRow("Values", values))
-            self.comparison_axes[key] = (enabled, values)
+            compare.addWidget(row)
+            self.comparison_axes[key] = (row.checkbox(), values)
         compare.addWidget(section_label("Historical years"))
         self.historical_enabled = QCheckBox("Run historical years")
         self.historical_enabled.setAccessibleName("Run historical years")
@@ -641,6 +682,7 @@ class RoutingPanel(QWidget):
         self.historical = HistoricalRoutingPanel(
             self.routing,
             request_provider=lambda: self._request("native")[0],
+            track_name_provider=self._active_track_name,
         )
         self.historical.setVisible(False)
         compare.addWidget(self.historical, 1)
@@ -708,7 +750,14 @@ class RoutingPanel(QWidget):
         self.priority_info.setText("ⓘ")
         self.priority_info.setToolTip("Why this matters")
         self.priority_info.clicked.connect(self._explain_priority)
+        # Same trailing-button geometry as an info row, so the dropdown keeps
+        # the shared control column instead of shifting left.
+        priority_row.setSpacing(4)
+        self.priority_info.setFixedWidth(self.priority_info.sizeHint().width())
         priority_row.addWidget(self.priority_info)
+        self.current_priority.set_column_gutter(
+            priority_row.spacing() + self.priority_info.width()
+        )
         self.parameters_box.layout().addLayout(priority_row)
 
     @staticmethod
@@ -1122,6 +1171,9 @@ class RoutingPanel(QWidget):
                     )
         except (ValueError, OverflowError) as error:
             self.status.setText(str(error))
+            # A validation error arrives while the panel is idle, so the
+            # label has to be shown again for the message to be readable.
+            self._sync_run_visibility(self.historical.is_running())
             return
         self.routing.start(request, scenarios, backend=backend)
 
@@ -1284,27 +1336,47 @@ class RoutingPanel(QWidget):
         )
 
     def _sync_run_visibility(self, historical_running):
-        """One progress display and one Cancel at a time.
+        """One progress display at a time, and no idle chrome.
 
-        The historical panel owns progress while a historical run is alive.
-        This panel's Cancel is the one tied to the routing engine, so it stays
-        visible only while the engine is actually running; during acquisition
-        the historical panel's Cancel is the one that works.
+        The progress bar shows only while this panel's routing run is live.
+        The historical panel owns progress while a historical run is alive,
+        so this bar stays hidden then. The status label shows only when it has
+        something to say, so an idle panel keeps its buttons but no empty bar
+        and no stray separator. The bottom Cancel is now the only Cancel: it
+        dispatches to the historical job while one is running and to the
+        routing engine otherwise, so it stays visible in every state.
         """
-        for widget in (self.progress, self.status):
-            widget.setVisible(not historical_running)
-        self.cancel_button.setVisible(not historical_running or self.routing.busy)
+        self.progress.setVisible(bool(self.routing.busy) and not historical_running)
+        has_text = bool(self.status.text().strip())
+        self.status.setVisible(has_text and not historical_running)
+
+    def _cancel_run(self):
+        """Cancel whichever run is live behind the single Cancel button."""
+        if self.historical.is_running():
+            self.historical.cancel_job()
+        else:
+            self.routing.cancel()
+
+    def _historical_cancelling(self):
+        event = getattr(self.historical, "_cancel_event", None)
+        return bool(event is not None and event.is_set())
+
+    def _cancel_requested(self, historical_running):
+        if historical_running:
+            return self._historical_cancelling()
+        return bool(self.routing.cancel_event.is_set())
 
     def _display_status(self):
         message = self.routing.message
         if not self._native_heartbeat_active():
             return message
         elapsed = self._elapsed_text(time.monotonic() - self.routing.native_started_at)
-        text = f"{message} · elapsed {elapsed}"
+        parts = [message] if message else []
+        parts.append(f"elapsed {elapsed}")
         counters = self._counter_text(getattr(self.routing, "native_counters", None))
         if counters:
-            text += f" · {counters}"
-        return text
+            parts.append(counters)
+        return " · ".join(parts)
 
     def _tick_native_heartbeat(self):
         if not self._native_heartbeat_active():
@@ -1317,9 +1389,6 @@ class RoutingPanel(QWidget):
         # the routing controller behind Calculate route is idle.
         historical_running = self.historical.is_running()
         busy = self.routing.busy or historical_running
-        # The historical panel shows its own progress, status and Cancel while
-        # it runs; a second copy here only competes for attention.
-        self._sync_run_visibility(historical_running)
         self._refresh_safety()
         for control in (
             *self.inputs,
@@ -1341,7 +1410,9 @@ class RoutingPanel(QWidget):
             and self.polar.count() > 0
             and self.destination.currentData() is not None
         )
-        self.cancel_button.setEnabled(busy and not self.routing.cancel_event.is_set())
+        self.cancel_button.setEnabled(
+            busy and not self._cancel_requested(historical_running)
+        )
         if getattr(self.routing, "progress_indeterminate", False):
             # Native runs expose lifecycle messages only: show a busy bar
             # rather than a percentage the engine cannot report.
@@ -1357,3 +1428,7 @@ class RoutingPanel(QWidget):
         else:
             self._native_elapsed_timer.stop()
         self.status.setText(self._display_status())
+        # Visibility follows the text just written: the progress bar shows
+        # only for a live routing run, the status only when it has something
+        # to say. The historical panel owns its own chrome while it runs.
+        self._sync_run_visibility(historical_running)

@@ -82,6 +82,9 @@ class HistoricalRoutingSpec:
     requested_backend: str = "native"
     configuration_fingerprint: str = ""
     software_version: str = ""
+    # The track this analysis belongs to, when the caller knows one. Empty for
+    # records written before the field existed and for untracked analyses.
+    track_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -142,7 +145,9 @@ def validate_spec(spec: HistoricalRoutingSpec) -> list[str]:
     if not MIN_YEARS <= spec.years <= MAX_YEARS:
         errors.append(f"years must be between {MIN_YEARS} and {MAX_YEARS}.")
     if not MIN_OFFSET_DAYS <= spec.offset_days <= MAX_OFFSET_DAYS:
-        errors.append(f"offset days must be between {MIN_OFFSET_DAYS} and {MAX_OFFSET_DAYS}.")
+        errors.append(
+            f"offset days must be between {MIN_OFFSET_DAYS} and {MAX_OFFSET_DAYS}."
+        )
     count = spec.years * (2 * spec.offset_days + 1)
     if count > MAX_MEMBERS:
         errors.append(f"{count} members exceeds the {MAX_MEMBERS}-member limit.")
@@ -157,7 +162,10 @@ def validate_spec(spec: HistoricalRoutingSpec) -> list[str]:
         errors.append("historical routing requires the native backend.")
     if spec.created_at_utc.tzinfo is None:
         errors.append("created_at_utc must be timezone-aware.")
-    if spec.selected_departure_local.second or spec.selected_departure_local.microsecond:
+    if (
+        spec.selected_departure_local.second
+        or spec.selected_departure_local.microsecond
+    ):
         errors.append("selected departure must have zero seconds and microseconds.")
     try:
         ZoneInfo(spec.timezone_id)
@@ -172,7 +180,9 @@ def validate_spec(spec: HistoricalRoutingSpec) -> list[str]:
     return errors
 
 
-def _validate_region(region: tuple[float, float, float, float], errors: list[str]) -> None:
+def _validate_region(
+    region: tuple[float, float, float, float], errors: list[str]
+) -> None:
     try:
         west, south, east, north = (float(value) for value in region)
     except (TypeError, ValueError):
@@ -203,7 +213,8 @@ def resolve_local_departure(
     if (month, day) == (2, 29) and not _is_leap_year(year):
         adjustments.append(
             CalendarAdjustment(
-                "leap_day", f"{year:04d}-02-29 does not exist; substituted {year:04d}-02-28."
+                "leap_day",
+                f"{year:04d}-02-29 does not exist; substituted {year:04d}-02-28.",
             )
         )
         day = 28
@@ -250,9 +261,9 @@ def plan_members(spec: HistoricalRoutingSpec) -> tuple[HistoricalMemberPlan, ...
                 f"{year:04d}-02-29 does not exist; substituted {year:04d}-02-28.",
             )
         for offset in range(-spec.offset_days, spec.offset_days + 1):
-            intended = datetime(year, base.month, day, base.hour, base.minute) + timedelta(
-                days=offset
-            )
+            intended = datetime(
+                year, base.month, day, base.hour, base.minute
+            ) + timedelta(days=offset)
             resolved, adjustments = resolve_local_departure(
                 intended.year,
                 intended.month,
@@ -294,7 +305,9 @@ def plan_years(spec: HistoricalRoutingSpec, unavailable) -> tuple[YearPlan, ...]
                 reason = f"{planned.member_id}: {detail}"
                 break
         state = YearState.EXCLUDED if reason else YearState.ELIGIBLE
-        plans.append(YearPlan(year=year, state=state, excluded_reason=reason, members=group))
+        plans.append(
+            YearPlan(year=year, state=state, excluded_reason=reason, members=group)
+        )
     return tuple(plans)
 
 

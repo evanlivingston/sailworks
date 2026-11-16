@@ -4,7 +4,7 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFontMetrics, QPainter
 from PySide6.QtWidgets import QSizePolicy, QSlider
 
-from .dropdown import FIELD_FRACTION
+from .dropdown import field_columns, label_band
 
 ROW_HEIGHT = 32
 
@@ -26,6 +26,9 @@ class Slider(QSlider):
         self._minimum = 0.0
         self._maximum = 99.0
         self._single_step = 1.0
+        # Space a trailing widget (an info button) takes from the row; see
+        # Dropdown.set_column_gutter.
+        self._column_gutter = 0
         super().__init__(Qt.Orientation.Horizontal, parent)
         self.setFixedHeight(ROW_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -45,6 +48,24 @@ class Slider(QSlider):
 
     def text(self):
         return self._text
+
+    def set_column_gutter(self, pixels):
+        """Reserve ``pixels`` at the row's right edge for a trailing widget.
+
+        The label and track columns are computed from the full row width, so
+        a row that ends in an info button keeps the same track left edge as
+        every other row; only its track's right edge stops sooner.
+        """
+        gutter = max(0, int(pixels))
+        if gutter != self._column_gutter:
+            self._column_gutter = gutter
+            self.update()
+
+    def column_gutter(self):
+        return self._column_gutter
+
+    def _column_width(self):
+        return self.width() + self._column_gutter
 
     def setText(self, text):
         self._text = text
@@ -100,7 +121,12 @@ class Slider(QSlider):
 
     def _field_rect(self) -> QRectF:
         width = self.width()
-        left = round(width * (1.0 - FIELD_FRACTION))
+        # A labelled slider paints its label in the left band, so the track
+        # starts at the shared control column. Without a label there is no
+        # band to reserve: the track spans the whole widget and lines up with
+        # the other fields.
+        _, control_left, _ = field_columns(self._column_width())
+        left = control_left if self._label else 0
         return QRectF(left, 2, max(0, width - left - 2), max(0, self.height() - 4))
 
     def _value_at(self, x) -> float:
@@ -165,7 +191,7 @@ class Slider(QSlider):
         metrics = QFontMetrics(self.font())
 
         if self._label:
-            label_rect = QRectF(6, 0, max(0, field.left() - 18), self.height())
+            label_rect = label_band(self._column_width(), self.height())
             painter.setPen(text_color)
             painter.drawText(
                 label_rect,

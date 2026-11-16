@@ -69,12 +69,16 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         scene_provider=None,
         store_factory=None,
         request_provider=None,
+        track_name_provider=None,
         service_factory=None,
         parent=None,
     ):
         super().__init__(parent)
         self.routing_controller = routing_controller
         self.request_provider = request_provider
+        # Optional callable returning the active track's name, so the job's
+        # scene collection can name the track it analysed.
+        self.track_name_provider = track_name_provider
         # Ensemble acquisitions use the ARCO transport by default; tests and
         # callers may still inject a fake through ``service_factory``.
         self._service_factory = service_factory or ArcoDownloadService
@@ -120,9 +124,7 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         # opens its results. There is no separate job selector here.
         self.job_selector = None
 
-        self.options.cancel_requested.connect(self.cancel_job)
         self.options.values_changed.connect(self._values_changed)
-        self.results.member_selected.connect(self._member_selected)
         self.results.delete_requested.connect(self.delete_job)
         self.results.retry_failed_requested.connect(self.retry_failed)
         self.results.recheck_requested.connect(self.recheck_excluded)
@@ -162,6 +164,16 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
                 "Build a route request before starting historical routing."
             )
         return request
+
+    def _track_name(self):
+        """The active track's name, or ``""`` when no track is selected."""
+        if self.track_name_provider is None:
+            return ""
+        try:
+            name = self.track_name_provider()
+        except Exception:  # a missing track must never block a job
+            return ""
+        return " ".join(str(name or "").split())
 
     def is_running(self):
         """Whether a historical run, including weather acquisition, is alive."""
@@ -231,6 +243,7 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
             region=region,
             backend="native",
             requested_backend="native",
+            track_name=self._track_name(),
         )
 
     # -- job lifecycle ---------------------------------------------------
@@ -267,9 +280,6 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
             # Acquisition left its phase label behind; show what the engine is
             # actually doing now instead of a stale "Acquiring weather".
             self.options.set_status(getattr(rc, "message", "") or "Routing members")
-        # Only one Cancel is shown: the routing engine's while it runs, this
-        # panel's while acquisition is the thing that can be stopped.
-        self.options.cancel_button.setVisible(not routing)
         return {
             "weather_detail": detail,
             "running": bool(getattr(rc, "busy", False))
@@ -377,9 +387,6 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
 
     def delete_job(self):
         self.actions.delete_job()
-
-    def _member_selected(self, member_id):
-        self.actions.member_selected(member_id)
 
     def _result_uids(self):
         return self.actions.result_uids()

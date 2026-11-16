@@ -5,19 +5,43 @@ import string
 import sys
 from functools import lru_cache
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPalette, QIcon, QPainter
-from PySide6.QtWidgets import QApplication, QLabel, QMenu
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QPalette, QIcon, QPainter, QPen
+from PySide6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QMenu,
+    QProxyStyle,
+    QStyle,
+    QStyleFactory,
+)
 from sailworks.common import resource_path
 from .scrollchrome import install_wheel_guard
 
 BACKGROUND = "#242424"
 PANEL = "#303030"
 SURFACE = "#1e1e1e"
+# Fill of an editable field, identical to the slider track in
+# ``sailworks.qt.slider`` so text inputs and sliders read as the same control.
+TRACK = "#2b2b2b"
 TEXT = "#e6e6e6"
 MUTED = "#b0b0ad"
 ACCENT = "#3584e4"
 BORDER = "#454545"
+DISABLED_SURFACE = "#292929"
+DISABLED_TEXT = "#777774"
+# Dimmed accent fill for a checked control that cannot be operated.
+DISABLED_ACCENT = "#3a4656"
+# Hover fill of an editable field.
+HOVER_SURFACE = "#323232"
+# An unchecked box is a flat grey, roughly twice the row background in
+# lightness, so it reads as a box rather than a black hole. Its hover is one
+# step lighter; it is distinct from the field hover, which is darker.
+UNCHECKED_SURFACE = "#3a3a3a"
+UNCHECKED_HOVER = "#474747"
+# Checkbox indicator box. The toggle field rows reserve a slot this wide, so
+# the painted indicator and its metrics must keep exactly this size.
+INDICATOR_SIZE = 15
 
 # Alternating row tint for dense lists such as the scene tree. Blender's
 # outliner separates rows with a barely visible band rather than a stripe, so
@@ -199,10 +223,85 @@ def _force_macos_dark_appearance() -> bool:
         return False
 
 
+class ThemeStyle(QProxyStyle):
+    """Fusion with flat, borderless checkbox indicators.
+
+    QSS cannot express this: any drawable rule on ``QCheckBox::indicator``
+    replaces Fusion's rendering, and ``:checked`` loses the tick glyph as soon
+    as the rule paints a background. So the box and the tick are painted here,
+    while everything else stays with Fusion. The indicator keeps the theme's
+    fixed size so the toggle field rows keep their geometry.
+    """
+
+    def __init__(self):
+        super().__init__(QStyleFactory.create("Fusion"))
+
+    def pixelMetric(self, metric, option=None, widget=None):  # noqa: N802
+        if metric in (
+            QStyle.PixelMetric.PM_IndicatorWidth,
+            QStyle.PixelMetric.PM_IndicatorHeight,
+        ):
+            return INDICATOR_SIZE
+        return super().pixelMetric(metric, option, widget)
+
+    def drawPrimitive(self, element, option, painter, widget=None):  # noqa: N802
+        if element == QStyle.PrimitiveElement.PE_IndicatorCheckBox:
+            self._paint_checkbox(option, painter)
+            return
+        super().drawPrimitive(element, option, painter, widget)
+
+    @staticmethod
+    def _paint_checkbox(option, painter):
+        state = option.state
+        enabled = bool(state & QStyle.StateFlag.State_Enabled)
+        checked = bool(state & QStyle.StateFlag.State_On)
+        hovered = bool(state & QStyle.StateFlag.State_MouseOver)
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # No pen at any point: the box is a flat fill like the slider track.
+        painter.setPen(Qt.PenStyle.NoPen)
+        if not enabled:
+            fill, mark = QColor(DISABLED_SURFACE), QColor(DISABLED_TEXT)
+        elif checked:
+            fill, mark = QColor(ACCENT), QColor(TEXT)
+        else:
+            fill = QColor(UNCHECKED_HOVER if hovered else UNCHECKED_SURFACE)
+            mark = None
+        rect = QRectF(option.rect)
+        painter.setBrush(fill)
+        painter.drawRoundedRect(rect, 3, 3)
+
+        if mark is not None:
+            tick = QPen(mark, 1.7)
+            tick.setCapStyle(Qt.PenCapStyle.RoundCap)
+            tick.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(tick)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            left, top = rect.left(), rect.top()
+            painter.drawPolyline(
+                [
+                    QPointF(left + 3.5, top + 7.6),
+                    QPointF(left + 6.3, top + 10.4),
+                    QPointF(left + 11.4, top + 4.6),
+                ]
+            )
+        painter.restore()
+
+
+# Application keeps ownership of the style; the reference only stops Python
+# from collecting it while the QApplication still points at it.
+_style = None
+
+
 def apply_theme(app: QApplication):
     # Fusion consistently honors the dark palette on all supported platforms.
     # Native window decorations and native filesystem dialogs remain OS-owned.
-    app.setStyle("Fusion")
+    # The proxy paints the controls QSS cannot style cleanly; the palette and
+    # stylesheet are applied on top of it exactly as before.
+    global _style
+    _style = ThemeStyle()
+    app.setStyle(_style)
     app.styleHints().setColorScheme(Qt.ColorScheme.Dark)
     _force_macos_dark_appearance()
     palette = QPalette()
@@ -226,8 +325,15 @@ def apply_theme(app: QApplication):
         QPalette.ColorRole.Text,
         QPalette.ColorRole.WindowText,
         QPalette.ColorRole.ButtonText,
+        QPalette.ColorRole.PlaceholderText,
     ):
-        palette.setColor(QPalette.ColorGroup.Disabled, role, QColor("#777774"))
+        palette.setColor(QPalette.ColorGroup.Disabled, role, QColor(DISABLED_TEXT))
+    for role in (
+        QPalette.ColorRole.Base,
+        QPalette.ColorRole.Button,
+        QPalette.ColorRole.AlternateBase,
+    ):
+        palette.setColor(QPalette.ColorGroup.Disabled, role, QColor(DISABLED_SURFACE))
     app.setPalette(palette)
     install_wheel_guard(app)
     app.setStyleSheet(
@@ -297,7 +403,8 @@ def apply_theme(app: QApplication):
                                        border: 1px solid #3584e4; }
         QPushButton[primary="true"]:hover { background: #4b93eb; }
         QPushButton[primary="true"]:pressed { background: #2d6fc0; }
-        QPushButton[primary="true"]:disabled { background: #3a4656; color: #9b9b98; }
+        QPushButton[primary="true"]:disabled { background: $disabled_accent;
+                                               color: #9b9b98; }
         QPushButton[quiet="true"] { background: transparent; border-color: #3a3a3a;
                                     color: #b0b0ad; min-height: 20px; padding: 3px 10px; }
         QPushButton[quiet="true"]:hover { background: #303030; color: #e6e6e6; }
@@ -305,12 +412,16 @@ def apply_theme(app: QApplication):
                                             border-color: #3584e4; }
         QPushButton[quiet="true"]:disabled { background: transparent;
                                              border-color: #303030; color: #666663; }
-        QComboBox, QDateTimeEdit, QDoubleSpinBox { min-height: 24px; padding: 3px;
-            border: 1px solid #454545; border-radius: 6px; background: #1e1e1e;
-            outline: none; }
-        QComboBox:hover { background: #262626; }
-        QDateTimeEdit:focus, QDoubleSpinBox:focus {
-            border-color: #3584e4; outline: none; }
+        QComboBox, QDateTimeEdit, QDoubleSpinBox, QSpinBox { min-height: 24px;
+            padding: 3px; border: 1px solid $track; border-radius: 3px;
+            background: $track; outline: none; }
+        QLineEdit { padding: 2px 4px; border: 1px solid $track;
+            border-radius: 3px; background: $track; color: $text; }
+        QComboBox:hover { background: $hover_surface;
+            border-color: $hover_surface; }
+        QLineEdit:focus, QComboBox:focus, QDateTimeEdit:focus,
+        QDoubleSpinBox:focus, QSpinBox:focus {
+            border-color: $accent; outline: none; }
         QComboBox QAbstractItemView { background: #1e1e1e; color: #e6e6e6;
             border: none; outline: 0; padding: 0;
             selection-background-color: #3584e4; selection-color: #ffffff; }
@@ -327,9 +438,9 @@ def apply_theme(app: QApplication):
         QComboBox QAbstractItemView::item:selected { background: #3584e4;
             color: #ffffff; }
         QLineEdit#placeSearchEdit { min-height: 24px; padding: 3px 8px;
-            border: 1px solid #454545; border-radius: 6px;
-            background: #1e1e1e; color: #e6e6e6; }
-        QLineEdit#placeSearchEdit:focus { border-color: #3584e4; }
+            border: 1px solid $track; border-radius: 3px;
+            background: $track; color: $text; }
+        QLineEdit#placeSearchEdit:focus { border-color: $accent; }
         QListView#placeSearchResults { background: #242424; color: #e6e6e6;
             border: 1px solid #454545; border-radius: 6px;
             outline: 0; padding: 2px; }
@@ -377,11 +488,26 @@ def apply_theme(app: QApplication):
         QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
             background: none; }
         QStatusBar { border-top: 1px solid #454545; }
+        QLineEdit:disabled, QLineEdit#placeSearchEdit:disabled,
+        QComboBox:disabled, QDateTimeEdit:disabled,
+        QDoubleSpinBox:disabled, QSpinBox:disabled,
+        QAbstractSpinBox:disabled {
+            background: $disabled_surface; color: $disabled_text;
+            border-color: $disabled_surface; }
     """).substitute(
             caption=TYPE_CAPTION,
             detail=TYPE_DETAIL,
             disclosure=TYPE_DISCLOSURE,
             semibold=TYPE_WEIGHT_SEMIBOLD,
+            disabled_surface=DISABLED_SURFACE,
+            disabled_text=DISABLED_TEXT,
+            disabled_accent=DISABLED_ACCENT,
+            surface=SURFACE,
+            border=BORDER,
+            accent=ACCENT,
+            track=TRACK,
+            hover_surface=HOVER_SURFACE,
+            text=TEXT,
         )
     )
 
