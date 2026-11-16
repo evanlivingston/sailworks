@@ -1274,6 +1274,72 @@ def test_scene_actions_fit_single_track_or_point(tmp_path):
     assert panel._nodes_for_fit([("item", KIND_LOG, "log-1")]) == ()
 
 
+def test_group_fit_expands_nested_descendant_items(tmp_path):
+    application()
+    panel = panel_for(
+        tmp_path,
+        tracks=[FakeTrack("t1", "Morning"), FakeTrack("t2", "Evening")],
+        routes=[FakeRoute("r1", "Route")],
+        pois=[FakePOI("p1", "Harbor")],
+    )
+    outer = panel.scene.create_group("Outer")
+    panel.scene.create_group(
+        "Inner",
+        parent=outer.id,
+        item_keys=[(KIND_TRACK, "t2"), (KIND_ROUTING, "r1")],
+    )
+    panel.scene.assign([(KIND_TRACK, "t1"), (KIND_POI, "p1")], outer.id)
+    panel.refresh()
+
+    nodes = panel._nodes_for_fit([("group", outer.id)])
+
+    assert set(nodes) == {
+        ("item", KIND_TRACK, "t1"),
+        ("item", KIND_TRACK, "t2"),
+        ("item", KIND_ROUTING, "r1"),
+        ("item", KIND_POI, "p1"),
+    }
+
+
+def test_track_menu_offers_fit_chart_and_fit_time(tmp_path):
+    application()
+    panel = panel_for(tmp_path, tracks=[FakeTrack("t1", "Morning")])
+    row = panel.item_row(KIND_TRACK, "t1")
+
+    labels = context_menu_labels(panel, row)
+
+    assert_action(labels, "Fit Chart")
+    assert_action(labels, "Fit Time")
+
+
+def test_fit_time_is_disabled_without_time_data(tmp_path):
+    application()
+    panel = panel_for(tmp_path, tracks=[FakeTrack("t1", "Morning")])
+    row = panel.item_row(KIND_TRACK, "t1")
+
+    action = action_named(context_menu_actions(panel, row), "Fit Time")
+
+    assert action.isEnabled() is False
+    assert action.toolTip() == "No time data in the selection"
+
+
+def test_fit_time_emits_the_selected_track_node(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    track.default_departure = "2026-06-01T09:00:00"
+    track.length = lambda: 25.0
+    panel = panel_for(tmp_path, tracks=[track])
+    row = panel.item_row(KIND_TRACK, "t1")
+    requested = []
+    panel.fit_time_requested.connect(requested.append)
+
+    action = action_named(context_menu_actions(panel, row), "Fit Time")
+
+    assert action.isEnabled() is True
+    action.trigger()
+    assert requested == [[("item", KIND_TRACK, "t1")]]
+
+
 def test_scene_actions_delete_skips_logs_and_race_tracks(tmp_path):
     application()
     panel = panel_for(tmp_path)

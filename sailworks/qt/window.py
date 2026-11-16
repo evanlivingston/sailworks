@@ -50,6 +50,11 @@ from sailworks.core.timecontrol import (
 )
 from sailworks.core.n2kdevices import source_label
 from sailworks.core.places import PlaceIndex, index_chart_files
+from sailworks.core.geo.timerange import (
+    MAXIMUM_FIT_SPAN_SECONDS,
+    clamp_bounds,
+    selection_time_bounds,
+)
 from sailworks.core.scene import (
     KIND_LOG,
     KIND_POI,
@@ -280,6 +285,7 @@ class PreviewWindow(QMainWindow):
         self.scene_panel.group_selected.connect(self._scene_group_selected)
         self.scene_panel.open_requested.connect(self._scene_open)
         self.scene_panel.fit_requested.connect(self._scene_fit)
+        self.scene_panel.fit_time_requested.connect(self._scene_fit_time)
         self.scene_panel.delete_requested.connect(self._scene_delete)
         self.scene_panel.move_point_requested.connect(self._move_scene_point)
         controller.log_library_changed.connect(self.scene_panel.refresh)
@@ -1527,6 +1533,75 @@ class PreviewWindow(QMainWindow):
         if coordinates:
             self.views.setCurrentWidget(self.map)
             self.map.fit_coordinates(coordinates)
+
+    def _forecast_time_coverage(self):
+        """Return the loaded forecast's (coverage, valid times).
+
+        Empty coverage means no model is showing yet, so a fitted region stays
+        unclamped rather than collapsing to nothing. Sources may not exist
+        before a model is selected, so any failure reads as "no limit".
+        """
+        try:
+            sources = tuple(self.controller.display_forecast.sources() or ())
+        except Exception:
+            return None, ()
+        starts = [
+            source.first_valid
+            for source in sources
+            if getattr(source, "first_valid", None) is not None
+        ]
+        ends = [
+            source.last_valid
+            for source in sources
+            if getattr(source, "last_valid", None) is not None
+        ]
+        if not starts or not ends:
+            return None, ()
+        valid_times = sorted(
+            {
+                stamp
+                for source in sources
+                for stamp in getattr(source, "valid_times", None) or ()
+            }
+        )
+        return (min(starts), max(ends)), valid_times
+
+    def _scene_fit_time(self, nodes):
+        elements = []
+        for node in nodes:
+            entry = self.scene_panel.scene.live_entry(node[1], node[2])
+            element = entry.element if entry is not None else None
+            if element is not None:
+                elements.append(element)
+        bounds = selection_time_bounds(elements)
+        timeline = getattr(self.map, "timeline", None)
+        if bounds is None or timeline is None:
+            return
+        if bounds[1] - bounds[0] > MAXIMUM_FIT_SPAN_SECONDS:
+            self.statusBar().showMessage(
+                "Fit Time: selection spans more than a year — "
+                "select a narrower collection",
+                6000,
+            )
+            return
+        # A selection under a year can still mix older history with a current
+        # forecast; the union would bury the model data in a timeline nobody
+        # can scrub, so fit only the part the loaded forecast can show.
+        coverage, valid_times = self._forecast_time_coverage()
+        bounds = clamp_bounds(bounds, coverage)
+        if bounds is None:
+            self.statusBar().showMessage(
+                "Fit Time: no forecast data covers the selected time", 6000
+            )
+            return
+        cursor = bounds[0]
+        for stamp in valid_times:
+            if bounds[0] <= stamp <= bounds[1]:
+                cursor = stamp
+                break
+        self.views.setCurrentWidget(self.map)
+        timeline.set_region(*bounds)
+        timeline.seek(cursor)
 
     def _scene_delete(self, nodes):
         item_keys = {(node[1], node[2]) for node in nodes if node[0] == "item"}

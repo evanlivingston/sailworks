@@ -61,6 +61,7 @@ from sailworks.core.geo.routing import (
     ISOCHRONE_COLOUR_MODE_LABELS,
     ISOCHRONE_COLOUR_MODES,
 )
+from sailworks.core.geo.timerange import element_time_bounds
 from sailworks.rendering.palettes import route_metrics
 from sailworks.core.geo.mapshapes import (
     DEFAULT_COLOURS,
@@ -901,6 +902,7 @@ class ScenePanel(QWidget):
     group_selected = Signal(str)
     open_requested = Signal(str, str)
     fit_requested = Signal(object)
+    fit_time_requested = Signal(object)
     delete_requested = Signal(object)
     move_point_requested = Signal(object, int)
     edit_track_requested = Signal(str)
@@ -2232,6 +2234,26 @@ class ScenePanel(QWidget):
             self.tree.editItem(row, NAME_COLUMN)
         self.changed.emit()
 
+    def _group_item_nodes(self, group_id, kinds=None):
+        """Return item nodes for every descendant of a group, once each."""
+        nodes = []
+        seen = set()
+
+        def walk(identifier):
+            if identifier in seen:
+                return
+            seen.add(identifier)
+            nodes.extend(
+                ("item", item.kind, item.key)
+                for item in self.scene.items_in(identifier)
+                if kinds is None or item.kind in kinds
+            )
+            for child in self.scene.groups_in(identifier):
+                walk(child.id)
+
+        walk(group_id)
+        return nodes
+
     def _nodes_for_fit(self, nodes):
         if len(nodes) != 1:
             return ()
@@ -2245,7 +2267,29 @@ class ScenePanel(QWidget):
             KIND_SHAPE,
         ):
             return nodes
+        if node[0] == "group":
+            return self._group_item_nodes(
+                node[1], (KIND_TRACK, KIND_ROUTING, KIND_POI, KIND_SHAPE)
+            )
         return ()
+
+    def _nodes_for_fit_time(self, nodes):
+        if len(nodes) != 1:
+            return ()
+        node = nodes[0]
+        if node[0] == "item" and node[1] in (KIND_TRACK, KIND_ROUTING):
+            return nodes
+        if node[0] == "group":
+            return self._group_item_nodes(node[1], (KIND_TRACK, KIND_ROUTING))
+        return ()
+
+    def _fit_time_available(self, nodes):
+        for node in nodes:
+            entry = self.scene.live_entry(node[1], node[2])
+            element = entry.element if entry is not None else None
+            if element is not None and element_time_bounds(element) is not None:
+                return True
+        return False
 
     def _nodes_for_delete(self, nodes):
         deletable = []
@@ -2276,6 +2320,7 @@ class ScenePanel(QWidget):
         nodes = self._selected_nodes()
         groups = self._selected_groups()
         fit_nodes = self._nodes_for_fit(nodes)
+        fit_time_nodes = self._nodes_for_fit_time(nodes)
         delete_nodes = self._nodes_for_delete(nodes)
         point_element = self._point_element(node)
         track_element = self._track_element(node)
@@ -2365,7 +2410,20 @@ class ScenePanel(QWidget):
         ):
             builder.section()
             if fit_nodes:
-                builder.add("Fit", lambda: self.fit_requested.emit(fit_nodes), key="F")
+                builder.add(
+                    "Fit Chart",
+                    lambda: self.fit_requested.emit(fit_nodes),
+                    key="F",
+                )
+            if fit_time_nodes:
+                action = builder.add(
+                    "Fit Time",
+                    lambda: self.fit_time_requested.emit(fit_time_nodes),
+                    key="T",
+                )
+                if not self._fit_time_available(fit_time_nodes):
+                    action.setEnabled(False)
+                    action.setToolTip("No time data in the selection")
             if track_element is not None:
                 builder.add(
                     "Add Point",

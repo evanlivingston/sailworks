@@ -618,6 +618,10 @@ class ForecastTimeline(QWidget):
         self.region_changed.emit()
         self.refresh()
 
+    def seek(self, stamp):
+        """Move the cursor to an epoch stamp and stop playback."""
+        self._seek_to_stamp(stamp)
+
     def clear_region(self):
         """Drop the user region and fall back to the loaded model range."""
         if self.region is None:
