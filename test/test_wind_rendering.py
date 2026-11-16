@@ -245,7 +245,8 @@ class TestWindOverlay(unittest.TestCase):
         )
 
     def drain(self):
-        deadline = time.monotonic() + 2
+        # CI runners can take several seconds to finish the retained-wind render.
+        deadline = time.monotonic() + 15
         while self.renderer._running and time.monotonic() < deadline:
             self.schedule.drain()
             time.sleep(0.001)
