@@ -862,3 +862,63 @@ def test_watchdog_dumps_stacks_and_exits_nonzero():
     )
     assert proc.returncode != 0, proc.stderr
     assert "WATCHDOG:" in proc.stderr, proc.stderr
+
+
+def test_watchdog_fires_while_the_main_thread_holds_the_gil():
+    """The deadline must trip from a C call that never returns to Python.
+
+    The gate wedges inside ``QQuickWindow::grabWindow`` with the GIL held, and
+    a ``threading.Timer`` needs that GIL to reach its callback, so the timer
+    watchdog could never fire.  Catastrophic regex backtracking reproduces the
+    wedge headlessly: the ``re`` engine stays in C for longer than any test
+    budget allows.
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    if not sys.executable:
+        pytest.skip("no interpreter to spawn")
+    path = Path(__file__).resolve().parents[1] / "tools/check_enc_viewport.py"
+    script = textwrap.dedent("""
+        import importlib.util, re, sys
+        from pathlib import Path
+
+        spec = importlib.util.spec_from_file_location(
+            "enc_gate_helpers", Path(sys.argv[1])
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module._arm_watchdog(1)
+        re.match(r"(a+)+$", "a" * 40 + "b")
+        print("WEDGE SURVIVED", flush=True)
+        """)
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", script, str(path)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("watchdog did not fire while the main thread held the GIL")
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "WATCHDOG:" in proc.stderr, proc.stderr
+    assert "WEDGE SURVIVED" not in proc.stdout, proc.stdout
+
+
+def test_watchdog_cancel_disarms_the_deadline():
+    """The normal return path must leave no handler or timer behind."""
+    import signal
+
+    module = tool()
+    if not hasattr(signal, "ITIMER_REAL"):
+        pytest.skip("no interval timer on this platform")
+    before = signal.getsignal(signal.SIGALRM)
+    watchdog = module._arm_watchdog(30)
+    assert watchdog.mechanism == "signal"
+    assert signal.getitimer(signal.ITIMER_REAL)[0] > 0
+    watchdog.cancel()
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+    assert signal.getsignal(signal.SIGALRM) == before
+    watchdog.cancel()  # idempotent

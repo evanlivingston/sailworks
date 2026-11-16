@@ -21,6 +21,7 @@ import importlib.util
 import json
 import os
 import shutil
+import signal
 import socket
 import sys
 import tempfile
@@ -1351,29 +1352,145 @@ def _camera_scale(camera):
     return MapViewport(ChartCamera(camera, 1), MARGIN, lambda: None).get_scale()
 
 
-def _arm_watchdog(seconds):
-    """Hard-exit if the gate wedges, dumping every stack first.
+_ARMED_WATCHDOGS = []
 
-    The GUI readback can block inside Qt's C++ event loop, where an orderly
-    shutdown would hang as well, so this exits the process directly.  The
-    timer is a daemon and dies with the interpreter, so it needs no explicit
-    disarm on the success path, but callers should cancel it anyway.
+
+def _write_watchdog_marker(marker):
+    """Write the watchdog marker straight to stderr's descriptor.
+
+    ``sys.stderr`` may be replaced or buffered, and the interpreter will not
+    run another line of Python after this point, so the bytes go out through
+    ``os.write`` on the descriptor itself.
+    """
+    try:
+        fd = sys.stderr.fileno()
+    except (AttributeError, OSError, ValueError):
+        fd = 2
+    try:
+        os.write(fd, marker.encode("utf-8", "replace"))
+    except OSError:
+        pass
+
+
+def _install_alarm_handler(handler):
+    """Install ``handler`` as the process' raw C-level ``SIGALRM`` handler.
+
+    ``faulthandler.register`` installs a handler that only knows how to dump
+    stacks, so the marker line cannot precede the dump through it, and a
+    handler installed with ``signal.signal`` is a Python callable that only
+    runs at the interpreter's next bytecode boundary -- which a wedge inside
+    ``QQuickWindow::grabWindow``, or catatonic regex backtracking, never
+    reaches.  Installing the callback directly on the signal keeps both
+    properties: it runs on the main thread, which already owns the GIL, so it
+    can write the marker, dump every stack through ``faulthandler`` and exit.
+
+    Returns ``(callback, restore)``; the caller must keep ``callback`` alive
+    for as long as the handler is installed.  Raises ``OSError`` if libc
+    refuses the handler, in which case the caller degrades to a timer.
+    """
+    import ctypes
+    import ctypes.util
+
+    libc = ctypes.CDLL(ctypes.util.find_library("c") or None)
+    signature = ctypes.CFUNCTYPE(None, ctypes.c_int)
+    callback = signature(handler)
+    # ``signal()`` returns the previous handler as a pointer; read it as a
+    # signed word so ``SIG_ERR`` (-1) is distinguishable from ``SIG_DFL`` (0),
+    # which ``c_void_p`` would fold into ``None``.
+    libc.signal.restype = ctypes.c_ssize_t
+    previous = libc.signal(int(signal.SIGALRM), callback)
+    if previous == -1:
+        raise OSError("cannot install a SIGALRM handler")
+
+    def restore():
+        libc.signal(int(signal.SIGALRM), ctypes.c_void_p(previous))
+
+    return callback, restore
+
+
+class _SignalWatchdog:
+    """Disarmable handle for the ``SIGALRM`` watchdog."""
+
+    mechanism = "signal"
+
+    def __init__(self, callback, restore):
+        self._callback = callback
+        self._restore = restore
+        # The installed handler is a ctypes trampoline; freeing it with this
+        # handle would leave libc pointing at released memory, so armed
+        # handles stay reachable even if the caller drops the return value.
+        _ARMED_WATCHDOGS.append(self)
+
+    def cancel(self):
+        """Stop the deadline and put the previous ``SIGALRM`` handler back."""
+        if self._restore is None:
+            return
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        self._restore()
+        self._restore = None
+        self._callback = None
+        if self in _ARMED_WATCHDOGS:
+            _ARMED_WATCHDOGS.remove(self)
+
+
+class _TimerWatchdog:
+    """Fallback handle where the platform has no ``ITIMER_REAL``."""
+
+    mechanism = "timer"
+
+    def __init__(self, timer):
+        self._timer = timer
+
+    def cancel(self):
+        self._timer.cancel()
+
+
+def _arm_fallback_timer(seconds, fire):
+    """Arm the pre-signal watchdog: a background timer.
+
+    It survives where ``SIGALRM`` is absent (Windows), but it cannot fire
+    while the main thread holds the GIL, which is the wedge this gate hits.
+    ``mechanism`` says so for callers that care.
     """
     from threading import Timer
-
-    def fire():
-        sys.stderr.write(
-            f"WATCHDOG: exceeded {seconds:.0f}s, dumping stacks and exiting\n"
-        )
-        sys.stderr.flush()
-        faulthandler.dump_traceback(all_threads=True)
-        sys.stderr.flush()
-        os._exit(1)
 
     timer = Timer(seconds, fire)
     timer.daemon = True
     timer.start()
-    return timer
+    return _TimerWatchdog(timer)
+
+
+def _arm_watchdog(seconds):
+    """Hard-exit if the gate wedges, dumping every stack first.
+
+    The readback can wedge inside Qt's C++ event loop while the main thread
+    holds the GIL.  A ``threading.Timer`` reaches its callback on a worker
+    thread, which needs that GIL, so it can never fire on such a wedge; the
+    deadline is therefore driven by ``SIGALRM``, whose handler runs on the
+    main thread that already owns the GIL.  The GUI readback cannot be shut
+    down orderly from there either, so the handler exits the process directly.
+
+    Returns a handle with ``cancel()`` and a ``mechanism`` attribute, which is
+    ``"timer"`` only on platforms without ``ITIMER_REAL``.
+    """
+    if seconds <= 0:
+        raise ValueError("watchdog deadline must be positive")
+    marker = f"WATCHDOG: exceeded {seconds:.0f}s, dumping stacks and exiting\n"
+
+    def fire(*_args):
+        _write_watchdog_marker(marker)
+        faulthandler.dump_traceback(all_threads=True)
+        sys.stderr.flush()
+        os._exit(1)
+
+    if not hasattr(signal, "ITIMER_REAL"):
+        return _arm_fallback_timer(seconds, fire)
+    try:
+        callback, restore = _install_alarm_handler(fire)
+    except (OSError, ValueError, AttributeError):
+        return _arm_fallback_timer(seconds, fire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    return _SignalWatchdog(callback, restore)
 
 
 def main(argv=None):
