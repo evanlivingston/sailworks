@@ -293,15 +293,33 @@ class ThemeStyle(QProxyStyle):
 # from collecting it while the QApplication still points at it.
 _style = None
 
+# Stored as a Qt dynamic property on the application itself rather than in a
+# module-level set of ids: the property dies with the C++ QApplication, so a
+# later QApplication in the same process (a new test session, an embedded
+# re-exec) is correctly treated as unthemed, and no id can be reused by a
+# different object.
+_THEMED = "_sailworks_theme_applied"
+
 
 def apply_theme(app: QApplication):
     # Fusion consistently honors the dark palette on all supported platforms.
     # Native window decorations and native filesystem dialogs remain OS-owned.
     # The proxy paints the controls QSS cannot style cleanly; the palette and
     # stylesheet are applied on top of it exactly as before.
+    #
+    # Re-applying is not idempotent-safe: once the stylesheet below is
+    # installed Qt wraps the base style in a QStyleSheetStyle, and replacing
+    # the base style makes Qt polish through the old wrapper's baseStyle()
+    # pointer while the previous ThemeStyle is being released.
+    if app.property(_THEMED):
+        return
     global _style
-    _style = ThemeStyle()
-    app.setStyle(_style)
+    style = ThemeStyle()
+    app.setStyle(style)
+    # Publish the Python reference only after Qt has finished swapping styles.
+    # Assigning the global first dropped the last reference to the previous
+    # style before setStyle walked the widget tree through the freed base.
+    _style = style
     app.styleHints().setColorScheme(Qt.ColorScheme.Dark)
     _force_macos_dark_appearance()
     palette = QPalette()
@@ -510,6 +528,7 @@ def apply_theme(app: QApplication):
             text=TEXT,
         )
     )
+    app.setProperty(_THEMED, True)
 
 
 def section_label(text):
