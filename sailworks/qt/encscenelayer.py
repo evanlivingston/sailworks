@@ -593,7 +593,6 @@ class EncSceneLayer:
     def _compose(self, camera, cancel):
         """Plan and assemble the cells for ``camera`` on the worker."""
         from sailworks.core.mapviewport import MapViewport
-        from sailworks.rendering.overlayrenderer import MARGIN
         from sailworks.qt.gribviewportchart import ChartCamera
 
         if self._catalog is None:
@@ -608,10 +607,7 @@ class EncSceneLayer:
             self._mesh_cache = encview.MeshCache(MESH_CACHE_BYTES)
         # Logical pixels: the item lives in QQuickItem coordinates and Qt
         # applies the device pixel ratio itself.
-        # The same margin the raster composition uses: planning against the
-        # bare view drops a cell whose envelope only reaches the padded area,
-        # and the chart then loses that cell's features entirely.
-        viewport = MapViewport(ChartCamera(camera, 1), MARGIN, lambda: None)
+        viewport = MapViewport(ChartCamera(camera, 1), 0, lambda: None)
         viewport.render_cancelled = cancel.is_set
         metadata = {
             "camera": camera,
