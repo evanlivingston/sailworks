@@ -17,7 +17,6 @@ import numpy as np
 from osgeo import ogr
 
 from sailworks.core.grib import Grib
-from sailworks.core.gribsampling import WeatherSampler
 from sailworks.core.storage import DATA_DIR
 from sailworks.core.utils import COUNTRY_SHAPES, point_in_bbox
 from sailworks.rendering.overlayrenderer import OverlayRenderer, covers
@@ -512,6 +511,8 @@ class WindOverlayRenderer(OverlayRenderer):
             # Do not cache the omission: build a fresh sampler so the missing
             # index is attempted again on this pass.
             logger.info("Rebuilding the weather sampler after a failed index")
+        from sailworks.core.gribsampling import WeatherSampler
+
         sources = [provider for _, provider in resources["providers"]]
         sampler = (
             WeatherSampler(sources)

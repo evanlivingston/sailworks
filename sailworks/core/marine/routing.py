@@ -20,7 +20,6 @@ from weatherrouting.routers.linearbestisorouter import LinearBestIsoRouter
 from weatherrouting.routers.router import RoutingResult
 
 from sailworks.core.grib import Grib
-from sailworks.core.gribsampling import WeatherSampler
 
 from .chs import DownloadCancelledError
 from .fields import Area, FieldSelection, field_sort_key, normalize_priority
@@ -308,6 +307,8 @@ class FrozenRoutingWind:
     """Prefer newest enabled model runs and record sources used by the search."""
 
     def __init__(self, manager, override=None):
+        from sailworks.core.gribsampling import WeatherSampler
+
         self.gribs = tuple(
             sorted(
                 (

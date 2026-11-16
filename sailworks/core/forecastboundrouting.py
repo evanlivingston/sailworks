@@ -7,7 +7,6 @@ from threading import Event, RLock
 from .forecastcapabilities import MODEL_CAPABILITIES
 from .gribmanager import GribManager
 from .grib import Grib, forecast_model_name
-from .gribsampling import FIELDS, model_key, number
 from .routingjob import (
     RoutingCancelledError,
     WindFile,
@@ -111,6 +110,8 @@ class BoundWorkerGrib(WorkerGrib):
             raise
 
     def _validate_records(self, binding):
+        from .gribsampling import model_key, number
+
         entry = binding.entry
         display_only = entry.model_id not in MODEL_CAPABILITIES
         expected_times = tuple(dict(entry.field_times)["wind"])
@@ -331,6 +332,8 @@ class BoundWaveGrib(WorkerGrib):
             raise
 
     def _validate_wave_records(self, binding):
+        from .gribsampling import FIELDS
+
         entry = binding.entry
         display_only = entry.model_id not in MODEL_CAPABILITIES
         expected = {

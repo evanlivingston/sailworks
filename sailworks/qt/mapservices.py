@@ -1,7 +1,5 @@
 """Weather service references shared by Qt map hosts."""
 
-from .basecharts import BaseChartRenderer
-
 
 class MapWeatherServices:
     """Own the weather-related services attached to a map host."""
@@ -14,6 +12,8 @@ class MapWeatherServices:
         self.weather_presenter = None
 
     def initialize_base_chart_renderer(self, controller):
+        from .basecharts import BaseChartRenderer
+
         self.base_chart_renderer = BaseChartRenderer(controller.scheduler.submit)
         return self.base_chart_renderer
 

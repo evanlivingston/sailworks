@@ -37,7 +37,6 @@ _SUPPORTED_ELEMENTS = (
     *_WAVE_PERIOD_ELEMENTS,
     *_WAVE_DIRECTION_ELEMENTS,
 )
-from .gribsampling import GridIndex, WeatherSampler, number
 
 import weatherrouting
 from osgeo import gdal
@@ -109,6 +108,8 @@ class Grib(weatherrouting.Grib):
 
     def _find_bands_for_time(self, t):
         """Find bands for U and V wind components at a given time."""
+        from .gribsampling import number
+
         u_band = None
         v_band = None
 
@@ -136,6 +137,8 @@ class Grib(weatherrouting.Grib):
 
     def _find_pressure_band_for_time(self, t):
         """Find the mean-sea-level pressure band at a given forecast hour."""
+        from .gribsampling import number
+
         for bidx in range(1, self.dataset.RasterCount + 1):
             band = self.dataset.GetRasterBand(bidx)
             metadata = band.GetMetadata()
@@ -173,11 +176,15 @@ class Grib(weatherrouting.Grib):
 
     @property
     def sampling(self):
+        from .gribsampling import GridIndex
+
         if "_sampling" not in self.__dict__:
             self._sampling = GridIndex(self)
         return self._sampling
 
     def sampler(self):
+        from .gribsampling import WeatherSampler
+
         if "_sampler" not in self.__dict__:
             self._sampler = WeatherSampler((self,))
         return self._sampler
@@ -214,6 +221,8 @@ class Grib(weatherrouting.Grib):
     @lru_cache(maxsize=1)
     def _get_available_pressure_hours(self):
         """Scan GRIB bands to find all forecast hours with pressure data."""
+        from .gribsampling import number
+
         hours = set()
         for bidx in range(1, self.dataset.RasterCount + 1):
             band = self.dataset.GetRasterBand(bidx)
@@ -227,6 +236,8 @@ class Grib(weatherrouting.Grib):
     @lru_cache(maxsize=1)
     def _get_available_forecast_hours(self):
         """Scan GRIB bands to find all available forecast hours."""
+        from .gribsampling import number
+
         hours = set()
         for bidx in range(1, self.dataset.RasterCount + 1):
             band = self.dataset.GetRasterBand(bidx)
@@ -264,6 +275,8 @@ class Grib(weatherrouting.Grib):
 
     @staticmethod
     def parse_metadata(path):
+        from .gribsampling import number
+
         dataset = gdal.Open(path)
         if dataset is None:
             raise ValueError("Unable to open forecast: " + path)
