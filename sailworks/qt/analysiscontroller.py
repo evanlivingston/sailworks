@@ -25,7 +25,15 @@ class AnalysisController(QObject):
     _finished = Signal(int, str, object, object)
     _progressed = Signal(int, object, object)
 
-    def __init__(self, root=None, *, state=None, parent=None, thread_factory=Thread):
+    def __init__(
+        self,
+        root=None,
+        *,
+        state=None,
+        parent=None,
+        thread_factory=Thread,
+        start_now=True,
+    ):
         super().__init__(parent)
         if (root is None) == (state is None):
             raise ValueError("provide exactly one analysis root or state")
@@ -48,7 +56,19 @@ class AnalysisController(QObject):
         self.status = "Loading published forecast"
         self._finished.connect(self._finish)
         self._progressed.connect(self._progress)
-        self._start(
+        if start_now:
+            self.start()
+
+    def start(self):
+        """Start the initial published-forecast analysis.
+
+        Call this after the first frame is on screen: the worker imports and
+        reads the published forecast, which must not compete with the paint.
+        Idempotent, so a repeated call cannot start a second worker.
+        """
+        if self._closed or self._thread is not None:
+            return False
+        return self._start(
             "startup",
             lambda event, report, token: self.state.snapshot(),
             preserve=True,

@@ -41,6 +41,7 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     try:
+        from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import QApplication
     except ImportError:
         parser.error("Qt requires PySide6; reinstall Sailworks with its dependencies")
@@ -61,6 +62,7 @@ def main(argv=None):
         gpu_resident_fields=args.gpu_resident_fields,
         gpu_streamlines=True,
         native_weather_fields=args.native_weather_fields,
+        defer_analysis=True,
     )
     window = PreviewWindow(controller)
     app.aboutToQuit.connect(window.workspace.close)
@@ -69,6 +71,9 @@ def main(argv=None):
     app.aboutToQuit.connect(window.dispose_marine)
     app.aboutToQuit.connect(controller.close)
     window.show()
+    # The first frame is on screen, so the published-forecast analysis can now
+    # start: its imports and reads must not compete with the first paint.
+    QTimer.singleShot(0, controller.start_model_analysis)
     if controller.chart_startup is not None:
         controller.chart_startup.start(window._active_map())
     controller.start_connections()
