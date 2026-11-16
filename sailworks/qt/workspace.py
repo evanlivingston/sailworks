@@ -36,6 +36,33 @@ def fit_window(widget, saved):
     widget.setGeometry(bounds["x"], bounds["y"], bounds["width"], bounds["height"])
 
 
+def dock_state(window):
+    """Explicit, version-safe dock state instead of Qt's opaque saveState blob."""
+    dock = getattr(window, "routing_inspector_dock", None)
+    if dock is None:
+        return {}
+    return {
+        "routing_inspector": {
+            "visible": bool(dock.isVisible()),
+            "floating": bool(dock.isFloating()),
+        }
+    }
+
+
+def restore_docks(window, saved):
+    dock = getattr(window, "routing_inspector_dock", None)
+    entry = mapping(mapping(saved).get("routing_inspector"))
+    if dock is None or not entry:
+        # Old state files have no docking data; keep the default hidden dock.
+        return
+    floating = entry.get("floating")
+    if isinstance(floating, bool):
+        dock.setFloating(floating)
+    visible = entry.get("visible")
+    if isinstance(visible, bool):
+        dock.setVisible(visible)
+
+
 class WorkspacePreferences(QObject):
     def __init__(self, window, path=None):
         super().__init__(window)
@@ -83,6 +110,10 @@ class WorkspacePreferences(QObject):
         window.timeline.step_changed.connect(self.changed)
         window.timeline.region_changed.connect(self.changed)
         window.workspace_toolbar.visibilityChanged.connect(self.changed)
+        dock = getattr(window, "routing_inspector_dock", None)
+        if dock is not None:
+            dock.visibilityChanged.connect(self.changed)
+            dock.topLevelChanged.connect(self.changed)
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt virtual method name
         if (
@@ -123,6 +154,7 @@ class WorkspacePreferences(QObject):
         return {
             "window": {**geometry(normal), "maximized": window.isMaximized()},
             "panels": window.panel_state(),
+            "docks": dock_state(window),
             "view": window.views.tabText(window.views.currentIndex()),
             "nmea_source": window.session.source,
             "forecast": {
@@ -199,6 +231,7 @@ class WorkspacePreferences(QObject):
         if source in ("live", "log", "none"):
             self.window.source.setCurrentIndex({"live": 0, "log": 1, "none": 2}[source])
         self.window.restore_panel_state(mapping(state.get("panels")))
+        restore_docks(self.window, state.get("docks"))
         self.window._order_toolbars()
         self._restore_window(mapping(state.get("window")))
         self._restore_views(state)

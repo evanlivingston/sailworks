@@ -59,6 +59,9 @@ class SettingsManager(Storage):
         self.panInertia = True
         self.mapRenderer = "cpu"
         self.weatherNextCredentialsPath = ""
+        # Per-workflow folder last used by a file dialog, keyed by the plain
+        # strings documented in sailworks/qt/filedialogpaths.py.
+        self.lastUsedDirectories = {}
         self.canadianCharts = True
         self.chartWorldVisible = True
         self.chartSatelliteVisible = False

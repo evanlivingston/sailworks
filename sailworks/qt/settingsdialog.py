@@ -31,6 +31,7 @@ from sailworks.core.weathernextcredentials import describe_access_error
 from .backgroundtask import BackgroundTask
 from .marinesettings import CurrentsAccount
 from .dropdown import Dropdown
+from .filedialogpaths import remembered_dir, remember_dir
 from .text import qt_text
 
 
@@ -508,14 +509,16 @@ class SettingsDialog(QDialog):
         )
 
     def choose_weathernext_credentials(self):
+        settings = self.controller.settings
         path, _filter = QFileDialog.getOpenFileName(
             self,
             "WN3 service-account credentials",
-            "",
+            remembered_dir(settings, "credentials"),
             "JSON credentials (*.json)",
         )
         if not path:
             return
+        remember_dir(settings, "credentials", path)
         self.weathernext_credentials.path = path
         self.set_preference("weatherNextCredentialsPath", path)
         self._refresh_weathernext()

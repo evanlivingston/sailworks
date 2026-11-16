@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from .polarcatalog import PolarCatalogDialog
+from .filedialogpaths import remembered_dir, remember_dir
 from .tables import PANEL_MARGINS, fit_columns, make_table
 from .theme import SURFACE, TEXT, MUTED, ThemedMenu
 
@@ -230,10 +231,15 @@ class PolarLibrary(QWidget):
             self.refresh()
 
     def import_file(self):
+        settings = getattr(self.controller, "settings", None)
         path, _ = QFileDialog.getOpenFileName(
-            self, "Import polar", "", "Polar files (*.pol);;All files (*)"
+            self,
+            "Import polar",
+            remembered_dir(settings, "polars"),
+            "Polar files (*.pol);;All files (*)",
         )
         if path:
+            remember_dir(settings, "polars", path)
             self.polars.import_file(path)
 
     def toggle(self, item):

@@ -13,6 +13,13 @@ from PySide6.QtWidgets import QFileDialog
 from .backgroundtask import BackgroundTask
 
 
+from .filedialogpaths import remembered_dir, remember_dir
+
+
+def _settings(window):
+    return getattr(getattr(window, "controller", None), "settings", None)
+
+
 def gpx_document(tracks=(), routes=(), waypoints=()):
     document = gpxpy.gpx.GPX()
     document.tracks = list(tracks)
@@ -55,9 +62,15 @@ def _status(window, text):
 def import_gpx(window, path=None):
     """Pick a GPX file (unless a path is given) and import it in the background."""
     if path is None:
+        settings = _settings(window)
         path, _ = QFileDialog.getOpenFileName(
-            window, "Import GPX", "", "GPX files (*.gpx);;All files (*)"
+            window,
+            "Import GPX",
+            remembered_dir(settings, "gpx"),
+            "GPX files (*.gpx);;All files (*)",
         )
+        if path:
+            remember_dir(settings, "gpx", path)
     if not path:
         return None
     return import_path(window, path)
@@ -202,9 +215,13 @@ def export_route(window):
 
 
 def _save(window, title, name, text, file_filter, suffix):
-    path, _ = QFileDialog.getSaveFileName(window, title, name, file_filter)
+    settings = _settings(window)
+    directory = remembered_dir(settings, "gpx")
+    initial = str(Path(directory) / name) if directory else name
+    path, _ = QFileDialog.getSaveFileName(window, title, initial, file_filter)
     if not path:
         return None
+    remember_dir(settings, "gpx", path)
     if not Path(path).suffix:
         path += suffix
     try:
