@@ -238,6 +238,12 @@ class WeatherPresenter(QObject):
                 enc_visible=bool(
                     getattr(self.canvas.controller.settings, "chartENCVisible", True)
                 ),
+                # Experimental and off by default: the viewport supersedes the
+                # raster ENC source only when the user asks for the GPU scene,
+                # so the default construction is the existing raster path.
+                enc_scene_layer=bool(
+                    getattr(self.canvas.controller.settings, "chartENCScene", False)
+                ),
             )
             if self.native_fields:
                 kwargs["native_weather_fields"] = True

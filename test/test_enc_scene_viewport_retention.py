@@ -99,6 +99,19 @@ def test_failed_update_still_withdraws_the_previous_scene():
     assert widget._weather.props["encStatus"] == "ENC charts are disabled"
 
 
+def test_a_scene_with_no_explanation_still_says_it_is_unavailable():
+    # The app must never leave the ENC overlay silently blank: an unavailable
+    # scene withdraws its picture and labels the chart, even when the layer
+    # reports no reason of its own.
+    widget = _widget(layer_state="unavailable", error="")
+    widget._mark_enc_scene_updating()
+
+    widget._enc_scene_state_changed("unavailable")
+
+    assert widget._enc_scene_item.visible is False
+    assert widget._weather.props["encStatus"] == "ENC scene unavailable"
+
+
 def test_idle_update_still_withdraws_the_previous_scene():
     widget = _widget()
     widget._mark_enc_scene_updating()
