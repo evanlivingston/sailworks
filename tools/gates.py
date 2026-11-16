@@ -183,6 +183,21 @@ GATES = {
                     "<=",
                     1.05,
                 ),
+                (
+                    "ENC pixels registered within 1 px",
+                    "registration_shift",
+                    "max",
+                    "<=",
+                    1,
+                ),
+                # No threshold on ink_mask_fraction. On a real ENC the depth
+                # bands fill nearly all water, so a correct frame measures
+                # 0.964-1.0 (gate run 2026-11, MAE 0.817, p99 1); a
+                # "not saturated" row fired on correct frames. The honest
+                # vacuity/replacement metrics (ref_signal, error_ratio,
+                # worst_tile_mae) are emitted by the tool but intentionally
+                # left unthresholded until they are calibrated against a
+                # measured run, not guessed.
             )
         ],
         "open_requirements": [

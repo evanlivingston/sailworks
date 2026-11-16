@@ -15,10 +15,13 @@ not GPU time, and they are never thresholded.
 """
 
 import argparse
+import faulthandler
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
+import signal
 import socket
 import sys
 import tempfile
@@ -42,10 +45,16 @@ CURRENT_SNAPSHOT_SHA = (
     "410b88ada69dd5a22fc18765a0f26b016e9d15df22bcfeaa954b8b4b62da2346"
 )
 ACCEPTED_SNAPSHOT_SHA = (EXPECTED_SNAPSHOT_SHA, CURRENT_SNAPSHOT_SHA)
+
 DEFAULT_SCENARIOS = ("san-francisco", "puget", "multi-cell")
 WIDGET_WIDTH = 710
 WIDGET_HEIGHT = 743
 BUDGET_S = 95.0
+#: A Quick item's asynchronous grab gets this long before the readback is
+#: treated as a failure and the widget path is tried instead.
+GRAB_TIMEOUT_MS = 15000
+# Bounded wait for the window to swap the frames that carry a state change.
+FRAME_TIMEOUT_MS = 5000
 MAE_LIMIT = 1.0
 P99_LIMIT = 8.0
 RATIO_LOW = 0.95
@@ -57,6 +66,8 @@ CHECK_NAMES = (
     "source_selection_exact",
     "multi_cell_coverage_exercised",
     "zero_alpha_preserved",
+    "pixel_registration_exact",
+    "ink_mask_not_saturated",
     "annotations_faithful",
     "native_metal_dpr2",
     "native_chart_nonblank",
@@ -108,23 +119,208 @@ def _wait(predicate, timeout_s, step_ms=50):
     return bool(predicate())
 
 
+def _device_pixel_ratio(widget):
+    """The widget's device pixel ratio, from the window or its screen."""
+    owners = [widget]
+    window = getattr(widget, "window", None)
+    if callable(window):
+        owners.append(window())
+    for owner in owners:
+        ratio = getattr(owner, "devicePixelRatio", None)
+        if ratio is None:
+            continue
+        value = ratio() if callable(ratio) else ratio
+        if value and float(value) > 0:
+            return float(value)
+    screen = getattr(widget, "screen", None)
+    if callable(screen):
+        handle = screen()
+        ratio = getattr(handle, "devicePixelRatio", None)
+        if ratio is not None:
+            value = ratio() if callable(ratio) else ratio
+            if value and float(value) > 0:
+                return float(value)
+    return 1.0
+
+
+def _device_size(width, height, dpr):
+    """The device-pixel size a grab of a logical (width, height) must have."""
+    scale = float(dpr) if dpr and float(dpr) > 0 else 1.0
+    return (max(1, int(round(width * scale))), max(1, int(round(height * scale))))
+
+
+def _grab_request(size, dpr):
+    """The ``grabToImage()`` target that yields a device-pixel ``size``.
+
+    ``QQuickItem::grabToImage()`` takes its target size in device-independent
+    pixels and scales it by the window's device pixel ratio, so asking for the
+    device size itself returns an image dpr times too large (measured at dpr 2
+    on this machine: a 1420x1486 request produced a 2840x2972 image).  The
+    request is therefore derived from the device target, and the result is
+    asserted against that target rather than trusted.
+    """
+    width, height = size
+    scale = float(dpr) if dpr and float(dpr) > 0 else 1.0
+    return (
+        max(1, int(round(width / scale))),
+        max(1, int(round(height / scale))),
+    )
+
+
+def _assert_device_shape(array, size):
+    """Refuse a grab whose pixels are not the requested device size.
+
+    The oracle is cropped to ``camera.width * dpr`` by ``camera.height * dpr``
+    device pixels, so a grab of a different size would be compared against a
+    crop at another resolution: every fidelity number would be wrong while
+    looking plausible.  The shapes are named in the error.
+    """
+    width, height = size
+    got = tuple(int(value) for value in array.shape[:2])
+    expected = (int(height), int(width))
+    if got != expected:
+        raise RuntimeError(
+            "grab size mismatch: got "
+            f"{got[1]}x{got[0]} device pixels (array {got}), "
+            f"expected {expected[1]}x{expected[0]} (array {expected})"
+        )
+
+
+def _frame_source(widget):
+    """The window that reports committed frames for ``widget`` and its signal.
+
+    A QQuickView is the window itself; a QWidget host exposes it through
+    ``window()``/``windowHandle()``.  ``frameSwapped`` fires when a rendered
+    frame is presented, which is the moment a camera or chart change becomes
+    visible to ``grabToImage()``.  ``afterFrameEnd`` is the same commitment
+    reported by newer Qt versions, so either one is accepted.
+    """
+    candidates = [widget]
+    window = getattr(widget, "window", None)
+    if callable(window):
+        owner = window()
+        candidates.append(owner)
+        handle = getattr(owner, "windowHandle", None)
+        if callable(handle):
+            candidates.append(handle())
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        for name in ("frameSwapped", "afterFrameEnd"):
+            signal = getattr(candidate, name, None)
+            if signal is not None and hasattr(signal, "connect"):
+                return candidate, signal
+    return None, None
+
+
+def _await_frame(widget, min_frames=2, timeout_ms=FRAME_TIMEOUT_MS):
+    """Wait, bounded, until ``min_frames`` freshly rendered frames are swapped.
+
+    ``grabToImage()`` renders the scene graph state the window last committed,
+    not the state just requested.  A scenario that moves the camera and
+    replaces the chart therefore has to let the window present those frames
+    before its pixels mean anything; grabbing first compares the previous
+    view against the new oracle.  Two frames are waited for: one may already
+    be in flight from before the change and commit the old state.
+
+    The wait cannot hang: a window that never reports a frame (hidden, or a
+    backend without the signal) returns its count after ``timeout_ms``.
+    Returns the number of frames observed, so the caller can record whether
+    the grab was frame-synchronised at all.
+    """
+    from PySide6.QtCore import QEventLoop, Qt, QTimer
+
+    window, signal = _frame_source(widget)
+    if signal is None:
+        _pump(min(timeout_ms, 100))
+        return 0
+    seen = []
+    loop = QEventLoop()
+
+    def _note(*_args):
+        seen.append(1)
+        if len(seen) >= min_frames:
+            loop.quit()
+
+    signal.connect(_note, Qt.ConnectionType.QueuedConnection)
+    try:
+        window.update()
+        QTimer.singleShot(timeout_ms, loop.quit)
+        loop.exec()
+    finally:
+        try:
+            signal.disconnect(_note)
+        except (RuntimeError, TypeError):
+            pass
+    return len(seen)
+
+
 def _grab(widget):
-    """The scene graph's framebuffer as premultiplied BGRA bytes (native)."""
+    """The scene graph's framebuffer as premultiplied BGRA bytes (native).
+
+    The viewport is a QQuickView, a QWindow rather than a QWidget.  Calling
+    its grabWindow() blocks the GUI thread waiting for a frame while holding
+    the GIL, and the render thread then deadlocks entering Python in
+    syncSceneGraph()/updatePaintNode().  A Quick view is therefore read
+    through its content item, whose grabToImage() is asynchronous and never
+    blocks the GUI thread.  QWidget hosts keep grabFramebuffer(), and
+    grabWindow() remains the last resort for a view with neither.
+
+    The image is never resized or cropped: the caller compares it against the
+    oracle crop, so the grab is requested at the widget's device pixel size
+    and that size is asserted.
+    """
     import numpy as np
 
+    from PySide6.QtCore import QEventLoop, QSize, QTimer
     from PySide6.QtGui import QImage
 
-    image = widget.grabFramebuffer().convertToFormat(
-        QImage.Format.Format_ARGB32_Premultiplied
-    )
+    dpr = _device_pixel_ratio(widget)
+    target = _device_size(int(widget.width()), int(widget.height()), dpr)
+    image = None
+    content = getattr(widget, "contentItem", None)
+    item = None
+    if callable(content) and hasattr(widget, "grabWindow"):
+        item = content()
+        if item is not None:
+            # A new grabToImage() result per capture: the object is per-request
+            # and owns its own image, so nothing from a previous scenario can
+            # be returned.  What it *does* render is the last committed scene
+            # graph state, which is why callers wait on _await_frame() first.
+            result = item.grabToImage(QSize(*_grab_request(target, dpr)))
+            loop = QEventLoop()
+            result.ready.connect(loop.quit)
+            QTimer.singleShot(GRAB_TIMEOUT_MS, loop.quit)
+            loop.exec()
+            grabbed = result.image()
+            if grabbed is not None and not grabbed.isNull():
+                image = grabbed
+    if image is None:
+        grab = getattr(widget, "grabFramebuffer", None)
+        if grab is None and item is None:
+            # grabWindow() blocks the GUI thread while holding the GIL and
+            # deadlocks this view's render thread, so it is only reachable
+            # for a window that has no Quick content item at all.
+            grab = getattr(widget, "grabWindow", None)
+        if grab is None:
+            raise RuntimeError(
+                f"{type(widget).__name__} content item produced no image and "
+                "has neither grabFramebuffer nor an independent grabWindow"
+            )
+        image = grab()
+    if image is None:
+        raise RuntimeError("framebuffer readback failed")
+    image = image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
     if image.isNull():
         raise RuntimeError("framebuffer readback failed")
-    return (
+    array = (
         np.frombuffer(image.constBits(), np.uint8)
         .reshape(image.height(), image.bytesPerLine())[:, : image.width() * 4]
         .reshape(image.height(), image.width(), 4)
         .copy()
     )
+    _assert_device_shape(array, target)
+    return array
 
 
 def _surface_array(surface):
@@ -158,10 +354,118 @@ def _ink(array):
     return (array.astype("int16") > INK_EPSILON).any(axis=2)
 
 
+def _registration(candidate, reference, max_shift=8):
+    """Integer (dx, dy) translation that maps reference onto candidate.
+
+    ``candidate[y + dy, x + dx]`` is expected to match ``reference[y, x]``.
+    The estimate is a normalised cross-correlation of the luma reduction over
+    an integer grid of +-max_shift: a block-reduced coarse pass, then a full
+    resolution refinement around the coarse best. It is deterministic, pure
+    numpy and needs no Qt, and it is the only fidelity metric that is not
+    translation invariant.
+    """
+    import numpy as np
+
+    if candidate.shape != reference.shape:
+        raise ValueError(
+            "registration needs equal shapes: "
+            f"candidate {candidate.shape} != reference {reference.shape}"
+        )
+    if candidate.ndim < 3 or candidate.shape[2] < 3:
+        raise ValueError(f"registration needs a colour image, got {candidate.shape}")
+
+    def luma(array):
+        data = np.asarray(array, dtype="float32")
+        return data[..., 0] * 0.114 + data[..., 1] * 0.587 + data[..., 2] * 0.299
+
+    def reduced(array, step):
+        if step <= 1:
+            return array
+        rows = (array.shape[0] // step) * step
+        cols = (array.shape[1] // step) * step
+        trimmed = array[:rows, :cols]
+        return trimmed.reshape(rows // step, step, cols // step, step).mean(axis=(1, 3))
+
+    def ncc(ref, cand, dy, dx):
+        height, width = ref.shape
+        top, bottom = max(0, -dy), min(height, height - dy)
+        left, right = max(0, -dx), min(width, width - dx)
+        if bottom - top < 8 or right - left < 8:
+            return -1.0
+        a = ref[top:bottom, left:right]
+        b = cand[top + dy : bottom + dy, left + dx : right + dx]
+        a = a - a.mean()
+        b = b - b.mean()
+        denominator = float(np.sqrt((a * a).sum() * (b * b).sum()))
+        if denominator <= 0.0:
+            return 0.0
+        return float((a * b).sum() / denominator)
+
+    ref_luma = luma(reference)
+    candidate_luma = luma(candidate)
+    step = 2 if max(reference.shape[:2]) > 512 else 1
+    coarse_ref = reduced(ref_luma, step)
+    coarse_candidate = reduced(candidate_luma, step)
+    radius = (max_shift + step - 1) // step
+    coarse_dy = coarse_dx = 0
+    coarse_score = ncc(coarse_ref, coarse_candidate, 0, 0)
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            score = ncc(coarse_ref, coarse_candidate, dy, dx)
+            if score > coarse_score:
+                coarse_dy, coarse_dx, coarse_score = dy, dx, score
+    centre_dy = coarse_dy * step
+    centre_dx = coarse_dx * step
+    window = step
+    best_dy, best_dx = centre_dy, centre_dx
+    best_score = ncc(ref_luma, candidate_luma, centre_dy, centre_dx)
+    for dy in range(
+        max(-max_shift, centre_dy - window), min(max_shift, centre_dy + window) + 1
+    ):
+        for dx in range(
+            max(-max_shift, centre_dx - window), min(max_shift, centre_dx + window) + 1
+        ):
+            score = ncc(ref_luma, candidate_luma, dy, dx)
+            if score > best_score:
+                best_dy, best_dx, best_score = dy, dx, score
+    return {"dx": int(best_dx), "dy": int(best_dy), "score": float(best_score)}
+
+
+FIDELITY_TILES = 6
+
+
+def _worst_tile_mae(diff, tiles=FIDELITY_TILES):
+    """Maximum mean absolute error over a ``tiles`` x ``tiles`` grid.
+
+    A whole-frame mean hides a localized failure: a single wrong band or a
+    misplaced label averages away against the rest of a dense chart. The grid
+    keeps the same 0-255 units as ``mae_255`` so the two are comparable.
+    """
+    import numpy as np
+
+    rows = np.array_split(np.arange(diff.shape[0]), tiles)
+    cols = np.array_split(np.arange(diff.shape[1]), tiles)
+    worst = 0.0
+    for row in rows:
+        if not len(row):
+            continue
+        for col in cols:
+            if not len(col):
+                continue
+            worst = max(worst, float(diff[np.ix_(row, col)].mean()))
+    return worst
+
+
 def _fidelity(native, ref_on, ref_off):
     """Metrics of the native ENC layer against the reference, premultiplied BGRA."""
     import numpy as np
 
+    if native.shape != ref_on.shape or native.shape != ref_off.shape:
+        raise ValueError(
+            "fidelity needs equal shapes: "
+            f"native {native.shape}, ref_on {ref_on.shape}, "
+            f"ref_off {ref_off.shape}"
+        )
     on = ref_on.astype("int16")
     off = ref_off.astype("int16")
     nat = native.astype("int16")
@@ -185,9 +489,18 @@ def _fidelity(native, ref_on, ref_off):
                 continue
             interior &= np.roll(np.roll(zero, dy, axis=0), dx, axis=1)
     zero_violations = int((interior & (nat[:, :, 3] > 0)).sum())
+    registration = _registration(native, ref_on)
     return {
         "mae_255": float(diff.mean()),
         "p99_255": float(np.percentile(diff, 99)),
+        # How much ink the reference carries at all. Near zero means the
+        # comparison is vacuous, which the ratios below cannot say on their own.
+        "ref_signal": float(np.abs(on - off).mean()),
+        # Error energy over reference signal energy. Unlike ``coverage`` this
+        # is not translation invariant and cannot saturate at 1.0.
+        "error_ratio": float(np.abs(nat - on).sum() / max(np.abs(on - off).sum(), 1)),
+        # Localized failure detector: whole-frame means average a bad band away.
+        "worst_tile_mae": _worst_tile_mae(diff),
         "nonblank": bool(ref_mask.any() and native_mask.any() and nat[:, :, 3].any()),
         "native_visible_pixels": int((nat[:, :, 3] > 0).sum()),
         "precision": precision,
@@ -197,7 +510,23 @@ def _fidelity(native, ref_on, ref_off):
         "zero_alpha_violations": zero_violations,
         "ref_ink_pixels": int(ref_mask.sum()),
         "native_ink_pixels": int(native_mask.sum()),
+        "registration_dx": registration["dx"],
+        "registration_dy": registration["dy"],
+        "registration_shift": int(
+            max(abs(registration["dx"]), abs(registration["dy"]))
+        ),
+        "registration_score": registration["score"],
+        "ink_mask_fraction": float(max(ref_mask.mean(), native_mask.mean())),
     }
+
+
+def _registration_check(metrics):
+    """True only when every pair was shape-checked and registered to <=1 px.
+
+    ``_fidelity`` raises on unequal shapes, so a metric dict proves the shapes
+    matched; the shift is the part that a translated image can fail.
+    """
+    return bool(metrics) and all(item["registration_shift"] <= 1 for item in metrics)
 
 
 def _rounded(value):
@@ -728,8 +1057,15 @@ def _run_session(  # noqa: C901 - one session keeps the widget and worker togeth
                 and report["identity"][name]["coverage_matches"]
             )
         probe.begin("reference")
+        # The camera and chart were just replaced inside composed(); wait for
+        # the window to present them before any pixel is read.
+        swaps = _await_frame(widget)
         native_frames = []
+        capture_swaps = []
         for _ in range(max(1, frames)):
+            # One fresh, committed frame per capture, so a repeat measures the
+            # readback rather than the same cached content.
+            capture_swaps.append(_await_frame(widget, min_frames=1))
             native_frames.append(_grab(widget))
         probe.end()
         native = native_frames[-1]
@@ -756,6 +1092,11 @@ def _run_session(  # noqa: C901 - one session keeps the widget and worker togeth
             "meaning": "fraction of reference annotation pixels matching within 8/255",
         }
         metrics.update(scenario=name, stable_readback=bool(stable))
+        report["identity"].setdefault(name, {})["frame_swaps"] = {
+            "settle": int(swaps),
+            "captures": int(sum(capture_swaps)),
+            "captures_requested": len(capture_swaps),
+        }
         report["fidelity"].append(metrics)
         report["scenarios"][name] = {
             "state": meta.get("state"),
@@ -781,6 +1122,12 @@ def _run_session(  # noqa: C901 - one session keeps the widget and worker togeth
     )
     report["checks"]["zero_alpha_preserved"] = bool(report["fidelity"]) and all(
         m["zero_alpha_violations"] == 0 for m in report["fidelity"]
+    )
+    report["checks"]["pixel_registration_exact"] = _registration_check(
+        report["fidelity"]
+    )
+    report["checks"]["ink_mask_not_saturated"] = bool(report["fidelity"]) and all(
+        m["ink_mask_fraction"] <= 0.99 for m in report["fidelity"]
     )
     report["checks"]["annotations_faithful"] = bool(spread) and all(
         report["identity"][name].get("annotations_match") for name in spread
@@ -986,6 +1333,7 @@ def _experience(report, widget, base_camera, deadline):  # noqa: C901
         sizes.stage = "initial"
         startup = settle("initial", camera)
         layers = (widget._chart, widget._barbs, widget._fill)
+        _await_frame(widget)
         frame = _grab(widget)
         report["checks"]["combined_layers_visible"] = bool(
             startup
@@ -1016,6 +1364,7 @@ def _experience(report, widget, base_camera, deadline):  # noqa: C901
 
         widget.resize(850, 620)
         resized = settle("resize")
+        _await_frame(widget)
         shape = _grab(widget).shape
         report["checks"]["resize_recovers"] = bool(
             resized
@@ -1229,6 +1578,147 @@ def _camera_scale(camera):
     return MapViewport(ChartCamera(camera, 1), MARGIN, lambda: None).get_scale()
 
 
+_ARMED_WATCHDOGS = []
+
+
+def _write_watchdog_marker(marker):
+    """Write the watchdog marker straight to stderr's descriptor.
+
+    ``sys.stderr`` may be replaced or buffered, and the interpreter will not
+    run another line of Python after this point, so the bytes go out through
+    ``os.write`` on the descriptor itself.
+    """
+    try:
+        fd = sys.stderr.fileno()
+    except (AttributeError, OSError, ValueError):
+        fd = 2
+    try:
+        os.write(fd, marker.encode("utf-8", "replace"))
+    except OSError:
+        pass
+
+
+def _install_alarm_handler(handler):
+    """Install ``handler`` as the process' raw C-level ``SIGALRM`` handler.
+
+    ``faulthandler.register`` installs a handler that only knows how to dump
+    stacks, so the marker line cannot precede the dump through it, and a
+    handler installed with ``signal.signal`` is a Python callable that only
+    runs at the interpreter's next bytecode boundary -- which a wedge inside
+    ``QQuickWindow::grabWindow``, or catatonic regex backtracking, never
+    reaches.  Installing the callback directly on the signal keeps both
+    properties: it runs on the main thread, which already owns the GIL, so it
+    can write the marker, dump every stack through ``faulthandler`` and exit.
+
+    Returns ``(callback, restore)``; the caller must keep ``callback`` alive
+    for as long as the handler is installed.  Raises ``OSError`` if libc
+    refuses the handler, in which case the caller degrades to a timer.
+    """
+    import ctypes
+    import ctypes.util
+
+    libc = ctypes.CDLL(ctypes.util.find_library("c") or None)
+    signature = ctypes.CFUNCTYPE(None, ctypes.c_int)
+    callback = signature(handler)
+    # ``signal()`` returns the previous handler as a pointer; read it as a
+    # signed word so ``SIG_ERR`` (-1) is distinguishable from ``SIG_DFL`` (0),
+    # which ``c_void_p`` would fold into ``None``.
+    libc.signal.restype = ctypes.c_ssize_t
+    previous = libc.signal(int(signal.SIGALRM), callback)
+    if previous == -1:
+        raise OSError("cannot install a SIGALRM handler")
+
+    def restore():
+        libc.signal(int(signal.SIGALRM), ctypes.c_void_p(previous))
+
+    return callback, restore
+
+
+class _SignalWatchdog:
+    """Disarmable handle for the ``SIGALRM`` watchdog."""
+
+    mechanism = "signal"
+
+    def __init__(self, callback, restore):
+        self._callback = callback
+        self._restore = restore
+        # The installed handler is a ctypes trampoline; freeing it with this
+        # handle would leave libc pointing at released memory, so armed
+        # handles stay reachable even if the caller drops the return value.
+        _ARMED_WATCHDOGS.append(self)
+
+    def cancel(self):
+        """Stop the deadline and put the previous ``SIGALRM`` handler back."""
+        if self._restore is None:
+            return
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        self._restore()
+        self._restore = None
+        self._callback = None
+        if self in _ARMED_WATCHDOGS:
+            _ARMED_WATCHDOGS.remove(self)
+
+
+class _TimerWatchdog:
+    """Fallback handle where the platform has no ``ITIMER_REAL``."""
+
+    mechanism = "timer"
+
+    def __init__(self, timer):
+        self._timer = timer
+
+    def cancel(self):
+        self._timer.cancel()
+
+
+def _arm_fallback_timer(seconds, fire):
+    """Arm the pre-signal watchdog: a background timer.
+
+    It survives where ``SIGALRM`` is absent (Windows), but it cannot fire
+    while the main thread holds the GIL, which is the wedge this gate hits.
+    ``mechanism`` says so for callers that care.
+    """
+    from threading import Timer
+
+    timer = Timer(seconds, fire)
+    timer.daemon = True
+    timer.start()
+    return _TimerWatchdog(timer)
+
+
+def _arm_watchdog(seconds):
+    """Hard-exit if the gate wedges, dumping every stack first.
+
+    The readback can wedge inside Qt's C++ event loop while the main thread
+    holds the GIL.  A ``threading.Timer`` reaches its callback on a worker
+    thread, which needs that GIL, so it can never fire on such a wedge; the
+    deadline is therefore driven by ``SIGALRM``, whose handler runs on the
+    main thread that already owns the GIL.  The GUI readback cannot be shut
+    down orderly from there either, so the handler exits the process directly.
+
+    Returns a handle with ``cancel()`` and a ``mechanism`` attribute, which is
+    ``"timer"`` only on platforms without ``ITIMER_REAL``.
+    """
+    if seconds <= 0:
+        raise ValueError("watchdog deadline must be positive")
+    marker = f"WATCHDOG: exceeded {seconds:.0f}s, dumping stacks and exiting\n"
+
+    def fire(*_args):
+        _write_watchdog_marker(marker)
+        faulthandler.dump_traceback(all_threads=True)
+        sys.stderr.flush()
+        os._exit(1)
+
+    if not hasattr(signal, "ITIMER_REAL"):
+        return _arm_fallback_timer(seconds, fire)
+    try:
+        callback, restore = _install_alarm_handler(fire)
+    except (OSError, ValueError, AttributeError):
+        return _arm_fallback_timer(seconds, fire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    return _SignalWatchdog(callback, restore)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--snapshot", required=True, type=Path)
@@ -1237,15 +1727,28 @@ def main(argv=None):
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--frames", type=int, default=10)
     parser.add_argument("--experience-only", action="store_true")
-    args = parser.parse_args(argv)
-    report = run(
-        args.snapshot,
-        args.output,
-        tuple(name for name in args.scenarios.split(",") if name),
-        args.repeats,
-        args.frames,
-        args.experience_only,
+    parser.add_argument(
+        "--watchdog-seconds",
+        type=float,
+        default=None,
+        help="hard-exit deadline; defaults to the gate budget plus slack",
     )
+    args = parser.parse_args(argv)
+    deadline = args.watchdog_seconds
+    if deadline is None:
+        deadline = BUDGET_S + 25
+    watchdog = _arm_watchdog(deadline)
+    try:
+        report = run(
+            args.snapshot,
+            args.output,
+            tuple(name for name in args.scenarios.split(",") if name),
+            args.repeats,
+            args.frames,
+            args.experience_only,
+        )
+    finally:
+        watchdog.cancel()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, default=str))
     return 0

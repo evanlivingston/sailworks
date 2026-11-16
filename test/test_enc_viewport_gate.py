@@ -38,6 +38,27 @@ def test_fidelity_identical_and_blank_negative():
     assert not module._fidelity(empty, reference, empty)["nonblank"]
 
 
+def test_grab_target_size_is_device_pixels_and_mismatch_rejected():
+    module = tool()
+    # dpr 1: logical and device pixels agree.
+    assert module._device_size(710, 743, 1) == (710, 743)
+    # dpr 2: the grab is requested at twice the logical size, matching the
+    # oracle crop of camera.width * dpr by camera.height * dpr.
+    assert module._device_size(710, 743, 2) == (1420, 1486)
+    assert module._device_size(850, 620, 2.0) == (1700, 1240)
+    # grabToImage() takes device-independent targets: the request that yields
+    # the device size is the device target divided by the ratio.
+    assert module._grab_request((710, 743), 1) == (710, 743)
+    assert module._grab_request((1420, 1486), 2) == (710, 743)
+    assert module._grab_request((1700, 1240), 2.0) == (850, 620)
+    # A grab at the requested device size is accepted ...
+    module._assert_device_shape(np.zeros((743, 710, 4), np.uint8), (710, 743))
+    module._assert_device_shape(np.zeros((1486, 1420, 4), np.uint8), (1420, 1486))
+    # ... and a device-independent grab against a device-pixel target is not.
+    with pytest.raises(RuntimeError, match="grab size mismatch"):
+        module._assert_device_shape(np.zeros((743, 710, 4), np.uint8), (1420, 1486))
+
+
 def test_weather_miss_keeps_enc_scene_visible():
     def item():
         state = SimpleNamespace(visible=None)
@@ -779,3 +800,225 @@ def test_satellite_render_camera_keeps_the_padded_extent(divisor):
         assert covered == pytest.approx(
             padded.view().get_scale() * padded.height * 2.0, rel=1e-9
         )
+
+
+def _translated(array, dy, dx):
+    """Candidate with ``candidate[y + dy, x + dx] == array[y, x]``."""
+    moved = np.zeros_like(array)
+    height, width = array.shape[:2]
+    top, bottom = max(0, dy), min(height, height + dy)
+    left, right = max(0, dx), min(width, width + dx)
+    moved[top:bottom, left:right] = array[
+        top - dy : bottom - dy, left - dx : right - dx
+    ]
+    return moved
+
+
+def _registration_reference():
+    reference = np.zeros((96, 112, 4), dtype=np.uint8)
+    reference[10:30, 12:50] = (200, 90, 30, 255)
+    reference[40:78, 58:100] = (20, 40, 200, 255)
+    for index in range(7):
+        row = 8 + index * 12
+        reference[row : row + 3, 6:104] = (10, 10, 10, 255)
+    return reference
+
+
+@pytest.mark.parametrize("dy, dx", ((0, 0), (7, -5)))
+def test_registration_recovers_a_known_shift_and_the_gate_rejects_it(dy, dx):
+    module = tool()
+    background = np.zeros((96, 112, 4), dtype=np.uint8)
+    reference = _registration_reference()
+    candidate = _translated(reference, dy, dx)
+
+    found = module._registration(candidate, reference)
+    assert (found["dy"], found["dx"]) == (dy, dx)
+    assert found["score"] > 0.9
+
+    metrics = module._fidelity(candidate, reference, background)
+    shift = max(abs(dx), abs(dy))
+    assert metrics["registration_shift"] == shift
+    # Coverage is translation invariant: it cannot see the misregistration
+    # that the registration metric is here to catch.
+    assert metrics["coverage"] > 0.9
+    assert module._registration_check([metrics]) == (shift <= 1)
+
+
+def test_fidelity_requires_equal_candidate_and_reference_shapes():
+    module = tool()
+    with pytest.raises(ValueError, match="equal shapes"):
+        module._fidelity(
+            np.zeros((4, 4, 4), dtype=np.uint8),
+            np.zeros((5, 4, 4), dtype=np.uint8),
+            np.zeros((4, 4, 4), dtype=np.uint8),
+        )
+
+
+def _inked(lines=6, size=96):
+    """A chart-like reference: horizontal depth bands across the water."""
+    reference = np.zeros((size, size, 4), dtype=np.uint8)
+    for row in range(0, size, max(1, size // lines)):
+        reference[row : row + size // (lines * 2)] = (20, 60, 120, 255)
+    return reference
+
+
+def test_error_ratio_is_zero_for_identical_and_grows_with_noise():
+    module = tool()
+    reference = _inked()
+    background = np.zeros_like(reference)
+    exact = module._fidelity(reference, reference, background)
+    assert exact["error_ratio"] == 0
+    assert exact["ref_signal"] > 0  # the reference does carry ink
+
+    rng = np.random.default_rng(7)
+    ratios, maes = [], []
+    for amplitude in (4, 24):
+        noisy = np.clip(
+            reference.astype("int16")
+            + rng.integers(-amplitude, amplitude + 1, reference.shape),
+            0,
+            255,
+        ).astype(np.uint8)
+        metrics = module._fidelity(noisy, reference, background)
+        ratios.append(metrics["error_ratio"])
+        maes.append(metrics["mae_255"])
+    assert ratios[0] < ratios[1]
+    assert maes[0] < maes[1]
+
+
+def test_error_ratio_sees_a_translation_that_coverage_cannot():
+    """The regression behind measuring instead of trusting coverage."""
+    module = tool()
+    reference = _inked()
+    background = np.zeros_like(reference)
+    shifted = np.roll(reference, 4, axis=0)
+    exact = module._fidelity(reference, reference, background)
+    moved = module._fidelity(shifted, reference, background)
+    # Coverage is a ratio of summed absolutes, so a shift leaves it at ~1.
+    assert exact["coverage"] == pytest.approx(1.0)
+    assert moved["coverage"] == pytest.approx(1.0, abs=0.02)
+    # Error energy is not translation invariant: it grows with the shift,
+    # and MAE grows with it.
+    assert moved["error_ratio"] > 0.05
+    assert moved["error_ratio"] > exact["error_ratio"]
+    assert moved["mae_255"] > exact["mae_255"]
+    assert moved["mae_255"] > 0
+
+
+def test_ref_signal_is_near_zero_when_reference_has_no_ink():
+    module = tool()
+    reference = _inked()
+    empty = np.zeros_like(reference)
+    vacuous = module._fidelity(empty, empty, empty)
+    assert vacuous["ref_signal"] == 0
+    assert vacuous["error_ratio"] == 0
+    # Same candidate compared against a blank base has nothing to compare, so
+    # ref_signal, not the ratios, is what says the comparison is vacuous.
+    assert module._fidelity(reference, empty, empty)["ref_signal"] == 0
+    assert module._fidelity(reference, reference, empty)["ref_signal"] > 0
+
+
+def test_worst_tile_mae_exceeds_whole_frame_mae_for_localized_error():
+    module = tool()
+    reference = _inked()
+    background = np.zeros_like(reference)
+    wrong = reference.copy()
+    # Corrupt exactly one tile of the 6x6 grid, leaving the rest correct.
+    tile = reference.shape[0] // 6
+    wrong[:tile, :tile] = 255
+    metrics = module._fidelity(wrong, reference, background)
+    assert metrics["worst_tile_mae"] > metrics["mae_255"]
+    # A uniform error spreads evenly: the worst tile matches the frame mean.
+    constant = np.full(reference.shape, 7, dtype="int16")
+    assert module._worst_tile_mae(constant) == pytest.approx(7.0)
+
+
+def test_watchdog_dumps_stacks_and_exits_nonzero():
+    """A wedged readback must fail loudly instead of hanging the process."""
+    import subprocess
+    import sys
+    import textwrap
+
+    if not sys.executable:
+        pytest.skip("no interpreter to spawn")
+    path = Path(__file__).resolve().parents[1] / "tools/check_enc_viewport.py"
+    script = textwrap.dedent("""
+        import importlib.util, sys, time
+        from pathlib import Path
+
+        spec = importlib.util.spec_from_file_location(
+            "enc_gate_helpers", Path(sys.argv[1])
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module._arm_watchdog(1)
+        time.sleep(60)
+        """)
+    proc = subprocess.run(
+        [sys.executable, "-c", script, str(path)],
+        capture_output=True,
+        text=True,
+        timeout=25,
+    )
+    assert proc.returncode != 0, proc.stderr
+    assert "WATCHDOG:" in proc.stderr, proc.stderr
+
+
+def test_watchdog_fires_while_the_main_thread_holds_the_gil():
+    """The deadline must trip from a C call that never returns to Python.
+
+    The gate wedges inside ``QQuickWindow::grabWindow`` with the GIL held, and
+    a ``threading.Timer`` needs that GIL to reach its callback, so the timer
+    watchdog could never fire.  Catastrophic regex backtracking reproduces the
+    wedge headlessly: the ``re`` engine stays in C for longer than any test
+    budget allows.
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    if not sys.executable:
+        pytest.skip("no interpreter to spawn")
+    path = Path(__file__).resolve().parents[1] / "tools/check_enc_viewport.py"
+    script = textwrap.dedent("""
+        import importlib.util, re, sys
+        from pathlib import Path
+
+        spec = importlib.util.spec_from_file_location(
+            "enc_gate_helpers", Path(sys.argv[1])
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module._arm_watchdog(1)
+        re.match(r"(a+)+$", "a" * 40 + "b")
+        print("WEDGE SURVIVED", flush=True)
+        """)
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", script, str(path)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("watchdog did not fire while the main thread held the GIL")
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "WATCHDOG:" in proc.stderr, proc.stderr
+    assert "WEDGE SURVIVED" not in proc.stdout, proc.stdout
+
+
+def test_watchdog_cancel_disarms_the_deadline():
+    """The normal return path must leave no handler or timer behind."""
+    import signal
+
+    module = tool()
+    if not hasattr(signal, "ITIMER_REAL"):
+        pytest.skip("no interval timer on this platform")
+    before = signal.getsignal(signal.SIGALRM)
+    watchdog = module._arm_watchdog(30)
+    assert watchdog.mechanism == "signal"
+    assert signal.getitimer(signal.ITIMER_REAL)[0] > 0
+    watchdog.cancel()
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+    assert signal.getsignal(signal.SIGALRM) == before
+    watchdog.cancel()  # idempotent
