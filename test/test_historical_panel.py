@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QScrollArea, QTreeWidgetItem
+from PySide6.QtWidgets import QMessageBox, QScrollArea, QTreeWidgetItem
 
 import sailworks.qt.era5download as era5download
 import sailworks.qt.historicalera5 as historicalera5
@@ -756,7 +756,7 @@ def test_results_project_records_and_pick_the_median(qtbot):
     assert panel.results.delete_button.isEnabled()
 
 
-def test_delete_calls_the_coordinator_and_the_collection(qtbot):
+def test_delete_calls_the_coordinator_and_the_collection(qtbot, monkeypatch):
     route = SimpleNamespace(uid="route-a")
     collection = [route]
     controller = SimpleNamespace(
@@ -770,12 +770,46 @@ def test_delete_calls_the_coordinator_and_the_collection(qtbot):
             (job_id, routes, collection)
         )
     )
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes
+    )
     panel.delete_job()
     assert calls == [("job-1", [route], collection)]
     assert panel._record is None
     assert panel.results._rows == []
     assert panel.results._median_member_id is None
     assert panel.results.isHidden()
+
+
+def test_delete_job_asks_before_removing_routes(qtbot, monkeypatch):
+    route = SimpleNamespace(uid="route-a")
+    collection = [route]
+    controller = SimpleNamespace(
+        core=SimpleNamespace(routingManager=collection), analysis=None
+    )
+    panel = historical_panel(qtbot, controller=controller)
+    record = SimpleNamespace(job_id="job-1", members={"2020-000": _member()})
+    panel._record = record
+    calls = []
+    panel.coordinator = SimpleNamespace(
+        delete_job=lambda job_id, routes, collection=None: calls.append(job_id)
+    )
+    asked = []
+
+    def question(parent, title, body, buttons, default):
+        asked.append((title, body, buttons, default))
+        return QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(QMessageBox, "question", question)
+    panel.delete_job()
+    assert calls == []
+    assert panel._record is record
+    assert len(asked) == 1
+    title, body, buttons, default = asked[0]
+    assert title == "Delete job"
+    assert "job-1" in body
+    assert buttons == QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+    assert default == QMessageBox.StandardButton.No
 
 
 # -- scene attachment, retry and visibility wiring -----------------------
