@@ -20,7 +20,11 @@ from sailworks.core.historicaljob import (
     prepare_job,
     summarize_job,
 )
-from sailworks.core.historicalrouting import HistoricalRoutingSpec, YearState, plan_members
+from sailworks.core.historicalrouting import (
+    HistoricalRoutingSpec,
+    YearState,
+    plan_members,
+)
 from sailworks.core.routingjob import RouteRequest
 
 UTC = timezone.utc
@@ -108,7 +112,9 @@ def test_prepare_job_all_available_counts_units_and_order():
     assert len({unit.unit_id for unit in prepared.units}) == len(prepared.units)
     assert len(prepared.units) < 3 * 3 * 11
     assert prepared.estimated_bytes > 0
-    assert all(str(unit.utc_day.year) in {"2024", "2025", "2026"} for unit in prepared.units)
+    assert all(
+        str(unit.utc_day.year) in {"2024", "2025", "2026"} for unit in prepared.units
+    )
 
 
 def test_prepare_job_excludes_a_whole_year_and_names_first_member():
@@ -128,7 +134,9 @@ def test_prepare_job_excludes_a_whole_year_and_names_first_member():
     assert year_2025.state is YearState.EXCLUDED
     assert 2025 not in {member.year for member in prepared.members}
 
-    first_offender = next(member for member in plan_members(spec) if member.year == 2025)
+    first_offender = next(
+        member for member in plan_members(spec) if member.year == 2025
+    )
     assert len(prepared.exclusions) == 1
     exclusion = prepared.exclusions[0]
     assert exclusion.year == 2025
@@ -138,7 +146,9 @@ def test_prepare_job_excludes_a_whole_year_and_names_first_member():
 
 
 def test_prepare_job_with_every_year_excluded_is_empty_but_populated():
-    prepared = prepare_job(make_spec(), now=NOW, availability=lambda window: "no coverage")
+    prepared = prepare_job(
+        make_spec(), now=NOW, availability=lambda window: "no coverage"
+    )
 
     assert prepared.requested_years == 3
     assert prepared.effective_years == 0
@@ -182,7 +192,9 @@ def test_build_executions_one_per_member_in_order_with_stable_digest():
     assert first.computation_key
 
     # Wind-only runs repeat byte for byte.
-    assert [item.binding_digest for item in run()] == [item.binding_digest for item in executions]
+    assert [item.binding_digest for item in run()] == [
+        item.binding_digest for item in executions
+    ]
 
 
 def test_build_executions_currents_require_binding_and_factory():
@@ -229,7 +241,9 @@ def test_build_executions_currents_require_binding_and_factory():
     assert first.request.use_currents is True
     shift = (planned.resolved_departure_utc - TARGET).total_seconds()
     assert first.current_time_shift_s == shift < 0
-    expected_hold = int((binding.coverage_end_utc + timedelta(seconds=shift)).timestamp())
+    expected_hold = int(
+        (binding.coverage_end_utc + timedelta(seconds=shift)).timestamp()
+    )
     assert first.current_hold_epoch_s == pytest.approx(expected_hold)
     assert executions[-1].current_time_shift_s > 0
 
@@ -256,7 +270,11 @@ def test_build_executions_without_currents_ignores_the_factory():
 
 
 def _mixed_outcomes(prepared):
-    durations = {2024: (100.0, 120.0, 140.0), 2025: (110.0, 130.0, None), 2026: (90.0, None, None)}
+    durations = {
+        2024: (100.0, 120.0, 140.0),
+        2025: (110.0, 130.0, None),
+        2026: (90.0, None, None),
+    }
     kinds = {
         2024: ("finished", "finished", "finished"),
         2025: ("finished", "finished", "no_finish"),
@@ -297,10 +315,30 @@ def test_summarize_job_uses_complete_years_and_keeps_no_finish_mass():
     assert json.loads(json.dumps(summary)) == summary
 
 
+def test_format_group_name_leads_with_the_track_and_keeps_siblings_apart():
+    kestrel = make_spec(years=10, track_name="Kestrel")
+    petrel = make_spec(years=10, track_name="Petrel")
+    assert (
+        format_group_name(kestrel)
+        == "Historical wind · Kestrel · Jun 15 2026 · requested 2017–2026"
+    )
+    assert format_group_name(kestrel) != format_group_name(petrel)
+
+    # An exported GPX name can be long and contain slashes; only the track
+    # segment shortens, and the suffix stays intact.
+    long_name = "/".join(["Vendée Globe leg 2 track"] * 4)
+    short = format_group_name(make_spec(years=10, track_name=long_name))
+    assert short.startswith("Historical wind · Vendée Globe leg 2 track/Vendée")
+    assert short.endswith("· Jun 15 2026 · requested 2017–2026")
+    assert "…" in short
+
+
 def test_format_group_name_and_compare_summary():
     spec = make_spec(years=10, offset_days=3)
     prepared = prepare_job(spec, now=NOW, availability=available)
-    assert format_group_name(spec) == "Historical wind · Jun 15 2026 · requested 2017–2026"
+    assert (
+        format_group_name(spec) == "Historical wind · Jun 15 2026 · requested 2017–2026"
+    )
     assert format_compare_summary(prepared) == (
         "Requested 10 years · Effective 10 · Excluded 0 · 70 routes"
     )

@@ -129,7 +129,8 @@ def prepare_job(spec, *, now=None, availability=None) -> PreparedJob:
 
 def _plan_units(members: tuple[HistoricalMemberPlan, ...], spec) -> tuple:
     windows = [
-        CoverageWindow(member.coverage_start_utc, member.coverage_end_utc) for member in members
+        CoverageWindow(member.coverage_start_utc, member.coverage_end_utc)
+        for member in members
     ]
     return plan_acquisition_units(windows, spec.region, fields=spec.required_fields)
 
@@ -181,7 +182,9 @@ def build_executions(
     silent downgrade to wind-only routes.
     """
     spec = prepared.spec
-    horizon = spec.max_duration_hours if max_duration_hours is None else max_duration_hours
+    horizon = (
+        spec.max_duration_hours if max_duration_hours is None else max_duration_hours
+    )
     if use_currents:
         if current_binding is None or not current_binding.enabled:
             raise ValueError("currents are enabled but no current binding was supplied")
@@ -190,7 +193,9 @@ def build_executions(
         currents = current_binding
         priority = current_binding.priority
     else:
-        currents = CurrentBinding(enabled=False, target_departure_utc=None, coverage_end_utc=None)
+        currents = CurrentBinding(
+            enabled=False, target_departure_utc=None, coverage_end_utc=None
+        )
         priority = base_request.current_priority
 
     executions: list[MemberExecution] = []
@@ -216,7 +221,9 @@ def build_executions(
         )
         if use_currents:
             shift = current_time_shift(member, target_departure_utc)
-            hold = current_hold_epoch(member, target_departure_utc, currents.coverage_end_utc)
+            hold = current_hold_epoch(
+                member, target_departure_utc, currents.coverage_end_utc
+            )
             selection = current_selection_factory(currents)
         else:
             shift = 0.0
@@ -233,7 +240,9 @@ def build_executions(
                 current_time_shift_s=shift,
                 current_hold_epoch_s=hold,
                 computation_key=computation_key(spec.job_id, member.member_id, 1),
-                binding_digest=_binding_digest(spec, member, forecast, currents, horizon),
+                binding_digest=_binding_digest(
+                    spec, member, forecast, currents, horizon
+                ),
             )
         )
     return tuple(executions)
@@ -241,7 +250,9 @@ def build_executions(
 
 def _wind_artifact_hashes(forecast) -> tuple[str, ...]:
     entry = getattr(forecast, "entry", None)
-    artifacts = tuple(getattr(entry, "artifacts", ()) or ()) if entry is not None else ()
+    artifacts = (
+        tuple(getattr(entry, "artifacts", ()) or ()) if entry is not None else ()
+    )
     if not artifacts:
         return ("",)
     return (str(getattr(artifacts[0], "sha256", "") or ""),)
@@ -298,7 +309,9 @@ def summarize_job(prepared, outcomes) -> dict:
     curve = historicalroutingstats.completion_curve(
         mapping, spec.offset_days, spec.max_duration_hours
     )
-    target = historicalroutingstats.target_completion(mapping, spec.offset_days, target_hours)
+    target = historicalroutingstats.target_completion(
+        mapping, spec.offset_days, target_hours
+    )
     return {
         "requested_years": int(prepared.requested_years),
         "effective_years": int(prepared.effective_years),
@@ -308,22 +321,44 @@ def summarize_job(prepared, outcomes) -> dict:
         "no_finish": counts["no_finish"],
         "failed": counts["failed"],
         "cancelled": counts["cancelled"],
-        "completion_curve": [[float(moment), float(fraction)] for moment, fraction in curve],
+        "completion_curve": [
+            [float(moment), float(fraction)] for moment, fraction in curve
+        ],
         "target_hours": target_hours,
         "target_completion": float(target),
         "sample_guardrails": historicalroutingstats.sample_guardrails(len(complete)),
-        "completion_label": historicalroutingstats.completion_label(len(complete), target_hours),
+        "completion_label": historicalroutingstats.completion_label(
+            len(complete), target_hours
+        ),
     }
 
 
+MAX_GROUP_TRACK_CHARS = 40
+
+
+def _group_track_name(value) -> str:
+    """One readable line of track name; long names elide at the end."""
+    name = " ".join(str(value or "").split())
+    if len(name) <= MAX_GROUP_TRACK_CHARS:
+        return name
+    return name[: MAX_GROUP_TRACK_CHARS - 1].rstrip() + "…"
+
+
 def format_group_name(spec) -> str:
-    """Scene group name: target departure plus the requested year span."""
+    """Scene group name: track, target departure and the requested year span.
+
+    Without a track name the group keeps the historical string exactly, so old
+    records and their saved groups stay recognisable.
+    """
     selected = spec.selected_departure_local
     first = spec.reference_year - spec.years + 1
-    return (
-        f"Historical wind · {selected:%b} {selected.day} {selected.year} · "
-        f"requested {first}–{spec.reference_year}"
-    )
+    parts = ["Historical wind"]
+    track = _group_track_name(getattr(spec, "track_name", ""))
+    if track:
+        parts.append(track)
+    parts.append(f"{selected:%b} {selected.day} {selected.year}")
+    parts.append(f"requested {first}–{spec.reference_year}")
+    return " · ".join(parts)
 
 
 def format_compare_summary(prepared) -> str:

@@ -616,6 +616,18 @@ class RoutingPanel(QWidget):
         scroll.setWidget(content)
         return scroll
 
+    def _active_track_name(self):
+        """The selected track's name, for the historical job's collection.
+
+        The panel is built without a window or track manager reference, so a
+        missing core or track simply means the job is not track-specific.
+        """
+        core = getattr(self.controller, "core", None)
+        tracks = getattr(core, "trackManager", None)
+        get_active = getattr(tracks, "get_active", None)
+        track = get_active() if callable(get_active) else None
+        return str(getattr(track, "name", "") or "")
+
     def _build_option_pages(self):
         compare_page = QWidget()
         compare = QVBoxLayout(compare_page)
@@ -641,6 +653,7 @@ class RoutingPanel(QWidget):
         self.historical = HistoricalRoutingPanel(
             self.routing,
             request_provider=lambda: self._request("native")[0],
+            track_name_provider=self._active_track_name,
         )
         self.historical.setVisible(False)
         compare.addWidget(self.historical, 1)

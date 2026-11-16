@@ -69,12 +69,16 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
         scene_provider=None,
         store_factory=None,
         request_provider=None,
+        track_name_provider=None,
         service_factory=None,
         parent=None,
     ):
         super().__init__(parent)
         self.routing_controller = routing_controller
         self.request_provider = request_provider
+        # Optional callable returning the active track's name, so the job's
+        # scene collection can name the track it analysed.
+        self.track_name_provider = track_name_provider
         # Ensemble acquisitions use the ARCO transport by default; tests and
         # callers may still inject a fake through ``service_factory``.
         self._service_factory = service_factory or ArcoDownloadService
@@ -163,6 +167,16 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
             )
         return request
 
+    def _track_name(self):
+        """The active track's name, or ``""`` when no track is selected."""
+        if self.track_name_provider is None:
+            return ""
+        try:
+            name = self.track_name_provider()
+        except Exception:  # a missing track must never block a job
+            return ""
+        return " ".join(str(name or "").split())
+
     def is_running(self):
         """Whether a historical run, including weather acquisition, is alive."""
         return self._thread is not None and self._thread.is_alive()
@@ -231,6 +245,7 @@ class HistoricalRoutingPanel(HistoricalRoutingSeams, QWidget):
             region=region,
             backend="native",
             requested_backend="native",
+            track_name=self._track_name(),
         )
 
     # -- job lifecycle ---------------------------------------------------
