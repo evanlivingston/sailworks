@@ -21,6 +21,7 @@ import platform
 import sys
 import tempfile
 import threading
+from contextlib import contextmanager
 from datetime import date, datetime
 
 from sailworks import log  # noqa: F401
@@ -29,6 +30,28 @@ logger = logging.getLogger("sailworks")
 
 _file_locks_guard = threading.Lock()
 _file_locks = {}
+_persistence_suspension = threading.local()
+
+
+def _persistence_suspended():
+    return getattr(_persistence_suspension, "depth", 0) > 0
+
+
+@contextmanager
+def suspend_persistence():
+    """Skip persisted writes while initial startup state is restored.
+
+    Restoring startup state re-selects values that were just read from disk, so
+    rewriting them stores identical content. The suspension is scoped to the
+    restore block on the calling thread: every later save, and any write from
+    another thread, behaves exactly as before. The on-disk schema is unchanged.
+    """
+    depth = getattr(_persistence_suspension, "depth", 0)
+    _persistence_suspension.depth = depth + 1
+    try:
+        yield
+    finally:
+        _persistence_suspension.depth = depth
 
 
 def _file_lock(path):
@@ -164,6 +187,9 @@ class Storage(dict):
             return self.__parent.save()
 
         if not self.__filename or not self.__init:
+            return
+
+        if _persistence_suspended():
             return
 
         self.flush_async()

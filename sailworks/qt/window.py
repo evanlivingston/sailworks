@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
 )
 
 from sailworks import build_label
+from sailworks.core import storage
 from sailworks.qt.filedialogpaths import remembered_dir, remember_dir
 from sailworks.core.timecontrol import (
     TimeControl,
@@ -463,36 +464,42 @@ class PreviewWindow(QMainWindow):
         controller.routing.preview_changed.connect(self.map.set_route_preview)
         controller.routing.isochrones_changed.connect(self.map.set_isochrones)
         controller.routing.changed.connect(self._routing_changed)
-        self.routing_panel._plan_changed()
-        self._select_saved_route(
-            controller.core.routingManager.get_active()
-            or next(iter(controller.core.routingManager), None)
-        )
-        # Restoring a saved result presents it through the shared presenter,
-        # which opens the dock. A launch should start with it closed; the
-        # content stays loaded for when the user opens it from the View menu.
-        self.routing_inspector_dock.hide()
-        self.statusBar().setContentsMargins(12, 4, 12, 4)
-        self.instruments = QLabel()
-        self.cursor_status = CursorStatus()
-        self.statusBar().addPermanentWidget(self.cursor_status, 1)
-        for canvas in _canvases(self):
-            canvas.cursor_readout.connect(
-                lambda text, canvas=canvas: self._cursor_readout(canvas, text)
+        # Startup restores routing and workspace state that was just read from
+        # disk. Suspend persistence for the whole restore block so re-selecting
+        # identical values performs no JSON writes before the first paint.
+        # User-triggered saves after construction are unaffected.
+        with storage.suspend_persistence():
+            self.routing_panel._plan_changed()
+            self._select_saved_route(
+                controller.core.routingManager.get_active()
+                or next(iter(controller.core.routingManager), None)
             )
-        self.statusBar().addPermanentWidget(self.instruments)
-        self.log_import_progress = LogImportProgress(controller, self)
-        self.statusBar().addPermanentWidget(self.log_import_progress)
-        controller.boat_changed.connect(self._boat_changed)
-        controller.changed.connect(self.refresh)
-        controller.connection_task.changed.connect(self.refresh)
-        controller.model_changed.connect(self._refresh_data)
-        self.live_timer = QTimer(self)
-        self.live_timer.setInterval(500)
-        self.live_timer.timeout.connect(self._refresh_data)
-        self.live_timer.start()
-        self.refresh()
-        self.workspace = WorkspacePreferences(self, workspace_path)
+            # Restoring a saved result presents it through the shared
+            # presenter, which opens the dock. A launch should start with it
+            # closed; the content stays loaded for when the user opens it from
+            # the View menu.
+            self.routing_inspector_dock.hide()
+            self.statusBar().setContentsMargins(12, 4, 12, 4)
+            self.instruments = QLabel()
+            self.cursor_status = CursorStatus()
+            self.statusBar().addPermanentWidget(self.cursor_status, 1)
+            for canvas in _canvases(self):
+                canvas.cursor_readout.connect(
+                    lambda text, canvas=canvas: self._cursor_readout(canvas, text)
+                )
+            self.statusBar().addPermanentWidget(self.instruments)
+            self.log_import_progress = LogImportProgress(controller, self)
+            self.statusBar().addPermanentWidget(self.log_import_progress)
+            controller.boat_changed.connect(self._boat_changed)
+            controller.changed.connect(self.refresh)
+            controller.connection_task.changed.connect(self.refresh)
+            controller.model_changed.connect(self._refresh_data)
+            self.live_timer = QTimer(self)
+            self.live_timer.setInterval(500)
+            self.live_timer.timeout.connect(self._refresh_data)
+            self.live_timer.start()
+            self.refresh()
+            self.workspace = WorkspacePreferences(self, workspace_path)
         self._show_startup_status(controller)
         view_menu.addSeparator()
         view_menu.addAction("Reset layout", self.workspace.reset_layout)
