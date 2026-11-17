@@ -51,6 +51,32 @@ def _set_text(label, text):
         label.setText(text)
 
 
+def _day_label(day, width, metrics):
+    """Return the widest day label that fits ``width`` pixels, or None.
+
+    ``Mon 16`` is the readable form, but a user region can span enough days
+    that cells are narrower than the label. Falling back to the day number and
+    then to nothing keeps neighbouring labels from overprinting into mush.
+    """
+    label = day.strftime("%a %d")
+    if metrics.horizontalAdvance(label) <= width:
+        return label
+    label = "%02d" % day.day
+    if metrics.horizontalAdvance(label) <= width:
+        return label
+    return None
+
+
+def _describe_stamp(stamp):
+    """Format an epoch stamp as a compact local date and time."""
+    try:
+        if stamp is None or not math.isfinite(stamp):
+            return ""
+        return datetime.fromtimestamp(stamp).astimezone().strftime("%a %d %b %H:%M")
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
 class DayStripWidget(QWidget):
     """Horizontal day-by-day timeline strip.
 
@@ -70,13 +96,16 @@ class DayStripWidget(QWidget):
     # Palette. One source of truth for the paint path.
     STRIP_BG = "#1e1e1e"
     CELL_BG = "#242424"
-    CELL_SEPARATOR = "#333333"
+    CELL_SEPARATOR = "#3f3f3f"
     LABEL = "#b0b0ad"
-    TRACK = "#3a3a3a"
-    DOT = "#555555"
+    LABEL_HOVER = "#e0e0dd"
+    CELL_HOVER = "#2f2f2f"
+    TRACK = "#4a4a4a"
+    DOT = "#9a9a95"
     NOW = "#e6c229"
     PLAYHEAD = "#3584e4"
-    MARKER = "#8f3b3b"
+    PLAYHEAD_HALO = "#141414"
+    MARKER = "#c05252"
 
     DEFAULT_STEP_SECONDS = 900
 
@@ -96,7 +125,10 @@ class DayStripWidget(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
         self._cell_rects = []  # list of (QRect, noon_timestamp)
+        self._hover_index = None  # index into _cell_rects, or None
+        self._saved_cursor = None  # cursor restored after hovering
         self.step_seconds = self.DEFAULT_STEP_SECONDS
+        self._refresh_accessibility()
         self._dragging = False
         self._now_timer = QTimer(self)
         self._now_timer.setInterval(30_000)
@@ -122,10 +154,12 @@ class DayStripWidget(QWidget):
         else:
             self.bounds = (start, end)
         self._cell_rects = []
+        self._refresh_accessibility()
         self.update()
 
     def set_position(self, stamp):
         self.position = stamp
+        self._refresh_accessibility()
         self.update()
 
     def set_marker(self, stamp):
@@ -143,10 +177,33 @@ class DayStripWidget(QWidget):
         except (TypeError, ValueError):
             value = 0
         self.step_seconds = value if value > 0 else self.DEFAULT_STEP_SECONDS
+        self._refresh_accessibility()
+
+    def _refresh_accessibility(self):
+        """State and keys for screen readers; the strip paints its own text."""
+        if self.bounds:
+            span = "%s to %s" % (
+                _describe_stamp(self.bounds[0]),
+                _describe_stamp(self.bounds[1]),
+            )
+        else:
+            span = "no forecast range loaded"
+        parts = [span]
+        selected = _describe_stamp(self.position)
+        if selected:
+            parts.append("selected %s" % selected)
+        parts.append(
+            "left and right arrows step, shift steps further, "
+            "Home and End jump to the ends"
+        )
+        self.setAccessibleDescription(". ".join(parts) + ".")
 
     def keyPressEvent(self, event):
         bounds = self.bounds
         if not bounds or bounds[0] is None or bounds[1] is None:
+            super().keyPressEvent(event)
+            return
+        if self.position is None:
             super().keyPressEvent(event)
             return
         start, end = bounds
@@ -156,9 +213,6 @@ class DayStripWidget(QWidget):
             event.accept()
             return
         if key not in (Qt.Key.Key_Left, Qt.Key.Key_Right):
-            super().keyPressEvent(event)
-            return
-        if self.position is None:
             super().keyPressEvent(event)
             return
         step = self.step_seconds
@@ -210,19 +264,28 @@ class DayStripWidget(QWidget):
 
             self._cell_rects = self._day_cells(start, end)
 
-            # Draw day cells.
-            painter.setPen(QPen(QColor(self.CELL_SEPARATOR), 1))
-            for rect, _noon in self._cell_rects:
+            # Draw day cells, with a flat hover overlay on the cell under the
+            # cursor.  Cells are separated by single hairlines, not borders.
+            for index, (rect, _noon) in enumerate(self._cell_rects):
                 painter.fillRect(rect, QColor(self.CELL_BG))
-                painter.drawRect(rect)
+                if index == self._hover_index:
+                    painter.fillRect(rect, QColor(self.CELL_HOVER))
 
-            # Draw day labels.
-            painter.setPen(QPen(QColor(self.LABEL), 1))
+            painter.setPen(QPen(QColor(self.CELL_SEPARATOR), 1))
+            for rect, _noon in self._cell_rects[1:]:
+                painter.drawLine(rect.left(), 0, rect.left(), self.CELL_HEIGHT - 1)
+
+            # Draw day labels.  The playhead is painted after these so it stays
+            # on top of the text.
             painter.setFont(self._label_font)
             fm = painter.fontMetrics()
-            for rect, noon in self._cell_rects:
+            for index, (rect, noon) in enumerate(self._cell_rects):
                 day = datetime.fromtimestamp(noon - 12 * 3600, tz=timezone.utc)
-                label = day.strftime("%d - %a")
+                label = _day_label(day, rect.width() - 6, fm)
+                if label is None:
+                    continue
+                colour = self.LABEL_HOVER if index == self._hover_index else self.LABEL
+                painter.setPen(QPen(QColor(colour), 1))
                 tw = fm.horizontalAdvance(label)
                 painter.drawText(
                     rect.center().x() - tw // 2,
@@ -230,49 +293,34 @@ class DayStripWidget(QWidget):
                     label,
                 )
 
-            # Separator line under the cells.
+            # Separator line under the cells.  The day boundaries already carry
+            # a hairline through the cells, so they need no second tick below:
+            # ticks there crowded the valid-time row into a picket fence.
             track_y = self.CELL_HEIGHT + 2
             painter.setPen(QPen(QColor(self.TRACK), 1))
             axis_right = self.width() - self.axis_right_margin
             painter.drawLine(self.axis_left_margin, track_y, axis_right, track_y)
 
-            # Tick marks below the track, one per day boundary.
-            if self._cell_rects:
-                width = self.width() - self.axis_left_margin - self.axis_right_margin
-                cell_width = width / len(self._cell_rects)
-                x = self.axis_left_margin + cell_width
-                while x < self.width() - self.axis_right_margin:
-                    painter.drawLine(
-                        int(x), track_y, int(x), track_y + self.TRACK_HEIGHT
-                    )
-                    x += cell_width
-
-            # Small dots identify actual forecast valid times.  Keep them on
-            # the bottom edge, independently of the day-cell boundaries.
-            if self.width() > 0:
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(self.DOT))
-                radius = 2
-                dot_y = self.height() - radius - 1
-                for stamp in self.valid_times:
-                    if not math.isfinite(stamp) or stamp < start or stamp > end:
-                        continue
-                    plot_width = max(
-                        0,
-                        self.width()
-                        - self.axis_left_margin
-                        - self.axis_right_margin
-                        - 1,
-                    )
-                    px = (
-                        self.axis_left_margin
-                        + round((stamp - start) / span * plot_width)
-                        if span > 0
-                        else (self.width() - 1) / 2
-                    )
-                    painter.drawEllipse(
-                        px - radius, dot_y - radius, radius * 2, radius * 2
-                    )
+            # Small dots identify actual forecast valid times.  Anchor them to
+            # the day cells rather than the widget bottom, so they keep their
+            # distance from the track whatever height the layout gives us.
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(self.DOT))
+            radius = 2
+            dot_y = track_y + radius + 2
+            for stamp in self.valid_times:
+                if not math.isfinite(stamp) or stamp < start or stamp > end:
+                    continue
+                plot_width = max(
+                    0,
+                    self.width() - self.axis_left_margin - self.axis_right_margin - 1,
+                )
+                px = (
+                    self.axis_left_margin + round((stamp - start) / span * plot_width)
+                    if span > 0
+                    else (self.width() - 1) / 2
+                )
+                painter.drawEllipse(px - radius, dot_y - radius, radius * 2, radius * 2)
 
             # Vertical markers.
             if self.now is not None and start <= self.now <= end and span > 0:
@@ -297,28 +345,6 @@ class DayStripWidget(QWidget):
                 painter.drawEllipse(now_x - 3, 0, 6, 6)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
 
-            if self.position is not None and span > 0:
-                px = self.axis_left_margin + round(
-                    (self.position - start)
-                    / span
-                    * max(
-                        0,
-                        self.width()
-                        - self.axis_left_margin
-                        - self.axis_right_margin
-                        - 1,
-                    )
-                )
-                painter.setPen(QPen(QColor(self.PLAYHEAD), 2))
-                painter.drawLine(px, 0, px, self.height())
-                # Downward triangle so the playhead reads as draggable.
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(self.PLAYHEAD))
-                painter.drawPolygon(
-                    QPolygon([QPoint(px - 4, 0), QPoint(px + 4, 0), QPoint(px, 6)])
-                )
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-
             if self.marker is not None and span > 0:
                 mx = self.axis_left_margin + round(
                     (self.marker - start)
@@ -331,14 +357,49 @@ class DayStripWidget(QWidget):
                         - 1,
                     )
                 )
-                marker_pen = QPen(QColor(self.MARKER), 2)
-                marker_pen.setStyle(Qt.PenStyle.DotLine)
-                painter.setPen(marker_pen)
-                painter.drawLine(mx, 0, mx, self.height())
-                # Bracket foot at the baseline separates it from the playhead.
-                painter.setPen(QPen(QColor(self.MARKER), 2))
-                painter.drawLine(mx - 5, self.height() - 1, mx + 5, self.height() - 1)
+                # A marker on the plot edge is the axis itself.  Drawing it
+                # there paints a full-height rule through the first or last
+                # day label, so only an interior marker carries information.
+                if self.axis_left_margin + 1 < mx < axis_right - 2:
+                    marker_pen = QPen(QColor(self.MARKER), 2)
+                    marker_pen.setStyle(Qt.PenStyle.DotLine)
+                    painter.setPen(marker_pen)
+                    painter.drawLine(mx, 0, mx, self.height())
+                    # Bracket foot at the baseline separates it from the playhead.
+                    painter.setPen(QPen(QColor(self.MARKER), 2))
+                    painter.drawLine(
+                        mx - 5, self.height() - 1, mx + 5, self.height() - 1
+                    )
+
+            if self.position is not None and span > 0:
+                px = self.axis_left_margin + round(
+                    (self.position - start)
+                    / span
+                    * max(
+                        0,
+                        self.width()
+                        - self.axis_left_margin
+                        - self.axis_right_margin
+                        - 1,
+                    )
+                )
+                # The halo protects the line against the track and dots.  Over
+                # the labels its 4px nib eats glyph strokes, so it starts below
+                # the cells; the 2px core is already 4:1 against the cell.
+                painter.setPen(QPen(QColor(self.PLAYHEAD_HALO), 4))
+                painter.drawLine(px, track_y, px, self.height())
+                painter.setPen(QPen(QColor(self.PLAYHEAD), 2))
+                painter.drawLine(px, 0, px, self.height())
                 painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(self.PLAYHEAD))
+                painter.drawPolygon(
+                    QPolygon([QPoint(px - 3, 0), QPoint(px + 4, 0), QPoint(px, 5)])
+                )
+
+            if self.hasFocus():
+                painter.setPen(QPen(QColor(self.PLAYHEAD), 1))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRoundedRect(self.rect().adjusted(1, 1, -2, -2), 2, 2)
         except Exception as exc:  # Never let a paint error crash the app
             logger.warning("DayStrip paint error: %s", exc)
 
@@ -371,12 +432,38 @@ class DayStripWidget(QWidget):
 
     def _stop_dragging(self):
         self._dragging = False
+        self._hover_index = None
         if QWidget.mouseGrabber() is self:
             self.releaseMouse()
+
+    def _hover_cell(self, point):
+        """Return the index of the day cell under ``point``, or None."""
+        for index, (rect, _noon) in enumerate(self._cell_rects):
+            if rect.contains(point):
+                return index
+        return None
+
+    def _update_hover(self, point):
+        index = self._hover_cell(point)
+        if self._saved_cursor is None:
+            self._saved_cursor = self.cursor()
+            self.setCursor(Qt.CursorShape.SizeHorCursor)
+        if index != self._hover_index:
+            self._hover_index = index
+            self.update()
+
+    def _clear_hover(self):
+        if self._hover_index is not None:
+            self._hover_index = None
+            self.update()
+        if self._saved_cursor is not None:
+            self.setCursor(self._saved_cursor)
+            self._saved_cursor = None
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._dragging = True
+            self._hover_index = None
             self.grabMouse()
             if not self._scrub_to(event.position().x()):
                 self._stop_dragging()
@@ -389,8 +476,13 @@ class DayStripWidget(QWidget):
             if not self._scrub_to(event.position().x()):
                 self._stop_dragging()
             event.accept()
-        else:
-            super().mouseMoveEvent(event)
+            return
+        self._update_hover(event.position().toPoint())
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self._clear_hover()
+        super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self._dragging:
@@ -402,6 +494,7 @@ class DayStripWidget(QWidget):
 
     def hideEvent(self, event):
         self._stop_dragging()
+        self._clear_hover()
         self.stop_clock()
         super().hideEvent(event)
 
@@ -815,7 +908,7 @@ class ForecastTimeline(QWidget):
             utc_instant = _as_utc(instant)
             _set_text(
                 self.time_label,
-                "<b>%s</b>" % (utc_instant.strftime("%d %b %H:%M UTC"),),
+                "<b>%s</b>" % (utc_instant.strftime("%a %d %b %H:%M UTC"),),
             )
             self.time_label.setToolTip(utc_instant.isoformat())
             self._syncing = True
