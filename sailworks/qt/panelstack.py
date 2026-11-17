@@ -34,6 +34,7 @@ from .collapsiblepanel import PANEL_ANIMATION_MS, CollapsiblePanel, blender_pane
 from .scrollchrome import style_scrollarea
 
 GAP_ANIMATION_MS = 120
+SPLIT_HANDLE_HEIGHT = 3
 
 
 def _lerp_rect(start: QRect, end: QRect, progress: float) -> QRect:
@@ -43,6 +44,54 @@ def _lerp_rect(start: QRect, end: QRect, progress: float) -> QRect:
         round(start.width() + (end.width() - start.width()) * progress),
         round(start.height() + (end.height() - start.height()) * progress),
     )
+
+
+class PanelSplitHandle(QWidget):
+    """Horizontal divider that trades height between the panels it separates."""
+
+    dragged = Signal(int)
+    released = Signal()
+    reset = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._dragging = False
+        self._start_y = 0.0
+        self.setObjectName("panel-split-handle")
+        self.setCursor(Qt.CursorShape.SplitVCursor)
+        self.setFixedHeight(SPLIT_HANDLE_HEIGHT)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+    def mousePressEvent(self, event):  # noqa: N802 - Qt virtual method name
+        if event.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(event)
+            return
+        self._dragging = True
+        self._start_y = float(event.globalPosition().y())
+        event.accept()
+
+    def mouseMoveEvent(self, event):  # noqa: N802 - Qt virtual method name
+        if not self._dragging:
+            super().mouseMoveEvent(event)
+            return
+        self.dragged.emit(round(event.globalPosition().y() - self._start_y))
+        event.accept()
+
+    def mouseReleaseEvent(self, event):  # noqa: N802 - Qt virtual method name
+        if self._dragging and event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            self.released.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):  # noqa: N802 - Qt virtual method name
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.reset.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
 
 class PanelStack(QWidget):
@@ -72,6 +121,14 @@ class PanelStack(QWidget):
         layout.addWidget(self.scroll)
 
         self._panels: list[CollapsiblePanel] = []
+        self._handles: list[PanelSplitHandle] = []
+        self._resize_handle: PanelSplitHandle | None = None
+        self._resize_start = (0, 0)
+        # The trailing grip resizes one panel against the stretch below the
+        # stack, so it keeps its own start state separate from pair drags.
+        self._grip_handle: PanelSplitHandle | None = None
+        self._grip_start = 0
+        self._grip_available = 0
         self._drag_panel: CollapsiblePanel | None = None
         self._drag_start = QPoint()
         self._drag_offset = 0
@@ -132,9 +189,9 @@ class PanelStack(QWidget):
                 lambda _checked=False, panel=panel: self.remove_panel(panel)
             )
             panel._stack_wired = True
-        self.stack.insertWidget(len(self._panels), panel)
         self._panels.append(panel)
         panel.show()
+        self._relayout()
         self._width_sync.start()
         self.changed.emit()
         return panel
@@ -142,11 +199,140 @@ class PanelStack(QWidget):
     def panels(self):
         return tuple(self._panels)
 
+    # -- stacked panel sizing --------------------------------------------
+    def _clear_handles(self):
+        self._resize_handle = None
+        self._grip_handle = None
+        for handle in self._handles:
+            self.stack.removeWidget(handle)
+            handle.hide()
+            handle.deleteLater()
+        self._handles.clear()
+
+    def _relayout(self):
+        """Rebuild the column as panel, handle, panel, ..., grip, stretch."""
+        self._clear_handles()
+        for panel in self._panels:
+            self.stack.removeWidget(panel)
+        index = 0
+        previous = None
+        for panel in self._panels:
+            if panel is self._drag_panel:
+                continue
+            if previous is not None:
+                handle = PanelSplitHandle(self.container)
+                self.stack.insertWidget(index, handle)
+                self._handles.append(handle)
+                self._wire_handle(handle, previous, panel)
+                index += 1
+            self.stack.insertWidget(index, panel)
+            index += 1
+            previous = panel
+        if previous is not None:
+            # A grip after the last panel lets it grow into the empty space
+            # below the stack instead of only trading height upwards.
+            grip = PanelSplitHandle(self.container)
+            self.stack.insertWidget(index, grip)
+            self._handles.append(grip)
+            self._wire_grip(grip, previous)
+
+    def _wire_handle(self, handle, upper, lower):
+        handle.dragged.connect(
+            lambda delta, handle=handle, upper=upper, lower=lower: self._resize_pair(
+                handle, upper, lower, delta
+            )
+        )
+        handle.released.connect(self._finish_split_drag)
+        handle.reset.connect(
+            lambda upper=upper, lower=lower: self._reset_pair(upper, lower)
+        )
+
+    def _wire_grip(self, handle, panel):
+        handle.dragged.connect(
+            lambda delta, handle=handle, panel=panel: self._resize_grip(
+                handle, panel, delta
+            )
+        )
+        handle.released.connect(self._finish_split_drag)
+        handle.reset.connect(lambda panel=panel: self._reset_grip(panel))
+
+    @staticmethod
+    def _panel_min_height(panel: CollapsiblePanel) -> int:
+        return panel.minimum_panel_height()
+
+    def _grip_span(self, panel: CollapsiblePanel) -> int:
+        """Height `panel` may reach before the trailing stretch is used up."""
+        others = sum(
+            other.height()
+            for other in self._panels
+            if other is not panel and other.isVisible()
+        )
+        handles = sum(
+            1
+            for index in range(self.stack.count())
+            if isinstance(self.stack.itemAt(index).widget(), PanelSplitHandle)
+        )
+        return self.scroll.viewport().height() - others - SPLIT_HANDLE_HEIGHT * handles
+
+    def _resize_grip(self, handle, panel, delta):
+        if panel.collapsed:
+            # The grip only has meaning for an expanded body.
+            return
+        if self._grip_handle is not handle:
+            self._grip_handle = handle
+            self._grip_start = panel.height()
+            self._grip_available = self._grip_span(panel)
+        minimum = self._panel_min_height(panel)
+        # A stack that already overflows has no free span; keep the current
+        # height as the ceiling so the first drag does not snap to the floor.
+        ceiling = max(minimum, self._grip_start, self._grip_available)
+        height = max(minimum, min(self._grip_start + delta, ceiling))
+        panel.set_user_height(height)
+
+    def _resize_pair(self, handle, upper, lower, delta):
+        if self._resize_handle is not handle:
+            self._resize_handle = handle
+            self._resize_start = (upper.height(), lower.height())
+        start_upper, start_lower = self._resize_start
+        upper_min = self._panel_min_height(upper)
+        lower_min = self._panel_min_height(lower)
+        if upper.collapsed and lower.collapsed:
+            return
+        if upper.collapsed:
+            # The collapsed header keeps its automatic height; the stretch
+            # below the pair absorbs whatever the expanded panel changes.
+            lower.set_user_height(max(lower_min, start_lower - delta))
+            return
+        if lower.collapsed:
+            upper.set_user_height(max(upper_min, start_upper + delta))
+            return
+        total = start_upper + start_lower
+        upper_height = max(upper_min, min(start_upper + delta, total - lower_min))
+        upper.set_user_height(upper_height)
+        lower.set_user_height(total - upper_height)
+
+    def _finish_split_drag(self):
+        ended = self._grip_handle is not None or self._resize_handle is not None
+        self._grip_handle = None
+        self._resize_handle = None
+        if ended:
+            self.changed.emit()
+
+    def _reset_pair(self, upper, lower):
+        upper.clear_user_height()
+        lower.clear_user_height()
+        self.changed.emit()
+
+    def _reset_grip(self, panel):
+        panel.clear_user_height()
+        self.changed.emit()
+
     def remove_panel(self, panel: CollapsiblePanel):
         if panel not in self._panels or self._drag_panel is panel:
             return
         self.stack.removeWidget(panel)
         self._panels.remove(panel)
+        self._relayout()
         panel.hide()
         # Keep the panel and its body alive for the owning application; it is
         # simply no longer part of the visible stack.
@@ -221,6 +407,7 @@ class PanelStack(QWidget):
 
         self.stack.removeWidget(panel)
         self._panels.remove(panel)
+        self._clear_handles()
         panel.setParent(self.container)
         panel.show()
 
@@ -286,6 +473,9 @@ class PanelStack(QWidget):
         if panel is None:
             return
         peer_y = peer.container.mapFromGlobal(cursor).y()
+        # Handles occupy layout slots, so they must go before the drop index is
+        # computed; _begin_external_drag applies it to a handle-free layout.
+        peer._clear_handles()
         index = peer._target_index(peer_y)
         if self._gap_animation is not None:
             self._gap_animation.stop()
@@ -298,6 +488,7 @@ class PanelStack(QWidget):
         self._drag_panel = None
         self._dragging = False
         self._drop_index = -1
+        self._relayout()
         self._set_dragging(panel, False)
         panel.setGraphicsEffect(None)
         self._shadow = None
@@ -307,6 +498,7 @@ class PanelStack(QWidget):
     def _begin_external_drag(self, panel: CollapsiblePanel, cursor: QPoint, index: int):
         self._drag_panel = panel
         self._dragging = True
+        self._clear_handles()
         self._drag_height = panel.height()
         self._drag_index = index
         self._drop_index = index
@@ -418,9 +610,10 @@ class PanelStack(QWidget):
             panel.setGraphicsEffect(None)
             self._shadow = None
             panel.setParent(self.container)
-            self.stack.insertWidget(target, panel)
             self._panels.insert(target, panel)
             panel.show()
+            self._drag_panel = None
+            self._relayout()
             panel.updateGeometry()
             self._set_dragging(panel, False)
             self._release_mouse(panel)

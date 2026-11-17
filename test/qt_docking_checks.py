@@ -7,10 +7,10 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QWidget
 
-from sailworks.qt.collapsiblepanel import PANEL_ANIMATION_MS
-from sailworks.qt.panelstack import GAP_ANIMATION_MS, PanelStack
+from sailworks.qt.collapsiblepanel import PANEL_ANIMATION_MS, CollapsiblePanel
+from sailworks.qt.panelstack import GAP_ANIMATION_MS, PanelSplitHandle, PanelStack
 
 
 class DockingChecks(unittest.TestCase):
@@ -120,3 +120,155 @@ class DockingChecks(unittest.TestCase):
         stack.add_panel(first)
         self.drain()
         self.assertTrue(first.isVisible())
+
+    def test_panel_split_handles_resize_and_restore(self):
+        gallery = self.build_gallery()
+        stack = gallery.findChild(PanelStack)
+        self.assertIsNotNone(stack)
+        panels = stack.panels()
+        layout = stack.stack
+        widgets = [layout.itemAt(index).widget() for index in range(layout.count())]
+        widgets = [widget for widget in widgets if widget is not None]
+        handles = [widget for widget in widgets if isinstance(widget, PanelSplitHandle)]
+        # One divider per adjacent pair, plus the trailing grip that lets the
+        # last panel grow into the stretch below it.
+        self.assertEqual(len(handles), len(panels))
+        for lower in panels[1:]:
+            self.assertIsInstance(widgets[widgets.index(lower) - 1], PanelSplitHandle)
+        self.assertIsInstance(widgets[widgets.index(panels[-1]) + 1], PanelSplitHandle)
+
+        upper, lower = panels[0], panels[1]
+        handle = widgets[widgets.index(lower) - 1]
+        # The lower panel starts at its content minimum, so give it room to
+        # shrink before trading height with the panel above.
+        lower.set_user_height(lower.height() + 80)
+        self.drain()
+        start_upper, start_lower = upper.height(), lower.height()
+        press = handle.mapToGlobal(handle.rect().center())
+        moved = press + QPoint(0, 40)
+        self.send_mouse(
+            handle,
+            QEvent.Type.MouseButtonPress,
+            press,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+        )
+        self.send_mouse(
+            handle,
+            QEvent.Type.MouseMove,
+            moved,
+            Qt.MouseButton.NoButton,
+            Qt.MouseButton.LeftButton,
+        )
+        self.send_mouse(
+            handle,
+            QEvent.Type.MouseButtonRelease,
+            moved,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.NoButton,
+        )
+        self.drain()
+        self.assertGreater(upper.height(), start_upper)
+        self.assertLess(lower.height(), start_lower)
+        self.assertAlmostEqual(
+            upper.height() + lower.height(), start_upper + start_lower, delta=4
+        )
+        self.assertIsNotNone(upper.user_height())
+        self.assertIsNotNone(lower.user_height())
+
+        self.send_mouse(
+            handle,
+            QEvent.Type.MouseButtonDblClick,
+            press,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+        )
+        self.drain()
+        self.assertIsNone(upper.user_height())
+        self.assertIsNone(lower.user_height())
+        self.assertAlmostEqual(upper.height(), start_upper, delta=2)
+
+        chosen = start_upper + 30
+        upper.set_user_height(chosen)
+        self.drain()
+        upper.set_collapsed(True)
+        QTest.qWait(PANEL_ANIMATION_MS + 100)
+        self.assertEqual(upper.user_height(), chosen)
+        self.assertLess(upper.height(), chosen)
+        upper.set_collapsed(False)
+        QTest.qWait(PANEL_ANIMATION_MS + 100)
+        self.assertEqual(upper.user_height(), chosen)
+        self.assertGreaterEqual(upper.height(), chosen - 2)
+
+    def test_trailing_grip_grows_last_panel_only(self):
+        stack = PanelStack()
+        stack.resize(320, 420)
+        stack.show()
+        self.addCleanup(self._close, stack)
+        for title in ("One", "Two", "Three"):
+            body = QWidget()
+            body.setMinimumHeight(60)
+            stack.add_panel(CollapsiblePanel(title, body))
+        self.drain()
+
+        panels = stack.panels()
+        self.assertEqual(len(panels), 3)
+        self.assertEqual(len(stack._handles), len(panels))
+        grip = stack._handles[-1]
+        self.assertIsInstance(grip, PanelSplitHandle)
+
+        others = [panel.height() for panel in panels[:-1]]
+        last = panels[-1]
+        start_last = last.height()
+        press = grip.mapToGlobal(grip.rect().center())
+        moved = press + QPoint(0, 40)
+        self.send_mouse(
+            grip,
+            QEvent.Type.MouseButtonPress,
+            press,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+        )
+        self.send_mouse(
+            grip,
+            QEvent.Type.MouseMove,
+            moved,
+            Qt.MouseButton.NoButton,
+            Qt.MouseButton.LeftButton,
+        )
+        self.send_mouse(
+            grip,
+            QEvent.Type.MouseButtonRelease,
+            moved,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.NoButton,
+        )
+        self.drain()
+        self.assertGreaterEqual(last.height(), start_last + 30)
+        self.assertEqual([panel.height() for panel in panels[:-1]], others)
+        self.assertEqual(last.user_height(), last.height())
+
+        self.send_mouse(
+            grip,
+            QEvent.Type.MouseButtonDblClick,
+            press,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+        )
+        self.drain()
+        self.assertIsNone(last.user_height())
+
+    def test_content_minimum_height_clamps_user_height(self):
+        body = QWidget()
+        body.setMinimumHeight(120)
+        panel = CollapsiblePanel("Fixed", body)
+        panel.show()
+        self.addCleanup(self._close, panel)
+        self.drain()
+
+        minimum = panel.minimum_panel_height()
+        self.assertGreaterEqual(minimum, panel._header_height() + 120)
+        panel.set_user_height(10)
+        self.drain()
+        self.assertGreaterEqual(panel.minimumHeight(), minimum)
+        self.assertGreaterEqual(panel.height(), minimum)

@@ -626,24 +626,26 @@ class PreviewWindow(QMainWindow):
                     for name, candidate in self.panels.items()
                     if candidate is wrapper
                 )
-                panels.append(
-                    {
-                        "name": name,
-                        "side": side,
-                        "visible": True,
-                        "collapsed": wrapper.collapsed,
-                    }
-                )
+                entry = {
+                    "name": name,
+                    "side": side,
+                    "visible": True,
+                    "collapsed": wrapper.collapsed,
+                }
+                if wrapper.user_height() is not None:
+                    entry["height"] = wrapper.user_height()
+                panels.append(entry)
         for name, wrapper in self.panels.items():
             if not self._panel_visible(name):
-                panels.append(
-                    {
-                        "name": name,
-                        "side": self._panel_home.get(name, "right"),
-                        "visible": False,
-                        "collapsed": wrapper.collapsed,
-                    }
-                )
+                entry = {
+                    "name": name,
+                    "side": self._panel_home.get(name, "right"),
+                    "visible": False,
+                    "collapsed": wrapper.collapsed,
+                }
+                if wrapper.user_height() is not None:
+                    entry["height"] = wrapper.user_height()
+                panels.append(entry)
         return {
             "open": dict(self._panel_stack_open),
             "width": dict(self._panel_stack_width),
@@ -674,12 +676,22 @@ class PreviewWindow(QMainWindow):
                 wrapper.set_collapsed(
                     bool(entry.get("collapsed", False)), animate=False
                 )
+                height = entry.get("height")
+                if (
+                    isinstance(height, int)
+                    and not isinstance(height, bool)
+                    and height > 0
+                ):
+                    wrapper.set_user_height(height)
+                else:
+                    wrapper.clear_user_height()
                 placed.add(name)
         for name, wrapper in self.panels.items():
             if name in placed:
                 continue
             side = self._panel_home.get(name, "right")
             self._panel_stacks[side].add_panel(wrapper)
+            wrapper.clear_user_height()
         for name in self.panels:
             action = self.panel_actions.get(name)
             if action is not None:

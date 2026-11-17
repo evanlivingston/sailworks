@@ -15,6 +15,9 @@ from PySide6.QtWidgets import (
 
 # Blender's panel curve, shortened from 0.30 s for a snappier toggle.
 PANEL_ANIMATION_MS = 160
+# Smallest usable body area an expanded panel may be dragged down to, so a
+# divider can always be grabbed back; real content can raise it further.
+PANEL_MIN_CONTENT_HEIGHT = 40
 _UNCONSTRAINED = (1 << 24) - 1
 
 
@@ -87,6 +90,7 @@ class CollapsiblePanel(QWidget):
         layout.addWidget(content, 1)
         self.header.hide()
         self._collapsed = False
+        self._user_height: int | None = None
         self._animation: QVariantAnimation | None = None
 
     def set_content(self, content):
@@ -125,7 +129,15 @@ class CollapsiblePanel(QWidget):
             self._finish_collapse(collapsed)
             return
         start = self.body.height() if self.body.isVisible() else 0
-        end = 0 if collapsed else self.body.sizeHint().height()
+        end = (
+            0
+            if collapsed
+            else (
+                max(self._header_height(), self._user_height) - self._header_height()
+                if self._user_height
+                else self.body.sizeHint().height()
+            )
+        )
         if start == end:
             self._finish_collapse(collapsed)
             return
@@ -158,10 +170,52 @@ class CollapsiblePanel(QWidget):
         self.setMinimumHeight(0)
         self.setMaximumHeight(_UNCONSTRAINED)
         self.body.setVisible(not collapsed)
+        self._apply_user_height()
         self.updateGeometry()
+
+    def user_height(self) -> int | None:
+        """Explicit height chosen by the user, or None for content height."""
+        return self._user_height
+
+    def set_user_height(self, height: int):
+        self._user_height = max(0, int(height))
+        self._apply_user_height()
+
+    def clear_user_height(self):
+        self._user_height = None
+        self._apply_user_height()
+
+    def _apply_user_height(self):
+        # A collapse owns the height (header only); the user height resumes
+        # when the panel expands again.
+        if self._user_height is None or self._collapsed:
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(_UNCONSTRAINED)
+            return
+        self.setFixedHeight(max(self._user_height, self.minimum_panel_height()))
 
     def _header_height(self) -> int:
         return self.header.sizeHint().height()
+
+    def body_minimum_height(self) -> int:
+        """Height the body needs at a minimum to show its fixed content.
+
+        Scroll area bodies report a small hint, so they stay freely resizable;
+        a body with no size hint of its own falls back to an explicit minimum.
+        """
+        if self.body is None:
+            return 0
+        hint = self.body.minimumSizeHint().height()
+        if hint < 0:
+            hint = self.body.minimumHeight()
+        return max(0, hint)
+
+    def minimum_panel_height(self) -> int:
+        """Shortest height this panel may have without clipping its content."""
+        header = self._header_height()
+        if self._collapsed:
+            return header
+        return header + max(PANEL_MIN_CONTENT_HEIGHT, self.body_minimum_height())
 
     def set_header_visible(self, visible: bool):
         self.header.setVisible(visible)
