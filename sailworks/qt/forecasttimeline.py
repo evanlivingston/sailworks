@@ -41,6 +41,16 @@ PLAY_INTERVAL_MS = 50
 PLAY_STEP_SECONDS = 360
 
 
+def _set_text(label, text):
+    """Set label text only when it changes.
+
+    Assigning identical text still queues a relayout and repaint, and startup
+    refreshes the timeline once per added source.
+    """
+    if label.text() != text:
+        label.setText(text)
+
+
 class DayStripWidget(QWidget):
     """Horizontal day-by-day timeline strip.
 
@@ -539,7 +549,7 @@ class ForecastTimeline(QWidget):
     def _set_expanded(self, expanded):
         self._expanded = bool(expanded)
         self.source_overview.set_expanded(self._expanded)
-        self.overview_button.setText("⌄" if self._expanded else "⌃")
+        _set_text(self.overview_button, "⌄" if self._expanded else "⌃")
         self.overview_button.setAccessibleName(
             "Collapse forecast source overview"
             if self._expanded
@@ -553,6 +563,12 @@ class ForecastTimeline(QWidget):
     def refresh(self, *_):
         if self.closed:
             return
+        # Window construction refreshes the timeline once per added source, and
+        # every label assignment runs a full layout pass. Disable updates for
+        # the batch so layout and repaint run once, on re-enable.
+        was_updating = self.updatesEnabled()
+        if was_updating:
+            self.setUpdatesEnabled(False)
         try:
             # Use only the selected display forecast's time range (weather model).
             # Marine (tides/currents) intervals are intentionally excluded so the
@@ -587,10 +603,12 @@ class ForecastTimeline(QWidget):
                     # Month/year labels at the edges.
                     start_local = datetime.fromtimestamp(start).astimezone()
                     end_local = datetime.fromtimestamp(end).astimezone()
-                    self.start_month_label.setText(start_local.strftime("%b %Y"))
-                    self.end_month_label.setText(end_local.strftime("%b %Y"))
-                    self.start_month_label.setToolTip(start_local.isoformat())
-                    self.end_month_label.setToolTip(end_local.isoformat())
+                    _set_text(self.start_month_label, start_local.strftime("%b %Y"))
+                    _set_text(self.end_month_label, end_local.strftime("%b %Y"))
+                    if self.start_month_label.toolTip() != start_local.isoformat():
+                        self.start_month_label.setToolTip(start_local.isoformat())
+                    if self.end_month_label.toolTip() != end_local.isoformat():
+                        self.end_month_label.setToolTip(end_local.isoformat())
                     self.day_strip.set_bounds(start, end)
                     self.day_strip.set_valid_times(valid_times)
                 else:
@@ -617,6 +635,9 @@ class ForecastTimeline(QWidget):
         except Exception as exc:  # Never let a refresh crash the app
             logger.warning("ForecastTimeline refresh error: %s", exc)
             self._syncing = False
+        finally:
+            if was_updating:
+                self.setUpdatesEnabled(True)
 
     def set_region(self, start, end):
         """Set the user-owned time region the scrubber spans.
@@ -664,7 +685,7 @@ class ForecastTimeline(QWidget):
             return
         try:
             self.cancel_commit()
-            self.time_label.setText("<b>%s</b>" % (instant.strftime("%H:%M"),))
+            _set_text(self.time_label, "<b>%s</b>" % (instant.strftime("%H:%M"),))
             self.time_label.setToolTip(instant.astimezone().isoformat())
             self._syncing = True
             if self.bounds:
@@ -688,7 +709,7 @@ class ForecastTimeline(QWidget):
                 self.day_strip.set_marker(None)
                 self.source_overview.set_cursors(self.day_strip.now, None)
             caption = self._caption_for(instant.timestamp())
-            self.caption.setText(caption)
+            _set_text(self.caption, caption)
             if self.caption.toolTip() != caption:
                 self.caption.setToolTip(caption)
             self._syncing = False
