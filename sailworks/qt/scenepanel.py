@@ -2433,6 +2433,25 @@ class ScenePanel(QWidget):
                 if not self._fit_time_available(fit_time_nodes):
                     action.setEnabled(False)
                     action.setToolTip("No time data in the selection")
+            scene_row = node is not None and not (
+                node[0] == "item" and node[1] == KIND_LOG
+            )
+            if scene_row:
+                isolated = self._isolated_to(node)
+                # The target state is captured at build time: the callback is
+                # invoked without the action's new checked value.
+                isolate = builder.add(
+                    "Isolate",
+                    lambda isolate=not isolated: self._isolate_node(node, isolate),
+                    key="S",
+                )
+                isolate.setCheckable(True)
+                isolate.setChecked(isolated)
+                builder.add(
+                    "Hide",
+                    lambda: self._hide_node(node),
+                    key="H",
+                )
             if track_element is not None:
                 builder.add(
                     "Add Point…",
@@ -2491,7 +2510,7 @@ class ScenePanel(QWidget):
                 builder.add(
                     "Edit Shape",
                     lambda uid=shape_element.uid: self.shape_edit_requested.emit(uid),
-                    key="S",
+                    key="E",
                 )
             avoidance = builder.add(
                 "Use for Avoidance",
@@ -2560,6 +2579,78 @@ class ScenePanel(QWidget):
         # setter bumps the revision, invalidating cached overlay payloads.
         element.isochrone_colour_by = mode
         self.changed.emit()
+
+    def _visibility_targets(self, node):
+        """Item identities that stay visible when a node is isolated."""
+        if node is None:
+            return set()
+        if node[0] == "group":
+            return {
+                (child[1], child[2])
+                for child in self._group_item_nodes(node[1])
+                if child[1] != KIND_LOG
+            }
+        if node[0] in ("item", "point"):
+            return {(node[1], node[2])}
+        return set()
+
+    def _ancestor_group_ids(self, node):
+        """The node's containing groups, nearest first, then upward."""
+        if node is None:
+            return []
+        if node[0] == "group":
+            start = node[1]
+        else:
+            entry = self.scene.item(node[1], node[2])
+            start = entry.group if entry is not None else None
+        identifiers = []
+        seen = set()
+        group = self.scene.group(start) if start is not None else None
+        while group is not None and group.id not in seen:
+            seen.add(group.id)
+            identifiers.append(group.id)
+            group = self.scene.group(group.parent) if group.parent is not None else None
+        return identifiers
+
+    def _isolated_to(self, node):
+        targets = self._visibility_targets(node)
+        visible = {
+            identity
+            for identity, item in self.scene.items.items()
+            if item.visible and identity[0] != KIND_LOG
+        }
+        return bool(targets) and visible == targets
+
+    def _isolate_node(self, node, isolate):
+        changed = False
+        if isolate:
+            targets = self._visibility_targets(node)
+            if not targets:
+                return
+            for identifier in self._ancestor_group_ids(node):
+                changed = self.scene.set_group_visible(identifier, True) or changed
+            # Logs are never a visibility target, so isolating leaves them
+            # alone rather than hiding them as a side effect.
+            mapping = {
+                identity: identity in targets
+                for identity in self.scene.items
+                if identity[0] != KIND_LOG
+            }
+        else:
+            mapping = {identity: True for identity in self.scene.items}
+        changed = self.scene.set_items_visible(mapping) or changed
+        if changed:
+            self._after_change()
+
+    def _hide_node(self, node):
+        if node[0] == "group":
+            changed = self.scene.set_group_visible(node[1], False)
+        elif node[0] in ("item", "point"):
+            changed = self.scene.set_item_visible(node[1], node[2], False)
+        else:
+            return
+        if changed:
+            self._after_change()
 
     def _delete_groups(self, identifiers):
         identifiers = list(identifiers)

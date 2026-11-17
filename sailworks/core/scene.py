@@ -355,6 +355,18 @@ class SceneCollection:
         self.save()
         return True
 
+    def set_items_visible(self, mapping):
+        """Set several item visibility flags and save once."""
+        changed = False
+        for identity, visible in mapping.items():
+            item = self.items.get(identity)
+            if item is not None and item.visible != bool(visible):
+                item.visible = bool(visible)
+                changed = True
+        if changed:
+            self.save()
+        return changed
+
     def assign(self, item_keys, group, save=True):
         valid = group if group is None or group in self.groups else None
         changed = False

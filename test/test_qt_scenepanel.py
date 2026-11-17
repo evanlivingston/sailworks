@@ -2786,3 +2786,61 @@ def test_shape_rows_are_fit_and_delete_candidates(tmp_path):
 
     assert panel._nodes_for_fit([node]) == [node]
     assert panel._nodes_for_delete([node]) == [node]
+
+
+def test_context_menu_isolates_the_clicked_item(tmp_path):
+    application()
+    panel = shown_panel(
+        tmp_path,
+        tracks=[FakeTrack("t1", "Morning"), FakeTrack("t2", "Evening")],
+    )
+    row = panel.item_row(KIND_TRACK, "t1")
+
+    action_named(context_menu_actions(panel, row), "Isolate").trigger()
+
+    assert panel.scene.item(KIND_TRACK, "t1").visible is True
+    assert panel.scene.item(KIND_TRACK, "t2").visible is False
+    assert panel.scene.effective_visible(KIND_TRACK, "t2") is False
+
+    row = panel.item_row(KIND_TRACK, "t1")
+    actions = context_menu_actions(panel, row)
+    assert action_named(actions, "Isolate").isChecked()
+    action_named(actions, "Isolate").trigger()
+
+    assert panel.scene.item(KIND_TRACK, "t1").visible is True
+    assert panel.scene.item(KIND_TRACK, "t2").visible is True
+    assert panel.scene.effective_visible(KIND_TRACK, "t2") is True
+
+
+def test_context_menu_hide_hides_the_clicked_row(tmp_path):
+    application()
+    shape = avoid_shape(note="coral")
+    panel = shown_panel(
+        tmp_path,
+        tracks=[FakeTrack("t1", "Morning")],
+        shapes=[shape],
+    )
+    row = panel.item_row(KIND_TRACK, "t1")
+
+    action_named(context_menu_actions(panel, row), "Hide").trigger()
+
+    assert panel.scene.item(KIND_TRACK, "t1").visible is False
+    assert panel.scene.effective_visible(KIND_TRACK, "t1") is False
+
+    shapes_row = panel.group_row("default-shapes")
+    action_named(context_menu_actions(panel, shapes_row), "Hide").trigger()
+
+    # Hiding the collection cascades to its members without clearing their
+    # own flags, so unchecking the eye on the collection restores them.
+    assert panel.scene.item(KIND_SHAPE, shape.uid).visible is True
+    assert panel.scene.effective_visible(KIND_SHAPE, shape.uid) is False
+
+
+def test_context_menu_does_not_offer_visibility_for_logs(tmp_path):
+    application()
+    panel = shown_panel(tmp_path)
+    row = panel.item_row(KIND_LOG, "log-1")
+
+    labels = [text.replace("&", "") for text in context_menu_labels(panel, row)]
+
+    assert not any("Isolate" in text or "Hide" in text for text in labels)
