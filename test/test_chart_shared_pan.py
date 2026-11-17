@@ -68,6 +68,11 @@ def _make_widget(composed, current, viewport, reference, dpr=1.0):
         _map_content=None,
         _map_pan_reference=None,
         _map_pan_window=None,
+        # No ENC scene item is attached to this headless double, so the
+        # camera-absolute scene placement is a no-op here.
+        _enc_scene_item=None,
+        _enc_scene_camera=None,
+        _camera_dpr=dpr,
         _marine_layer=SimpleNamespace(set_camera=lambda camera: None),
         _icoads_layer=SimpleNamespace(set_camera=lambda camera: None),
         _publication_manager=SimpleNamespace(
@@ -86,6 +91,7 @@ def _make_widget(composed, current, viewport, reference, dpr=1.0):
     widget._rebase_retained_imagery = MethodType(
         widget_class._rebase_retained_imagery, widget
     )
+    widget._place_enc_scene = MethodType(widget_class._place_enc_scene, widget)
     widget._native_publication_dpr = MethodType(
         widget_class._native_publication_dpr, widget
     )

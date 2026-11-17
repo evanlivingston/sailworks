@@ -25,6 +25,27 @@ def test_nested_geometry_identity():
     assert tool()._rounded([[(1.12345678, 2.0)]]) == (((1.123457, 2.0),),)
 
 
+def test_accepted_snapshot_hashes_are_exact():
+    module = tool()
+    assert module.ACCEPTED_SNAPSHOT_SHA == (
+        module.EXPECTED_SNAPSHOT_SHA,
+        module.CURRENT_SNAPSHOT_SHA,
+        module.RETRY_SNAPSHOT_SHA,
+    )
+    assert module.RETRY_SNAPSHOT_SHA == (
+        "52fe24319af0c97c03bdfc44aa951a49190d614ea69529bdaf465978feac96e4"
+    )
+    accepted = module.ACCEPTED_SNAPSHOT_SHA
+    assert len(set(accepted)) == len(accepted)
+    for sha in accepted:
+        assert sha == sha.lower()
+        assert len(sha) == 64
+        int(sha, 16)
+    assert module.RETRY_SNAPSHOT_SHA[:16] not in accepted
+    assert module.RETRY_SNAPSHOT_SHA + "\n" not in accepted
+    assert "0" * 64 not in accepted
+
+
 def test_fidelity_identical_and_blank_negative():
     module = tool()
     reference = np.zeros((10, 10, 4), dtype=np.uint8)
@@ -779,3 +800,512 @@ def test_satellite_render_camera_keeps_the_padded_extent(divisor):
         assert covered == pytest.approx(
             padded.view().get_scale() * padded.height * 2.0, rel=1e-9
         )
+
+
+def _grab_result(image):
+    """A stand-in for QQuickItemGrabResult that never signals by itself."""
+
+    class Result:
+        ready = SimpleNamespace(connect=lambda slot: None)
+
+        def image(self):
+            return image
+
+    return Result()
+
+
+def test_grab_releases_the_quick_item_result_after_reading_it(monkeypatch):
+    """Each grab frees its result: retention starves the render thread."""
+    from PySide6.QtGui import QImage
+
+    module = tool()
+    events = []
+
+    class Result:
+        ready = SimpleNamespace(
+            connect=lambda slot: None,
+            disconnect=lambda: events.append("disconnect"),
+        )
+
+        def image(self):
+            image = QImage(4, 2, QImage.Format.Format_ARGB32)
+            image.fill(Qt.GlobalColor.red)
+            return image
+
+        def deleteLater(self):
+            events.append("deleteLater")
+
+    class Content:
+        def grabToImage(self, size=None):
+            return Result()
+
+    widget = SimpleNamespace(contentItem=lambda: Content())
+    monkeypatch.setattr(module, "_await_grab", lambda result, timeout_ms: None)
+    frame = module._grab(widget)
+    assert events == ["disconnect", "deleteLater"]
+    # The pixels survive the release: QImage is refcounted, not borrowed.
+    assert frame.shape == (2, 4, 4)
+    assert (frame[:, :, 2] == 255).all()
+
+
+def test_grab_releases_the_result_even_when_the_image_is_null(monkeypatch):
+    from PySide6.QtGui import QImage
+
+    module = tool()
+    released = []
+
+    class Result:
+        ready = SimpleNamespace(connect=lambda slot: None)
+
+        def image(self):
+            return QImage()
+
+        def deleteLater(self):
+            released.append(True)
+
+    class Content:
+        def grabToImage(self, size=None):
+            return Result()
+
+    widget = SimpleNamespace(contentItem=lambda: Content())
+    monkeypatch.setattr(module, "_await_grab", lambda result, timeout_ms: None)
+    with pytest.raises(RuntimeError, match="timed out"):
+        module._grab(widget)
+    assert released
+
+
+def test_grab_sequence_compares_consecutive_grabs(monkeypatch):
+    """The verdict matches "every grab equals the last", holding two frames."""
+    module = tool()
+    first = np.zeros((2, 2, 4), np.uint8)
+    same = np.zeros((2, 2, 4), np.uint8)
+    changed = np.zeros((2, 2, 4), np.uint8)
+    changed[0, 0, 0] = 9
+
+    grabs = iter([first, changed, changed])
+    monkeypatch.setattr(module, "_grab", lambda widget: next(grabs))
+    native, digests, stable = module._grab_sequence(object(), 3)
+    assert native is changed
+    assert len(digests) == 3
+    assert digests[1] == digests[2] != digests[0]
+    assert stable is False
+
+    grabs = iter([first, same])
+    monkeypatch.setattr(module, "_grab", lambda widget: next(grabs))
+    native, digests, stable = module._grab_sequence(object(), 2)
+    assert native is same
+    assert digests[0] == digests[1]
+    assert stable is True
+
+
+def test_grab_sequence_reads_one_frame_when_asked_for_one(monkeypatch):
+    module = tool()
+    calls = []
+
+    def grab(widget):
+        calls.append(widget)
+        return np.zeros((2, 2, 4), np.uint8)
+
+    monkeypatch.setattr(module, "_grab", grab)
+    native, digests, stable = module._grab_sequence(object(), 0)
+    assert len(calls) == 1
+    assert len(digests) == 1
+    assert stable is True
+    assert native.shape == (2, 2, 4)
+
+
+def test_grab_sequence_holds_at_most_two_frames(monkeypatch):
+    """A ten-frame stability check must not retain ten 34 MB DPR2 frames."""
+    import weakref
+
+    module = tool()
+    live = []
+    alive_before_grab = []
+
+    def grab(widget):
+        alive_before_grab.append(sum(1 for ref in live if ref() is not None))
+        frame = np.zeros((2, 2, 4), np.uint8)
+        live.append(weakref.ref(frame))
+        return frame
+
+    monkeypatch.setattr(module, "_grab", grab)
+    module._grab_sequence(object(), 10)
+    assert len(alive_before_grab) == 10
+    # At each grab only the immediately preceding frame is still reachable;
+    # the old implementation kept all ten until the step ended.
+    assert max(alive_before_grab) == 1
+
+
+def test_readback_diagnostics_accepts_precomputed_digests():
+    from types import SimpleNamespace
+
+    module = tool()
+    frame = np.zeros((4, 4, 4), np.uint8)
+    digests = [module._digest(frame), module._digest(frame)]
+    readback = module._readback_diagnostics(digests=digests)
+    assert readback["grabs"] == 2
+    assert readback["digests"] == digests
+    assert readback["stable"]
+    assert readback["diagnostic_only"]
+
+
+class _DprScaledContent:
+    """A content item that scales grabs the way Qt does.
+
+    ``grabToImage(target)`` treats ``target`` as a logical, device-independent
+    size and multiplies it by the window's device pixel ratio, so the image is
+    in physical pixels.  A target that was already scaled by the ratio gets
+    scaled twice -- the ratio squared.
+    """
+
+    def __init__(self, ratio, logical=(8, 4), color=Qt.GlobalColor.red):
+        from PySide6.QtCore import QSizeF
+
+        self.ratio = ratio
+        self.logical = QSizeF(*logical)
+        self.color = color
+        self.targets = []
+
+    def size(self):
+        return self.logical
+
+    def grabToImage(self, size=None):
+        from PySide6.QtCore import QSize
+        from PySide6.QtGui import QImage
+
+        self.targets.append(size)
+        logical = self.logical if size is None else size
+        width = max(1, round(logical.width() * self.ratio))
+        height = max(1, round(logical.height() * self.ratio))
+        image = QImage(QSize(width, height), QImage.Format.Format_ARGB32)
+        image.fill(self.color)
+        return _grab_result(image)
+
+
+def test_grab_reads_native_quick_view_through_content_item(monkeypatch):
+    """A QQuickView has no grabFramebuffer; the gate must grab its content."""
+    module = tool()
+    content = _DprScaledContent(2.0)
+    # No devicePixelRatio: the helper must let Qt scale the item, not apply
+    # the ratio itself.
+    widget = SimpleNamespace(contentItem=lambda: content)
+    monkeypatch.setattr(module, "_await_grab", lambda result, timeout_ms: None)
+    frame = module._grab(widget)
+    assert not hasattr(widget, "grabFramebuffer")
+    # The target is omitted, so Qt returns the item's physical-pixel image.
+    # A pre-scaled target would have produced 32x16 here and a frame of the
+    # wrong shape, which is what the native comparison aborts on.
+    assert content.targets == [None]
+    assert frame.shape == (8, 16, 4)
+    assert frame.dtype == np.uint8
+    assert (frame[:, :, 2] == 255).all()
+
+
+def test_prescaled_grab_target_would_double_the_device_pixel_ratio():
+    """Guard the regression: Qt scales a target again, so never pass one."""
+    from PySide6.QtCore import QSize
+
+    content = _DprScaledContent(2.0)
+    omitted = content.grabToImage().image()
+    prescaled = content.grabToImage(QSize(16, 8)).image()
+    assert (omitted.width(), omitted.height()) == (16, 8)
+    assert (prescaled.width(), prescaled.height()) == (32, 16)
+    assert (prescaled.width(), prescaled.height()) != (
+        omitted.width(),
+        omitted.height(),
+    )
+
+
+def test_grab_fails_loudly_when_the_content_grab_yields_no_image(monkeypatch):
+    from PySide6.QtCore import QSizeF
+    from PySide6.QtGui import QImage
+
+    module = tool()
+    empty = QImage()
+
+    class Content:
+        def size(self):
+            return QSizeF(8, 4)
+
+        def grabToImage(self, size=None):
+            return _grab_result(empty)
+
+    widget = SimpleNamespace(contentItem=lambda: Content())
+    monkeypatch.setattr(module, "_await_grab", lambda result, timeout_ms: None)
+    with pytest.raises(RuntimeError, match="timed out"):
+        module._grab(widget)
+
+
+def test_grab_still_uses_a_widget_framebuffer_and_converts_to_argb32():
+    from PySide6.QtCore import QSize
+    from PySide6.QtGui import QImage
+
+    module = tool()
+    image = QImage(QSize(3, 2), QImage.Format.Format_RGB32)
+    image.fill(Qt.GlobalColor.blue)
+    widget = SimpleNamespace(
+        grabFramebuffer=lambda: image,
+        contentItem=lambda: pytest.fail("content item must not be grabbed"),
+    )
+    frame = module._grab(widget)
+    assert frame.shape == (2, 3, 4)
+    assert frame.dtype == np.uint8
+    assert (frame[:, :, 0] == 255).all()  # BGRA: blue lands in channel 0
+
+
+def test_readiness_conjuncts_name_each_unsatisfied_condition():
+    module = tool()
+    chart = Mock()
+    chart.property.return_value = False
+    widget = SimpleNamespace(
+        counters={"chart_publications": 7, "chart_publications_dropped": 0},
+        _chart=chart,
+    )
+    layer = SimpleNamespace(
+        state="loading", enc_metadata={"state": "ready", "selected": None}
+    )
+    conjuncts = module._readiness_conjuncts(layer, widget, 7)
+    assert list(conjuncts) == [
+        "layer_state_ready",
+        "chart_publications_advanced",
+        "chart_property_ready",
+        "enc_metadata_state_allowed",
+        "enc_metadata_selected",
+    ]
+    assert conjuncts["enc_metadata_state_allowed"]
+    assert not conjuncts["layer_state_ready"]
+    assert not conjuncts["chart_publications_advanced"]
+    assert not conjuncts["chart_property_ready"]
+    assert not conjuncts["enc_metadata_selected"]
+
+
+def test_readiness_diagnostics_carry_counters_and_selected_metadata():
+    module = tool()
+    chart = Mock()
+    chart.property.return_value = False
+    widget = SimpleNamespace(
+        counters={"chart_publications": 7, "weather_publications": 2},
+        _chart=chart,
+    )
+    layer = SimpleNamespace(
+        state="loading",
+        enc_metadata={"state": "ready", "selected": None, "coverage": ((1, 2),)},
+    )
+    diagnostics = module._readiness_diagnostics(layer, widget, 7)
+    assert diagnostics["unsatisfied"] == [
+        "layer_state_ready",
+        "chart_publications_advanced",
+        "chart_property_ready",
+        "enc_metadata_selected",
+    ]
+    assert diagnostics["chart_publications"] == 7
+    assert diagnostics["publications"] == {
+        "chart_publications": 7,
+        "weather_publications": 2,
+    }
+    assert diagnostics["enc_metadata_state"] == "ready"
+    assert diagnostics["enc_metadata_selected"] == []
+    assert diagnostics["enc_metadata_coverage"] == [(1, 2)]
+    assert diagnostics["enc_metadata_keys"] == ["coverage", "selected", "state"]
+
+
+def test_records_diff_is_terse_and_points_at_the_first_mismatch():
+    module = tool()
+    reference = [
+        ("_render_area", "DEPARE", "aaaa"),
+        ("_render_line", "COALNE", "bbbb"),
+    ]
+    candidate = [
+        ("_render_area", "DEPARE", "aaaa"),
+        ("_render_line", "COALNE", "cccc"),
+        ("_render_point", "BOYLAT", "dddd"),
+    ]
+    diff = module._records_diff(candidate, reference)
+    assert diff["identical"] is False
+    assert diff["candidate_count"] == 3
+    assert diff["reference_count"] == 2
+    assert diff["first_mismatch"] == 1
+    assert diff["window_start"] == 1
+    assert diff["candidate_digest"] != diff["reference_digest"]
+    assert len(diff["candidate_digest"]) == 16
+    assert diff["candidate_window"][0] == {
+        "kind": "_render_line",
+        "name": "COALNE",
+        "digest": "cccc",
+    }
+    assert diff["reference_window"][0] == {
+        "kind": "_render_line",
+        "name": "COALNE",
+        "digest": "bbbb",
+    }
+    assert len(diff["candidate_window"]) <= 3
+    assert diff["candidate_window"][-1] == {
+        "kind": "_render_point",
+        "name": "BOYLAT",
+        "digest": "dddd",
+    }
+    assert diff["reference_window"][-1] is None
+
+
+def test_records_diff_reports_identical_and_empty_sequences():
+    module = tool()
+    reference = [("_render_area", "DEPARE", "aaaa")]
+    identical = module._records_diff(reference, reference)
+    assert identical["identical"] is True
+    assert identical["first_mismatch"] is None
+    assert "candidate_window" not in identical
+    empty = module._records_diff([], reference)
+    assert empty["first_mismatch"] == 0
+    assert empty["candidate_count"] == 0
+    assert empty["candidate_window"] == [None]
+
+
+def test_readback_diagnostics_digest_each_grab():
+    module = tool()
+    layer = SimpleNamespace(
+        state="ready", enc_state="ready", enc_metadata={"state": "ready"}
+    )
+    widget = SimpleNamespace(counters={"chart_publications": 3})
+    frames = [np.zeros((4, 4, 4), dtype=np.uint8) for _ in range(2)]
+    frames.append(np.ones((4, 4, 4), dtype=np.uint8))
+    readback = module._readback_diagnostics(frames, layer, widget)
+    assert readback["grabs"] == 3
+    assert readback["stable"] is False
+    assert readback["distinct"] == 2
+    assert readback["first_distinct_index"] == 2
+    assert len(readback["digests"]) == 3
+    assert all(len(digest) == 16 for digest in readback["digests"])
+    assert readback["digests"][0] == readback["digests"][1]
+    assert readback["digests"][1] != readback["digests"][2]
+    assert readback["diagnostic_only"] is True
+    assert readback["signals"]["layer_state"] == "ready"
+    assert readback["signals"]["chart_publications"] == 3
+    stable = module._readback_diagnostics(frames[:2])
+    assert stable["stable"] is True
+    assert stable["distinct"] == 1
+    assert stable["first_distinct_index"] is None
+
+
+def test_unstable_readback_stays_out_of_the_gate_result():
+    module = tool()
+    assert "stable_readback" not in module.CHECK_NAMES
+    assert set(module.ALLOWED_METADATA_STATES) == {
+        "ready",
+        "coverage_miss",
+        "unavailable",
+        "disabled",
+    }
+    assert "diagnostic" in module.UNSTABLE_READBACK_NOTE
+
+
+class _FakeGrabImage:
+    """The ``QImage`` surface ``_grab`` reads, without a Qt platform."""
+
+    def __init__(self, width=3, height=2, null=False):
+        self._width = width
+        self._height = height
+        self._null = null
+        self._bits = bytes(range(1, 13)) * (width * height // 3)
+
+    def isNull(self):
+        return self._null
+
+    def convertToFormat(self, _format):
+        return self
+
+    def constBits(self):
+        return self._bits
+
+    def bytesPerLine(self):
+        return self._width * 4
+
+    def width(self):
+        return self._width
+
+    def height(self):
+        return self._height
+
+
+class _FakeView:
+    """A native view stand-in: only the grab entries the tool probes."""
+
+    def __init__(self, image=None):
+        self._image = image if image is not None else _FakeGrabImage()
+        self.window_calls = 0
+        self.framebuffer_calls = 0
+
+    def grabWindow(self):
+        self.window_calls += 1
+        return self._image
+
+    def grabFramebuffer(self):
+        self.framebuffer_calls += 1
+        return self._image
+
+
+class _FakeContentItem:
+    def grabToImage(self):
+        raise AssertionError("content item grab must not run in this branch")
+
+
+class _FakeNativeView:
+    """A ``QQuickView`` stand-in with no ``grabFramebuffer``."""
+
+    def __init__(self, image=None):
+        self._image = image if image is not None else _FakeGrabImage()
+        self.window_calls = 0
+
+    def grabWindow(self):
+        self.window_calls += 1
+        return self._image
+
+    def contentItem(self):
+        return _FakeContentItem()
+
+
+def test_grab_window_path_is_opt_in(monkeypatch):
+    module = tool()
+    view = _FakeNativeView()
+    monkeypatch.delenv(module.GRAB_WINDOW_ENV, raising=False)
+    monkeypatch.setattr(module, "_quick_view_image", lambda widget: "content-item")
+    assert module._grab_image(view) == "content-item"
+    assert view.window_calls == 0
+
+    monkeypatch.setenv(module.GRAB_WINDOW_ENV, "1")
+    assert module._grab_image(view) is view._image
+    assert view.window_calls == 1
+
+    monkeypatch.setenv(module.GRAB_WINDOW_ENV, "0")
+    assert module._grab_image(view) == "content-item"
+    assert view.window_calls == 1
+
+
+def test_grab_framebuffer_still_wins_over_the_env_flag(monkeypatch):
+    module = tool()
+    widget = _FakeView()
+    monkeypatch.setenv(module.GRAB_WINDOW_ENV, "1")
+    assert module._grab_image(widget) is widget._image
+    assert widget.framebuffer_calls == 1
+    assert widget.window_calls == 0
+
+
+def test_grab_window_null_image_fails_loudly():
+    module = tool()
+    with pytest.raises(RuntimeError, match="grabWindow returned no image"):
+        module._grab_window_image(_FakeNativeView(_FakeGrabImage(null=True)))
+
+
+def test_grab_window_reports_a_slow_call_on_stderr(capsys):
+    module = tool()
+    image = module._grab_window_image(_FakeNativeView(), timeout_ms=0)
+    assert not image.isNull()
+    assert "grabWindow blocked for" in capsys.readouterr().err
+
+
+def test_image_frame_matches_the_framebuffer_layout():
+    module = tool()
+    frame = module._image_frame(_FakeGrabImage(width=3, height=2), object())
+    assert frame.shape == (2, 3, 4)
+    assert frame.dtype == np.uint8
+    assert frame[0, 0].tolist() == [1, 2, 3, 4]
+    assert frame[1, 2].tolist() == frame[0, 2].tolist()

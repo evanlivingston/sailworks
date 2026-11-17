@@ -139,6 +139,30 @@ def _viewport_bounds(viewport):
     )
 
 
+def _same_static_geometry(frame_viewport, viewport):
+    """Whether a retained frame's pixels are aligned with this view exactly.
+
+    Two viewports are interchangeable only when they have the same extent and
+    the same world-pixel rectangle: the frame is then at the target's own
+    origin and zoom, so its pixels may be handed back verbatim.  A frame that
+    merely covers the view (a pan within the margin, or a differently sized
+    view) sits at another offset or scale and must be re-anchored first.
+    """
+    if int(frame_viewport.width) != int(viewport.width):
+        return False
+    if int(frame_viewport.height) != int(viewport.height):
+        return False
+    f_left, f_top, f_right, f_bottom = _viewport_bounds(frame_viewport)
+    left, top, right, bottom = _viewport_bounds(viewport)
+    tolerance = 1e-6
+    return (
+        abs(f_left - left) <= tolerance
+        and abs(f_top - top) <= tolerance
+        and abs(f_right - right) <= tolerance
+        and abs(f_bottom - bottom) <= tolerance
+    )
+
+
 def _intersection_rect(viewport, frame_viewport):
     """The covered part of a composition, in integer surface coordinates.
 
@@ -752,7 +776,21 @@ class ViewportChartLayer:
             # The composition was made at another device pixel ratio: it is
             # not current, and it may not be resampled into this one.
             return False
-        return fits(metadata["viewport"], ChartCamera(camera, self._dpr))
+        canvas = ChartCamera(camera, self._dpr)
+        recorded_extent = metadata.get("image_extent")
+        if recorded_extent is not None:
+            width = canvas.get_allocated_width() + 2 * MARGIN
+            height = canvas.get_allocated_height() + 2 * MARGIN
+            expected_extent = (
+                max(1, int(round(width * expected_factor))),
+                max(1, int(round(height * expected_factor))),
+            )
+            if tuple(recorded_extent) != expected_extent:
+                # The retained pixels are not the extent this view needs: the
+                # composition describes another surface.  Serving it would
+                # present mismatched pixels under this demand's own metadata.
+                return False
+        return fits(metadata["viewport"], canvas)
 
     def set_device_pixel_ratio(self, dpr):
         """Adopt the GUI's device pixel ratio (GUI thread).
@@ -1185,6 +1223,11 @@ class ViewportChartLayer:
             "time": camera.stamp(),
             "factor": factor,
             "preview": preview,
+            # The published image's own device-pixel extent.  It is read from
+            # the image, not from the requested viewport, so a surface that
+            # does not match this demand can never be re-served under
+            # metadata that claims it does.
+            "image_extent": (int(image.width()), int(image.height())),
             # The background identity these pixels were painted for.  The
             # viewport presents a deferred switch only on a composition that
             # matches it.
@@ -1217,14 +1260,31 @@ class ViewportChartLayer:
         frame, overlap = self._best_static_frame(key, viewport)
         if frame is not None and overlap is not None:
             if overlap == (0, 0, int(viewport.width), int(viewport.height)):
-                # Every pixel was already composed for this view.
+                # Every pixel is covered by the retained frame, but its
+                # surface may be sized and anchored for another view.  It is
+                # handed back only when its geometry is this view's; otherwise
+                # the covered pixels are re-anchored into a surface of the
+                # requested extent, and that corrected frame is retained.  The
+                # caller's metadata must describe the pixels it actually got:
+                # a mismatched extent would place other pixels' content under
+                # this view's camera and show only an overlapping corner.
                 report["mode"] = "reused"
                 report["composed_pixels"] = 0
                 report["reused_pixels"] = int(viewport.width) * int(viewport.height)
+                if _same_static_geometry(frame.viewport, viewport):
+                    self._count_static(report)
+                    self._touch_static(frame)
+                    report["retained_bytes"] = self._retained_static_bytes()
+                    return frame.surface, frame.enc_metadata, report
+                surface = _empty_surface(viewport, factor)
+                _paint_static(surface, frame, viewport, factor)
+                enc_metadata = self._enc_report(job, self._enc_composer())
+                if enc_metadata is None:
+                    return None
+                self._retain_static(key, surface, viewport, factor, enc_metadata)
                 self._count_static(report)
-                self._touch_static(frame)
                 report["retained_bytes"] = self._retained_static_bytes()
-                return frame.surface, frame.enc_metadata, report
+                return surface, enc_metadata, report
             surface = _empty_surface(viewport, factor)
             _paint_static(surface, frame, viewport, factor)
             regions = _exposed_regions(

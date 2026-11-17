@@ -62,6 +62,11 @@ from sailworks.qt.viewporttransform import (
     CameraChange,
     PaddedPanWindow,
     continuous_longitude,
+    enc_scene_cover_stale,
+    enc_compose_margin,
+    enc_scene_placement,
+    enc_scene_pan,
+    same_frame,
     zoom_preview_transform,
 )
 from sailworks.qt.worldunderlaycache import load_for, save_for
@@ -1839,7 +1844,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
     """
     from PySide6.QtCore import QEvent, QObject, QRectF, QTimer, QUrl, Qt, Signal
     from PySide6.QtGui import QSurfaceFormat, QVector2D
-    from PySide6.QtQuick import QQuickView
+    from PySide6.QtQuick import QQuickItem, QQuickView
     from PySide6.QtWidgets import QLabel
     import shiboken6
 
@@ -1882,6 +1887,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
         stateChanged = Signal(str)  # noqa: N815 - Qt signal name
         chartPublished = Signal(object)  # noqa: N815 - Qt signal name
         chartStateChanged = Signal(str)  # noqa: N815 - Qt signal name
+        encScenePublished = Signal(object)  # noqa: N815 - Qt signal name
+        encSceneStateChanged = Signal(str)  # noqa: N815 - Qt signal name
         nativeError = Signal(str)  # noqa: N815 - Qt signal name
         streamlinesPrepared = Signal()  # noqa: N815
         wavePrepared = Signal()  # noqa: N815
@@ -1900,6 +1907,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             native_weather_fields=None,
             native_weather_budget=None,
             enc_chart_layer=False,
+            enc_scene_layer=False,
             chart_without_weather=False,
             chart_palette=CHART_PALETTE,
             enc_only=False,
@@ -1993,7 +2001,44 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._native_error = ""
             # The ENC cells are an experimental addition to the chart layer.
             # They are off by default, and they never turn on by themselves.
-            self._enc_chart_layer = bool(enc_chart_layer) and self._chart_layer
+            # The GPU scene layer supersedes the raster ENC source (a cell is
+            # drawn once, never twice) and implies the chart layer, so the
+            # resolution is shared with the CLI wiring.
+            from .encscenelayer import resolve_enc_modes
+
+            (
+                self._chart_layer,
+                self._enc_chart_layer,
+                self._enc_scene_layer,
+            ) = resolve_enc_modes(self._chart_layer, enc_chart_layer, enc_scene_layer)
+            # The scene layer's item, layer and last state stay absent unless
+            # the flag resolved on: the default path constructs none of them.
+            self._enc_scene_container = None
+            self._enc_scene_item: Any = None
+            self._enc_scene_model = None
+            self._enc_scene_state = "idle"
+            #: The camera the presented ENC scene was composed for; its
+            #: projection is already in that camera's pixels.
+            self._enc_scene_camera = None
+            #: True while the presented scene belongs to a previous camera and
+            #: its replacement is still being composed: the status says so and
+            #: a failed/cancelled update withdraws it.
+            self._enc_scene_provisional = False
+            #: The published scene's ordered cell identity records and their
+            #: explicit per-cell states (``ready``, ``unavailable``,
+            #: ``oversized``, ``error``, ``loading``).  Empty when nothing is
+            #: presented; a skipped cell is named here instead of vanishing.
+            self._enc_scene_cells_order = ()
+            self._enc_scene_cell_states = ()
+            #: Generation of the complete scene on screen, or ``None`` when
+            #: nothing complete is presented.  A partial publication for a
+            #: newer generation must not replace it.
+            self._enc_scene_ready_generation = None
+            #: The newest generation this view has asked for.  A withdrawal for
+            #: any other generation is a superseded job's cancellation and may
+            #: not touch the presented scene.
+            self._enc_scene_pending_generation = None
+            self._enc_scene_generation = None
             self._chart_palette = chart_palette
             self._environment_provider = None
             self._environment = None
@@ -2293,6 +2338,44 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     enc_only=enc_only,
                     session=getattr(model, "session", None),
                 )
+                if self._enc_scene_layer:
+                    # The GPU ENC source.  The raster composition above was
+                    # constructed with its ENC source disabled (the mode
+                    # resolution guarantees it), so no cell is drawn twice.
+                    from .encscenelayer import EncSceneLayer
+
+                    container = self._weather.findChild(QQuickItem, "encSceneLayer")
+                    if container is None:
+                        raise RuntimeError(
+                            "The GRIB viewport could not load its ENC scene"
+                        )
+                    self._enc_scene_container = container
+                    # The item is the GUI thread's only handle on the scene:
+                    # the layer's worker never touches it.
+                    self._enc_scene_item = enc_scene_item(container)
+                    self._enc_scene_model = EncSceneLayer(
+                        data_dir=chart_data_dir,
+                        palette=self._chart_palette,
+                        # The catalog the scene layer refreshes and reads is
+                        # the viewport's own ``EncCatalog``; the raster path's
+                        # ``ViewportEncSource`` has no ``refresh()``.
+                        catalog_factory=enc_scene_catalog,
+                        worker_idle=lambda: not model.busy(),
+                        current_camera=lambda: self._camera,
+                        on_publish=self.encScenePublished.emit,
+                        on_state=self.encSceneStateChanged.emit,
+                        dpr=self.devicePixelRatio(),
+                    )
+                    # The worker publishes off the GUI thread: both callbacks
+                    # are queued so only this thread touches the item.
+                    self.encScenePublished.connect(
+                        self._enc_scene_published,
+                        Qt.ConnectionType.QueuedConnection,
+                    )
+                    self.encSceneStateChanged.connect(
+                        self._enc_scene_state_changed,
+                        Qt.ConnectionType.QueuedConnection,
+                    )
                 self._route_overlay = self._weather.findChild(QObject, "routeOverlay")
                 self._navigation_overlay = self._weather.findChild(
                     QObject, "navigationOverlay"
@@ -2901,14 +2984,211 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             The ENC state never changes the weather's state and never
             changes the chart's own: it is reported beside them.
             """
-            model = getattr(self, "_chart_model", None)
             scene = getattr(self, "_weather", None)
-            if model is None or scene is None:
+            if scene is None:
+                return
+            if getattr(self, "_enc_scene_layer", False):
+                layer = getattr(self, "_enc_scene_model", None)
+                if layer is None:
+                    return
+                state = layer.state
+                if state == "loading" or getattr(self, "_enc_scene_provisional", False):
+                    status = "ENC scene updating…"
+                elif state == "unavailable":
+                    status = layer.error or "ENC scene unavailable"
+                else:
+                    status = ""
+                scene.setProperty("encStatus", status)
+                return
+            model = getattr(self, "_chart_model", None)
+            if model is None:
                 return
             if not getattr(self, "_enc_chart_layer", False):
                 return
             status = model.enc_status()
             scene.setProperty("encStatus", status)
+
+        def _request_enc_scene(self, replace=False):
+            """Ask the scene layer for this view's own scene (GUI thread).
+
+            The scene carries positions in the viewport's logical pixels, so
+            the item is sized to the camera the request was made for.
+            """
+            layer = getattr(self, "_enc_scene_model", None)
+            camera = self._camera
+            if layer is None or camera is None:
+                return None
+            item = getattr(self, "_enc_scene_item", None)
+            if item is not None:
+                item.setWidth(camera.width)
+                item.setHeight(camera.height)
+            generation = layer.request(camera, replace=replace)
+            # The newest request owns the next publication; anything older is
+            # stale the moment it asks.
+            self._enc_scene_pending_generation = generation
+            return generation
+
+        def _withdraw_enc_scene(self):
+            """Hide the presented ENC scene: it is not current content."""
+            self._enc_scene_provisional = False
+            self._enc_scene_ready_generation = None
+            self._enc_scene_cells_order = ()
+            self._enc_scene_cell_states = ()
+            item = getattr(self, "_enc_scene_item", None)
+            if item is not None:
+                item.setVisible(False)
+
+        def _mark_enc_scene_updating(self):
+            """Keep the previous ENC scene up and label it provisional.
+
+            A camera change makes the presented scene describe the old view.
+            Its replacement is already on its way (the settle timer asks for
+            it), and a blank chart for a whole tessellation is worse than a
+            picture the status explicitly calls *updating*.  Nothing here makes
+            the old frame current: a ready publication replaces it and clears
+            the flag, and a failed, cancelled or idle update still withdraws it
+            (see ``_enc_scene_published``/``_enc_scene_state_changed``).
+            """
+            if getattr(self, "_enc_scene_item", None) is None:
+                return
+            self._enc_scene_provisional = True
+            self._update_enc_status()
+
+        def _withdraw_enc_scene_if_current(self, generation):
+            """Apply a withdrawal only to the scene it actually names.
+
+            ``generation`` is the generation the withdrawing job spoke for, or
+            ``None`` for a message that names nothing.  A withdrawal may hide
+            the presented scene only when it *is* that scene's generation and no
+            newer generation is already composing: a superseded job's
+            cancellation must never blank a current picture, which is the
+            disappear-then-reappear flicker.  An unnamed withdrawal can only
+            clear a picture that is itself unattributed.
+            """
+            presented = getattr(self, "_enc_scene_ready_generation", None)
+            if generation is None:
+                if presented is None:
+                    self._withdraw_enc_scene()
+                return
+            if presented is None or generation != presented:
+                return
+            pending = getattr(self, "_enc_scene_pending_generation", None)
+            if pending is not None and pending != generation:
+                return
+            self._withdraw_enc_scene()
+
+        def _enc_scene_published(self, payload):
+            """A scene publication or withdrawal from the layer (queued here).
+
+            Every message names the generation it speaks for; a withdrawal is
+            ``(generation, None, ...)``.  A withdrawal takes the presented
+            picture down only when it is that picture's own generation, so a
+            cancelled or superseded job cannot blank the current scene.
+            """
+            if self._disposed:
+                return
+            item = getattr(self, "_enc_scene_item", None)
+            if item is None:
+                return
+            if payload is None:
+                self._withdraw_enc_scene_if_current(None)
+                return
+            generation, scene, metadata = payload
+            if scene is None:
+                self._withdraw_enc_scene_if_current(generation)
+                return
+            # The ordered plan and the explicit per-cell state travel with the
+            # scene: a planned cell that drew nothing is named here rather
+            # than silently absent.
+            self._enc_scene_cells_order = (
+                () if metadata is None else tuple(metadata.get("cells_order", ()))
+            )
+            self._enc_scene_cell_states = (
+                () if metadata is None else tuple(metadata.get("cell_states", ()))
+            )
+            if metadata is not None and metadata.get("partial"):
+                if getattr(self, "_enc_scene_ready_generation", None) is not None:
+                    # A partial is progress, never the current view.  Swapping
+                    # the finished frame for the cells resolved so far is what
+                    # makes whole rectangles of chart disappear and redraw;
+                    # keep the ready frame up until the complete scene lands.
+                    self._enc_scene_provisional = True
+                    self._update_enc_status()
+                    return
+            self._enc_scene_generation = generation
+            # The scene carries lon/lat: project it with the view that made it,
+            # otherwise the item draws degrees and nothing lands on screen.
+            projection = None if metadata is None else metadata.get("projection")
+            if projection is not None:
+                item.set_projection(projection)
+            # Adopt the ring the layer composed over before the buffers are
+            # built, so culling keeps exactly the cells a pan can reach.
+            item.set_compose_margin(
+                None if metadata is None else metadata.get("compose_margin")
+            )
+            self._enc_scene_camera = (
+                None if metadata is None else metadata.get("camera")
+            )
+            # The projection just set is this frame's camera: the matrix is
+            # solved against it until a scale change re-composes it.
+            self._enc_scene_frame_camera = self._enc_scene_camera
+            # The item is hidden until here, and only a ready scene is shown.
+            item.set_view_scene(scene)
+            # Cancel the container pan: this scene's projection already
+            # includes the camera that composed it.
+            self._place_enc_scene()
+            item.setVisible(True)
+            self._enc_scene_provisional = False
+            self._enc_scene_ready_generation = generation
+            self._update_enc_status()
+
+        def _enc_scene_state_changed(self, state):
+            """The scene layer's own state; it never changes the chart's."""
+            self._enc_scene_state = state
+            if state in ("unavailable", "idle"):
+                # Nothing current is presented: a failed or superseded scene
+                # never leaves the previous picture standing in for it.
+                self._withdraw_enc_scene()
+            self._update_enc_status()
+
+        @property
+        def enc_scene_cells_order(self):
+            """The presented ENC scene's ordered cell identity records."""
+            return tuple(self._enc_scene_cells_order)
+
+        @property
+        def enc_scene_cell_states(self):
+            """The presented ENC scene's per-cell state, in plan order.
+
+            A cell the scene could not draw is reported here as
+            ``unavailable``/``oversized``/``error``/``loading`` with its
+            reason, so the UI can name it.  The Cairo raster ENC source stays
+            disabled while a scene is active, so the scene's own explicit
+            state is the fallback report for this phase.
+            """
+            return tuple(self._enc_scene_cell_states)
+
+        def set_chart_palette(self, palette):
+            """Adopt a new chart palette in place; ``False`` means rebuild.
+
+            A raster chart composition binds its palette when it is
+            constructed, so a viewport that has one reports that it needs a
+            fresh viewport - the presenter's existing response to a palette
+            change.  A scene-only view can adopt the palette here: the layer
+            withdraws the published scene and the settle timer composes it
+            again with palette-keyed meshes.
+            """
+            if palette == self._chart_palette:
+                return True
+            if getattr(self, "_chart_model", None) is not None:
+                return False
+            self._chart_palette = palette
+            layer = getattr(self, "_enc_scene_model", None)
+            if layer is not None and layer.set_palette(palette):
+                self._withdraw_enc_scene()
+                self._update_enc_status()
+                self._restart_chart_settle()
+            return True
 
         def _adopt_device_pixel_ratio(self):
             """The GUI's device pixel ratio, given to the chart worker.
@@ -2919,7 +3199,19 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             model = getattr(self, "_chart_model", None)
             if model is None:
                 return
+            scene_layer = getattr(self, "_enc_scene_model", None)
+            scene_changed = (
+                scene_layer is not None
+                and scene_layer.set_device_pixel_ratio(self.devicePixelRatio())
+            )
+            if scene_changed:
+                # A scene made at the old ratio is not current and may not be
+                # resampled; the settle timer composes it again.
+                self._withdraw_enc_scene()
             if not model.set_device_pixel_ratio(self.devicePixelRatio()):
+                if scene_changed:
+                    self._update_enc_status()
+                    self._restart_chart_settle()
                 return
             chart = getattr(self, "_chart", None)
             if chart is not None:
@@ -4275,12 +4567,38 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 generation = self._chart_model.request(self._camera, replace=True)
             else:
                 generation = self._chart_model.request(self._camera)
+            # The scene layer has no half-resolution preview rung: it composes
+            # for the same settled view, on its own worker, independently of
+            # the raster composition above.  Partial widget doubles (and the
+            # default path) need not define it.
+            request_scene = getattr(self, "_request_enc_scene", None)
+            if request_scene is not None:
+                request_scene()
             if generation is not None:
                 times = getattr(self, "_chart_request_times", None)
                 if times is not None:
                     times[generation] = time.perf_counter()
                     while len(times) > 64:
                         times.pop(next(iter(times)))
+            # A generation the model serves from its retained composition is
+            # already published, so no composition callback will follow it.
+            # If that generation is not the visible chart yet (the demand
+            # moved to a camera the retained composition still covers), it
+            # must be staged here or the view stays on an older frame until
+            # an unrelated demand forces a new composition.
+            if (
+                generation is not None
+                and generation != self._chart_visible_generation
+                and (
+                    self._chart_pending is None or self._chart_pending[0] != generation
+                )
+            ):
+                with self._chart_model._condition:
+                    payload = self._chart_model._published
+                    if payload is None or payload[0] != generation:
+                        payload = None
+                if payload is not None:
+                    self._publish_chart(payload)
             refusal = getattr(self, "_chart_budget_refusal", None)
             retry_refusal = False
             if refusal is not None and refusal[0] == generation:
@@ -6054,6 +6372,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self._chart_source_timer.stop()
             if self._chart_model is not None:
                 self._chart_model.close()
+            if getattr(self, "_enc_scene_model", None) is not None:
+                self._enc_scene_model.close()
             self._provider.clear()
             self._streamline_provider.clear()
             self._marine_provider.clear()
@@ -6267,6 +6587,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         self._chart_camera = camera
                         self._chart_camera_changed = time.perf_counter()
                         self._restart_chart_settle()
+                        if getattr(self, "_enc_scene_model", None) is not None:
+                            # The presented scene belongs to the previous
+                            # camera, but its replacement is already on its
+                            # way (the settle timer asks for it).  Keep the
+                            # picture up and labelled as updating instead of
+                            # blanking the chart for a whole tessellation.
+                            # A failed, cancelled or idle update withdraws it.
+                            self._mark_enc_scene_updating()
                         self._request_interactive_chart()
                         # A switch at the old camera cannot hold its retained
                         # frame across the move; withdraw it and present the
@@ -6485,7 +6813,89 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             dx, dy = reference.translation_to(camera, dpr)
             parent.setProperty("x", dx)
             parent.setProperty("y", dy)
+            self._place_enc_scene()
             return anchor_changed
+
+        def _place_enc_scene(self):
+            """Cancel the retained map's pan on the camera-absolute ENC scene.
+
+            ``mapContent`` is translated so reference-local layers keep their
+            geographic anchor.  The ENC scene is not reference-local: its
+            projection already maps degrees through a camera, so the container
+            translation was added on top of the same pan and every settled
+            chart sat one pan away from its cells.
+
+            The item cancels the translation between the current reference and
+            the camera its matrix is composed for.  A pan keeps that camera -
+            the matrix is only re-solved for a new projection - so exactly the
+            pan since composition remains, and a settled chart is pinned.
+
+            A zoom cannot be expressed as a translation at all: the world-pixel
+            scale changed.  The retained buffers live in a reference screen
+            frame, so the frame is re-composed against the current camera
+            instead: ``_frame_coeffs`` re-projects its four probes and the
+            matrix supplies the scale.  Nothing is rebuilt, no vertex is
+            re-projected per frame, and the upload is untouched.
+            """
+            item = getattr(self, "_enc_scene_item", None)
+            if item is None:
+                return
+            reference = getattr(self, "_map_pan_reference", None)
+            camera = getattr(self, "_camera", None)
+            frame = getattr(self, "_enc_scene_frame_camera", None)
+            if frame is None:
+                frame = getattr(self, "_enc_scene_camera", None)
+            rescaled = False
+            if (
+                camera is not None
+                and frame is not None
+                and not same_frame(frame, camera)
+            ):
+                from sailworks.qt.encscenelayer import (
+                    projection_for,
+                    screen_viewport_for,
+                )
+
+                item.set_projection(projection_for(screen_viewport_for(camera)))
+                self._enc_scene_frame_camera = camera
+                frame = camera
+                rescaled = True
+            x, y = enc_scene_placement(reference, frame, self._camera_dpr)
+            item.setX(x)
+            item.setY(y)
+            if camera is None or frame is None:
+                return
+            if rescaled:
+                stale = True
+            else:
+                # The frame was composed over this ring; ask for a replacement
+                # once half of it is consumed, leaving the rest as slack for
+                # the asynchronous composer.
+                stale = enc_scene_cover_stale(
+                    reference,
+                    frame,
+                    camera,
+                    enc_compose_margin(frame),
+                    self._camera_dpr,
+                )
+            if not stale:
+                return
+            # One replacement request per presented generation, however far the
+            # gesture runs: the layer cancels superseded work and the settle
+            # timer asks again anyway.  Until it arrives the uncovered strip is
+            # bounded by the padding the composition reached past the view.
+            request = getattr(self, "_request_enc_scene", None)
+            generation = getattr(self, "_enc_scene_generation", None)
+            if (
+                request is None
+                or getattr(self, "_enc_scene_cover_generation", None) == generation
+            ):
+                return
+            self._enc_scene_cover_generation = generation
+            updating = getattr(self, "_mark_enc_scene_updating", None)
+            if updating is not None:
+                updating()
+            request()
 
         @staticmethod
         def _same_weather_view(first, second):
@@ -6524,6 +6934,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     None
                     if self._chart_model is None
                     else self._chart_model.observations()
+                ),
+                "enc_scene_layer": (
+                    None
+                    if getattr(self, "_enc_scene_model", None) is None
+                    else self._enc_scene_model.observations()
                 ),
             }
 
@@ -8134,61 +8549,59 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
     return GribViewport
 
 
-def saved_selection(data_dir):
-    """Read the saved ordered selection without creating or modifying app data."""
-    directory = Path(data_dir).expanduser()
-    manager = json.loads((directory / "grib-manager.json").read_text())
-    names = manager.get("opened", [])
-    if not isinstance(names, list) or not names:
-        raise ValueError("No saved forecasts selected; open forecasts in the app first")
-    paths = []
-    for name in names:
-        if not isinstance(name, str) or Path(name).name != name:
-            raise ValueError("Saved forecast selection contains an invalid filename")
-        path = directory / "grib" / name
-        if not path.is_file():
-            raise ValueError(f"Selected forecast is missing: {path}")
-        paths.append(str(path))
-    settings_path = directory / "settings.json"
-    settings = json.loads(settings_path.read_text()) if settings_path.is_file() else {}
-    return tuple(paths), settings
+def enc_scene_catalog(data_dir, palette=None):
+    """The catalog the ENC scene layer refreshes and reads.
 
-
-def saved_chart_palette(data_dir, settings=None):
-    """The user's own chart palette, read without creating or modifying data.
-
-    The palette is the application's own: an unknown name falls back to the
-    application's default rather than failing the composition.
+    The layer needs ``refresh()``, ``manifest.class_enabled`` and
+    ``sources``; that is ``viewportenc.EncCatalog``.  The raster path's
+    ``ViewportEncSource`` owns one but does not expose it, so it cannot be
+    injected here.  ``palette`` is accepted for the factory's signature; the
+    catalog reads no colours.
     """
-    from sailworks.qt.gribviewportchart import CHART_PALETTE
-    from sailworks.rendering.style import Style
+    from .viewportenc import EncCatalog
 
-    if not settings:
-        path = Path(data_dir).expanduser() / "settings.json"
-        try:
-            settings = json.loads(path.read_text())
-        except (OSError, ValueError):
-            settings = {}
-    palette = settings.get("chartPalette") if isinstance(settings, dict) else None
-    if palette in Style.chart_palettes:
-        return palette
-    return CHART_PALETTE
+    return EncCatalog(data_dir)
 
 
-def main(argv=None):
-    """Launch a read-only standalone viewport; no paths means saved selection."""
-    import argparse
+def enc_scene_item(container):
+    """Parent the GPU ENC item on its QML container and size it to it.
 
-    from PySide6.QtCore import QDateTime, Qt
-    from PySide6.QtWidgets import (
-        QApplication,
-        QDateTimeEdit,
-        QHBoxLayout,
-        QLabel,
-        QPushButton,
-        QVBoxLayout,
-        QWidget,
+    The scene's coordinates are viewport logical pixels, so the item covers
+    the container rather than a zero-sized rect.  The two connections keep it
+    covering the container across a resize.  The item starts hidden: it is
+    shown only when a ready scene is published, never as an empty overlay.
+    """
+    from .encgpu import EncMeshItem
+
+    item = EncMeshItem(container)
+    item.setWidth(container.width())
+    item.setHeight(container.height())
+    # ``widthChanged``/``heightChanged`` carry no argument, so the slot has to
+    # read the container's current size: connecting ``item.setWidth`` directly
+    # would call it with zero arguments and raise.
+    container.widthChanged.connect(lambda: item.setWidth(container.width()))
+    container.heightChanged.connect(lambda: item.setHeight(container.height()))
+    item.setVisible(False)
+    return item
+
+
+def viewport_layer_flags(args):
+    """The chart/ENC layer flags the viewport is constructed with.
+
+    Kept apart from :func:`main` so the wiring is testable without a GUI: the
+    scene layer implies the chart layer and supersedes the raster ENC source,
+    so a cell is never drawn twice.
+    """
+    from .encscenelayer import resolve_enc_modes
+
+    return resolve_enc_modes(
+        args.chart_layer, args.enc_chart_layer, args.enc_scene_layer
     )
+
+
+def viewport_argument_parser():
+    """The launcher's own arguments; every experimental layer defaults off."""
+    import argparse
 
     parser = argparse.ArgumentParser(description="Independent GRIB viewport")
     parser.add_argument(
@@ -8251,6 +8664,75 @@ def main(argv=None):
             "implies the chart layer)"
         ),
     )
+    parser.add_argument(
+        "--enc-scene-layer",
+        action="store_true",
+        help=(
+            "draw the installed ENC cells as a GPU scene layer instead of the "
+            "raster ENC overlay, which then rasterizes no ENC at all "
+            "(default: off; implies the chart layer)"
+        ),
+    )
+    return parser
+
+
+def saved_selection(data_dir):
+    """Read the saved ordered selection without creating or modifying app data."""
+    directory = Path(data_dir).expanduser()
+    manager = json.loads((directory / "grib-manager.json").read_text())
+    names = manager.get("opened", [])
+    if not isinstance(names, list) or not names:
+        raise ValueError("No saved forecasts selected; open forecasts in the app first")
+    paths = []
+    for name in names:
+        if not isinstance(name, str) or Path(name).name != name:
+            raise ValueError("Saved forecast selection contains an invalid filename")
+        path = directory / "grib" / name
+        if not path.is_file():
+            raise ValueError(f"Selected forecast is missing: {path}")
+        paths.append(str(path))
+    settings_path = directory / "settings.json"
+    settings = json.loads(settings_path.read_text()) if settings_path.is_file() else {}
+    return tuple(paths), settings
+
+
+def saved_chart_palette(data_dir, settings=None):
+    """The user's own chart palette, read without creating or modifying data.
+
+    The palette is the application's own: an unknown name falls back to the
+    application's default rather than failing the composition.
+    """
+    from sailworks.qt.gribviewportchart import CHART_PALETTE
+    from sailworks.rendering.style import Style
+
+    if not settings:
+        path = Path(data_dir).expanduser() / "settings.json"
+        try:
+            settings = json.loads(path.read_text())
+        except (OSError, ValueError):
+            settings = {}
+    palette = settings.get("chartPalette") if isinstance(settings, dict) else None
+    if palette in Style.chart_palettes:
+        return palette
+    return CHART_PALETTE
+
+
+def main(argv=None):
+    """Launch a read-only standalone viewport; no paths means saved selection."""
+    import argparse
+
+    from PySide6.QtCore import QDateTime, Qt
+    from PySide6.QtWidgets import (
+        QApplication,
+        QDateTimeEdit,
+        QHBoxLayout,
+        QLabel,
+        QPushButton,
+        QVBoxLayout,
+        QWidget,
+    )
+
+    parser = viewport_argument_parser()
     args = parser.parse_args(argv)
     settings = {}
     try:
@@ -8289,13 +8771,15 @@ def main(argv=None):
         chart_data_dir = Path(DATA_DIR)
     # The chart composition uses the user's own palette where it is exposed.
     chart_palette = saved_chart_palette(chart_data_dir, settings)
+    chart_layer, enc_chart_layer, enc_scene_layer = viewport_layer_flags(args)
     viewport = _viewport_widget_class()(
         model,
         gpu_weather_fill=args.gpu_weather_fill,
-        chart_layer=args.chart_layer or args.enc_chart_layer,
+        chart_layer=chart_layer,
         chart_data_dir=chart_data_dir,
         native_weather_fields=args.native_weather_fields,
-        enc_chart_layer=args.enc_chart_layer,
+        enc_chart_layer=enc_chart_layer,
+        enc_scene_layer=enc_scene_layer,
         chart_palette=chart_palette,
     )
     window = QWidget()

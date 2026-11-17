@@ -2206,6 +2206,81 @@ def test_a_warm_reversal_reuses_the_frame_it_came_from(tmp_path):
         layer.close()
 
 
+def test_a_resized_view_is_reanchored_not_returned_verbatim(tmp_path):
+    """A retained frame of another extent is cropped to the requested view.
+
+    Returning it verbatim would hand back pixels whose size and origin belong
+    to the old view while the metadata describes the new one; the GUI places
+    it by that metadata and shows only an overlapping corner.
+    """
+    layer, composer, _enc, _sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    try:
+        _image, first = layer._compose(camera, Event())
+        assert first["static"]["mode"] == "full"
+        calls = len(composer.calls)
+        # A smaller view at the same centre is entirely covered by the first
+        # composition, so it takes the full-overlap reuse path.
+        smaller = _camera(width=200, height=160)
+        image, second = layer._compose(smaller, Event())
+        report = second["static"]
+        assert report["mode"] == "reused"
+        assert len(composer.calls) == calls
+        viewport = second["viewport"]
+        expected = (
+            int(round(viewport.width * second["factor"])),
+            int(round(viewport.height * second["factor"])),
+        )
+        # The returned pixels are the requested view's extent, never the
+        # retained frame's larger one, and the metadata says so.
+        assert (image.width(), image.height()) == expected
+        assert second["image_extent"] == expected
+        assert expected != (
+            int(round(first["viewport"].width * first["factor"])),
+            int(round(first["viewport"].height * first["factor"])),
+        )
+        # The covered pixels were re-anchored, not composed again: the old
+        # frame's red ink fills the smaller view.
+        assert image.pixelColor(5, 5).getRgb()[:3] == (255, 0, 0)
+        # The corrected frame is retained, so the same view is served verbatim
+        # on the next demand without another blit.
+        retained = list(layer._static_frames.values())[-1]
+        assert retained.viewport.width == viewport.width
+        assert retained.viewport.height == viewport.height
+    finally:
+        layer.close()
+
+
+def test_reuse_rejects_a_published_surface_of_another_extent(tmp_path):
+    """A composition whose pixels are another size is not served as current."""
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.qt.gribviewportchart import ChartCamera
+    from sailworks.rendering.overlayrenderer import MARGIN
+
+    layer = _chart_layer(tmp_path)
+    camera = _camera()
+    try:
+        viewport = MapViewport(ChartCamera(camera, layer._dpr), MARGIN, lambda: None)
+        expected = (
+            int(round(viewport.width * layer._dpr)),
+            int(round(viewport.height * layer._dpr)),
+        )
+        metadata = {
+            "viewport": viewport,
+            "time": camera.stamp(),
+            "factor": layer._dpr,
+            # The pixels belong to a larger surface than this demand needs.
+            "image_extent": (expected[0] + 256, expected[1] + 192),
+        }
+        layer._published = (7, object(), metadata)
+        assert layer._reusable(camera) is False
+        # The same demand, once the pixels are its own extent, is reusable.
+        metadata["image_extent"] = expected
+        assert layer._reusable(camera) is True
+    finally:
+        layer.close()
+
+
 def test_a_quality_or_source_change_composes_the_whole_view_again(tmp_path):
     """A DPR or source change never reuses content composed for another key."""
     layer, composer, _enc, sources, Event = _static_layer(tmp_path)

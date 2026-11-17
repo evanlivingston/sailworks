@@ -48,6 +48,7 @@ def main(argv=None):
     from sailworks import build_label
 
     from .controller import SessionController
+    from .enc_capture import install_capture
     from .window import PreviewWindow
     from .theme import apply_theme
 
@@ -79,6 +80,8 @@ def main(argv=None):
     controller.start_connections()
     if args.log:
         controller.load_path(args.log)
+    # Inert unless SAILWORKS_ENC_CAPTURE names a directory.
+    install_capture(app, window, controller)
     return app.exec()
 
 

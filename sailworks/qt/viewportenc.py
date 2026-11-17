@@ -31,6 +31,7 @@ from dataclasses import dataclass, replace
 import hashlib
 import json
 import os
+import tempfile
 from pathlib import Path
 
 import cairo
@@ -213,16 +214,147 @@ class EncSource:
         return (self.path, self.native_scale, self.envelopes)
 
 
+#: The persisted per-cell metadata manifest, under the app's cache directory.
+CATALOG_CACHE_NAME = "enc-catalog.json"
+
+
+def cache_directory(data_dir):
+    """The app's own cache directory for a data directory, or ``None``."""
+    if data_dir is None:
+        return None
+    return Path(data_dir) / "cache"
+
+
+class CatalogMetadata:
+    """Per-cell metadata keyed by the cell file's own identity.
+
+    ``EncCatalog.refresh`` used to open every installed cell to learn its
+    native scale and coverage.  That metadata is a pure function of the cell
+    file, so it is stored against ``(dev, inode, size, mtime_ns)``: an
+    unchanged cell is not opened to discover that it is unchanged, and a
+    touched or replaced cell is read again.  A manifest that cannot be read is
+    an empty cache, never an error.
+    """
+
+    FORMAT = 1
+
+    def __init__(self, directory=None):
+        self.directory = Path(directory) if directory is not None else None
+        self._entries = {}
+        self.reads = 0
+        self.reuses = 0
+        self.errors = 0
+        self._load()
+
+    @property
+    def path(self):
+        if self.directory is None:
+            return None
+        return self.directory / CATALOG_CACHE_NAME
+
+    @staticmethod
+    def _key(path):
+        return os.path.abspath(os.fspath(path))
+
+    def _load(self):
+        if self.path is None:
+            return
+        try:
+            raw = json.loads(self.path.read_text())
+        except (OSError, ValueError):
+            return
+        if not isinstance(raw, dict) or raw.get("format") != self.FORMAT:
+            return
+        cells = raw.get("cells")
+        if not isinstance(cells, dict):
+            return
+        for path, entry in cells.items():
+            if isinstance(entry, dict) and isinstance(entry.get("version"), list):
+                self._entries[str(path)] = entry
+
+    def lookup(self, path, version):
+        """The stored metadata for this exact file identity, or ``None``."""
+        entry = self._entries.get(self._key(path))
+        if entry is None or tuple(entry.get("version") or ()) != tuple(version):
+            return None
+        try:
+            envelopes = tuple(
+                tuple(float(value) for value in envelope)
+                for envelope in entry.get("envelopes") or ()
+            )
+            source = EncSource(
+                path,
+                int(entry.get("native_scale", 0)),
+                envelopes,
+                str(entry.get("error") or ""),
+            )
+        except (TypeError, ValueError):
+            return None
+        self.reuses += 1
+        return source
+
+    def remember(self, source, version):
+        self._entries[self._key(source.path)] = {
+            "version": [int(part) for part in version],
+            "native_scale": int(source.native_scale),
+            "envelopes": [list(envelope) for envelope in source.envelopes],
+            "error": str(source.error),
+        }
+
+    def prune(self, paths):
+        """Forget cells that are no longer installed and enabled."""
+        keep = {self._key(path) for path in paths}
+        self._entries = {
+            path: entry for path, entry in self._entries.items() if path in keep
+        }
+
+    def save(self):
+        """Write the manifest atomically; a failed write is only a lost cache."""
+        if self.path is None:
+            return
+        payload = json.dumps(
+            {"format": self.FORMAT, "cells": self._entries},
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            handle, temporary = tempfile.mkstemp(
+                dir=self.directory, prefix=".tmp-", suffix=".json"
+            )
+            try:
+                with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                    stream.write(payload)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, self.path)
+            except BaseException:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+                raise
+        except OSError:
+            self.errors += 1
+
+
 class EncCatalog:
     """The installed, enabled ENC charts, read with the worker's own handles.
 
-    The manifest is re-read on every refresh; the charts' metadata is read
-    only when the manifest changed, so an installed, replaced or switched
-    off chart invalidates the metadata that described it.
+    The manifest is re-read on every refresh; a cell's metadata is taken from
+    the persisted store when the cell file's own identity is unchanged, so an
+    unchanged cell is not opened to discover that it is unchanged.  An
+    installed, replaced or switched off chart invalidates the metadata that
+    described it.
     """
 
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, metadata=None):
         self._data_dir = data_dir
+        self._metadata = (
+            metadata
+            if metadata is not None
+            else CatalogMetadata(cache_directory(data_dir))
+        )
         self._manifest = None
         self._sources = ()
         self._disabled = ()
@@ -257,9 +389,25 @@ class EncCatalog:
         self._manifest = manifest
         if not changed:
             return self
-        self._sources = tuple(self._read(path) for path, _ in manifest.enabled)
+        paths = tuple(path for path, _ in manifest.enabled)
+        self._metadata.prune(paths)
+        self._sources = tuple(self._source(path) for path in paths)
+        self._metadata.save()
         self._disabled = tuple(enc_cell_name(path) for path, _ in manifest.disabled)
         return self
+
+    def _source(self, path):
+        """One cell's metadata: the stored record, or the cell read once."""
+        version = _version(path)
+        if version is not None:
+            stored = self._metadata.lookup(path, version)
+            if stored is not None:
+                return stored
+        self._metadata.reads += 1
+        source = self._read(path)
+        if version is not None:
+            self._metadata.remember(source, version)
+        return source
 
     @staticmethod
     def _read(path):

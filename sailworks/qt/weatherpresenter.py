@@ -238,6 +238,12 @@ class WeatherPresenter(QObject):
                 enc_visible=bool(
                     getattr(self.canvas.controller.settings, "chartENCVisible", True)
                 ),
+                # Experimental and off by default: the viewport supersedes the
+                # raster ENC source only when the user asks for the GPU scene,
+                # so the default construction is the existing raster path.
+                enc_scene_layer=bool(
+                    getattr(self.canvas.controller.settings, "chartENCScene", False)
+                ),
             )
             if self.native_fields:
                 kwargs["native_weather_fields"] = True
@@ -484,7 +490,13 @@ class WeatherPresenter(QObject):
         if self.widget is not None and (
             self.widget._chart_palette != self.canvas.controller.settings.chartPalette
         ):
-            self._drop_widget()
+            # A scene-only viewport adopts the palette in place; one with a
+            # raster chart composition binds its palette at construction, so
+            # its refusal recreates the widget as before.
+            adopt = getattr(self.widget, "set_chart_palette", None)
+            palette = self.canvas.controller.settings.chartPalette
+            if adopt is None or not adopt(palette):
+                self._drop_widget()
         if self.widget is None:
             self._create(source)
             self._source = source
