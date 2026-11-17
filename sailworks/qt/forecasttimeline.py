@@ -55,9 +55,10 @@ class DayStripWidget(QWidget):
     """Horizontal day-by-day timeline strip.
 
     Draws one equal-width cell per day across the forecast range, each
-    labelled ``Mon 16``.  Vertical markers indicate the current
-    forecast time (blue) and an optional reference time (red).  Clicking
-    and dragging seeks continuously through the forecast range.
+    labelled ``Mon 16``.  Vertical lines mark the current time (yellow,
+    dashed), the selected forecast time (blue, with a triangle handle) and
+    the start of the selected forecast range (red, dotted with a foot).  Clicking and dragging seeks
+    continuously through the forecast range.
     """
 
     time_selected = Signal(float)
@@ -69,16 +70,13 @@ class DayStripWidget(QWidget):
     # Palette. One source of truth for the paint path.
     STRIP_BG = "#1e1e1e"
     CELL_BG = "#242424"
-    CELL_SEPARATOR = "#3f3f3f"
+    CELL_SEPARATOR = "#333333"
     LABEL = "#b0b0ad"
-    LABEL_HOVER = "#e0e0dd"
-    CELL_HOVER = "#2f2f2f"
-    TRACK = "#4a4a4a"
-    DOT = "#9a9a95"
+    TRACK = "#3a3a3a"
+    DOT = "#555555"
     NOW = "#e6c229"
     PLAYHEAD = "#3584e4"
-    PLAYHEAD_HALO = "#141414"
-    MARKER = "#c05252"
+    MARKER = "#8f3b3b"
 
     DEFAULT_STEP_SECONDS = 900
 
@@ -86,7 +84,7 @@ class DayStripWidget(QWidget):
         super().__init__(parent)
         self.bounds = None  # (start, end) timestamps
         self.position = None  # current forecast time (blue marker)
-        self.marker = None  # optional reference time (red marker)
+        self.marker = None  # start of the selected forecast range (red marker)
         self.now = datetime.now(timezone.utc).timestamp()
         self.valid_times = ()  # forecast valid-time timestamps (dot markers)
         self.axis_left_margin = 0
@@ -98,8 +96,6 @@ class DayStripWidget(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
         self._cell_rects = []  # list of (QRect, noon_timestamp)
-        self._hover_index = None  # index into _cell_rects, or None
-        self._saved_cursor = None  # cursor restored after hovering
         self.step_seconds = self.DEFAULT_STEP_SECONDS
         self._dragging = False
         self._now_timer = QTimer(self)
@@ -210,18 +206,18 @@ class DayStripWidget(QWidget):
             painter = QPainter(self)
 
             # Fill the whole strip: the cells no longer cover it edge to edge.
-            painter.fillRect(self.rect(), QColor("#1e1e1e"))
+            painter.fillRect(self.rect(), QColor(self.STRIP_BG))
 
             self._cell_rects = self._day_cells(start, end)
 
             # Draw day cells.
-            painter.setPen(QPen(QColor("#333333"), 1))
+            painter.setPen(QPen(QColor(self.CELL_SEPARATOR), 1))
             for rect, _noon in self._cell_rects:
-                painter.fillRect(rect, QColor("#242424"))
+                painter.fillRect(rect, QColor(self.CELL_BG))
                 painter.drawRect(rect)
 
             # Draw day labels.
-            painter.setPen(QPen(QColor("#b0b0ad"), 1))
+            painter.setPen(QPen(QColor(self.LABEL), 1))
             painter.setFont(self._label_font)
             fm = painter.fontMetrics()
             for rect, noon in self._cell_rects:
@@ -236,7 +232,7 @@ class DayStripWidget(QWidget):
 
             # Separator line under the cells.
             track_y = self.CELL_HEIGHT + 2
-            painter.setPen(QPen(QColor("#3a3a3a"), 1))
+            painter.setPen(QPen(QColor(self.TRACK), 1))
             axis_right = self.width() - self.axis_right_margin
             painter.drawLine(self.axis_left_margin, track_y, axis_right, track_y)
 
@@ -255,7 +251,7 @@ class DayStripWidget(QWidget):
             # the bottom edge, independently of the day-cell boundaries.
             if self.width() > 0:
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor("#555555"))
+                painter.setBrush(QColor(self.DOT))
                 radius = 2
                 dot_y = self.height() - radius - 1
                 for stamp in self.valid_times:
@@ -291,8 +287,15 @@ class DayStripWidget(QWidget):
                         - 1,
                     )
                 )
-                painter.setPen(QPen(QColor("#e6c229"), 1))
+                now_pen = QPen(QColor(self.NOW), 1)
+                now_pen.setStyle(Qt.PenStyle.DashLine)
+                painter.setPen(now_pen)
                 painter.drawLine(now_x, 0, now_x, self.height())
+                # Filled dot caps the dashed line at the top.
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(self.NOW))
+                painter.drawEllipse(now_x - 3, 0, 6, 6)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
 
             if self.position is not None and span > 0:
                 px = self.axis_left_margin + round(
@@ -306,8 +309,15 @@ class DayStripWidget(QWidget):
                         - 1,
                     )
                 )
-                painter.setPen(QPen(QColor("#3584e4"), 2))
+                painter.setPen(QPen(QColor(self.PLAYHEAD), 2))
                 painter.drawLine(px, 0, px, self.height())
+                # Downward triangle so the playhead reads as draggable.
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(self.PLAYHEAD))
+                painter.drawPolygon(
+                    QPolygon([QPoint(px - 4, 0), QPoint(px + 4, 0), QPoint(px, 6)])
+                )
+                painter.setBrush(Qt.BrushStyle.NoBrush)
 
             if self.marker is not None and span > 0:
                 mx = self.axis_left_margin + round(
@@ -321,8 +331,14 @@ class DayStripWidget(QWidget):
                         - 1,
                     )
                 )
-                painter.setPen(QPen(QColor("#8f3b3b"), 2))
+                marker_pen = QPen(QColor(self.MARKER), 2)
+                marker_pen.setStyle(Qt.PenStyle.DotLine)
+                painter.setPen(marker_pen)
                 painter.drawLine(mx, 0, mx, self.height())
+                # Bracket foot at the baseline separates it from the playhead.
+                painter.setPen(QPen(QColor(self.MARKER), 2))
+                painter.drawLine(mx - 5, self.height() - 1, mx + 5, self.height() - 1)
+                painter.setPen(Qt.PenStyle.NoPen)
         except Exception as exc:  # Never let a paint error crash the app
             logger.warning("DayStrip paint error: %s", exc)
 
@@ -390,6 +406,13 @@ class DayStripWidget(QWidget):
         super().hideEvent(event)
 
 
+def _as_utc(moment):
+    """Return *moment* in UTC, treating naive datetimes as already UTC."""
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
 class ForecastTimeline(QWidget):
     step_changed = Signal()
     expansion_changed = Signal()
@@ -401,7 +424,7 @@ class ForecastTimeline(QWidget):
         self.controller = controller
         self.clock = controller.time_control
         self.marine = controller.core.marine_manager
-        self.bounds = None
+        self._bounds = None
         # User-owned time region; selecting a model never rewrites it.
         self.region = None
         self._model_intervals = ()
@@ -464,7 +487,8 @@ class ForecastTimeline(QWidget):
             lambda: self.step(self.seconds),
         )
 
-        # Kept (off-panel) for workspace step persistence and tests.
+        # Compact step interval control, sized to its contents so the
+        # transport row stays tight.
         self.step_combo = QComboBox()
         self.step_combo.addItems([label for label in TIME_UNITS if label != "1d"])
         self.step_combo.setCurrentText("15m")
@@ -472,7 +496,11 @@ class ForecastTimeline(QWidget):
         self.step_combo.setToolTip(
             "Forecast time advanced by each manual step; playback advances 2 hours per second"
         )
+        self.step_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.step_combo.setMaximumWidth(64)
         self.step_combo.currentTextChanged.connect(self._step_changed)
+        row.addWidget(self.step_combo)
+
         self.select_button = self._button(
             row,
             "preferences-system-time-symbolic",
@@ -480,9 +508,16 @@ class ForecastTimeline(QWidget):
             self.select_time,
         )
 
-        self.now_button = self._button(
-            row, "go-bottom-symbolic", "Select now", self.now
-        )
+        # Compact text button: the icon form cost more width than the label.
+        # 40 px is the smallest width that fits "Now" without eliding.
+        self.now_button = QToolButton()
+        self.now_button.setText("Now")
+        self.now_button.setFixedSize(40, 24)
+        self.now_button.setAutoRaise(True)
+        self.now_button.setAccessibleName("Select now")
+        self.now_button.setToolTip("Jump to the current time")
+        self.now_button.clicked.connect(self.now)
+        row.addWidget(self.now_button)
 
         self.end_month_label = QLabel()
         self.end_month_label.setAlignment(
@@ -495,11 +530,12 @@ class ForecastTimeline(QWidget):
         row.addWidget(self.end_month_label)
 
         self.overview_button = QToolButton()
-        self.overview_button.setText("⌃")
+        self.overview_button.setArrowType(Qt.ArrowType.RightArrow)
         self.overview_button.setAccessibleName("Expand forecast source overview")
         self.overview_button.setToolTip("Show valid times by forecast source")
         self.overview_button.setCheckable(True)
         self.overview_button.setAutoRaise(True)
+        self.overview_button.setFixedSize(24, 24)
         self.overview_button.toggled.connect(self._set_expanded)
         row.addWidget(self.overview_button)
 
@@ -613,7 +649,9 @@ class ForecastTimeline(QWidget):
     def _set_expanded(self, expanded):
         self._expanded = bool(expanded)
         self.source_overview.set_expanded(self._expanded)
-        _set_text(self.overview_button, "⌄" if self._expanded else "⌃")
+        self.overview_button.setArrowType(
+            Qt.ArrowType.DownArrow if self._expanded else Qt.ArrowType.RightArrow
+        )
         self.overview_button.setAccessibleName(
             "Collapse forecast source overview"
             if self._expanded
@@ -623,6 +661,29 @@ class ForecastTimeline(QWidget):
 
     def _marine_changed(self, *_):
         self.controller.scheduler.submit(self.refresh)
+
+    @property
+    def bounds(self):
+        return self._bounds
+
+    @bounds.setter
+    def bounds(self, value):
+        self._bounds = value
+        if hasattr(self, "backward_button"):
+            self._set_transport_enabled(bool(value))
+
+    def _set_transport_enabled(self, enabled):
+        """Enable or disable the playback and stepping controls together."""
+        for widget in (
+            self.backward_button,
+            self.pause_button,
+            self.play_button,
+            self.forward_button,
+            self.step_combo,
+            self.select_button,
+            self.now_button,
+        ):
+            widget.setEnabled(enabled)
 
     def refresh(self, *_):
         if self.closed:
@@ -664,19 +725,21 @@ class ForecastTimeline(QWidget):
                     self.slider.setSingleStep(60)
                     self.slider.setPageStep(3600)
                     self.slider.setEnabled(end > start)
-                    # Month/year labels at the edges.
-                    start_local = datetime.fromtimestamp(start).astimezone()
-                    end_local = datetime.fromtimestamp(end).astimezone()
-                    _set_text(self.start_month_label, start_local.strftime("%b %Y"))
-                    _set_text(self.end_month_label, end_local.strftime("%b %Y"))
-                    if self.start_month_label.toolTip() != start_local.isoformat():
-                        self.start_month_label.setToolTip(start_local.isoformat())
-                    if self.end_month_label.toolTip() != end_local.isoformat():
-                        self.end_month_label.setToolTip(end_local.isoformat())
+                    self._set_transport_enabled(True)
+                    # Month/year labels at the edges, in UTC like the day cells.
+                    start_utc = datetime.fromtimestamp(start, tz=timezone.utc)
+                    end_utc = datetime.fromtimestamp(end, tz=timezone.utc)
+                    _set_text(self.start_month_label, start_utc.strftime("%b %Y"))
+                    _set_text(self.end_month_label, end_utc.strftime("%b %Y"))
+                    if self.start_month_label.toolTip() != start_utc.isoformat():
+                        self.start_month_label.setToolTip(start_utc.isoformat())
+                    if self.end_month_label.toolTip() != end_utc.isoformat():
+                        self.end_month_label.setToolTip(end_utc.isoformat())
                     self.day_strip.set_bounds(start, end)
                     self.day_strip.set_valid_times(valid_times)
                 else:
                     self.slider.setEnabled(False)
+                    self._set_transport_enabled(False)
                     self.start_month_label.clear()
                     self.end_month_label.clear()
                     self.day_strip.set_bounds(None, None)
@@ -733,7 +796,7 @@ class ForecastTimeline(QWidget):
     def _caption_for(self, stamp):
         """Explain why the selected time is not usable, or return ""."""
         if not self.bounds:
-            return "Choose a display forecast in Weather, or download tides / currents"
+            return "Choose a display forecast in Weather to enable the timeline."
         start, end = self.bounds
         if not (start <= stamp <= end):
             return "Selected time is outside the selected time range"
@@ -749,8 +812,12 @@ class ForecastTimeline(QWidget):
             return
         try:
             self.cancel_commit()
-            _set_text(self.time_label, "<b>%s</b>" % (instant.strftime("%H:%M"),))
-            self.time_label.setToolTip(instant.astimezone().isoformat())
+            utc_instant = _as_utc(instant)
+            _set_text(
+                self.time_label,
+                "<b>%s</b>" % (utc_instant.strftime("%d %b %H:%M UTC"),),
+            )
+            self.time_label.setToolTip(utc_instant.isoformat())
             self._syncing = True
             if self.bounds:
                 start, end = self.bounds
