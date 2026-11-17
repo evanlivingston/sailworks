@@ -104,6 +104,12 @@ def fake_window(route, native, *, active_route=None, busy=False):
     )
     window._publish_race_track_overlay = lambda: None
     window._race_time_changed = lambda *_args: None
+    # ``_scene_changed`` re-resolves the scene selection before repainting.
+    # Record the call so a scene change can be shown to reach that step without
+    # this double standing in for the emphasis itself.
+    selection_applied = []
+    window._scene_selection_applied = selection_applied
+    window._apply_scene_selection = lambda: selection_applied.append(True)
     # Bind the production ownership and sync helpers so this fixture exercises
     # the same route/overlay matching and cache-key sync as the real window
     # rather than a partial stand-in. Isochrone mode resolution itself is a
@@ -203,6 +209,7 @@ def test_unrelated_scene_change_does_not_hydrate_or_sync():
 
     PreviewWindow._scene_changed(window)
 
+    assert window._scene_selection_applied == [True]
     assert window.map.frames == []
     assert route._isochrones is None
 
