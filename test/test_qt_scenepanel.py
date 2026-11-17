@@ -42,7 +42,10 @@ from sailworks.core.scene import (
     KIND_ROUTING,
     KIND_SHAPE,
     KIND_TRACK,
+    SceneCollection,
+    SceneItem,
 )
+from sailworks.qt.navigationcommands import RemoveGroupsCommand
 from sailworks.qt.scenepanel import (
     COORDINATE_ROLE,
     DETAIL_GAP,
@@ -356,6 +359,114 @@ def test_new_collection_action_remains_available(tmp_path):
         panel._new_collection()
 
     create_group.assert_called_once()
+
+
+def test_collection_delete_routes_through_the_window(tmp_path):
+    application()
+    panel = panel_for(tmp_path, tracks=[FakeTrack("t1", "Morning")])
+    group = panel.scene.create_group("Outer")
+    requested = []
+    panel.groups_delete_requested.connect(requested.append)
+
+    panel._delete_groups([group.id])
+
+    assert requested == [[group.id]]
+    # The panel requests an undoable removal; it no longer mutates the scene.
+    assert panel.scene.group(group.id) is not None
+
+
+def test_collection_delete_command_restores_groups_and_items(tmp_path):
+    application()
+    panel = panel_for(tmp_path, tracks=[FakeTrack("t1", "Morning")])
+    group = panel.scene.create_group("Outer", item_keys=[(KIND_TRACK, "t1")])
+    panel.refresh()
+    identity = (KIND_TRACK, "t1")
+    assert panel.scene.items[identity].group == group.id
+
+    command = RemoveGroupsCommand(panel.scene, panel.refresh, [group.id])
+    command.redo()
+
+    assert panel.scene.group(group.id) is None
+    assert panel.scene.items[identity].group != group.id
+
+    command.undo()
+
+    assert panel.scene.group(group.id) is not None
+    assert panel.scene.group(group.id).name == "Outer"
+    assert panel.scene.items[identity].group == group.id
+
+
+def test_remove_groups_command_restores_children_and_items(tmp_path):
+    scene = SceneCollection(tmp_path / "scene.json")
+    parent = scene.create_group("Parent")
+    child = scene.create_group("Child", parent=parent.id)
+    locked = scene.create_group("Locked")
+    locked.builtin = True
+    identity = ("shape", "one")
+    scene.items[identity] = SceneItem(
+        kind=identity[0], key=identity[1], name="One", group=child.id
+    )
+    order = list(scene.groups)
+
+    command = RemoveGroupsCommand(scene, lambda: None, [child.id, locked.id])
+    assert command.removed == [child.id]
+
+    command.redo()
+
+    assert scene.group(child.id) is None
+    # A builtin collection is refused, so it survives the deletion.
+    assert scene.group(locked.id) is not None
+    assert scene.items[identity].group == parent.id
+
+    command.undo()
+
+    assert list(scene.groups) == order
+    assert scene.group(child.id) is not None
+    assert scene.items[identity].group == child.id
+    scene.save()
+
+    command.redo()
+
+    assert scene.group(child.id) is None
+    assert scene.group(locked.id) is not None
+
+
+def test_context_menu_makes_the_clicked_row_current(tmp_path):
+    application()
+    panel = shown_panel(tmp_path, tracks=[FakeTrack("t1", "Morning")])
+    outer = panel.scene.create_group("Outer")
+    clicked = panel.scene.create_group("Clicked")
+    panel.refresh()
+
+    other_row = panel.group_row(outer.id)
+    target_row = panel.group_row(clicked.id)
+    panel.tree.setCurrentItem(other_row)
+    assert panel.tree.currentItem() is other_row
+
+    panel.tree.scrollToItem(target_row)
+    QApplication.processEvents()
+    point = panel.tree.visualItemRect(target_row).center()
+    assert panel.tree.itemAt(point) is target_row
+
+    captured = []
+
+    def capture(menu, *_args):
+        captured.extend(menu.actions())
+        return None
+
+    with patch.object(ThemedMenu, "exec", capture):
+        panel._context_menu(point)
+
+    assert panel.tree.currentItem() is target_row
+
+    before = set(panel.scene.groups)
+    action_named(captured, "New Collection").trigger()
+    created = set(panel.scene.groups) - before
+
+    assert len(created) == 1
+    (identifier,) = created
+    assert panel.scene.group(identifier).parent == clicked.id
+    assert [group.id for group in panel.scene.groups_in(clicked.id)] == [identifier]
 
 
 def test_toggling_item_updates_element_visibility(tmp_path):
@@ -2272,8 +2383,25 @@ def test_track_row_context_menu_offers_add_point(tmp_path):
 
     labels = context_menu_labels(panel, row)
 
-    assert_action(labels, "Add Point")
+    assert_action(labels, "Add Point…")
     assert not any("Delete Point" in text for text in labels)
+
+
+def test_track_row_context_menu_letters_are_unique(tmp_path):
+    application()
+    panel = panel_for(tmp_path, tracks=[FakeTrack("t1", "Morning")])
+    row = panel.item_row(KIND_TRACK, "t1")
+
+    actions = context_menu_actions(panel, row)
+
+    letters = []
+    for action in actions:
+        text = action.text()
+        index = text.find("&")
+        if index >= 0:
+            letters.append(text[index + 1].lower())
+    assert len(letters) == len(set(letters))
+    assert len(letters) > 1
 
 
 def test_point_row_context_menu_offers_point_editing(tmp_path):
@@ -2285,11 +2413,11 @@ def test_point_row_context_menu_offers_point_editing(tmp_path):
     labels = context_menu_labels(panel, row.child(0))
 
     for label in (
-        "Add Point",
+        "Add Point…",
         "Rename Point",
         "Move Point",
         "Delete Point",
-        "Edit",
+        "Edit Point…",
     ):
         assert_action(labels, label)
 
@@ -2540,7 +2668,7 @@ def test_shape_context_menu_offers_vertex_edit_for_a_polygon(tmp_path):
     panel.shape_edit_requested.connect(requested.append)
 
     actions = context_menu_actions(panel, panel.item_row(KIND_SHAPE, shape.uid))
-    action_named(actions, "Edit vertices").trigger()
+    action_named(actions, "Edit Shape").trigger()
 
     assert requested == [shape.uid]
     # Entering vertex edit mode is a viewport concern, so nothing is written.
@@ -2554,7 +2682,7 @@ def test_shape_context_menu_edits_note_and_persists(tmp_path):
     panel = panel_for(tmp_path, shapes=[shape])
 
     actions = context_menu_actions(panel, panel.item_row(KIND_SHAPE, shape.uid))
-    edit_note = action_named(actions, "Edit Note")
+    edit_note = action_named(actions, "Edit Note…")
     assert edit_note is not None
 
     with patch(
@@ -2658,3 +2786,61 @@ def test_shape_rows_are_fit_and_delete_candidates(tmp_path):
 
     assert panel._nodes_for_fit([node]) == [node]
     assert panel._nodes_for_delete([node]) == [node]
+
+
+def test_context_menu_isolates_the_clicked_item(tmp_path):
+    application()
+    panel = shown_panel(
+        tmp_path,
+        tracks=[FakeTrack("t1", "Morning"), FakeTrack("t2", "Evening")],
+    )
+    row = panel.item_row(KIND_TRACK, "t1")
+
+    action_named(context_menu_actions(panel, row), "Isolate").trigger()
+
+    assert panel.scene.item(KIND_TRACK, "t1").visible is True
+    assert panel.scene.item(KIND_TRACK, "t2").visible is False
+    assert panel.scene.effective_visible(KIND_TRACK, "t2") is False
+
+    row = panel.item_row(KIND_TRACK, "t1")
+    actions = context_menu_actions(panel, row)
+    assert action_named(actions, "Isolate").isChecked()
+    action_named(actions, "Isolate").trigger()
+
+    assert panel.scene.item(KIND_TRACK, "t1").visible is True
+    assert panel.scene.item(KIND_TRACK, "t2").visible is True
+    assert panel.scene.effective_visible(KIND_TRACK, "t2") is True
+
+
+def test_context_menu_hide_hides_the_clicked_row(tmp_path):
+    application()
+    shape = avoid_shape(note="coral")
+    panel = shown_panel(
+        tmp_path,
+        tracks=[FakeTrack("t1", "Morning")],
+        shapes=[shape],
+    )
+    row = panel.item_row(KIND_TRACK, "t1")
+
+    action_named(context_menu_actions(panel, row), "Hide").trigger()
+
+    assert panel.scene.item(KIND_TRACK, "t1").visible is False
+    assert panel.scene.effective_visible(KIND_TRACK, "t1") is False
+
+    shapes_row = panel.group_row("default-shapes")
+    action_named(context_menu_actions(panel, shapes_row), "Hide").trigger()
+
+    # Hiding the collection cascades to its members without clearing their
+    # own flags, so unchecking the eye on the collection restores them.
+    assert panel.scene.item(KIND_SHAPE, shape.uid).visible is True
+    assert panel.scene.effective_visible(KIND_SHAPE, shape.uid) is False
+
+
+def test_context_menu_does_not_offer_visibility_for_logs(tmp_path):
+    application()
+    panel = shown_panel(tmp_path)
+    row = panel.item_row(KIND_LOG, "log-1")
+
+    labels = [text.replace("&", "") for text in context_menu_labels(panel, row)]
+
+    assert not any("Isolate" in text or "Hide" in text for text in labels)
