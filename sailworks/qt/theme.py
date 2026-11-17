@@ -81,6 +81,10 @@ TOOLTIP_STYLE = (
 
 logger = logging.getLogger("sailworks")
 
+# Marks a menu entry that a mnemonic only highlights: Enter then triggers it,
+# so a destructive entry cannot fire from a single keystroke.
+ENTER_TO_CONFIRM_PROPERTY = "menu_enter_to_confirm"
+
 
 class ThemedMenu(QMenu):
     """Menu without the native light popup frame on macOS."""
@@ -88,6 +92,9 @@ class ThemedMenu(QMenu):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
+        # Disabled entries carry the reason a command is unavailable as a
+        # tooltip; without this QMenu never shows it.
+        self.setToolTipsVisible(True)
 
     def _mnemonic_action(self, letter):
         for action in self.actions():
@@ -111,6 +118,9 @@ class ThemedMenu(QMenu):
             if len(text) == 1 and text.isalnum():
                 action = self._mnemonic_action(text.lower())
                 if action is not None:
+                    if action.property(ENTER_TO_CONFIRM_PROPERTY):
+                        self.setActiveAction(action)
+                        return
                     if action.menu() is not None:
                         self.setActiveAction(action)
                         geometry = self.actionGeometry(action)
@@ -130,14 +140,26 @@ class MenuBuilder:
         self._keys = set()
 
     def _mark(self, text, key=None):
+        if key is not None:
+            key = key.lower()
+            if key in self._keys:
+                raise ValueError(f"duplicate mnemonic {key!r} in menu item {text!r}")
+            self._keys.add(key)
+            if "&" in text:
+                return text
+            index = text.lower().find(key)
+            if index < 0:
+                raise ValueError(f"mnemonic {key!r} does not occur in {text!r}")
+            return f"{text[:index]}&{text[index:]}"
         if "&" in text:
             return text
         letters = [char for char in text if char.isalnum()]
-        if key is None:
-            key = next(
-                (char for char in letters if char.lower() not in self._keys),
-                letters[0] if letters else None,
-            )
+        # Every letter taken: leave the entry unmarked rather than reusing a
+        # mnemonic that already selects something else.
+        key = next(
+            (char for char in letters if char.lower() not in self._keys),
+            None,
+        )
         if key is None:
             return text
         self._keys.add(key.lower())
@@ -146,8 +168,11 @@ class MenuBuilder:
             return text
         return f"{text[:index]}&{text[index:]}"
 
-    def add(self, text, callback=None, key=None):
-        return self.menu.addAction(self._mark(text, key), callback)
+    def add(self, text, callback=None, key=None, enter_to_confirm=False):
+        action = self.menu.addAction(self._mark(text, key), callback)
+        if enter_to_confirm:
+            action.setProperty(ENTER_TO_CONFIRM_PROPERTY, True)
+        return action
 
     def add_menu(self, text, key=None):
         submenu = ThemedMenu(self.menu)

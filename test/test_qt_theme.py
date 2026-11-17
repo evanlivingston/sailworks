@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, QRect, Qt
@@ -284,6 +286,41 @@ def test_menu_builder_assigns_unique_mnemonics_and_sections():
     assert second.text() == "S&elect hierarchy"
     assert third.text() == "&Delete"
     assert menu.actions()[2].isSeparator()
+
+
+def test_menu_builder_rejects_duplicate_explicit_mnemonic():
+    application()
+    builder = MenuBuilder(ThemedMenu())
+    builder.add("Delete", key="D")
+
+    with pytest.raises(ValueError):
+        builder.add("Duplicate", key="D")
+
+
+def test_menu_builder_rejects_mnemonic_absent_from_label():
+    application()
+    builder = MenuBuilder(ThemedMenu())
+
+    with pytest.raises(ValueError):
+        builder.add("Delete", key="Z")
+
+
+def test_themed_menu_requires_enter_for_destructive_entry():
+    application()
+    menu = ThemedMenu()
+    builder = MenuBuilder(menu)
+    fired = []
+
+    action = builder.add(
+        "Delete", lambda: fired.append("delete"), key="D", enter_to_confirm=True
+    )
+
+    press(menu, Qt.Key_D, "d")
+    assert fired == []
+    assert menu.activeAction() is action
+
+    press(menu, Qt.Key_Return, "\r")
+    assert fired == ["delete"]
 
 
 def test_themed_menu_mnemonic_triggers_action_and_opens_submenu():

@@ -89,7 +89,11 @@ from .plotdata import elapsed_offsets
 from .workspace import WorkspacePreferences
 from .polarworkspace import PolarWorkspace
 from .polarlibrary import PolarLibrary
-from .navigationcommands import MovePointCommand, RemoveNavigationCommand
+from .navigationcommands import (
+    MovePointCommand,
+    RemoveGroupsCommand,
+    RemoveNavigationCommand,
+)
 from . import navigationio
 from .scenepanel import ScenePanel
 from .racepanel import RacesPanel
@@ -337,6 +341,7 @@ class PreviewWindow(QMainWindow):
         self.scene_panel.fit_requested.connect(self._scene_fit)
         self.scene_panel.fit_time_requested.connect(self._scene_fit_time)
         self.scene_panel.delete_requested.connect(self._scene_delete)
+        self.scene_panel.groups_delete_requested.connect(self._scene_delete_groups)
         self.scene_panel.move_point_requested.connect(self._move_scene_point)
         controller.log_library_changed.connect(self.scene_panel.refresh)
         self.scene_panel.edit_track_requested.connect(self._scene_edit_track)
@@ -1795,6 +1800,15 @@ class PreviewWindow(QMainWindow):
         self.views.setCurrentWidget(self.map)
         timeline.set_region(*bounds)
         timeline.seek(cursor)
+
+    def _scene_delete_groups(self, identifiers):
+        command = RemoveGroupsCommand(
+            self.scene_panel.scene,
+            lambda: (self.scene_panel.refresh(), self.scene_panel.changed.emit()),
+            identifiers,
+        )
+        if command.removed:
+            self.undo_stack.push(command)
 
     def _scene_delete(self, nodes):
         item_keys = {(node[1], node[2]) for node in nodes if node[0] == "item"}

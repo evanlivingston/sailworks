@@ -268,3 +268,45 @@ class RemovePointCommand(QUndoCommand):
         if collection is not None:
             collection.save()
         self.refresh()
+
+
+class RemoveGroupsCommand(QUndoCommand):
+    """Undoable removal of scene collections.
+
+    ``SceneCollection.delete_group`` reparents children and items to the
+    group's parent, so the command snapshots the group table and each item's
+    group and restores them wholesale instead of reversing the reparenting.
+    """
+
+    def __init__(self, scene, refresh, identifiers):
+        removed = [
+            identifier
+            for identifier in identifiers
+            if scene.group(identifier) is not None
+            and not scene.group(identifier).builtin
+        ]
+        super().__init__(
+            f"Delete {len(removed)} collection{'' if len(removed) == 1 else 's'}"
+        )
+        self.scene = scene
+        self.refresh = refresh
+        self.removed = removed
+        self._groups = dict(scene.groups)
+        self._items = {identity: item.group for identity, item in scene.items.items()}
+
+    def redo(self):
+        changed = False
+        for identifier in self.removed:
+            changed = self.scene.delete_group(identifier) or changed
+        if changed:
+            self.refresh()
+
+    def undo(self):
+        self.scene.groups.clear()
+        self.scene.groups.update(self._groups)
+        for identity, group in self._items.items():
+            item = self.scene.items.get(identity)
+            if item is not None:
+                item.group = group
+        self.scene.save()
+        self.refresh()
