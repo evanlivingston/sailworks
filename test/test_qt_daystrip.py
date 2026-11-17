@@ -133,7 +133,7 @@ class TestDayStrip(unittest.TestCase):
         self.strip.stop_clock()
         self.assertFalse(self.strip._now_timer.isActive())
 
-    def test_transport_button_is_larger_and_clickable(self):
+    def test_transport_button_is_compact_and_clickable(self):
         from PySide6.QtCore import QPoint, QSize, Qt
         from PySide6.QtTest import QTest
         from PySide6.QtWidgets import QHBoxLayout, QWidget
@@ -148,7 +148,7 @@ class TestDayStrip(unittest.TestCase):
         )
         container.show()
         self.app.processEvents()
-        self.assertEqual(button.size(), QSize(32, 32))
-        self.assertEqual(button.iconSize(), QSize(20, 20))
-        QTest.mouseClick(button, Qt.MouseButton.LeftButton, pos=QPoint(26, 16))
+        self.assertEqual(button.size(), QSize(24, 24))
+        self.assertEqual(button.iconSize(), QSize(14, 14))
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton, pos=QPoint(18, 12))
         callback.assert_called_once()

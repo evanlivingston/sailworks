@@ -8,8 +8,8 @@ import logging
 import math
 from datetime import datetime, timedelta, timezone
 
-from PySide6.QtCore import QDateTime, QRect, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QPainter, QPen, QColor
+from PySide6.QtCore import QDateTime, QPoint, QRect, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPolygon
 from PySide6.QtWidgets import (
     QComboBox,
     QDateTimeEdit,
@@ -55,7 +55,7 @@ class DayStripWidget(QWidget):
     """Horizontal day-by-day timeline strip.
 
     Draws one equal-width cell per day across the forecast range, each
-    labelled ``DD - DDD``.  Vertical markers indicate the current
+    labelled ``Mon 16``.  Vertical markers indicate the current
     forecast time (blue) and an optional reference time (red).  Clicking
     and dragging seeks continuously through the forecast range.
     """
@@ -63,8 +63,24 @@ class DayStripWidget(QWidget):
     time_selected = Signal(float)
     now_changed = Signal(float)
 
-    CELL_HEIGHT = 40
-    TRACK_HEIGHT = 6
+    CELL_HEIGHT = 22
+    TRACK_HEIGHT = 4
+
+    # Palette. One source of truth for the paint path.
+    STRIP_BG = "#1e1e1e"
+    CELL_BG = "#242424"
+    CELL_SEPARATOR = "#3f3f3f"
+    LABEL = "#b0b0ad"
+    LABEL_HOVER = "#e0e0dd"
+    CELL_HOVER = "#2f2f2f"
+    TRACK = "#4a4a4a"
+    DOT = "#9a9a95"
+    NOW = "#e6c229"
+    PLAYHEAD = "#3584e4"
+    PLAYHEAD_HALO = "#141414"
+    MARKER = "#c05252"
+
+    DEFAULT_STEP_SECONDS = 900
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -75,9 +91,16 @@ class DayStripWidget(QWidget):
         self.valid_times = ()  # forecast valid-time timestamps (dot markers)
         self.axis_left_margin = 0
         self.axis_right_margin = 0
-        self.setMinimumHeight(self.CELL_HEIGHT + self.TRACK_HEIGHT + 10)
+        # Blender-style timeline type: small, fixed, independent of the app font.
+        self._label_font = QFont(self.font())
+        self._label_font.setPixelSize(10)
+        self.setMinimumHeight(self.CELL_HEIGHT + self.TRACK_HEIGHT + 6)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
         self._cell_rects = []  # list of (QRect, noon_timestamp)
+        self._hover_index = None  # index into _cell_rects, or None
+        self._saved_cursor = None  # cursor restored after hovering
+        self.step_seconds = self.DEFAULT_STEP_SECONDS
         self._dragging = False
         self._now_timer = QTimer(self)
         self._now_timer.setInterval(30_000)
@@ -117,6 +140,38 @@ class DayStripWidget(QWidget):
         self.valid_times = tuple(stamps or ())
         self.update()
 
+    def set_step_seconds(self, seconds):
+        """Set the arrow-key step; fall back to the default on bad input."""
+        try:
+            value = int(seconds)
+        except (TypeError, ValueError):
+            value = 0
+        self.step_seconds = value if value > 0 else self.DEFAULT_STEP_SECONDS
+
+    def keyPressEvent(self, event):
+        bounds = self.bounds
+        if not bounds or bounds[0] is None or bounds[1] is None:
+            super().keyPressEvent(event)
+            return
+        start, end = bounds
+        key = event.key()
+        if key in (Qt.Key.Key_Home, Qt.Key.Key_End):
+            self.time_selected.emit(start if key == Qt.Key.Key_Home else end)
+            event.accept()
+            return
+        if key not in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            super().keyPressEvent(event)
+            return
+        if self.position is None:
+            super().keyPressEvent(event)
+            return
+        step = self.step_seconds
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            step *= 4
+        delta = step if key == Qt.Key.Key_Right else -step
+        self.time_selected.emit(min(max(self.position + delta, start), end))
+        event.accept()
+
     def _day_cells(self, start, end):
         """Return [(rect, noon_timestamp), ...] for each day in [start, end]."""
         start_dt = datetime.fromtimestamp(start, tz=timezone.utc).replace(
@@ -154,16 +209,20 @@ class DayStripWidget(QWidget):
             span = end - start
             painter = QPainter(self)
 
+            # Fill the whole strip: the cells no longer cover it edge to edge.
+            painter.fillRect(self.rect(), QColor("#1e1e1e"))
+
             self._cell_rects = self._day_cells(start, end)
 
             # Draw day cells.
-            painter.setPen(QPen(QColor("#d0d0d0"), 1))
+            painter.setPen(QPen(QColor("#333333"), 1))
             for rect, _noon in self._cell_rects:
-                painter.fillRect(rect, QColor("#efefef"))
+                painter.fillRect(rect, QColor("#242424"))
                 painter.drawRect(rect)
 
             # Draw day labels.
-            painter.setPen(QPen(QColor("#222222"), 1))
+            painter.setPen(QPen(QColor("#b0b0ad"), 1))
+            painter.setFont(self._label_font)
             fm = painter.fontMetrics()
             for rect, noon in self._cell_rects:
                 day = datetime.fromtimestamp(noon - 12 * 3600, tz=timezone.utc)
@@ -176,8 +235,8 @@ class DayStripWidget(QWidget):
                 )
 
             # Separator line under the cells.
-            track_y = self.CELL_HEIGHT + 4
-            painter.setPen(QPen(QColor("#999999"), 1))
+            track_y = self.CELL_HEIGHT + 2
+            painter.setPen(QPen(QColor("#3a3a3a"), 1))
             axis_right = self.width() - self.axis_right_margin
             painter.drawLine(self.axis_left_margin, track_y, axis_right, track_y)
 
@@ -232,7 +291,7 @@ class DayStripWidget(QWidget):
                         - 1,
                     )
                 )
-                painter.setPen(QPen(QColor("#e6c229"), 2))
+                painter.setPen(QPen(QColor("#e6c229"), 1))
                 painter.drawLine(now_x, 0, now_x, self.height())
 
             if self.position is not None and span > 0:
@@ -247,7 +306,7 @@ class DayStripWidget(QWidget):
                         - 1,
                     )
                 )
-                painter.setPen(QPen(QColor("#0066cc"), 2))
+                painter.setPen(QPen(QColor("#3584e4"), 2))
                 painter.drawLine(px, 0, px, self.height())
 
             if self.marker is not None and span > 0:
@@ -262,7 +321,7 @@ class DayStripWidget(QWidget):
                         - 1,
                     )
                 )
-                painter.setPen(QPen(QColor("#cc0000"), 2))
+                painter.setPen(QPen(QColor("#8f3b3b"), 2))
                 painter.drawLine(mx, 0, mx, self.height())
         except Exception as exc:  # Never let a paint error crash the app
             logger.warning("DayStrip paint error: %s", exc)
@@ -354,14 +413,16 @@ class ForecastTimeline(QWidget):
         self.seconds = 900
         self.setMinimumWidth(520)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        # The overlay paints its own background from the stylesheet rule.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(2)
 
         # ── Top transport row ──────────────────────────────────────
         row = QHBoxLayout()
-        row.setSpacing(4)
+        row.setSpacing(2)
 
         self.start_month_label = QLabel()
         self.start_month_label.setAlignment(
@@ -455,7 +516,10 @@ class ForecastTimeline(QWidget):
         # Caption / status line.
         self.caption = QLabel()
         self.caption.setProperty("secondary", True)
-        self.caption.setFixedHeight(16)
+        caption_font = self.caption.font()
+        caption_font.setPixelSize(10)
+        self.caption.setFont(caption_font)
+        self.caption.setFixedHeight(12)
         self.caption.setMinimumWidth(0)
         self.caption.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         layout.addWidget(self.caption)
@@ -531,8 +595,8 @@ class ForecastTimeline(QWidget):
         button.setAccessibleName(title)
         button.setToolTip(title)
         button.setAutoRaise(True)
-        button.setFixedSize(32, 32)
-        button.setIconSize(QSize(20, 20))
+        button.setFixedSize(24, 24)
+        button.setIconSize(QSize(14, 14))
         button.clicked.connect(callback)
         row.addWidget(button)
         return button

@@ -365,9 +365,15 @@ def apply_theme(app: QApplication):
         QToolBar QToolButton:checked { background: #344966;
                                        border: 1px solid #3584e4; }
         QToolBar QToolButton:disabled { color: #777774; background: #292929; }
+        QWidget#forecast-timeline-overlay {
+            background: #1e1e1e;
+        }
+        QWidget#forecast-timeline-overlay QComboBox {
+            min-height: 18px; max-height: 18px; padding: 1px 2px;
+            font-size: 11px; }
         QWidget#forecast-timeline-overlay QToolButton {
             padding: 0px; border: none; border-radius: 6px;
-            background: transparent; }
+            background: transparent; min-height: 18px; }
         QWidget#forecast-timeline-overlay QToolButton:hover {
             background: #3c3c3c; }
         QWidget#forecast-timeline-overlay QToolButton:pressed {
