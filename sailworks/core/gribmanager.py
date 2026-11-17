@@ -19,8 +19,6 @@ from typing import List
 import weatherrouting
 from weatherrouting import Grib
 
-from sailworks.core.gribsampling import WeatherSampler
-
 
 class GribManager(weatherrouting.Grib):
     """Transient sampler interface for published GRIB-backed model forecasts.
@@ -37,6 +35,8 @@ class GribManager(weatherrouting.Grib):
         return bool(self.gribs)
 
     def weather_sampler(self):
+        from sailworks.core.gribsampling import WeatherSampler
+
         signature = tuple(self.gribs)
         if getattr(self, "_sampling_signature", None) != signature:
             self._sampling_signature = signature

@@ -101,8 +101,10 @@ def export_worker(config):
     canvas = (
         window.map
         if window.views.tabText(window.views.currentIndex()) == "Charts"
-        else window.log_map
+        else window.current_log_map
     )
+    if canvas is None:
+        raise ValueError("The Logs viewport is not built yet; open the Logs view first")
     renderers = (
         canvas.wind,
         canvas.isochrones,

@@ -10,8 +10,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sailworks.core.places import PlaceIndex
-
 
 class PlaceSearch(QWidget):
     """Search the local gazetteer and emit the selected place."""
@@ -22,7 +20,7 @@ class PlaceSearch(QWidget):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
         self.setMaximumWidth(380)
-        self.index = index if index is not None else PlaceIndex.from_default()
+        self.index = index
         self.near = near
         self._places = []
         self._suppress = False
@@ -64,6 +62,11 @@ class PlaceSearch(QWidget):
         self.timer.timeout.connect(self._refresh)
         self.edit.textChanged.connect(self._text_changed)
 
+    def set_index(self, index):
+        """Attach the gazetteer once it is available."""
+        self.index = index
+        self.refresh()
+
     def refresh(self):
         if self.edit.text():
             self._refresh()
@@ -82,6 +85,11 @@ class PlaceSearch(QWidget):
 
     def _refresh(self):
         text = self.edit.text().strip()
+        if self.index is None:
+            self._places = []
+            self.model.clear()
+            self.completer.popup().hide()
+            return
         self._places = self.index.search(text, limit=12, near=self._near_point())
         self.model.clear()
         for place in self._places:

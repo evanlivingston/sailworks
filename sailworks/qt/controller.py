@@ -55,6 +55,7 @@ class SessionController(QObject):
         analysis_state=None,
         log_library_directory=None,
         gpu_streamlines=True,
+        defer_analysis=False,
     ):
         super().__init__(parent)
         if map_renderer not in (None, "cpu", "gpu"):
@@ -142,7 +143,7 @@ class SessionController(QObject):
         self.connection_task = BackgroundTask(self)
         self.data = DataController(self)
         self.charts.chart_sources_changed = self.data.changed.emit
-        self.analysis = self.prepare_model_analysis()
+        self.analysis = self.prepare_model_analysis(start=not defer_analysis)
         from .analysisdisplay import BoundDisplayForecastSelection
 
         self.display_forecast = BoundDisplayForecastSelection(self.analysis, self)
@@ -186,25 +187,39 @@ class SessionController(QObject):
 
             self.chart_startup = ChartStartup(self)
 
-    def prepare_model_analysis(self):
-        """Create/reuse the opt-in authority without switching display or routing."""
+    def prepare_model_analysis(self, start=True):
+        """Create/reuse the opt-in authority without switching display or routing.
+
+        ``start=False`` builds the controller in its loading state but leaves
+        the analysis worker unstarted; call it later with
+        :meth:`start_model_analysis` once the first frame is on screen.
+        """
         if self.closed:
             raise RuntimeError("session controller is closed")
         if self.models_analysis is not None:
-            return self.models_analysis
+            analysis = self.models_analysis
+            if start:
+                analysis.start()
+            return analysis
         from .analysiscontroller import AnalysisController
 
         if self._analysis_state is not None:
-            analysis = AnalysisController(state=self._analysis_state, parent=self)
+            analysis = AnalysisController(
+                state=self._analysis_state, parent=self, start_now=start
+            )
         else:
             root = self._analysis_root
             if root is None:
                 from sailworks.core.storage import DATA_DIR
 
                 root = Path(DATA_DIR) / "forecast-analysis"
-            analysis = AnalysisController(root, parent=self)
+            analysis = AnalysisController(root, parent=self, start_now=start)
         self.models_analysis = analysis
         return analysis
+
+    def start_model_analysis(self):
+        """Start the published-forecast analysis after the first frame is shown."""
+        return self.analysis.start()
 
     def set_renderer_status(self, canvas, actual, reason="", api=""):
         state = dict(actual=actual, reason=reason, api=api)

@@ -37,12 +37,27 @@ _SUPPORTED_ELEMENTS = (
     *_WAVE_PERIOD_ELEMENTS,
     *_WAVE_DIRECTION_ELEMENTS,
 )
-from .gribsampling import GridIndex, WeatherSampler, number
 
 import weatherrouting
 from osgeo import gdal
 
 logger = logging.getLogger("sailworks")
+
+# ``gribsampling`` is imported on first use so importing ``grib`` stays cheap.
+# The resolved class is cached so routing's per-candidate ``get_wind_at`` calls
+# do not repeat import machinery for every sample.
+_WEATHER_SAMPLER_CLASS = None
+
+
+def _weather_sampler_class():
+    """Return ``WeatherSampler``, importing ``gribsampling`` once."""
+    global _WEATHER_SAMPLER_CLASS
+    if _WEATHER_SAMPLER_CLASS is None:
+        from .gribsampling import WeatherSampler
+
+        _WEATHER_SAMPLER_CLASS = WeatherSampler
+    return _WEATHER_SAMPLER_CLASS
+
 
 PRESSURE_ELEMENTS = _PRESSURE_ELEMENTS
 
@@ -109,6 +124,8 @@ class Grib(weatherrouting.Grib):
 
     def _find_bands_for_time(self, t):
         """Find bands for U and V wind components at a given time."""
+        from .gribsampling import number
+
         u_band = None
         v_band = None
 
@@ -136,6 +153,8 @@ class Grib(weatherrouting.Grib):
 
     def _find_pressure_band_for_time(self, t):
         """Find the mean-sea-level pressure band at a given forecast hour."""
+        from .gribsampling import number
+
         for bidx in range(1, self.dataset.RasterCount + 1):
             band = self.dataset.GetRasterBand(bidx)
             metadata = band.GetMetadata()
@@ -173,13 +192,16 @@ class Grib(weatherrouting.Grib):
 
     @property
     def sampling(self):
+        from .gribsampling import GridIndex
+
         if "_sampling" not in self.__dict__:
             self._sampling = GridIndex(self)
         return self._sampling
 
     def sampler(self):
         if "_sampler" not in self.__dict__:
-            self._sampler = WeatherSampler((self,))
+            sampler_class = _weather_sampler_class()
+            self._sampler = sampler_class((self,))
         return self._sampler
 
     def get_pressure(self, tt, bounds):
@@ -214,6 +236,8 @@ class Grib(weatherrouting.Grib):
     @lru_cache(maxsize=1)
     def _get_available_pressure_hours(self):
         """Scan GRIB bands to find all forecast hours with pressure data."""
+        from .gribsampling import number
+
         hours = set()
         for bidx in range(1, self.dataset.RasterCount + 1):
             band = self.dataset.GetRasterBand(bidx)
@@ -227,6 +251,8 @@ class Grib(weatherrouting.Grib):
     @lru_cache(maxsize=1)
     def _get_available_forecast_hours(self):
         """Scan GRIB bands to find all available forecast hours."""
+        from .gribsampling import number
+
         hours = set()
         for bidx in range(1, self.dataset.RasterCount + 1):
             band = self.dataset.GetRasterBand(bidx)
@@ -264,6 +290,8 @@ class Grib(weatherrouting.Grib):
 
     @staticmethod
     def parse_metadata(path):
+        from .gribsampling import number
+
         dataset = gdal.Open(path)
         if dataset is None:
             raise ValueError("Unable to open forecast: " + path)

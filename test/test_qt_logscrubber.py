@@ -101,8 +101,14 @@ def test_lifecycle_changes_cancel_timer_and_preview(transport, cancel):
 def test_preview_is_forwarded_to_existing_maps_and_plot_cursor(transport):
     _, controller = transport
     session = controller.session
+    log_map = Mock()
     window = SimpleNamespace(
-        session=session, plots=Mock(), map=Mock(), log_map=Mock(), log_time=Mock()
+        session=session,
+        plots=Mock(),
+        map=Mock(),
+        log_map=log_map,
+        current_log_map=log_map,
+        log_time=Mock(),
     )
     controller.changed.connect(lambda: PreviewWindow._refresh_log_position(window))
     controller.preview_log_position(session.log.duration / 2)
@@ -646,12 +652,14 @@ def test_gps_picker_updates_plot_both_maps_and_marker_without_replay(transport):
     controller.points = log.points
     picker = QComboBox()
     group = QWidget()
+    log_map = Mock()
     window = SimpleNamespace(
         session=session,
         controller=controller,
         plots=Mock(),
         map=Mock(),
-        log_map=Mock(),
+        log_map=log_map,
+        current_log_map=log_map,
         log_time=Mock(),
         data_key=None,
         track_source=picker,

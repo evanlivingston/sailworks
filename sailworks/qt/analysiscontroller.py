@@ -25,7 +25,15 @@ class AnalysisController(QObject):
     _finished = Signal(int, str, object, object)
     _progressed = Signal(int, object, object)
 
-    def __init__(self, root=None, *, state=None, parent=None, thread_factory=Thread):
+    def __init__(
+        self,
+        root=None,
+        *,
+        state=None,
+        parent=None,
+        thread_factory=Thread,
+        start_now=True,
+    ):
         super().__init__(parent)
         if (root is None) == (state is None):
             raise ValueError("provide exactly one analysis root or state")
@@ -40,15 +48,33 @@ class AnalysisController(QObject):
         self._generation = 0
         self._cancel = None
         self._thread = None
+        self._thread_generation = None
         self._progress_token = None
         self.busy = False
-        self.loading = True
+        self.loading = bool(start_now)
         self.progress = 0
         self.error = ""
-        self.status = "Loading published forecast"
+        self.status = (
+            "Loading published forecast"
+            if start_now
+            else "Published forecast not loaded"
+        )
         self._finished.connect(self._finish)
         self._progressed.connect(self._progress)
-        self._start(
+        if start_now:
+            self.start()
+
+    def start(self):
+        """Start the initial published-forecast analysis.
+
+        Call this after the first frame is on screen: the worker imports and
+        reads the published forecast, which must not compete with the paint.
+        Idempotent while a worker is live, so a repeated call cannot start a
+        second one.
+        """
+        if self._closed or self._thread is not None:
+            return False
+        return self._start(
             "startup",
             lambda event, report, token: self.state.snapshot(),
             preserve=True,
@@ -155,8 +181,11 @@ class AnalysisController(QObject):
             self._thread = self._thread_factory(
                 target=worker, name="qt-analysis", daemon=True
             )
+            self._thread_generation = generation
             self._thread.start()
         except Exception as exc:
+            self._thread = None
+            self._thread_generation = None
             self.busy = self.loading = False
             self.error = str(exc) or type(exc).__name__
             self._active = None
@@ -211,8 +240,29 @@ class AnalysisController(QObject):
         self.status = str(value)
         self.changed.emit()
 
+    def _release_thread(self):
+        """Retire a finished worker so a later ``start()`` is not blocked.
+
+        The worker emits its result before it returns, so a short join is
+        enough to keep ``start()`` from overlapping two live workers.
+        """
+        thread = self._thread
+        self._thread = None
+        self._thread_generation = None
+        if thread is None:
+            return
+        is_alive = getattr(thread, "is_alive", None)
+        join = getattr(thread, "join", None)
+        try:
+            if callable(is_alive) and is_alive() and callable(join):
+                join(1.0)
+        except RuntimeError:
+            pass
+
     @Slot(int, str, object, object)
     def _finish(self, generation, action, result, details):
+        if not self._closed and self._thread_generation == generation:
+            self._release_thread()
         if self._closed or generation != self._generation:
             return
         error, reconciliation_error = details

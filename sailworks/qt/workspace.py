@@ -90,7 +90,10 @@ class WorkspacePreferences(QObject):
         window.views.currentChanged.connect(self.changed)
         window.source.currentIndexChanged.connect(self.changed)
         window.map.view_changed.connect(self.changed)
-        window.log_map.view_changed.connect(self.changed)
+        log_map = window.current_log_map
+        if log_map is not None:
+            # A map built after the restore connects in the window itself.
+            log_map.view_changed.connect(self.changed)
         window.logs_view.splitterMoved.connect(self.changed)
         window.polar_workspace.splitter.splitterMoved.connect(self.changed)
         window.polar_workspace.selection_changed.connect(self.changed)
@@ -318,18 +321,39 @@ class WorkspacePreferences(QObject):
             workspace.select(selected)
         workspace.performance.restore_state(polars.get("performance"))
         logs = mapping(state.get("logs"))
-        for splitter, saved in (
-            (workspace.splitter, polars.get("split")),
-            (self.window.logs_view, logs.get("split")),
-        ):
-            if isinstance(saved, list) and len(saved) == 2:
-                splitter.setSizes([int(number(v, 300, 60, 10000)) for v in saved])
+        polars_split = polars.get("split")
+        if isinstance(polars_split, list) and len(polars_split) == 2:
+            workspace.splitter.setSizes(
+                [int(number(v, 300, 60, 10000)) for v in polars_split]
+            )
+        logs_split = logs.get("split")
+        if isinstance(logs_split, list) and len(logs_split) == 2:
+            sizes = [int(number(v, 300, 60, 10000)) for v in logs_split]
+            self.window._log_split_sizes = sizes
+            if self.window.current_log_map is not None:
+                self.window.logs_view.setSizes(sizes)
         for key, value in mapping(logs.get("series")).items():
             if isinstance(value, bool):
                 self.window.plots.set_series(key, value)
         saved_map = mapping(logs.get("map"))
-        canvas = self.window.log_map
-        self._restore_map_display(canvas, saved_map)
+        canvas = self.window.current_log_map
+        if canvas is None:
+            # The Logs viewport is built on first use; keep its state until then.
+            self.window._pending_log_map_state = dict(saved_map)
+        else:
+            self._restore_log_map(canvas, saved_map)
+
+    def restore_log_map(self, saved_map):
+        """Apply saved Logs-view state once the viewport has been built."""
+        canvas = self.window.current_log_map
+        if canvas is None:
+            self.window._pending_log_map_state = dict(saved_map)
+            return
+        self._restore_log_map(canvas, saved_map)
+
+    @staticmethod
+    def _restore_log_map(canvas, saved_map):
+        WorkspacePreferences._restore_map_display(canvas, saved_map)
         canvas.camera_state.center_lat = number(
             saved_map.get("latitude"), canvas.camera_state.center_lat, -85, 85
         )

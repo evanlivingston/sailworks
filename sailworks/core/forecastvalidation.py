@@ -7,7 +7,6 @@ import math
 from osgeo import gdal
 
 from .grib import PRESSURE_ELEMENTS, forecast_model_name
-from .gribsampling import model_key, number
 from .gribvectors import vector_flags
 from .forecastgrid import ForecastGridError, validate_grid
 from .forecastcapabilities import MODEL_CAPABILITIES
@@ -91,6 +90,8 @@ def _planned_model(planned):
 
 
 def _utc_epoch(value, label):
+    from .gribsampling import number
+
     try:
         seconds = number(value)
         if not math.isfinite(seconds) or not seconds.is_integer():
@@ -101,6 +102,8 @@ def _utc_epoch(value, label):
 
 
 def _seconds(value, label):
+    from .gribsampling import number
+
     try:
         seconds = number(value)
     except (TypeError, ValueError, IndexError):
@@ -156,6 +159,8 @@ def inspect_download(path, planned, cancel=None, *, opener=None, vector_reader=N
     Region containment is checked on 64 samples per requested boundary edge;
     this validates geometric extent, not every interior cell's nodata mask.
     """
+    from .gribsampling import model_key
+
     config = _planned_model(planned)
     model = config.model_id
     fields = tuple(config.fields)

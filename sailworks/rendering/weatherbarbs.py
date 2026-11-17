@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
-from sailworks.core.gribsampling import FIELDS
 from sailworks.core.mapviewport import MercatorProjection
 from sailworks.rendering.weatherstaging import (
     StagedWind,
@@ -80,6 +79,8 @@ class BarbAtlas:
 
 def _native_points(sampler, bounds, cancel, parameter="wind"):
     """The unique native nodes of every gridded source in the bounds."""
+    from sailworks.core.gribsampling import FIELDS
+
     elements = FIELDS[parameter]
     nodes = []
     count = 0
@@ -409,6 +410,8 @@ def stage_field(  # noqa: C901 - native/gridded forms share one sampling pass
     # Multiple selected forecasts often share a grid (different times/runs).
     # Their candidate nodes are identical. Deduplicate only enumeration;
     # stage_wind above still evaluates every source under the existing policy.
+    from sailworks.core.gribsampling import FIELDS
+
     grids: dict[tuple, Any] = {}
     for grid in sampler.indices:
         if any(record.element in FIELDS[parameter] for record in grid.records):
