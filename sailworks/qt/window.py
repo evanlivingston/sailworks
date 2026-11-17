@@ -336,6 +336,7 @@ class PreviewWindow(QMainWindow):
         historical.visibility_changed.connect(self.scene_panel.refresh)
         historical.visibility_changed.connect(self._routing_visibility_changed)
         self.scene_panel.selected.connect(self._scene_selected)
+        self.scene_panel.selection_changed.connect(self._scene_selection_changed)
         self.scene_panel.group_selected.connect(self._scene_group_selected)
         self.scene_panel.open_requested.connect(self._scene_open)
         self.scene_panel.fit_requested.connect(self._scene_fit)
@@ -1488,6 +1489,9 @@ class PreviewWindow(QMainWindow):
     def _scene_changed(self):
         self._sync_isochrone_colour_mode()
         self._publish_race_track_overlay()
+        # A structural change can add members to an already selected
+        # collection; re-resolve the emphasis before repainting.
+        self._apply_scene_selection()
         for canvas in _canvases(self):
             invalidate = getattr(canvas, "invalidate_navigation", None)
             if callable(invalidate):
@@ -1502,6 +1506,47 @@ class PreviewWindow(QMainWindow):
         self._race_time_changed(self.controller.time_control.time)
         if hasattr(self, "workspace"):
             self.workspace.changed()
+
+    def _scene_selection_changed(self, selection):
+        """Track the tree selection that emphasises chart elements."""
+        self._scene_selection = selection
+        self._apply_scene_selection()
+
+    def _apply_scene_selection(self):
+        """Emphasise the selected routes and tracks on every chart.
+
+        A selected collection contributes every member beneath it, so the
+        resolution happens here rather than in the tree row that was clicked.
+        """
+        selection = getattr(self, "_scene_selection", None)
+        if not selection:
+            return
+        scene = getattr(getattr(self, "scene_panel", None), "scene", None)
+        resolve = getattr(scene, "selected_identities", None)
+        if not callable(resolve):
+            return
+        identities = resolve(selection.get("items", ()), selection.get("groups", ()))
+        routes = {key for kind, key in identities if kind == KIND_ROUTING}
+        tracks = {
+            key
+            for kind, key in identities
+            if kind == KIND_TRACK and not str(key).startswith("race:")
+        }
+        for canvas in _canvases(self):
+            navigation = getattr(canvas, "navigation", None)
+            set_selection = getattr(navigation, "set_scene_selection", None)
+            if not callable(set_selection):
+                continue
+            set_selection(routes, tracks)
+            invalidate = getattr(canvas, "invalidate_navigation", None)
+            if callable(invalidate):
+                invalidate()
+            refresh = getattr(canvas, "refresh_route_overlay", None)
+            if callable(refresh):
+                refresh()
+            update = getattr(canvas, "update", None)
+            if callable(update):
+                update()
 
     def _scene_group_selected(self, group_id):
         """Show a historical job's results when its scene group is selected.

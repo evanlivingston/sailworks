@@ -345,6 +345,12 @@ class NavigationRenderer:
     def __init__(self, core):
         self.core = core
         self.hl_routing = None
+        # Element uids emphasised by the scene tree selection. The routing and
+        # track panels pick one active element (``hl_routing`` and the manager's
+        # active track); the scene tree can select several items and whole
+        # collections, and every member of that selection is emphasised.
+        self.hl_routes = frozenset()
+        self.hl_tracks = frozenset()
         self.hl_poi = None
         self.hl_track_item = None
         self.hl_track_hover = None
@@ -353,6 +359,23 @@ class NavigationRenderer:
         # Per-route colour arrays cached by (revision, mode) so frames do not
         # reclassify legs or re-read the saved result.
         self._route_styles = {}
+
+    def set_scene_selection(self, routes=(), tracks=()):
+        """Emphasise the scene tree's selected routes and tracks.
+
+        ``routes`` and ``tracks`` hold element uids. A selected collection
+        contributes every member it contains, so the caller resolves groups
+        before calling this. The scene selection is independent of the single
+        element the routing or track panel marks active.
+        """
+        self.hl_routes = frozenset(routes)
+        self.hl_tracks = frozenset(tracks)
+
+    def route_highlighted(self, route):
+        """Whether a route carries emphasis from either selection surface."""
+        return route.name == self.hl_routing or (
+            getattr(route, "uid", None) in self.hl_routes
+        )
 
     def draw_routes(self, gpsmap, cr, display_time, draw_routes=True):  # noqa: C901
         # Legacy route times and the map clock are local and naive; newer
@@ -363,7 +386,7 @@ class NavigationRenderer:
                 if not tr.visible:
                     continue
 
-                highlight = tr.name == self.hl_routing
+                highlight = self.route_highlighted(tr)
                 if highlight:
                     draw_current_exclusions(
                         gpsmap,
@@ -630,7 +653,7 @@ class NavigationRenderer:
             route_data = {
                 "name": str(tr.name),
                 "points": points,
-                "highlight": tr.name == self.hl_routing,
+                "highlight": self.route_highlighted(tr),
                 "boat": boat,
                 "colour_by": mode,
                 # The registry id the client should treat as the dimension.
