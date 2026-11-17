@@ -373,9 +373,36 @@ Item {
                            `${Math.round(color[2] * 255)},${alpha})`
                 }
 
-                function drawRouteLegend(context, legend) {
+                function routeLegendHeight(legend) {
                     if (!legend || !legend.entries || !legend.entries.length)
-                        return
+                        return 0
+                    return 15 * (legend.entries.length + 1) + 10
+                }
+
+                // Routes coloured by the same metric share one legend; a
+                // multi-route selection must not stack identical boxes.
+                function routeLegends(routes) {
+                    const legends = []
+                    if (!routes)
+                        return legends
+                    const seen = {}
+                    for (let r = 0; r < routes.length; ++r) {
+                        const legend = routes[r].legend
+                        if (!routeLegendHeight(legend))
+                            continue
+                        const key = JSON.stringify([legend.title, legend.entries])
+                        if (seen[key])
+                            continue
+                        seen[key] = true
+                        legends.push(legend)
+                    }
+                    return legends
+                }
+
+                function drawRouteLegend(context, legend, top) {
+                    const boxHeight = routeLegendHeight(legend)
+                    if (!boxHeight)
+                        return 0
                     context.save()
                     context.font = "10px sans-serif"
                     let width = context.measureText(legend.title || "").width
@@ -384,14 +411,13 @@ Item {
                             context.measureText(legend.entries[i][0]).width)
                     const rowHeight = 15
                     const boxWidth = width + 38
-                    const boxHeight =
-                        rowHeight * (legend.entries.length + 1) + 10
+                    const y = top === undefined ? 12 : top
                     context.fillStyle = "rgba(0,0,0,0.55)"
-                    context.fillRect(12, 12, boxWidth, boxHeight)
+                    context.fillRect(12, y, boxWidth, boxHeight)
                     context.fillStyle = "rgba(255,255,255,0.9)"
-                    context.fillText(legend.title || "", 20, 27)
+                    context.fillText(legend.title || "", 20, y + 15)
                     for (let i = 0; i < legend.entries.length; ++i) {
-                        const rowY = 37 + rowHeight * i
+                        const rowY = y + 25 + rowHeight * i
                         context.fillStyle =
                             rgbColor(legend.entries[i][1], 1.0)
                         context.fillRect(20, rowY, 10, 10)
@@ -399,6 +425,7 @@ Item {
                         context.fillText(legend.entries[i][0], 36, rowY + 9)
                     }
                     context.restore()
+                    return boxHeight
                 }
 
                 function drawIsochroneLegend(context, legend) {
@@ -408,16 +435,15 @@ Item {
                     context.save()
                     context.font = "10px sans-serif"
                     const rowHeight = 15
-                    // Keep clear of the top-left route legend when one is drawn.
+                    // Keep clear of the routes' stacked legends at the top-left.
                     let topLimit = 12
                     if (routes && routes.length) {
-                        for (let r = 0; r < routes.length; ++r) {
-                            const other = routes[r].legend
-                            if (other && other.entries && other.entries.length)
-                                topLimit = Math.max(topLimit,
-                                    12 + rowHeight * (other.entries.length + 1) +
-                                    10 + 8)
-                        }
+                        const legends = routeLegends(routes)
+                        let stacked = 0
+                        for (let r = 0; r < legends.length; ++r)
+                            stacked += routeLegendHeight(legends[r]) + 6
+                        if (stacked)
+                            topLimit = Math.max(topLimit, 12 + stacked)
                     }
                     const entries = legend.entries || []
                     const maxRows = Math.max(0,
@@ -1043,10 +1069,15 @@ Item {
                         context.globalAlpha = 1
                     }
                     if (routes && routes.length) {
+                        // Legends are shared by metric and stacked so a
+                        // multi-route selection does not overdraw them.
+                        let legendTop = 12
+                        const legends = routeLegends(routes)
+                        for (let l = 0; l < legends.length; ++l)
+                            legendTop += drawRouteLegend(
+                                context, legends[l], legendTop) + 6
                         for (let r = 0; r < routes.length; ++r) {
                             const route = routes[r]
-                            if (route.legend)
-                                drawRouteLegend(context, route.legend)
                             const points = route.points
                             if (!points || points.length < 2)
                                 continue
@@ -1057,65 +1088,87 @@ Item {
                                 context.beginPath()
                                 context.moveTo(previous.x, previous.y)
                                 context.lineTo(point.x, point.y)
-                                context.lineWidth = highlight ? 3 : 2
+                                // Unselected routes stay readable as context
+                                // without competing with the selection.
+                                context.lineWidth = highlight ? 2.5 : 1.4
                                 const segmentColor =
                                     route.segment_colors &&
                                     route.segment_colors.length >= i
                                         ? route.segment_colors[i - 1] : null
                                 context.strokeStyle = segmentColor
                                     ? rgbColor(segmentColor,
-                                               highlight ? 0.9 : 0.63)
+                                               highlight ? 0.95 : 0.42)
                                     : rgbColor(null,
-                                               highlight ? 0.9 : 0.63)
+                                               highlight ? 0.95 : 0.42)
                                 context.stroke()
                             }
                             context.font = "10px sans-serif"
-                            context.fillStyle = "rgba(17,17,17,0.7)"
                             const first = screenPoint(points[0])
-                            context.fillText(route.name, first.x + 10, first.y)
-                            for (let i = 0; i < points.length; ++i) {
-                                const point = screenPoint(points[i])
-                                context.beginPath()
-                                context.arc(point.x, point.y,
-                                            highlight ? 3 : 2, 0, Math.PI * 2)
-                                context.fillStyle =
-                                    route.point_colors &&
-                                    route.point_colors.length > i
-                                        ? rgbColor(route.point_colors[i], 1.0)
-                                        : rgbColor(null, 1.0)
-                                context.fill()
+                            if (highlight) {
+                                // A chip matches the legend language and keeps
+                                // the name legible over any basemap.
+                                const label = String(route.name || "")
+                                const labelWidth =
+                                    context.measureText(label).width
+                                context.fillStyle = "rgba(0,0,0,0.6)"
+                                context.fillRect(first.x + 6, first.y - 13,
+                                                 labelWidth + 10, 16)
+                                context.fillStyle = "rgba(255,255,255,0.95)"
+                                context.fillText(label, first.x + 11, first.y)
+                            } else {
+                                context.fillStyle = "rgba(17,17,17,0.45)"
+                                context.fillText(route.name,
+                                                 first.x + 10, first.y)
                             }
-                            if (route.sail_changes && route.sail_changes.length) {
-                                const changes = route.sail_changes
-                                const markerColor = route.sail_change_color
-                                    ? rgbColor(route.sail_change_color, 1.0)
-                                    : "rgba(250,209,51,1)"
-                                const side = highlight ? 6 : 5
-                                for (let c = 0; c < changes.length; ++c) {
-                                    const index = changes[c]
-                                    if (!(index >= 0 && index < points.length))
-                                        continue
-                                    const marker = screenPoint(points[index])
-                                    context.fillStyle = markerColor
-                                    context.fillRect(marker.x - side / 2,
-                                                     marker.y - side / 2,
-                                                     side, side)
-                                    context.strokeStyle = "rgba(26,26,26,0.9)"
-                                    context.lineWidth = 1
-                                    context.strokeRect(marker.x - side / 2,
-                                                       marker.y - side / 2,
-                                                       side, side)
+                            if (highlight) {
+                                for (let i = 0; i < points.length; ++i) {
+                                    const point = screenPoint(points[i])
+                                    context.beginPath()
+                                    context.arc(point.x, point.y, 2.5,
+                                                0, Math.PI * 2)
+                                    context.fillStyle =
+                                        route.point_colors &&
+                                        route.point_colors.length > i
+                                            ? rgbColor(route.point_colors[i], 1.0)
+                                            : rgbColor(null, 1.0)
+                                    context.fill()
+                                }
+                                if (route.sail_changes &&
+                                    route.sail_changes.length) {
+                                    const changes = route.sail_changes
+                                    const markerColor = route.sail_change_color
+                                        ? rgbColor(route.sail_change_color, 1.0)
+                                        : "rgba(250,209,51,1)"
+                                    for (let c = 0; c < changes.length; ++c) {
+                                        const index = changes[c]
+                                        if (!(index >= 0 && index < points.length))
+                                            continue
+                                        const marker = screenPoint(points[index])
+                                        context.fillStyle = markerColor
+                                        context.fillRect(marker.x - 3,
+                                                         marker.y - 3, 6, 6)
+                                        context.strokeStyle = "rgba(26,26,26,0.9)"
+                                        context.lineWidth = 1
+                                        context.strokeRect(marker.x - 3,
+                                                           marker.y - 3, 6, 6)
+                                    }
                                 }
                             }
                             if (route.boat && route.boat.length === 2) {
                                 const boat = screenPoint(route.boat)
                                 context.beginPath()
-                                context.arc(boat.x, boat.y, 8, 0, Math.PI * 2)
-                                context.fillStyle = "rgba(26,153,26,1)"
+                                context.arc(boat.x, boat.y,
+                                            highlight ? 8 : 5, 0, Math.PI * 2)
+                                context.fillStyle = highlight
+                                    ? "rgba(26,153,26,1)"
+                                    : "rgba(26,153,26,0.5)"
                                 context.fill()
-                                context.lineWidth = 1.5
-                                context.strokeStyle = "rgba(255,255,255,0.9)"
-                                context.stroke()
+                                if (highlight) {
+                                    context.lineWidth = 1.5
+                                    context.strokeStyle =
+                                        "rgba(255,255,255,0.9)"
+                                    context.stroke()
+                                }
                             }
                         }
                     }
@@ -1134,6 +1187,10 @@ Item {
                                             ? movePreview : null
                             const previewIndex = preview ? preview[1] : -1
                             const active = Boolean(track.active)
+                            const selected = Boolean(track.selected)
+                            // The active track and any track selected in the
+                            // scene tree carry emphasis; the rest recede.
+                            const emphasis = active || selected
                             context.beginPath()
                             const first = previewIndex === 0
                                 ? screenPoint([preview[2], preview[3]])
@@ -1145,37 +1202,43 @@ Item {
                                     : screenPoint(points[i])
                                 context.lineTo(point.x, point.y)
                             }
-                            context.lineWidth = active ? 1 : 0.8
-                            context.strokeStyle = active
+                            context.lineWidth = emphasis ? 1.8 : 0.9
+                            context.strokeStyle = emphasis
                                 ? "rgba(145,50,28,1)"
-                                : "rgba(145,74,124,0.6)"
+                                : "rgba(145,74,124,0.42)"
                             context.setLineDash([8, 4])
                             context.stroke()
                             context.setLineDash([])
                             context.font = "10px sans-serif"
-                            context.fillStyle = "rgba(17,17,17,0.7)"
+                            context.fillStyle = emphasis
+                                ? "rgba(17,17,17,0.85)"
+                                : "rgba(17,17,17,0.4)"
                             context.fillText(track.name, first.x - 10, first.y - 10)
-                            for (let i = 0; i < points.length; ++i) {
-                                const point = i === previewIndex
-                                    ? screenPoint([preview[2], preview[3]])
-                                    : screenPoint(points[i])
-                                context.fillStyle = i === track.highlight
-                                    ? "rgba(255,0,0,0.9)"
-                                    : active
-                                        ? "rgba(17,17,17,0.7)"
-                                        : "rgba(17,17,17,0.3)"
-                                context.fillText(String(i + 1),
-                                                 point.x - 4, point.y + 18)
-                                if (track.editing) {
-                                    context.beginPath()
-                                    context.arc(point.x, point.y,
-                                                i === track.highlight ? 7 : 5,
-                                                0, Math.PI * 2)
-                                    context.strokeStyle = active
-                                        ? "rgba(145,50,28,1)"
-                                        : "rgba(145,74,124,0.6)"
-                                    context.lineWidth = 1
-                                    context.stroke()
+                            // Per-fix numbers are editing and emphasis detail,
+                            // not background clutter.
+                            if (emphasis || track.editing) {
+                                for (let i = 0; i < points.length; ++i) {
+                                    const point = i === previewIndex
+                                        ? screenPoint([preview[2], preview[3]])
+                                        : screenPoint(points[i])
+                                    context.fillStyle = i === track.highlight
+                                        ? "rgba(255,0,0,0.9)"
+                                        : emphasis
+                                            ? "rgba(17,17,17,0.7)"
+                                            : "rgba(17,17,17,0.35)"
+                                    context.fillText(String(i + 1),
+                                                     point.x - 4, point.y + 18)
+                                    if (track.editing) {
+                                        context.beginPath()
+                                        context.arc(point.x, point.y,
+                                                    i === track.highlight ? 7 : 5,
+                                                    0, Math.PI * 2)
+                                        context.strokeStyle = emphasis
+                                            ? "rgba(145,50,28,1)"
+                                            : "rgba(145,74,124,0.6)"
+                                        context.lineWidth = 1
+                                        context.stroke()
+                                    }
                                 }
                             }
                         }

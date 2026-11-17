@@ -900,6 +900,10 @@ class ScenePanel(QWidget):
 
     changed = Signal()
     selected = Signal(str, str)
+    # The full tree selection: selected item keys and collection ids. The chart
+    # emphasises every route and track they name, including a collection's
+    # members at any depth.
+    selection_changed = Signal(object)
     group_selected = Signal(str)
     open_requested = Signal(str, str)
     fit_requested = Signal(object)
@@ -2161,6 +2165,14 @@ class ScenePanel(QWidget):
         if self.syncing:
             return
         nodes = self._selected_nodes()
+        self.selection_changed.emit(
+            {
+                "items": [
+                    (node[1], node[2]) for node in nodes if node[0] in ("item", "point")
+                ],
+                "groups": [node[1] for node in nodes if node[0] == "group"],
+            }
+        )
         if len(nodes) != 1:
             return
         if nodes[0][0] == "item":

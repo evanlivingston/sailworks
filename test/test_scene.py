@@ -173,3 +173,43 @@ def test_collection_restores_element_uid():
     collection.elements = []
     collection.load_json({"elements": [track.to_json()]})
     assert collection[0].uid == track.uid
+
+
+def test_selected_identities_expand_collections_at_any_depth(tmp_path):
+    scene = SceneCollection(tmp_path / "scene.json")
+    route = FakeElement("r1", "Route")
+    nested = FakeElement("r2", "Nested route")
+    track = FakeElement("t1", "Morning")
+    scene.reconcile(
+        [
+            entry(KIND_ROUTING, route),
+            entry(KIND_ROUTING, nested),
+            entry(KIND_TRACK, track),
+        ]
+    )
+    parent = scene.create_group("Offshore", "default-routings", [(KIND_ROUTING, "r1")])
+    child = scene.create_group("Legs", parent.id, [(KIND_ROUTING, "r2")])
+
+    assert scene.selected_identities(group_ids=[parent.id]) == {
+        (KIND_ROUTING, "r1"),
+        (KIND_ROUTING, "r2"),
+    }
+    # An explicitly selected item survives alongside a selected collection.
+    assert scene.selected_identities([(KIND_TRACK, "t1")], [child.id]) == {
+        (KIND_TRACK, "t1"),
+        (KIND_ROUTING, "r2"),
+    }
+    assert scene.selected_identities() == set()
+
+
+def test_selected_identities_treats_a_point_row_as_its_parent(tmp_path):
+    scene = SceneCollection(tmp_path / "scene.json")
+    track = FakeElement("t1", "Morning")
+    scene.reconcile([entry(KIND_TRACK, track)])
+    # A point row's node key is ("point", kind, key, index); the panel emits
+    # the parent identity so selecting a point emphasises its whole track.
+    point_node = ("point", KIND_TRACK, "t1", 0)
+
+    item_keys = [(point_node[1], point_node[2])]
+
+    assert scene.selected_identities(item_keys) == {(KIND_TRACK, "t1")}

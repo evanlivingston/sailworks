@@ -524,6 +524,20 @@ def test_group_selection_creates_collection_under_common_parent(tmp_path):
     assert panel.scene.group(item.group).parent == "default-tracks"
 
 
+def test_clearing_the_tree_emits_an_empty_scene_selection(tmp_path):
+    application()
+    panel = panel_for(tmp_path, tracks=[FakeTrack("t1", "Morning")])
+    emitted = []
+    panel.selection_changed.connect(emitted.append)
+    panel.tree.setCurrentItem(panel.item_row(KIND_TRACK, "t1"))
+    assert panel.tree.selectedItems()
+
+    panel.tree.clearSelection()
+
+    assert emitted[-1] == {"items": [], "groups": []}
+    assert not panel.tree.selectedItems()
+
+
 def test_log_rows_are_not_checkable(tmp_path):
     application()
     log = log_entry(tmp_path)
