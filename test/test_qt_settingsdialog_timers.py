@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QWidget  # noqa: E402
+from PySide6.QtWidgets import QDialog, QWidget  # noqa: E402
 
 from sailworks.qt.settingsdialog import SettingsDialog  # noqa: E402
 
@@ -59,3 +59,27 @@ def test_refresh_timer_runs_only_while_dialog_is_visible(qtbot, dialog):
     dialog.close()
     qtbot.wait(0)
     assert not dialog.timer.isActive()
+
+
+def test_editing_a_connection_commits_without_pressing_apply(dialog):
+    original = {
+        "type": "serial",
+        "protocol": "nmea0183",
+        "direction": "in",
+        "data-port": "COM1",
+        "baudrate": 4800,
+    }
+    dialog.draft = [dict(original)]
+    dialog.reload()
+    dialog.connections.setCurrentRow(0)
+    edited = dict(original, **{"data-port": "COM2"})
+    connection = Mock()
+    connection.exec.return_value = QDialog.DialogCode.Accepted
+    connection.result_config = edited
+    with (
+        patch("sailworks.qt.settingsdialog.ConnectionDialog", return_value=connection),
+        patch.object(SettingsDialog, "apply_connections") as apply_connections,
+    ):
+        dialog.edit_connection(True)
+    apply_connections.assert_called_once_with()
+    assert dialog.draft[0]["data-port"] == "COM2"
