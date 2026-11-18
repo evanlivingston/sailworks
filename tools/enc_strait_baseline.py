@@ -31,6 +31,14 @@ same camera (a source refresh or a resize) and the trace's demand-scoped
 is kept beside the wall-clock figure.  A run whose layer publishes no cells
 fails loudly: a data failure must never be written down as a rendering
 interval.
+
+Every span is recorded twice: wall milliseconds from ``time.perf_counter()``
+and process CPU milliseconds from ``time.process_time()``.  The CPU clock is
+process-wide, so the ENC mesh/compose worker threads count towards it; it is
+the load-tolerant companion to wall time, which on a busy desktop stretches
+whenever another process takes the CPU.  The two are sampled at the same event
+loop turn as the state the span ends on (a trace line returning true), and the
+existing trace-derived wall fields are left exactly as they were.
 """
 
 from __future__ import annotations
@@ -129,6 +137,63 @@ def _ms_between(start, end):
 
 def _camera_key(record):
     return tuple(record.get(key) for key in ("lat", "lon", "zoom", "width", "height"))
+
+
+def _camera_key_matches(left, right):
+    """Whether two camera keys are the same camera within stamp precision."""
+    if left is None or right is None or len(left) != len(right):
+        return False
+    for first, second in zip(left, right):
+        if first is None or second is None:
+            return False
+        try:
+            if abs(float(first) - float(second)) > 1e-6:
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+def _wall_ms(started):
+    """Wall milliseconds since a ``time.perf_counter()`` reading."""
+    return round((time.perf_counter() - started) * 1000.0, 3)
+
+
+def _cpu_ms(started):
+    """Process CPU milliseconds since a ``time.process_time()`` reading.
+
+    ``process_time`` counts every thread in this process, so the ENC worker
+    threads that build meshes inside a demand are included.  It does not count
+    other processes, so a busy host inflates wall time but not this.
+    """
+    return round((time.process_time() - started) * 1000.0, 3)
+
+
+def _spread(values):
+    """Count, median, worst, mean and coefficient of variation of a sample.
+
+    The coefficient is the population standard deviation over the mean, which
+    is the comparable shape of "how much does this swing" for wall and CPU
+    alike.  A single sample has no spread, so its CV is ``None`` rather than 0.
+    """
+    clean = [value for value in values if value is not None]
+    if not clean:
+        return {
+            "n": 0,
+            "median_ms": None,
+            "worst_ms": None,
+            "mean_ms": None,
+            "cv": None,
+        }
+    mean = sum(clean) / len(clean)
+    deviation = (sum((value - mean) ** 2 for value in clean) / len(clean)) ** 0.5
+    return {
+        "n": len(clean),
+        "median_ms": _percentile(clean, 0.5),
+        "worst_ms": round(max(clean), 3),
+        "mean_ms": round(mean, 3),
+        "cv": round(deviation / mean, 4) if mean else None,
+    }
 
 
 def _readable_manifest_cells(data_dir):
@@ -849,6 +914,38 @@ def _wait(app, predicate, timeout):
     return predicate()
 
 
+def _wait_marks(app, sample, predicate, timeout, watchers):
+    """Pump until ``predicate`` and stamp when each watcher first sees its state.
+
+    ``sample`` reads the trace rows once per turn and hands them to the stop
+    condition and every watcher, so a watcher costs no extra parse inside the
+    span it is timing.  Each mark is the absolute ``(perf_counter, process_time)``
+    pair of the turn it was first observed, for the caller to difference against
+    its own start.  Returns ``(hit, marks)``.
+    """
+    deadline = time.monotonic() + timeout
+    marks = {}
+
+    def observe(rows):
+        for name, watcher in watchers:
+            if name not in marks and watcher(rows):
+                marks[name] = (time.perf_counter(), time.process_time())
+
+    while True:
+        app.processEvents()
+        rows = sample()
+        observe(rows)
+        if predicate(rows):
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.01)
+    app.processEvents()
+    rows = sample()
+    observe(rows)
+    return predicate(rows), marks
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, required=True)
@@ -877,6 +974,11 @@ def main(argv=None):
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--repeat-index", type=int, default=0)
     args = parser.parse_args(argv)
+
+    try:
+        load_start = os.getloadavg()
+    except OSError:
+        load_start = None
 
     os.environ["SAILWORKS_ENC_HEAD_FIRST"] = "1" if args.mode == "headfirst" else "0"
     os.environ["SAILWORKS_ENC_TRACE"] = str(args.trace)
@@ -955,43 +1057,98 @@ def main(argv=None):
             over_land=False,
         )
 
-    def demand_and_wait(camera_spec, wait_complete=False):
+    demand_marks = []
+
+    def demand_and_wait(camera_spec, wait_complete=False, label=None):
         before = len(_records(args.trace))
+        wall_started = time.perf_counter()
+        cpu_started = time.process_time()
         widget.set_camera(camera_spec)
 
         def new_rows():
             return _records(args.trace)[before:]
 
-        def presented():
-            return any(row.get("event") == "scene_presented" for row in new_rows())
+        def presented(rows):
+            return any(row.get("event") == "scene_presented" for row in rows)
 
-        def complete_generation():
+        def drawable(rows):
+            # The bring-up span ends on the first presented frame that drew a
+            # vertex: the same "first drawable" the summary derives from the
+            # trace, sampled here so its CPU cost can be measured.
+            return any(
+                row.get("event") == "scene_presented"
+                and (row.get("shown_vertices") or 0) > 0
+                for row in rows
+            )
+
+        def complete_generation(rows):
             generations = [
                 row.get("generation")
-                for row in new_rows()
+                for row in rows
                 if row.get("event") == "scene_publish"
                 and row.get("state") == "complete"
                 and row.get("cells")
             ]
             return generations[-1] if generations else None
 
-        _wait(app, presented, args.timeout)
+        marks = {}
+        _hit_first, marks = _wait_marks(
+            app,
+            new_rows,
+            presented,
+            args.timeout,
+            (("first_present", presented), ("first_drawable", drawable)),
+        )
         if wait_complete:
-            _wait(app, lambda: complete_generation() is not None, args.timeout)
-            generation = complete_generation()
+
+            def has_complete(rows):
+                return complete_generation(rows) is not None
+
+            _hit_complete, complete_marks = _wait_marks(
+                app,
+                new_rows,
+                has_complete,
+                args.timeout,
+                (("complete_publish", has_complete),),
+            )
+            marks.update(complete_marks)
+            generation = complete_generation(new_rows())
             if generation is not None:
-                # The complete frame must actually present: wait for the
-                # after-rendering sample of that same generation.
-                _wait(
-                    app,
-                    lambda: any(
+
+                def complete_presented(rows):
+                    return any(
                         row.get("event") == "scene_presented"
                         and row.get("generation") == generation
-                        for row in new_rows()
-                    ),
+                        for row in rows
+                    )
+
+                # The complete frame must actually present: wait for the
+                # after-rendering sample of that same generation.
+                _hit_present, present_marks = _wait_marks(
+                    app,
+                    new_rows,
+                    complete_presented,
                     args.timeout,
+                    (("complete_presented", complete_presented),),
                 )
+                marks.update(present_marks)
         _pump(app, HOLD_S)
+        mark = {
+            "label": label,
+            "index": len(demand_marks),
+            "camera_key": (
+                camera_spec.center_lat,
+                camera_spec.center_lon,
+                camera_spec.zoom,
+                camera_spec.width,
+                camera_spec.height,
+            ),
+        }
+        for name, (perf, cpu) in marks.items():
+            mark["%s_wall_ms" % name] = round((perf - wall_started) * 1000.0, 3)
+            mark["%s_cpu_ms" % name] = round((cpu - cpu_started) * 1000.0, 3)
+        demand_marks.append(mark)
+        return mark
 
     gesture = [
         ("zoom_start", camera(STRAIT_LON, START_ZOOM), True),
@@ -1020,6 +1177,7 @@ def main(argv=None):
         """
         before = len(_records(args.trace))
         started = time.perf_counter()
+        started_cpu = time.process_time()
         started_at = datetime.now().isoformat(timespec="milliseconds")
         steps = max(1, int(round(abs(VIEW_ZOOM - OUT_ZOOM) / ZOOM_STEP)))
         per_step_zoom = (OUT_ZOOM - VIEW_ZOOM) / steps
@@ -1027,6 +1185,8 @@ def main(argv=None):
         marks = []
 
         def step(dzoom, dlon, label):
+            step_wall = time.perf_counter()
+            step_cpu = time.process_time()
             widget.zoom_at(dzoom)
             _pump(app, STEP_PUMP_S)
             pan_degrees(dlon)
@@ -1036,6 +1196,11 @@ def main(argv=None):
                 {
                     "label": label,
                     "at_ms": round((time.perf_counter() - started) * 1000.0, 3),
+                    "cpu_at_ms": _cpu_ms(started_cpu),
+                    # The step's own cost, both clocks: the zoom/pump/pan/pump
+                    # work the user's wheel-and-drag step does.
+                    "step_wall_ms": _wall_ms(step_wall),
+                    "step_cpu_ms": _cpu_ms(step_cpu),
                     "zoom": round(current.zoom, 4),
                     "center_lon": round(current.center_lon, 6),
                 }
@@ -1068,6 +1233,7 @@ def main(argv=None):
             "requests": marks,
             "presented": presented,
             "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3),
+            "cpu_elapsed_ms": _cpu_ms(started_cpu),
             "final_zoom": round(widget._camera.zoom, 4),
             "final_center_lon": round(widget._camera.center_lon, 6),
             "final_shown_vertices": int(shown()) if callable(shown) else None,
@@ -1092,11 +1258,14 @@ def main(argv=None):
         before = len(_records(args.trace))
         counters_before = chart_counters()
         started = time.perf_counter()
+        started_cpu = time.process_time()
         started_at = datetime.now().isoformat(timespec="milliseconds")
         marks = []
         moves = PAN_STEP_COUNT * (2 if return_back else 1)
         for index in range(moves):
             direction = 1.0 if index < PAN_STEP_COUNT else -1.0
+            step_wall = time.perf_counter()
+            step_cpu = time.process_time()
             widget.pan_pixels(PAN_STEP_PX * direction, 0.0)
             _pump(app, PAN_STEP_PUMP_S)
             current = widget._camera
@@ -1104,6 +1273,9 @@ def main(argv=None):
                 {
                     "label": "mouse_pan_%d" % (index + 1),
                     "at_ms": round((time.perf_counter() - started) * 1000.0, 3),
+                    "cpu_at_ms": _cpu_ms(started_cpu),
+                    "step_wall_ms": _wall_ms(step_wall),
+                    "step_cpu_ms": _cpu_ms(step_cpu),
                     "direction": direction,
                     "zoom": round(current.zoom, 4),
                     "center_lon": round(current.center_lon, 8),
@@ -1137,6 +1309,7 @@ def main(argv=None):
             "requests": marks,
             "presented": presented,
             "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3),
+            "cpu_elapsed_ms": _cpu_ms(started_cpu),
             "final_zoom": round(widget._camera.zoom, 4),
             "final_center_lon": round(widget._camera.center_lon, 6),
             "final_shown_vertices": int(shown()) if callable(shown) else None,
@@ -1150,7 +1323,7 @@ def main(argv=None):
     if args.gesture in ("zoom_out_pan", "mouse_pan"):
 
         def interactive_run():
-            demand_and_wait(camera(STRAIT_LON, VIEW_ZOOM), True)
+            demand_and_wait(camera(STRAIT_LON, VIEW_ZOOM), True, "interactive_base")
             if args.gesture == "mouse_pan":
                 return scripted_mouse_pan(args.return_back)
             return scripted_zoom_out_pan(args.return_back)
@@ -1167,7 +1340,7 @@ def main(argv=None):
         if args.temperature == "warm":
             # One unmeasured warmup so the caches are resident before repeat 0.
             for _label, spec, complete in gesture:
-                demand_and_wait(spec, complete)
+                demand_and_wait(spec, complete, _label)
 
         measured = []
         for _ in range(args.repeats):
@@ -1176,7 +1349,7 @@ def main(argv=None):
                 # Warm repeats reuse the same widget: every step must settle, or
                 # the gesture loop runs ahead of the layer and manufactures
                 # drifting intermediate cameras instead of measured repeats.
-                demand_and_wait(spec, complete or args.temperature == "warm")
+                demand_and_wait(spec, complete or args.temperature == "warm", _label)
             measured.append(start)
 
     records = _records(args.trace)
@@ -1194,6 +1367,84 @@ def main(argv=None):
                 if previous is not None and previous["present_chain"]
                 else None
             )
+    # Attach each measured demand's wall/CPU spans to the cycle it produced.
+    # Marks are matched to cycles by camera, oldest first, so warm repeats that
+    # re-use the same camera still pair one-to-one in order.
+    unused_marks = list(demand_marks)
+    for cycle in cycles:
+        mark = None
+        for candidate in unused_marks:
+            if _camera_key_matches(candidate["camera_key"], cycle["camera_key"]):
+                mark = candidate
+                unused_marks.remove(candidate)
+                break
+        if mark is None:
+            continue
+        cycle["wall_first_drawable_measured_ms"] = mark.get("first_drawable_wall_ms")
+        cycle["cpu_first_drawable_ms"] = mark.get("first_drawable_cpu_ms")
+        cycle["wall_demand_to_complete_ms"] = mark.get("complete_publish_wall_ms")
+        cycle["cpu_demand_to_complete_ms"] = mark.get("complete_publish_cpu_ms")
+        cycle["wall_complete_presented_ms"] = mark.get("complete_presented_wall_ms")
+        cycle["cpu_complete_presented_ms"] = mark.get("complete_presented_cpu_ms")
+    measured_cycles = [cycle for cycle in cycles if cycle.get("measured", True)]
+    warm_steps = [
+        step
+        for run in interactive_runs
+        for step in (run.get("requests") or ())
+        if step.get("step_cpu_ms") is not None
+    ]
+
+    def _span_summary(rows, wall_key, cpu_key):
+        """Wall and CPU spread for one span, over the repeats that recorded it."""
+        return {
+            "wall": _spread([row.get(wall_key) for row in rows]),
+            "cpu": _spread([row.get(cpu_key) for row in rows]),
+        }
+
+    cpu_wall = {
+        "clock": "time.process_time()",
+        "note": (
+            "Process-wide CPU, so the ENC worker threads are included; each "
+            "metric times the same span as the wall field beside it.  Median, "
+            "worst and coefficient of variation are within this process."
+        ),
+        "assembly": _span_summary(
+            measured_cycles,
+            "wall_demand_to_complete_ms",
+            "cpu_demand_to_complete_ms",
+        ),
+        "first_drawable": _span_summary(
+            measured_cycles,
+            "wall_first_drawable_measured_ms",
+            "cpu_first_drawable_ms",
+        ),
+        "complete_presented": _span_summary(
+            measured_cycles,
+            "wall_complete_presented_ms",
+            "cpu_complete_presented_ms",
+        ),
+        "warm_step": _span_summary(warm_steps, "step_wall_ms", "step_cpu_ms"),
+        # Pooling every camera into one median mixes a z13 start with a z12 pan,
+        # so the summary is also broken out per gesture step where labels exist.
+        "by_label": {
+            label: {
+                "assembly": _span_summary(
+                    [cycle for cycle in measured_cycles if cycle.get("label") == label],
+                    "wall_demand_to_complete_ms",
+                    "cpu_demand_to_complete_ms",
+                ),
+                "first_drawable": _span_summary(
+                    [cycle for cycle in measured_cycles if cycle.get("label") == label],
+                    "wall_first_drawable_measured_ms",
+                    "cpu_first_drawable_ms",
+                ),
+            }
+            for label in sorted(
+                {cycle.get("label") for cycle in measured_cycles if cycle.get("label")}
+            )
+        },
+        "demand_marks": demand_marks,
+    }
     enc_cells = max(
         (
             publish.get("cells") or 0
@@ -1280,6 +1531,12 @@ def main(argv=None):
         },
         "repeat_index": args.repeat_index,
         "warmup_demands": warmup,
+        "cpu_wall": cpu_wall,
+        "load_average": {
+            "start": list(load_start) if load_start else None,
+            "end": list(os.getloadavg()),
+            "cpus": os.cpu_count(),
+        },
         "cycles": cycles,
         "layer": layer_state,
         "chart": chart_state,
