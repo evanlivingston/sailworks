@@ -1173,7 +1173,10 @@ def main(argv=None):
         for _ in range(args.repeats):
             start = len(_records(args.trace))
             for _label, spec, complete in gesture:
-                demand_and_wait(spec, complete)
+                # Warm repeats reuse the same widget: every step must settle, or
+                # the gesture loop runs ahead of the layer and manufactures
+                # drifting intermediate cameras instead of measured repeats.
+                demand_and_wait(spec, complete or args.temperature == "warm")
             measured.append(start)
 
     records = _records(args.trace)
