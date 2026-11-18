@@ -3688,11 +3688,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 return
             # The ordered plan and the explicit per-cell state travel with the
             # scene: a planned cell that drew nothing is named here rather
-            # than silently absent.
-            self._enc_scene_cells_order = (
+            # than silently absent.  They are published *with* the scene, not
+            # before the hold decision: a partial that is held back must not
+            # rewrite the presented scene's cell identity.
+            published_cells = (
                 () if metadata is None else tuple(metadata.get("cells_order", ()))
             )
-            self._enc_scene_cell_states = (
+            published_states = (
                 () if metadata is None else tuple(metadata.get("cell_states", ()))
             )
             if enc_trace.enabled():
@@ -3713,8 +3715,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         if metadata is not None and metadata.get("partial")
                         else "complete"
                     ),
-                    cells=len(self._enc_scene_cells_order),
-                    cells_order=tuple(self._enc_scene_cells_order),
+                    cells=len(published_cells),
+                    cells_order=published_cells,
                     assembly_ms=assembly,
                     # What the *previous* frame draws while this one lands:
                     # a retained frame with no vertex or no viewport overlap
@@ -3732,22 +3734,24 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             if (
                 partial
                 and self._enc_scene_frame_reaches_view(generation)
-                and not self._enc_scene_partial_supersedes(metadata)
+                and not self._enc_scene_partial_supersedes(metadata, generation)
             ):
                 # A partial is progress, never the current view.  Swapping
                 # the finished frame for the cells resolved so far is what
                 # makes whole rectangles of chart disappear and redraw;
                 # keep the ready frame up until the complete scene lands.
-                # That holds only while the ready frame belongs to this
-                # camera.  After a zoom or pan the retained frame is the
-                # previous view: it can still intersect the viewport, so the
-                # intersection probe keeps it, yet it is the wrong scale or
-                # place.  A partial composed for the demanded camera, with
-                # geometry of its own, is the newer picture (see
-                # ``_enc_scene_partial_is_current``).
+                # A camera change alone is not a reason to prefer the
+                # partial: the frame on screen is retained while any of its
+                # drawn cells still lands in this viewport, and only a frame
+                # that can no longer reach the view is replaced (see
+                # ``_enc_scene_partial_supersedes``).  Either way what the
+                # user sees is labelled updating, and a partial never claims
+                # the view.
                 self._enc_scene_provisional = True
                 self._update_enc_status()
                 return
+            self._enc_scene_cells_order = published_cells
+            self._enc_scene_cell_states = published_states
             apply_scene_publication(self, generation, metadata)
             self._enc_scene_generation = generation
             # The scene carries lon/lat: project it with the view that made it,
@@ -3877,48 +3881,56 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
         def _enc_scene_frame_reaches_view(self, generation=None):
             """Whether the frame on screen still draws part of the demanded view.
 
-            A complete scene is retained through a rebuild, but one composed
-            for a camera this zoom or pan left behind can map entirely outside
-            the viewport: keeping it is then indistinguishable from a blank
-            chart.  Only in that case is a partial publication drawn, and it is
-            never reported as current content.  A generation already drawing as
-            loading keeps updating, so its resolved cells accumulate instead of
-            freezing the first partial.
+            "Part" is the point: a frame whose cells still project into the
+            viewport is this view's chart content even when those cells do not
+            cover it, and replacing it with a partial resets the drawn set to
+            whatever has resolved so far.  Only a frame that no longer lands in
+            the viewport at all is worth nothing here, and only then is a
+            partial drawn.  A generation already drawing as loading keeps
+            updating, so its resolved cells accumulate instead of freezing the
+            first partial.
             """
-            if getattr(self, "_enc_scene_ready_generation", None) is None:
+            ready = getattr(self, "_enc_scene_ready_generation", None)
+            presented = getattr(self, "_enc_scene_partial_generation", None)
+            if ready is None and presented is None:
                 return False
-            if (
-                generation is not None
-                and getattr(self, "_enc_scene_partial_generation", None) == generation
-            ):
+            if generation is not None and presented == generation:
                 return False
             item = getattr(self, "_enc_scene_item", None)
-            reaches = getattr(item, "scene_covers_view", None)
+            # The reach probe is weaker than the raster's coverage gate: it
+            # answers whether any drawn cell still lands in this viewport.
+            # A stub without it falls back to coverage, and a GUI-only stub
+            # with neither carries no geometry, so the frame is up.
+            reaches = getattr(item, "scene_reaches_view", None)
             if reaches is None:
-                # A GUI-only stub carries no geometry: assume the frame is up.
+                reaches = getattr(item, "scene_covers_view", None)
+            if reaches is None:
                 return True
             return bool(reaches())
 
-        def _enc_scene_partial_supersedes(self, metadata):
-            """Whether a partial is newer than the retained frame, same view.
+        def _enc_scene_partial_supersedes(self, metadata, generation=None):
+            """Whether a partial may take the screen from the retained frame.
 
-            The retained frame is kept only while it draws part of the view.
-            A frame composed for an earlier camera can satisfy that
-            intersection probe at a coarser zoom while being the wrong scale
-            or place; holding the partial back for it would spend the whole
-            assembly on the stale picture.  A partial composed for the current
-            camera, carrying geometry of its own, is the newer picture and may
-            be drawn provisionally.  It still never claims the view: the
-            caller marks it ``_enc_scene_partial_generation``.  A partial for
-            the camera already on screen is only progress and leaves the ready
-            frame untouched.
+            Only when that frame can no longer reach the demanded viewport: a
+            pan past the composed ring, or a zoom that maps its cells outside
+            the item.  While it still draws any of the view it is the only
+            chart content the view has, and a partial composed for a newer
+            camera would replace a full frame with the cells resolved by now -
+            the pan-time collapse a user sees as whole squares disappearing.
+            A camera change alone is therefore not enough: the partial's own
+            vertex count says nothing about what it omits.  A partial for the
+            camera already on screen is only progress.  When this returns true
+            the caller adopts the partial provisionally; it never claims the
+            view.
             """
             if metadata is None or not metadata.get("vertices"):
                 return False
             camera = metadata.get("camera")
             if camera is None or camera != self._camera:
                 return False
-            return camera != self._enc_scene_camera
+            if camera == self._enc_scene_camera:
+                return False
+            return not self._enc_scene_frame_reaches_view(generation)
 
         def _enc_scene_state_changed(self, state):
             """The scene layer's own state; it never changes the chart's."""

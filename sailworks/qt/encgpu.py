@@ -641,6 +641,27 @@ def coverage_boxes_cover(boxes, width: float, height: float) -> bool:
     return True
 
 
+def coverage_boxes_reach(boxes, width: float, height: float) -> bool:
+    """Whether ``boxes`` overlap the ``width`` x ``height`` item rect at all.
+
+    The weaker companion of :func:`coverage_boxes_cover`: this is the
+    retention probe, not the raster's gate.  A frame whose cells still land in
+    the viewport is the chart content that view has, even when those cells
+    cover only part of it; a frame whose cells map entirely outside draws
+    nothing a user can see, and only then may a partial take its place.
+    """
+    if not boxes or width <= 0.0 or height <= 0.0:
+        return False
+    half = COVERAGE_TOLERANCE
+    return any(
+        box[0] - half <= width
+        and box[2] + half >= 0.0
+        and box[1] - half <= height
+        and box[3] + half >= 0.0
+        for box in boxes
+    )
+
+
 class _CellGeometry:
     """One static vertex buffer: a cell's vertices and their reference bbox."""
 
@@ -957,6 +978,15 @@ class EncMeshItem(QQuickItem):
         coeffs = self._frame_coeffs()
         if coeffs is None:
             return False
+        boxes = self._drawn_cell_boxes(coeffs)
+        return coverage_boxes_cover(boxes, width, height)
+
+    def _drawn_cell_boxes(self, coeffs):
+        """Item-pixel extents of the cells this frame actually draws.
+
+        A cell that is attached with a zero vertex count draws nothing, so the
+        mask, not the attached buffer list, decides what is on screen.
+        """
         cells = self._static.cells
         mask = self._cell_visible
         trust_mask = len(mask) == len(cells)
@@ -967,7 +997,33 @@ class EncMeshItem(QQuickItem):
             if trust_mask and not mask[index]:
                 continue
             boxes.append(_affine_bounds(coeffs, cell.bounds))
-        return coverage_boxes_cover(boxes, width, height)
+        return boxes
+
+    def scene_reaches_view(self) -> bool:
+        """Whether any cell this frame draws still lands in the viewport.
+
+        The adoption policy's retention probe, deliberately weaker than
+        :meth:`scene_covers_view`: a frame whose cells still map into the item
+        is the chart content this view has, so a newer partial must not take
+        the screen from it.  It answers false only when the drawn cells map
+        entirely outside the item, which is the one state where keeping the
+        frame is indistinguishable from a blank chart.
+
+        A frame that was adopted but has not been built yet is this viewport's
+        picture and the next paint draws it.  Answering from an unbuilt frame
+        would let the first publication after an adoption replace it with a
+        partial.
+        """
+        width = float(self.width())
+        height = float(self.height())
+        if width <= 0.0 or height <= 0.0:
+            return False
+        if self._static is None:
+            return bool(getattr(self._mesh, "parts", ()))
+        coeffs = self._frame_coeffs()
+        if coeffs is None:
+            return False
+        return coverage_boxes_reach(self._drawn_cell_boxes(coeffs), width, height)
 
     @property
     def text_upload_count(self) -> int:

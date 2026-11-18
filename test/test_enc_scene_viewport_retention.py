@@ -14,13 +14,17 @@ from __future__ import annotations
 
 from types import MethodType, SimpleNamespace
 
-from sailworks.qt.gribviewport import ViewportCamera, _viewport_widget_class
+from sailworks.qt.gribviewport import (
+    ViewportCamera,
+    _viewport_widget_class,
+    enc_scene_covers_view,
+)
 
 
 class _Item:
     """The GPU item's GUI-side surface: visibility and the presented scene."""
 
-    def __init__(self, covers_view=True):
+    def __init__(self, covers_view=True, reaches_view=None):
         self.visible = True
         self.scene = "previous"
         self.x = 0.0
@@ -29,6 +33,9 @@ class _Item:
         # What the presented frame's mapped bbox does against the current
         # viewport; a real ``EncMeshItem`` answers from its own geometry.
         self.covers_view = covers_view
+        # Whether any drawn cell still lands in the viewport.  It defaults to
+        # the coverage answer, so a stub that covers also reaches.
+        self.reaches_view = covers_view if reaches_view is None else reaches_view
 
     def setVisible(self, visible):
         self.visible = bool(visible)
@@ -38,6 +45,9 @@ class _Item:
 
     def scene_covers_view(self):
         return self.covers_view
+
+    def scene_reaches_view(self):
+        return self.reaches_view
 
     def set_compose_margin(self, margin):
         self.compose_margin = margin
@@ -57,11 +67,11 @@ class _Weather:
         self.props[name] = value
 
 
-def _widget(layer_state="ready", error="", covers_view=True):
+def _widget(layer_state="ready", error="", covers_view=True, reaches_view=None):
     widget_class = _viewport_widget_class()
     widget = SimpleNamespace(
         _disposed=False,
-        _enc_scene_item=_Item(covers_view),
+        _enc_scene_item=_Item(covers_view, reaches_view),
         _enc_scene_generation=0,
         _enc_scene_ready_generation=None,
         _enc_scene_partial_generation=None,
@@ -210,7 +220,7 @@ def test_cancelled_or_superseded_publication_still_withdraws():
 # --------------------------------------------------- generation-qualified
 
 
-def _present(widget, generation, partial=False, camera=None, vertices=0):
+def _present(widget, generation, partial=False, camera=None, vertices=0, cells=None):
     """Publish the way the layer does: the message names its generation."""
     metadata = {"partial": True} if partial else {}
     if partial:
@@ -219,6 +229,8 @@ def _present(widget, generation, partial=False, camera=None, vertices=0):
         metadata["vertices"] = vertices
     if camera is not None:
         metadata["camera"] = camera
+    if cells is not None:
+        metadata["cells_order"] = tuple(cells)
     widget._enc_scene_published((generation, f"scene-{generation}", metadata))
 
 
@@ -292,12 +304,12 @@ def test_a_complete_frame_that_reaches_the_view_is_never_replaced_by_a_partial()
     assert widget._weather.props["encStatus"] == "ENC scene updating…"
 
 
-def test_a_partial_for_the_demanded_camera_replaces_a_stale_frame():
-    # A zoom-out leaves the previous frame intersecting the viewport, so the
-    # intersection probe keeps it even though it is the earlier camera's
-    # scale.  A partial composed for the demanded camera is the newer picture
-    # and is drawn provisionally instead of waiting for the whole assembly.
-    widget = _widget(covers_view=True)
+def test_a_partial_for_the_demanded_camera_does_not_replace_a_reaching_frame():
+    # A zoom-out leaves the retained frame drawing into the viewport at the
+    # earlier camera's scale.  A partial composed for the demanded camera was
+    # treated as the newer picture; swapping it in reset the drawn cells to
+    # whatever had resolved by then, which is the pan-time collapse.
+    widget = _widget(covers_view=True, reaches_view=True)
     older = ViewportCamera(
         center_lat=48.00842, center_lon=-124.74315, zoom=13.0, width=960, height=693
     )
@@ -310,12 +322,98 @@ def test_a_partial_for_the_demanded_camera_replaces_a_stale_frame():
     widget._camera = current
     _present(widget, 8, partial=True, camera=current, vertices=129105)
 
+    assert widget._enc_scene_item.scene == "scene-7"
+    assert widget._enc_scene_ready_generation == 7
+    assert widget._enc_scene_partial_generation is None
+    # Retained, but labelled: the new camera has an update in flight.
+    assert widget._enc_scene_provisional is True
+    assert widget._weather.props["encStatus"] == "ENC scene updating…"
+    # Not both invisible: the presented frame claims the view.
+    assert enc_scene_covers_view(widget._enc_scene_item) is True
+
+
+def test_a_partial_takes_the_screen_only_when_the_retained_frame_cannot_reach():
+    # A pan past the composed ring maps the retained frame outside the item;
+    # keeping it is then a blank chart, so the partial is drawn - explicitly
+    # as a partial, never as coverage.
+    widget = _widget(covers_view=False, reaches_view=False)
+    older = ViewportCamera(
+        center_lat=48.00842, center_lon=-124.74315, zoom=13.0, width=960, height=693
+    )
+    _present(widget, 7, camera=older, cells=("c1", "c2", "c3", "c4", "c5", "c6"))
+
+    current = ViewportCamera(
+        center_lat=47.60, center_lon=-124.74315, zoom=13.0, width=960, height=693
+    )
+    widget._camera = current
+    _present(widget, 8, partial=True, camera=current, vertices=129105, cells=("c9",))
+
     assert widget._enc_scene_item.scene == "scene-8"
     # A partial never claims the view: the complete generation is still 7.
     assert widget._enc_scene_ready_generation == 7
     assert widget._enc_scene_partial_generation == 8
     assert widget._enc_scene_provisional is True
     assert widget._weather.props["encStatus"] == "ENC scene updating…"
+    # It is drawn as incomplete, so the raster still covers the viewport.
+    assert enc_scene_covers_view(widget._enc_scene_item) is False
+
+
+def test_a_held_partial_does_not_rewrite_the_presented_cell_set():
+    # The cell identity a caller reads belongs to the frame on screen, not to
+    # the partial that was held back.
+    widget = _widget(covers_view=True, reaches_view=True)
+    covering = ("c1", "c2", "c3", "c4", "c5", "c6")
+    _present(widget, 7, cells=covering)
+
+    current = ViewportCamera(
+        center_lat=48.00842, center_lon=-124.74315, zoom=12.0, width=960, height=693
+    )
+    widget._camera = current
+    _present(widget, 8, partial=True, camera=current, vertices=4000, cells=("c1", "c2"))
+
+    assert widget._enc_scene_cells_order == covering
+    assert widget._enc_scene_item.scene == "scene-7"
+
+
+def test_a_pan_sequence_never_shrinks_the_presented_scene():
+    # The owner's report: squares disappear and re-appear while panning.  Each
+    # pan step demanded a new generation and its partial, with only the cells
+    # resolved so far, replaced the presented frame.  The frame must stay while
+    # any of its cells still lands in the viewport.
+    widget = _widget(covers_view=True, reaches_view=True)
+    covering = ("c1", "c2", "c3", "c4", "c5", "c6")
+    start = ViewportCamera(
+        center_lat=37.84, center_lon=-122.48, zoom=13.7105, width=1512, height=827
+    )
+    widget._camera = start
+    _present(widget, 7, camera=start, vertices=278070, cells=covering)
+    assert widget._enc_scene_ready_generation == 7
+
+    for step, generation in enumerate(range(8, 12), start=1):
+        widget._camera = ViewportCamera(
+            center_lat=37.84 - 0.004 * step,
+            center_lon=-122.48 - 0.004 * step,
+            zoom=13.7105,
+            width=1512,
+            height=827,
+        )
+        # The snapshot resolved two of the six cells so far.
+        _present(
+            widget,
+            generation,
+            partial=True,
+            camera=widget._camera,
+            vertices=93939,
+            cells=("c1", "c2"),
+        )
+        assert widget._enc_scene_item.scene == "scene-7"
+        assert widget._enc_scene_cells_order == covering
+        assert widget._enc_scene_partial_generation is None
+
+    # The complete scene for the demanded camera is still free to land.
+    _present(widget, 4, camera=widget._camera, vertices=261720, cells=covering)
+    assert widget._enc_scene_item.scene == "scene-4"
+    assert widget._enc_scene_ready_generation == 4
 
 
 def test_a_partial_for_the_retained_camera_does_not_replace_it():

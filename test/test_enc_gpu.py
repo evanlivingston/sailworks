@@ -841,3 +841,17 @@ def test_an_all_zero_cull_mask_is_honoured(qt_app):
     item._cull_cells((1.0, 0.0, 0.0, 0.0, 1.0, 0.0))
     assert item._cell_visible == (True,)
     assert item._cell_nodes[0].geometry().vertexCount() == 3
+
+
+def test_coverage_boxes_reach_is_weaker_than_coverage():
+    # One cell in a corner reaches the viewport but does not cover it: that is
+    # the state where a partial must not replace the frame and the raster must
+    # fill the rest.
+    boxes = [(-50.0, -50.0, 200.0, 120.0)]
+    width, height = 960.0, 693.0
+    assert encgpu.coverage_boxes_reach(boxes, width, height) is True
+    assert encgpu.coverage_boxes_cover(boxes, width, height) is False
+    # Mapped entirely outside the item, the frame reaches nothing.
+    outside = [(width + 10.0, height + 10.0, width + 90.0, height + 90.0)]
+    assert encgpu.coverage_boxes_reach(outside, width, height) is False
+    assert encgpu.coverage_boxes_reach([], width, height) is False
