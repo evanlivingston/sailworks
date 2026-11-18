@@ -1616,7 +1616,10 @@ def test_chart_idle_timer_debounces_camera_changes(presenter):
         calls.append((time.perf_counter(), camera, preview))
         if not preview:
             settled.quit()
-        return len(calls)
+        # The double names the retained generation, so the retained-staging
+        # branch (which reads the layer's own condition) is not part of this
+        # scheduling test.
+        return 1
 
     cls = _viewport_widget_class()
     viewport = cls(Mock(paths=(), display_identity=""))
@@ -1638,6 +1641,8 @@ def test_chart_idle_timer_debounces_camera_changes(presenter):
     widget._model = SimpleNamespace(busy=lambda: False)
     widget._chart_interactive_at = None
     widget._chart_redelivery_generation = None
+    widget._chart_visible_generation = 1
+    widget._chart_pending = None
     widget._chart_state_now = lambda: {}
     widget.counters = {"chart_requests": 0}
     widget._chart_timer.setTimerType(Qt.TimerType.PreciseTimer)

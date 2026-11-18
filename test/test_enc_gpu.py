@@ -29,6 +29,7 @@ from PySide6.QtQuick import (  # noqa: E402
     QSGGeometryNode,
     QSGMaterial,
     QSGNode,
+    QSGTransformNode,
     QSGVertexColorMaterial,
 )
 
@@ -748,3 +749,95 @@ def test_rejected_upload_leaves_the_buffer_untouched(qt_app):
 
     raw = ctypes.string_at(encgpu._vertex_address(geometry), byte_count)
     assert raw == b"\xab" * byte_count
+
+
+# ------------------------------------------------------- retained frame
+def _static_frame_item(qt_app):
+    """An item with a content node and one built static frame attached."""
+    item = encgpu.EncMeshItem()
+    item._content_node = QSGTransformNode()
+    item._static = encgpu.build_static_frame(_triangle_mesh())
+    assert item._static is not None
+    item._upload_cells()
+    assert len(item._cell_nodes) == 1
+    assert item._cell_vertex_counts == [3]
+    return item
+
+
+def test_an_empty_rebuild_keeps_the_presented_cells(qt_app):
+    item = _static_frame_item(qt_app)
+    before_nodes = list(item._cell_nodes)
+    before_counts = list(item._cell_vertex_counts)
+
+    # An empty frame builds no geometry at all; it must not replace the frame
+    # that is still on screen.
+    item._static = encgpu.build_static_frame(encgpu.EMPTY_MESH)
+    assert item._static is None
+    item._upload_cells()
+
+    assert item._cell_nodes == before_nodes
+    assert item._cell_vertex_counts == before_counts
+    assert item._cell_nodes[0].geometry().vertexCount() == 3
+
+
+def test_a_frame_whose_cells_draw_nothing_keeps_the_presented_cells(qt_app):
+    item = _static_frame_item(qt_app)
+    before_nodes = list(item._cell_nodes)
+    before_counts = list(item._cell_vertex_counts)
+
+    item._static = encgpu._StaticFrame(
+        cells=[encgpu._CellGeometry(np.empty(0, dtype=encgpu.VERTEX_DTYPE), None)],
+        reference=np.zeros((3, 2), dtype=np.float64),
+        samples=np.zeros((3, 2), dtype=np.float64),
+    )
+    item._upload_cells()
+
+    assert item._cell_nodes == before_nodes
+    assert item._cell_vertex_counts == before_counts
+
+
+def test_a_non_empty_rebuild_swaps_the_cells(qt_app):
+    item = _static_frame_item(qt_app)
+    before_nodes = list(item._cell_nodes)
+
+    replacement = encgpu.build_static_frame(_triangle_mesh(offset=(20.0, 0.0)))
+    assert replacement is not None
+    item._static = replacement
+    item._upload_cells()
+
+    assert item._cell_nodes != before_nodes
+    assert item._cell_vertex_counts == [3]
+    assert item._cell_nodes[0].geometry().vertexCount() == 3
+
+
+def test_set_origin_keeps_the_static_frame(qt_app):
+    item = _static_frame_item(qt_app)
+    frame = item._static
+
+    assert item.set_origin((1.0, 2.0)) is True
+
+    # The matrix path re-projects the frame's own samples with the new origin,
+    # so a pan does not blank the chart.
+    assert item._static is frame
+    assert item._cell_nodes
+
+
+def test_an_all_zero_cull_mask_is_honoured(qt_app):
+    item = _static_frame_item(qt_app)
+    item.setWidth(100.0)
+    item.setHeight(100.0)
+    item._compose_margin = 0
+    item._cell_visible = (True,)
+
+    # Every cell outside the item is a real blank, not a transient one: the
+    # mask is applied, the geometry is zeroed and the node is dirtied so the
+    # renderer re-reads the element count.  Keeping the old mask here would
+    # draw a cell the camera has left.
+    item._cull_cells((1.0, 0.0, 1e6, 0.0, 1.0, 1e6))
+
+    assert item._cell_visible == (False,)
+    assert item._cell_nodes[0].geometry().vertexCount() == 0
+
+    item._cull_cells((1.0, 0.0, 0.0, 0.0, 1.0, 0.0))
+    assert item._cell_visible == (True,)
+    assert item._cell_nodes[0].geometry().vertexCount() == 3

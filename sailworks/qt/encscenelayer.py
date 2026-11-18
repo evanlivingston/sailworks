@@ -363,6 +363,7 @@ class EncSceneLayer:
         dpr=1,
         catalog_factory=None,
         cache_dir=None,
+        yield_budget_ms=None,
     ):
         self._data_dir = Path(data_dir)
         # The persisted scene store lives in the app's cache directory, never
@@ -379,6 +380,20 @@ class EncSceneLayer:
         # it stays importable and testable without it.
         self._catalog_factory = catalog_factory
         self._worker_idle = worker_idle or (lambda: True)
+        #: How long a generation may defer to the weather pipeline before it
+        #: composes anyway.  ``None`` keeps the unbounded courtesy a caller with
+        #: a real raster competitor relies on; the viewport's scene mode bounds
+        #: it, because there the scene *is* the chart and waiting on the raster
+        #: worker starves it until the next chart-source poll.
+        self._yield_budget = (
+            None
+            if yield_budget_ms is None
+            else max(0.0, float(yield_budget_ms) / 1000.0)
+        )
+        #: When the current demand was made, so the yield budget is measured
+        #: from the request and not from a worker attempt: a retried generation
+        #: must not be able to restart the courtesy.
+        self._demand_at = None
         self._current_camera = current_camera
         self._on_publish = on_publish
         self._on_state = on_state
@@ -387,6 +402,10 @@ class EncSceneLayer:
         self._active = None
         self._generation = 0
         self._published = None
+        #: The last complete (READY) publication.  It is kept across camera
+        #: changes so a pan or zoom can present it until its replacement is
+        #: genuinely assembled instead of blanking the chart.
+        self._last_ready = None
         self._state = STATE_IDLE
         self._error = ""
         self._incomplete = ""
@@ -446,8 +465,34 @@ class EncSceneLayer:
 
     @property
     def published(self):
+        """The scene callers may present.
+
+        While the layer is ``ready`` this is the current complete publication.
+        A camera change keeps the last complete scene so the chart is not
+        blanked while its replacement assembles; that retained scene is
+        returned with ``stale``/``complete`` markers so a caller can tell it
+        describes an older camera.  A partial publication is never returned
+        over a retained complete scene.
+        """
         with self._condition:
+            if self._state == STATE_READY:
+                return self._published
+            retained = self._last_ready
+            if retained is None:
+                return self._published
+            generation, scene, metadata = retained
+            metadata = dict(metadata) if metadata is not None else {}
+            metadata["stale"] = True
+            metadata["complete"] = True
+            return (generation, scene, metadata)
+
+    def _presented(self):
+        """The published scene, or the retained complete one (lock held)."""
+        if self._state == STATE_READY and self._published is not None:
             return self._published
+        if self._last_ready is not None:
+            return self._last_ready
+        return self._published
 
     @property
     def cells_order(self):
@@ -458,9 +503,10 @@ class EncSceneLayer:
         composition has planned cells.
         """
         with self._condition:
-            if self._published is None:
+            presented = self._presented()
+            if presented is None:
                 return ()
-            return tuple(self._published[2].get("cells_order", ()))
+            return tuple(presented[2].get("cells_order", ()))
 
     @property
     def cell_states(self):
@@ -471,9 +517,10 @@ class EncSceneLayer:
         cell is visible to the UI instead of silently absent.
         """
         with self._condition:
-            if self._published is None:
+            presented = self._presented()
+            if presented is None:
                 return ()
-            return tuple(self._published[2].get("cell_states", ()))
+            return tuple(presented[2].get("cell_states", ()))
 
     @property
     def _progress(self):
@@ -518,6 +565,12 @@ class EncSceneLayer:
                 return reused
             self._generation += 1
             generation = self._generation
+            # Only a fresh demand restarts the courtesy clock.  A retry of an
+            # outstanding (yielded) demand must keep the original instant, or
+            # resetting it here would make the yield budget unreachable: every
+            # retry would look like a brand-new demand and defer forever.
+            if self._state == STATE_READY or self._demand_at is None:
+                self._demand_at = time.perf_counter()
             if self._pending is not None:
                 self._pending[2].set()
                 self.counters["cancelled"] += 1
@@ -581,8 +634,11 @@ class EncSceneLayer:
             if factor == self._dpr:
                 return False
             self._dpr = factor
-            was_published = self._published is not None
+            was_published = self._published is not None or self._last_ready is not None
             self._published = None
+            # A new ratio invalidates every uploaded pixel, so the retained
+            # complete scene goes with it.
+            self._last_ready = None
             self._incomplete = ""
             self._progress_done = 0
             self._progress_total = 0
@@ -611,8 +667,11 @@ class EncSceneLayer:
             if palette == self._palette:
                 return False
             self._palette = palette
-            was_published = self._published is not None
+            was_published = self._published is not None or self._last_ready is not None
             self._published = None
+            # The palette is part of a scene's identity; the retained complete
+            # scene was drawn with the old colours and must go too.
+            self._last_ready = None
             self._incomplete = ""
             self._progress_done = 0
             self._progress_total = 0
@@ -630,6 +689,7 @@ class EncSceneLayer:
                 return
             self._closed = True
             self._published = None
+            self._last_ready = None
             self._incomplete = ""
             self._progress_done = 0
             self._progress_total = 0
@@ -641,6 +701,25 @@ class EncSceneLayer:
             self._condition.notify_all()
 
     # ------------------------------------------------------------ worker
+    def _should_yield(self, generation):
+        """Whether this generation defers to the weather pipeline.
+
+        A busy weather worker defers the scene only within the layer's yield
+        budget.  Past that budget the scene composes regardless: in scene mode
+        the scene draws the chart itself, and deferring until the raster worker
+        is free left it idle until the viewport's five-second source poll.  The
+        budget runs from the demand, so a retried generation cannot extend it.
+        """
+        if self._worker_idle():
+            return False
+        if self._yield_budget is None:
+            return True
+        with self._condition:
+            demand = self._demand_at if generation == self._generation else None
+        if demand is None:
+            return True
+        return (time.perf_counter() - demand) < self._yield_budget
+
     def _notify_state(self, state):
         if self._on_state is not None:
             self._on_state(state)
@@ -666,6 +745,11 @@ class EncSceneLayer:
         with ``done == total``.  The GUI is notified through ``on_publish``
         only: ``loading`` was already announced by :meth:`request`, and the
         payload itself carries what has been drawn so far.
+
+        Once a complete scene has been published, a partial never replaces it:
+        the complete frame stays presented and the partial only reports
+        progress.  Replacing a finished picture with a hole-ridden subset is
+        what makes the chart blank and redraw during a pan or zoom.
         """
         if done >= total:
             # Not a partial: the finished scene is published as READY when the
@@ -689,14 +773,24 @@ class EncSceneLayer:
                     "progress": (done, total),
                 }
             )
-            self._published = (generation, scene, published)
+            if self._last_ready is None:
+                # Nothing complete to keep: this partial is the only chart
+                # content, so it is what the viewport draws.  The notified
+                # payload is that same object, so a listener that records it
+                # and a reader that asks the layer for ``published`` see one
+                # identity.
+                self._published = (generation, scene, published)
+                self._incomplete = published["incomplete"]
+                payload = self._published
+            else:
+                # A complete scene is retained and stays presented; the partial
+                # is reported for progress only and never stored.
+                payload = (generation, scene, published)
             self._state = STATE_LOADING
             self._error = ""
-            self._incomplete = published["incomplete"]
             self._progress_done = done
             self._progress_total = total
             self.counters["partial_publications"] += 1
-            payload = self._published
         self._notify_publish(payload)
         return True
 
@@ -720,7 +814,7 @@ class EncSceneLayer:
                 withdraw = None
                 try:
                     if not cancel.is_set():
-                        if not self._worker_idle():
+                        if self._should_yield(generation):
                             yielded = True
                         else:
                             scene, metadata = self._compose(camera, cancel)
@@ -737,8 +831,15 @@ class EncSceneLayer:
                         and generation == self._generation
                     ):
                         # The weather pipeline has priority: ask again later.
-                        self._state = STATE_IDLE
-                        notify_state = STATE_IDLE
+                        # A deferral while a scene is already presented is not
+                        # "nothing to show" -- dropping to idle here made every
+                        # motion tick hide the chart.  Stay loading (or ready)
+                        # and let the next request compose.
+                        if self._published is not None or self._last_ready is not None:
+                            self._state = STATE_LOADING
+                        else:
+                            self._state = STATE_IDLE
+                            notify_state = STATE_IDLE
                         self.counters["yielded"] += 1
                     elif (
                         cancel.is_set()
@@ -750,9 +851,16 @@ class EncSceneLayer:
                         # scene.  It is no longer current, so withdraw it, and
                         # name the generation in the withdrawal: the viewport
                         # must ignore it if the scene it actually presents
-                        # belongs to another generation.
+                        # belongs to another generation.  A retained complete
+                        # scene is not withdrawn: it is the last good frame and
+                        # the viewport keeps presenting it until a ready
+                        # publication replaces it.
                         stale = self._published
-                        if stale is not None and stale[0] == generation:
+                        if (
+                            stale is not None
+                            and stale[0] == generation
+                            and self._last_ready is None
+                        ):
                             self._published = None
                             self._incomplete = ""
                             self._progress_done = 0
@@ -778,6 +886,8 @@ class EncSceneLayer:
                             self.counters["skipped"] += len(report["skipped"])
                             self.counters["unsupported"] += report["unsupported"]
                             self._published = (generation, scene, metadata)
+                            # This is the frame motion may fall back to.
+                            self._last_ready = self._published
                             self._state = STATE_READY
                             self._incomplete = INCOMPLETE_LABELS
                             # The finished scene resolved every planned cell,

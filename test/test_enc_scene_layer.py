@@ -11,6 +11,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -748,6 +749,153 @@ def test_superseded_generation_withdraws_the_partial_scene(tmp_path, cell):
         layer._thread.join(TIMEOUT)
 
 
+# ------------------------------------------------- retain the last complete
+def test_a_partial_does_not_displace_the_ready_scene(tmp_path, cell):
+    """A hole-ridden partial is never the presented geometry."""
+    layer = _layer(tmp_path)
+    scene = _assembled(cell)
+    camera = _Camera()
+    try:
+        with layer._condition:
+            generation = layer._generation
+            layer._published = (
+                generation,
+                scene,
+                dict(_metadata(camera), complete=True, cell_states=()),
+            )
+            layer._last_ready = layer._published
+            layer._state = encscenelayer.STATE_READY
+
+        accepted = layer._publish_partial(
+            generation, scene, 1, 2, threading.Event(), _metadata(camera)
+        )
+
+        assert accepted is True
+        # Progress and counters still advance...
+        assert layer.state == encscenelayer.STATE_LOADING
+        assert layer._progress == (1, 2)
+        assert layer.counters["partial_publications"] == 1
+        # ...but the complete frame stays what callers present.
+        presented_generation, presented_scene, metadata = layer.published
+        assert presented_generation == generation
+        assert presented_scene is scene
+        assert metadata["stale"] is True
+        assert metadata["complete"] is True
+        assert "partial" not in metadata
+    finally:
+        layer.close()
+
+
+def test_yield_with_a_retained_scene_is_not_idle(tmp_path, cell):
+    """A busy weather worker defers composition; it must not hide the chart."""
+    states = []
+    layer = _layer(tmp_path, worker_idle=lambda: False, on_state=states.append)
+    scene = _assembled(cell)
+    try:
+        with layer._condition:
+            layer._last_ready = (0, scene, {"complete": True})
+        layer.request(_Camera())
+        deadline = time.monotonic() + TIMEOUT
+        while layer.counters["yielded"] == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert layer.counters["yielded"] == 1
+        assert encscenelayer.STATE_IDLE not in states
+        assert layer.state == encscenelayer.STATE_LOADING
+        presented = layer.published
+        assert presented is not None
+        assert presented[1] is scene
+        assert presented[2]["stale"] is True
+    finally:
+        layer.close()
+        layer._thread.join(TIMEOUT)
+
+
+def test_yield_without_a_scene_still_reports_idle(tmp_path):
+    states = []
+    layer = _layer(tmp_path, worker_idle=lambda: False, on_state=states.append)
+    try:
+        layer.request(_Camera())
+        deadline = time.monotonic() + TIMEOUT
+        while encscenelayer.STATE_IDLE not in states and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert encscenelayer.STATE_IDLE in states
+        assert layer.counters["yielded"] == 1
+        assert layer.state == encscenelayer.STATE_IDLE
+        assert layer.published is None
+    finally:
+        layer.close()
+        layer._thread.join(TIMEOUT)
+
+
+def test_superseding_a_partial_keeps_the_last_complete_scene(tmp_path, cell):
+    """A retiring generation must not withdraw the frame that is up."""
+    ready = threading.Event()
+    partial_ready = threading.Event()
+    release = threading.Event()
+    hold = threading.Event()
+    withdrawals = []
+
+    def on_state(state):
+        if state == encscenelayer.STATE_READY:
+            ready.set()
+
+    def on_publish(payload):
+        if payload is not None and payload[1] is None:
+            withdrawals.append(payload)
+
+    layer = _layer(tmp_path, on_publish=on_publish, on_state=on_state)
+    scene = _assembled(cell)
+    camera = _Camera()
+    other = _Camera(lon=6.0)
+    third = _Camera(lon=12.0)
+
+    def compose(requested, cancel):
+        with layer._condition:
+            generation = layer._generation
+        if requested is camera:
+            return scene, _metadata(requested)
+        if requested is other:
+            layer._publish_partial(generation, scene, 1, 2, cancel)
+            partial_ready.set()
+            release.wait(TIMEOUT)
+            return None, {"reason": "superseded", **_metadata(requested)}
+        hold.wait(TIMEOUT)
+        return None, {"reason": "held", **_metadata(requested)}
+
+    layer._compose = compose
+    try:
+        layer.request(camera)
+        assert ready.wait(TIMEOUT)
+        assert layer._last_ready is not None
+
+        layer.request(other)
+        assert partial_ready.wait(TIMEOUT)
+        layer.request(third)  # supersedes ``other``'s partial
+        release.set()
+
+        deadline = time.monotonic() + TIMEOUT
+        while (
+            layer.counters["superseded_rejected"] == 0 and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+
+        assert layer.counters["superseded_rejected"] >= 1
+        assert layer._last_ready is not None
+        assert layer._last_ready[1] is scene
+        presented = layer.published
+        assert presented is not None
+        assert presented[1] is scene
+        assert presented[2]["stale"] is True
+        assert withdrawals == []
+    finally:
+        release.set()
+        hold.set()
+        layer.close()
+        layer._thread.join(TIMEOUT)
+
+
 # ---------------------------------------------------------------- Qt-freeness
 def test_module_imports_without_qt():
     assert not hasattr(encscenelayer, "QQuickItem")
@@ -942,3 +1090,55 @@ def test_stored_loader_threads_timings_into_store_and_ogr(monkeypatch):
     assert loader("cell.000", (1, 2, 3, 4)) == "scene"
     assert seen["store_timings"] is timings
     assert seen["ogr_timings"] is timings
+
+
+def test_a_spent_yield_budget_composes_the_scene(tmp_path, cell):
+    """Scene mode bounds the weather courtesy: a retried demand composes."""
+    scene = _assembled(cell)
+    busy = [True]
+    layer = _layer(
+        tmp_path,
+        worker_idle=lambda: not busy[0],
+        yield_budget_ms=30,
+    )
+    layer._compose = lambda camera, cancel: (scene, _metadata(camera))
+    try:
+        layer.request(_Camera())
+        deadline = time.monotonic() + TIMEOUT
+        while layer.counters["yielded"] == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert layer.counters["yielded"] == 1
+        assert layer.state == encscenelayer.STATE_IDLE
+        # The weather worker is still busy; past the budget the next demand
+        # composes instead of deferring forever.
+        time.sleep(0.05)
+        layer.request(_Camera(lon=5.6))
+        deadline = time.monotonic() + TIMEOUT
+        while layer.state != encscenelayer.STATE_READY and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert layer.state == encscenelayer.STATE_READY
+        assert layer.published is not None
+        assert layer.counters["yielded"] == 1
+    finally:
+        layer.close()
+        layer._thread.join(TIMEOUT)
+
+
+def test_without_a_yield_budget_a_busy_worker_still_defers(tmp_path):
+    """The default stays unbounded for callers with a real competitor."""
+    layer = _layer(tmp_path, worker_idle=lambda: False)
+    try:
+        layer.request(_Camera())
+        deadline = time.monotonic() + TIMEOUT
+        while layer.counters["yielded"] == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert layer.counters["yielded"] == 1
+        layer.request(_Camera())
+        deadline = time.monotonic() + TIMEOUT
+        while layer.counters["yielded"] < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert layer.counters["yielded"] == 2
+        assert layer.state == encscenelayer.STATE_IDLE
+    finally:
+        layer.close()
+        layer._thread.join(TIMEOUT)

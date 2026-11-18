@@ -2303,6 +2303,93 @@ def test_a_quality_or_source_change_composes_the_whole_view_again(tmp_path):
         layer.close()
 
 
+def test_static_frame_reuse_is_a_pan_only_decision():
+    """A retained frame serves a pan, never a zoom, palette or source change."""
+    from types import SimpleNamespace
+
+    from sailworks.qt.gribviewportchart import _static_frame_serves
+
+    key = ("palette", 1, ())
+    frame = SimpleNamespace(
+        palette="palette", factor=1, sources=(), viewport=SimpleNamespace(_zoom=9.0)
+    )
+    same_zoom = SimpleNamespace(_zoom=9.0)
+    assert _static_frame_serves(frame, key, same_zoom) is True
+    # A zoom change rescales every pixel: the frame does not describe it.
+    assert _static_frame_serves(frame, key, SimpleNamespace(_zoom=9.25)) is False
+    # The content identity is part of the reuse decision.
+    assert _static_frame_serves(frame, ("other", 1, ()), same_zoom) is False
+    assert _static_frame_serves(frame, ("palette", 2, ()), same_zoom) is False
+    assert _static_frame_serves(frame, ("palette", 1, ("src",)), same_zoom) is False
+
+
+def test_a_preview_frame_never_evicts_the_full_quality_frame(tmp_path):
+    """Interactive previews may not push out the frame the next settle reuses.
+
+    The previews are half resolution and every settled composition supersedes
+    them.  If they evicted by age alone, the full-quality frame a pan would
+    have reused is gone and the settle composes the whole chart again.
+    """
+    layer, _composer, _enc, _sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    try:
+        _image, first = layer._compose(camera, Event())
+        assert first["static"]["mode"] == "full"
+        assert first["factor"] == 1
+        for step in range(3):
+            layer._compose(_panned(camera, 20 + step), Event(), preview=True)
+        assert any(
+            frame.factor == layer._dpr for frame in layer._static_frames.values()
+        )
+        _image, second = layer._compose(_panned(camera, 300), Event())
+        assert second["static"]["mode"] == "regions"
+        assert second["static"]["reused_pixels"] > 0
+    finally:
+        layer.close()
+
+
+def test_scene_draws_chart_only_for_a_complete_frame_of_this_camera():
+    """The raster yields only to a complete scene assembled for this camera.
+
+    A partial publication is progress, not coverage; a complete frame for
+    another camera is exactly what a pan or zoom invalidated.  In both cases
+    the scene does not draw the chart the user is looking at, so the raster
+    must compose.
+    """
+    camera = _camera()
+    complete = {"camera": camera}
+
+    assert gribviewport.scene_draws_chart(complete, camera) is True
+    # The published camera is compared by value, so an equal camera object
+    # serves the current view.
+    assert gribviewport.scene_draws_chart({"camera": replace(camera)}, camera) is True
+
+    # A partial publication never substitutes for a complete scene.
+    assert (
+        gribviewport.scene_draws_chart({**complete, "partial": True}, camera) is False
+    )
+    assert (
+        gribviewport.scene_draws_chart({**complete, "partial": False}, camera) is True
+    )
+
+    # A frame assembled for another view does not draw this one.
+    assert (
+        gribviewport.scene_draws_chart({"camera": _camera(zoom=9.5)}, camera) is False
+    )
+    assert (
+        gribviewport.scene_draws_chart({"camera": _camera(center_lon=0.75)}, camera)
+        is False
+    )
+    assert (
+        gribviewport.scene_draws_chart({"camera": _camera(width=800)}, camera) is False
+    )
+
+    # Without metadata, or without a camera of its own, nothing is drawn.
+    assert gribviewport.scene_draws_chart(None, camera) is False
+    assert gribviewport.scene_draws_chart({}, camera) is False
+    assert gribviewport.scene_draws_chart(complete, None) is False
+
+
 def test_releasing_the_layer_drops_the_retained_content(tmp_path):
     """The retained surfaces are bounded and released with the worker."""
     layer, _composer, _enc, _sources, Event = _static_layer(tmp_path)

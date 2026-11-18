@@ -75,6 +75,10 @@ class _Harness:
         self._enc_scene_state = "idle"
         self._enc_scene_generation = None
         self._enc_scene_camera = None
+        # A publication resolves any deferred raster composition against the
+        # widget's camera; no chart composition runs in this harness.
+        self._camera = None
+        self._chart_timer = None
         # No retained pan reference in this headless harness, so the published
         # scene is placed at the item origin.
         self._map_pan_reference = None
@@ -219,10 +223,13 @@ def test_a_published_scene_reaches_the_render_thread(app):
         assert sum(cell_vertices) == scene.vertex_count == 9
         assert sum(cell_vertices) // 3 == len(scene.positions) // 3 == 3
 
-        # A layer state that leaves nothing current withdraws the scene.
+        # A layer state that leaves nothing current keeps the last complete
+        # frame: it is a better report than a blank chart.  The scene the item
+        # already draws stays presented.
         harness._enc_scene_state_changed("unavailable")
         assert harness._enc_scene_state == "unavailable"
-        assert not item.isVisible()
+        assert item.isVisible()
+        assert item.view_scene is scene
     finally:
         view.afterRendering.disconnect(handler)
         item.setParentItem(None)

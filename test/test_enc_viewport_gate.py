@@ -694,6 +694,150 @@ def test_settled_chart_gives_busy_weather_a_bounded_head_start(monkeypatch):
     assert requests == ["camera"]
 
 
+def test_weather_head_start_does_not_rearm_across_continuous_camera_moves(monkeypatch):
+    """A move every settle interval must not starve the chart for ever."""
+    now = [100.0]
+    monkeypatch.setattr("sailworks.qt.gribviewport.time.perf_counter", lambda: now[0])
+    requests = []
+    timer = Mock()
+    widget = SimpleNamespace(
+        _chart_model=SimpleNamespace(request=requests.append),
+        _camera="camera",
+        _weather_ready_at=None,
+        _chart_without_weather=False,
+        _enc_chart_layer=False,
+        _model=SimpleNamespace(state="ready", busy=lambda: False),
+        _chart_camera_changed=100.0,
+        _chart_head_start_basis=100.0,
+        _chart_visible_generation=None,
+        _chart_timer=timer,
+        counters={"chart_requests": 0},
+        _chart_state_now=lambda: {},
+    )
+    method = _viewport_widget_class()._request_chart
+
+    # Each move restarts the settle window; the head start is measured from
+    # the last composition, so it keeps draining while the user keeps moving.
+    fired = []
+    for step in range(6):
+        now[0] = 100.0 + step * 0.65
+        widget._chart_camera_changed = now[0]
+        now[0] += 0.12
+        method(widget)
+        fired.append(len(requests))
+
+    # The first three settles still honour the (draining) weather window; the
+    # fourth proceeds even though the camera has never stopped moving.
+    assert fired == [0, 0, 0, 1, 2, 3]
+    assert widget.counters["chart_requests"] == 3
+    assert timer.start.called
+
+
+def test_retained_chart_bounds_the_weather_head_start(monkeypatch):
+    """A retained frame needs only the short bound, not the cold start."""
+    from sailworks.qt.gribviewportchart import CHART_RETAINED_HEAD_START_MS
+
+    now = [100.0]
+    monkeypatch.setattr("sailworks.qt.gribviewport.time.perf_counter", lambda: now[0])
+    requests = []
+    timer = Mock()
+    widget = SimpleNamespace(
+        _chart_model=SimpleNamespace(request=requests.append),
+        _camera="camera",
+        _weather_ready_at=None,
+        _chart_without_weather=False,
+        _enc_chart_layer=False,
+        _model=SimpleNamespace(state="loading", busy=lambda: False),
+        _chart_camera_changed=100.0,
+        _chart_head_start_basis=100.0,
+        _chart_visible_generation=1,
+        _chart_timer=timer,
+        counters={"chart_requests": 0},
+        _chart_state_now=lambda: {},
+    )
+    method = _viewport_widget_class()._request_chart
+
+    now[0] = 100.12
+    method(widget)
+    assert requests == []
+    assert timer.start.called
+
+    now[0] = 100.0 + (CHART_RETAINED_HEAD_START_MS + 50) / 1000.0
+    method(widget)
+    assert requests == ["camera"]
+
+
+def test_scene_request_does_not_wait_for_the_weather_head_start(monkeypatch):
+    """The resident ENC scene is asked even while the raster waits."""
+    now = [100.0]
+    monkeypatch.setattr("sailworks.qt.gribviewport.time.perf_counter", lambda: now[0])
+    requests = []
+    scene = Mock()
+    widget = SimpleNamespace(
+        _chart_model=SimpleNamespace(request=requests.append),
+        _camera="camera",
+        _weather_ready_at=None,
+        _chart_without_weather=False,
+        _enc_chart_layer=False,
+        _model=SimpleNamespace(state="loading", busy=lambda: False),
+        _chart_camera_changed=100.0,
+        _chart_head_start_basis=100.0,
+        _chart_visible_generation=None,
+        _chart_timer=Mock(),
+        _request_enc_scene=scene,
+        counters={"chart_requests": 0},
+        _chart_state_now=lambda: {},
+    )
+
+    now[0] = 100.12
+    _viewport_widget_class()._request_chart(widget)
+
+    assert requests == []
+    scene.assert_called_once_with()
+
+
+def test_interactive_preview_does_not_wait_for_weather_with_a_retained_chart(
+    monkeypatch,
+):
+    """A retained frame makes the preview an improvement, never a blank."""
+    now = [1.0]
+    monkeypatch.setattr("sailworks.qt.gribviewport.time.perf_counter", lambda: now[0])
+    chart = SimpleNamespace(request=Mock(return_value=7))
+    widget = SimpleNamespace(
+        _chart_model=chart,
+        _camera="camera",
+        _weather_ready_at=None,
+        _chart_without_weather=False,
+        _enc_chart_layer=False,
+        _chart_visible_generation=3,
+        _model=SimpleNamespace(state="loading", busy=lambda: False),
+        _chart_interactive_at=None,
+        counters={"chart_requests": 0},
+        _chart_state_now=lambda: {},
+    )
+    request = _viewport_widget_class()._request_interactive_chart
+
+    request(widget)
+    chart.request.assert_called_once_with("camera", preview=True)
+    assert widget.counters["chart_requests"] == 1
+
+    # With nothing on screen the preview would be a blank; the weather keeps
+    # its veto there.
+    blank = SimpleNamespace(
+        _chart_model=SimpleNamespace(request=Mock(return_value=8)),
+        _camera="camera",
+        _weather_ready_at=None,
+        _chart_without_weather=False,
+        _enc_chart_layer=False,
+        _model=SimpleNamespace(state="loading", busy=lambda: False),
+        _chart_interactive_at=None,
+        counters={"chart_requests": 0},
+        _chart_state_now=lambda: {},
+    )
+    request(blank)
+    blank._chart_model.request.assert_not_called()
+
+
 def test_world_basemap_request_does_not_wait_for_weather():
     requests = []
     widget = SimpleNamespace(

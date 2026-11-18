@@ -9,6 +9,7 @@ scheduler and the cache rather than ENC data.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -250,6 +251,124 @@ def test_progress_publishes_plan_prefixes_despite_completion_order(
     assert [cell.path for cell in snapshots[-1].cells] == [
         cell.path for cell in result.cells
     ]
+
+
+# ------------------------------------------------- head-first publication
+def test_first_partial_is_published_before_the_other_cells_finish(
+    tmp_path, monkeypatch
+):
+    """The first prefix must not wait for cells that come after it.
+
+    A build that published only when every mesh was in would still return a
+    correct scene, but the chart would stay blank until the last cell.  Here
+    every non-head cell blocks inside its mesh; the first publication has to
+    release them, so a build that waits for them never publishes at all.
+    """
+    plan = _plan_of(tmp_path, count=3)
+    head = plan[0].path
+    release = threading.Event()
+    real = encview._mesh_cell
+
+    def gated(task, scene, *args, **kwargs):
+        if task.cell.path != head:
+            # 5 s is far longer than the synthetic mesh; a hang here means
+            # the first partial waited for a cell that follows it.
+            assert release.wait(5.0), "the first partial waited for later cells"
+        return real(task, scene, *args, **kwargs)
+
+    monkeypatch.setattr(encview, "_mesh_cell", gated)
+
+    snapshots = []
+
+    def on_cell(snapshot, done, total):
+        snapshots.append((done, len(snapshot.cells)))
+        if done == 1:
+            release.set()
+        return True
+
+    scene = _build(plan, workers=4, on_cell=on_cell)
+    assert scene is not None
+    # A one-cell prefix is published, in plan order, while the rest are held.
+    assert snapshots[0] == (1, 1)
+    assert snapshots[-1] == (3, 3)
+    assert len(scene.cells) == 3
+
+
+def test_the_plan_head_is_meshed_alone_before_the_window_opens(tmp_path, monkeypatch):
+    """Meshing the head against the window multiplies its latency.
+
+    Publication is a plan prefix, so only the head is on the critical path to
+    the first frame.  Measured on the six-cell Strait view, meshing it against
+    three other cells took 1.27 s against 0.34 s alone, which pushed every
+    partial into one burst at the end of the build.
+    """
+    plan = _plan_of(tmp_path, count=4)
+    started = []
+    lock = threading.Lock()
+    real = encview._mesh_cell
+
+    def record(task, scene, *args, **kwargs):
+        with lock:
+            started.append(task.cell.path)
+        return real(task, scene, *args, **kwargs)
+
+    monkeypatch.setattr(encview, "_mesh_cell", record)
+
+    at_first = []
+
+    def on_cell(snapshot, done, total):
+        with lock:
+            if done == 1:
+                at_first.extend(started)
+        return True
+
+    scene = _build(plan, workers=4, on_cell=on_cell)
+    assert scene is not None
+    assert at_first == [plan[0].path]
+    # The window fills once the head has published, and every cell is drawn.
+    assert sorted(started) == sorted(entry.path for entry in plan)
+    assert len(scene.cells) == len(plan)
+
+
+def test_head_first_can_be_switched_off_for_an_ab(tmp_path, monkeypatch):
+    """``SAILWORKS_ENC_HEAD_FIRST=0`` restores whole-window submission.
+
+    Opens and submissions happen inline in plan order, so the cells opened by
+    the first publication say how much of the window was submitted: only the
+    head with the switch on, the whole window off.
+    """
+    plan = _plan_of(tmp_path, count=4)
+    opened = []
+    real_load = _load
+
+    def record_load(path, version, cancelled=None):
+        opened.append(os.path.abspath(os.fspath(path)))
+        return real_load(path, version, cancelled)
+
+    monkeypatch.setattr(sys.modules[__name__], "_load", record_load)
+
+    at_first = []
+
+    def on_cell(snapshot, done, total):
+        if done == 1:
+            at_first.extend(opened)
+        return True
+
+    monkeypatch.setenv("SAILWORKS_ENC_HEAD_FIRST", "0")
+    scene = _build(plan, workers=4, on_cell=on_cell)
+    assert scene is not None
+    assert len(scene.cells) == len(plan)
+    assert at_first == [entry.path for entry in plan]
+
+    opened.clear()
+    at_first.clear()
+    monkeypatch.setenv("SAILWORKS_ENC_HEAD_FIRST", "1")
+    scene = _build(plan, workers=4, on_cell=on_cell)
+    assert scene is not None
+    assert len(scene.cells) == len(plan)
+    assert at_first == [plan[0].path]
+    # Every cell is opened in plan order either way.
+    assert opened == [entry.path for entry in plan]
 
 
 def test_refusing_progress_stops_the_build(tmp_path):

@@ -270,6 +270,175 @@ def test_cells_outside_the_item_are_culled(app):
         assert cell_node.geometry().vertexCount() == (count if visible else 0)
 
 
+class _SpyGeometry:
+    """Records the vertex-count writes a culled node receives."""
+
+    def __init__(self, count):
+        self._count = int(count)
+        self.changes = []
+
+    def vertexCount(self):
+        return self._count
+
+    def setVertexCount(self, count):
+        self.changes.append(int(count))
+        self._count = int(count)
+
+
+class _SpyNode:
+    """Stands in for a cell node; records the dirty bits it is sent."""
+
+    def __init__(self, count):
+        self._geometry = _SpyGeometry(count)
+        self.dirty = []
+
+    def geometry(self):
+        return self._geometry
+
+    def markDirty(self, bits):
+        self.dirty.append(bits)
+
+
+def test_culling_marks_a_changed_cell_geometry_dirty(app):
+    """A changed vertex count must dirty the node for the renderer to see it.
+
+    ``setVertexCount`` only writes the Python-side value; QSGBatchRenderer
+    re-reads a geometry node's element count only when the node is dirty.  A
+    cell culled at the item edge therefore stayed blank when the pan returned
+    — the blinking-tile report — and an unchanged count must stay clean.
+    """
+    camera = _Camera()
+    positions = _visible_degrees(camera)
+    scene = _Scene(positions, _split_cells(positions))
+    item, node = _presented(app, camera, scene, _projection(camera))
+    counts = list(item._cell_vertex_counts)
+    visible0 = item._cell_visible
+    assert counts and any(item.visible_cells)
+    spies = [
+        _SpyNode(count if visible else 0)
+        for count, visible in zip(counts, item._cell_visible)
+    ]
+    # Only the Python-side list is swapped: the real nodes stay attached to
+    # the content node, and the mask length still matches the frame's cells.
+    item._cell_nodes = spies
+    dirty_bit = encgpu.QSGNode.DirtyStateBit.DirtyGeometry
+
+    far = _Camera(lon=camera.center_lon + 5.0)
+    item.set_projection(_projection(far))
+    item.updatePaintNode(node, None)
+    assert item.visible_cells and not any(item.visible_cells)
+    changed = 0
+    for spy, count, was_visible in zip(spies, counts, visible0):
+        if was_visible and count:
+            # Culled now: the count change is written and the node is dirtied.
+            assert spy.geometry().changes == [0]
+            assert spy.dirty == [dirty_bit]
+            changed += 1
+        else:
+            # Already drew nothing: no write and, crucially, no dirty.
+            assert spy.geometry().changes == []
+            assert spy.dirty == []
+    assert changed
+
+    item.set_projection(_projection(camera))
+    item.updatePaintNode(node, None)
+    assert item.visible_cells and any(item.visible_cells)
+    for spy, count, visible in zip(spies, counts, item._cell_visible):
+        applied = count if visible else 0
+        # Every write is paired with exactly one dirty, and the spy's count came
+        # back to what the mask says should be drawn.
+        assert len(spy.dirty) == len(spy.geometry().changes)
+        assert all(bits == dirty_bit for bits in spy.dirty)
+        assert spy.geometry().vertexCount() == applied
+
+    # An unchanged mask is the steady state: no write, no dirty.
+    before = [(list(spy.geometry().changes), list(spy.dirty)) for spy in spies]
+    item.updatePaintNode(node, None)
+    assert [(list(spy.geometry().changes), list(spy.dirty)) for spy in spies] == before
+
+
+def test_culling_restores_a_geometry_zeroed_under_an_unchanged_mask(app):
+    """A cell zeroed while the mask is unchanged must be drawn again.
+
+    The cull pass used to return early when the freshly computed mask equalled
+    the cached one, so a cell whose geometry had been zeroed (by a stale node,
+    a re-used scene graph, or anything else holding the buffer) stayed blank
+    with no camera change: the "chart rectangles disappear and reappear"
+    report.  The mask is a diagnostic now, not proof the geometries are right.
+    """
+    camera = _Camera()
+    positions = _visible_degrees(camera)
+    scene = _Scene(positions, _split_cells(positions))
+    item, _ = _presented(app, camera, scene, _projection(camera))
+    counts = list(item._cell_vertex_counts)
+    visible = tuple(item._cell_visible)
+    assert counts and any(visible)
+
+    # Same camera, same mask — but every geometry now reports zero vertices.
+    spies = [_SpyNode(0) for _ in counts]
+    item._cell_nodes = spies
+    coeffs = item._frame_coeffs()
+    assert coeffs is not None
+    item._cull_cells(coeffs)
+
+    dirty_bit = encgpu.QSGNode.DirtyStateBit.DirtyGeometry
+    for spy, count, is_visible in zip(spies, counts, visible):
+        applied = count if is_visible else 0
+        assert spy.geometry().vertexCount() == applied
+        if applied:
+            # The lost geometry is rewritten and the node is dirtied so the
+            # renderer re-reads the element count.
+            assert spy.geometry().changes == [applied]
+            assert spy.dirty == [dirty_bit]
+        else:
+            # Already drew nothing, so there is still nothing to write.
+            assert spy.geometry().changes == []
+            assert spy.dirty == []
+
+
+def test_culling_is_write_free_when_counts_already_match(app):
+    """Reconciling every frame must not turn the steady state into a write."""
+    camera = _Camera()
+    positions = _visible_degrees(camera)
+    scene = _Scene(positions, _split_cells(positions))
+    item, _ = _presented(app, camera, scene, _projection(camera))
+    counts = list(item._cell_vertex_counts)
+    spies = [
+        _SpyNode(count if is_visible else 0)
+        for count, is_visible in zip(counts, item._cell_visible)
+    ]
+    item._cell_nodes = spies
+    coeffs = item._frame_coeffs()
+    assert coeffs is not None
+
+    item._cull_cells(coeffs)
+
+    for spy in spies:
+        assert spy.geometry().changes == []
+        assert spy.dirty == []
+
+
+def test_forgetting_the_scene_graph_drops_the_cell_bookkeeping(app):
+    camera = _Camera()
+    positions = _visible_degrees(camera)
+    scene = _Scene(positions, _split_cells(positions))
+    item, _ = _presented(app, camera, scene, _projection(camera))
+    assert item._cell_nodes and item._cell_vertex_counts and item._cell_visible
+
+    item._forget_scene_graph()
+    assert item._cell_nodes == []
+    assert item._cell_vertex_counts == []
+    assert item._cell_visible == ()
+
+    # With no content node the upload returns early, and the stale lists are
+    # still dropped so they can never be zipped against a later build.
+    item._cell_vertex_counts = [6, 6]
+    item._cell_visible = (True, False)
+    item._upload_cells()
+    assert item._cell_vertex_counts == []
+    assert item._cell_visible == ()
+
+
 def test_legacy_flag_reprojects_instead_of_moving_a_matrix(app):
     camera = _Camera()
     positions = _visible_degrees(camera)
@@ -1057,14 +1226,26 @@ def test_a_partial_publication_never_replaces_the_ready_scene(app):
         _enc_scene_generation=None,
         _enc_scene_camera=None,
         _enc_scene_frame_camera=None,
+        # The viewport is showing ``reference``: a publication resolves the
+        # chart deferral against the camera on screen, so the double carries
+        # it exactly as the real widget does from ``__init__``.
+        _camera=reference,
         _camera_dpr=1.0,
         _disposed=False,
         _update_enc_status=lambda: None,
         _place_enc_scene=lambda: None,
     )
-    shown._enc_scene_published = MethodType(
-        _viewport_widget_class()._enc_scene_published, shown
-    )
+    # The publication path decides retention by consulting two further
+    # predicates on ``self``.  Bind the production implementations, as for
+    # ``_enc_scene_published``, so the double exercises the real retention
+    # law instead of a stubbed verdict.
+    widget_class = _viewport_widget_class()
+    for name in (
+        "_enc_scene_published",
+        "_enc_scene_frame_reaches_view",
+        "_enc_scene_partial_supersedes",
+    ):
+        setattr(shown, name, MethodType(getattr(widget_class, name), shown))
     metadata = {
         "projection": _projection(reference),
         "camera": reference,

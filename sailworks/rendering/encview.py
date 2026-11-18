@@ -160,6 +160,12 @@ DEFAULT_MESH_WORKERS = 4
 #: machines where the default is wrong.  Ignored when it is not a positive int.
 MESH_WORKERS_ENV = "SAILWORKS_ENC_MESH_WORKERS"
 
+#: Environment switch for the plan-head rule: the head cell is meshed alone
+#: before the worker window opens, so the first prefix is not delayed by cells
+#: that cannot be published before it.  Default on; ``"0"`` submits the whole
+#: window at once, the previous scheduling, which is what an A/B compares.
+HEAD_FIRST_ENV = "SAILWORKS_ENC_HEAD_FIRST"
+
 #: The finest chart zoom a reusable mesh is tessellated for: the chart's own
 #: ``MAX_ZOOM`` (``sailworks.core.chscharts``).  A caller that supplies
 #: ``mesh_scale`` builds every cell once in this fixed reference frame, so the
@@ -181,6 +187,11 @@ def _default_workers() -> int:
     if configured > 0:
         return configured
     return max(1, min(DEFAULT_MESH_WORKERS, os.cpu_count() or 1))
+
+
+def _head_first_enabled() -> bool:
+    """Whether the plan head is meshed alone first: default on, ``"0"`` off."""
+    return os.environ.get(HEAD_FIRST_ENV, "").strip() != "0"
 
 
 def default_mesh_cache() -> "MeshCache":
@@ -1339,12 +1350,23 @@ def build_view_scene(
     with the ``SAILWORKS_ENC_MESH_WORKERS`` environment variable - and ``1``
     keeps the sequential path, one cell at a time.  Each task reads only its
     own cell's records and geometry and writes only its own cache entry, so no
-    lock is needed outside :class:`MeshCache`.  Whole-cell scenes are still
-    opened on the calling thread, in plan order, so ``scene_cache`` is never
-    shared and GDAL dataset opening stays serialised.  Assembly and progress
-    stay in plan order regardless of which cell finishes first, and the result
-    is byte-identical for any worker count.  A cell whose build raises is
-    reported in :attr:`ViewScene.skipped` with its error and the rest of the
+    lock is needed outside :class:`MeshCache`.  Whole-cell scenes are opened in
+    plan order, one at a time, just before the cell is submitted: the scene
+    cache and the store behind ``loader`` are single-worker by contract, so
+    only the scheduler touches them, and its GDAL dataset reads never overlap
+    another open.  A cell already resident in ``scene_cache`` is a hit and is
+    not re-opened, and the open of the next cell overlaps the mesh of the
+    current one because submission does not wait for that mesh.  Assembly and
+    progress stay in plan order regardless of which cell finishes first, and
+    the result
+    is byte-identical for any worker count.  Because publication is a plan
+    prefix, the plan head is the first frame: it is meshed alone before the
+    rest of the window starts, so the first snapshot is not inflated by
+    contention with cells that cannot be published before it, and the
+    remaining cells then fill the window normally.  ``SAILWORKS_ENC_HEAD_FIRST``
+    (default on) can be set to ``0`` to submit the whole window at once, the
+    previous scheduling, for an A/B measurement.  A cell whose build raises
+    is reported in :attr:`ViewScene.skipped` with its error and the rest of the
     plan still assembles; the sequential path keeps raising, as it always did.
     Cancelling stops opening new cells and submitting new work and returns
     ``None`` immediately; meshes already running finish on their own threads
@@ -1449,38 +1471,24 @@ def build_view_scene(
         return on_cell(snapshot, done, len(plan)) is not False
 
     def _open_scene(cell):
-        """Open one cell on the calling thread; a skip or ``None`` (cancelled)."""
+        """Open one cell; a skip or ``None`` (cancelled).
+
+        The scene cache and the persisted store behind ``loader`` are
+        single-worker by contract, so an open only ever runs on the calling
+        thread and never in parallel with another.
+        """
         started = time.perf_counter()
         build = lambda cancel, path=cell.path, version=cell.version: loader(
             path, version, cancel
         )
-        if timings is None:
-            scene = scene_cache.get_or_build(
-                cell.path,
-                cell.version,
-                build,
-                cancelled,
-                pin=scene_pins,
-            )
-        else:
-            try:
-                scene = scene_cache.get_or_build(
-                    cell.path,
-                    cell.version,
-                    build,
-                    cancelled,
-                    pin=scene_pins,
-                    timings=timings,
-                )
-            except TypeError:
-                # A cache that predates the diagnostic kwarg still assembles.
-                scene = scene_cache.get_or_build(
-                    cell.path,
-                    cell.version,
-                    build,
-                    cancelled,
-                    pin=scene_pins,
-                )
+        scene = scene_cache.get_or_build(
+            cell.path,
+            cell.version,
+            build,
+            cancelled,
+            pin=scene_pins,
+            timings=timings,
+        )
         _stage(timings, "cell_open", started)
         if scene is not None:
             return scene
@@ -1525,6 +1533,7 @@ def build_view_scene(
             if not _progress(len(contributions) + len(skipped)):
                 return None
     else:
+        head_first = _head_first_enabled()
         executor = ThreadPoolExecutor(
             max_workers=workers, thread_name_prefix="enc-mesh"
         )
@@ -1567,9 +1576,17 @@ def build_view_scene(
             while index < len(tasks):
                 if _cancelled(cancelled):
                     return None
-                # Keep the window full.  Nothing is submitted ahead of the
-                # window, so a cancelled build leaves cells that never start.
+                # Keep the window full, except for the plan head: it is the
+                # first frame, and meshing it against three other cells slows
+                # it several times over (measured 1.27 s against 0.34 s for
+                # the same cell), which pushed every partial into one burst at
+                # the end of the build.  It is submitted alone and the window
+                # fills as soon as the first prefix is published.  Each cell is
+                # opened inline just before it is submitted, so its decode
+                # overlaps the mesh already running on the workers.
                 while next_task < len(tasks) and len(pending) < workers:
+                    if head_first and index == 0 and next_task >= 1:
+                        break
                     ahead = tasks[next_task]
                     scene = _open_scene(ahead.cell)
                     if scene is None:

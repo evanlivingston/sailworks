@@ -79,6 +79,11 @@ def _identity(positions):
     return positions
 
 
+def _offset(positions):
+    """A camera change that moves the whole frame off the item's viewport."""
+    return np.asarray(positions, dtype=np.float64) + np.array((1000.0, 1000.0))
+
+
 #: Mirrors the ColoredPoint2D layout the coloured item uploads: two float32
 #: coordinates followed by four premultiplied RGBA bytes, 12 bytes per vertex.
 _COLORED_VERTEX = np.dtype(
@@ -139,9 +144,10 @@ def _uploaded_scene_vertices(item):
     """Read every coloured cell buffer, in scene order, and concatenate it.
 
     The static path stores one ``QSGGeometryNode`` per contributing cell under
-    a single ``QSGTransformNode``; the root node holds no geometry itself, so
-    ``item._geometry`` (kept as a diagnostic for the first cell) is not the
-    scene's buffer.  Concatenating the children recovers the scene order.
+    a single ``QSGTransformNode``; the root node holds no geometry itself and
+    ``item._geometry`` stays ``None`` in this mode (it is only the single-node
+    legacy buffer, never a cell alias).  Concatenating the children recovers
+    the scene order.
     """
     assert item._built_colored
     content = item._content_node
@@ -554,5 +560,46 @@ def test_enc_mesh_item_renders_view_scene_in_order(app):
             assert item._content_node.childCount() == 0
         finally:
             _release(item, window2, handler2)
+    finally:
+        _release(item, window, handler)
+
+
+def test_a_frame_mapped_outside_the_view_is_reported_blank_not_hidden(app):
+    """A retained frame that draws nothing says so; it is never hidden.
+
+    A zoom or a long pan can carry the composed frame entirely outside the
+    item.  The item keeps the scene, its buffers and its visibility - dropping
+    them would turn a stale picture into a blank chart - and reports zero drawn
+    vertices plus no viewport coverage, which is the state the viewport uses to
+    draw loading cells instead of waiting for the complete scene.
+    """
+    if not hasattr(QSGGeometry, "defaultAttributes_ColoredPoint2D"):
+        pytest.skip("this PySide6 build lacks defaultAttributes_ColoredPoint2D")
+
+    scene = _two_cell_view_scene()
+    frames = _Frames()
+    item = EncMeshItem()
+    item.setSize(QSizeF(64, 64))
+    item.set_projection(_identity)
+    item.set_view_scene(scene)
+    item.setVisible(True)
+
+    window, errors, handler = _attach(item, frames)
+    try:
+        _skip_if_stalled(frames, 0, errors, "coverage")
+        assert item.scene_covers_view() is True
+        assert item.shown_vertex_count() == scene.vertex_count
+
+        # The demanded camera moved the frame off the viewport: the matrix is
+        # re-solved, every cell is culled to zero vertices, nothing is dropped.
+        assert item.set_projection(_offset) is True
+        assert _render_unchanged(window, frames, 1), "camera change never rendered"
+
+        assert item.isVisible() is True
+        assert item.view_scene is scene
+        assert item.upload_count >= 1
+        assert item.scene_covers_view() is False
+        assert item.shown_vertex_count() == 0
+        assert sum(item._cell_vertex_counts) == scene.vertex_count
     finally:
         _release(item, window, handler)

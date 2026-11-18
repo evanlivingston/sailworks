@@ -771,6 +771,10 @@ class EncMeshItem(QQuickItem):
         self._cell_nodes = []
         self._cell_vertex_counts = []
         self._cell_visible = ()
+        #: One-shot flag: an explicit empty scene clears the presented cells on
+        #: the next upload, while an empty rebuild keeps the last complete
+        #: frame on screen.
+        self._drop_cells_on_upload = False
         #: How far past the item the presented scene was composed.  Culling
         #: must keep the cells in that ring: they are what a pan brings into
         #: view before the replacement arrives.
@@ -858,6 +862,54 @@ class EncMeshItem(QQuickItem):
         """Per-cell visibility from the last cull, in composite order."""
         return self._cell_visible
 
+    def shown_vertex_count(self) -> int:
+        """Vertices the presented mask currently draws.
+
+        A culled cell keeps its buffer and is drawn with a zero vertex count,
+        so the sum of the cell buffers is *not* what is on screen.  This is
+        the number a state probe and the adoption policy read: zero means the
+        frame is attached but draws nothing.
+        """
+        counts = self._cell_vertex_counts
+        mask = self._cell_visible
+        if not counts:
+            return 0
+        if len(mask) != len(counts):
+            return int(sum(counts))
+        return int(sum(count for count, shown in zip(counts, mask) if shown))
+
+    def scene_covers_view(self) -> bool:
+        """Whether any cell of the presented frame reaches the item's viewport.
+
+        The retained frame draws through a matrix solved for the current
+        camera, so its own reference bbox mapped by that matrix is what the
+        user actually sees.  A frame composed for a camera a zoom or a long pan
+        left behind can map entirely outside the item: keeping it then draws
+        exactly nothing, which is indistinguishable from a blank chart.
+        """
+        if not self._cell_nodes or self._static is None:
+            return False
+        boxes = [cell.bounds for cell in self._static.cells if cell.bounds is not None]
+        if not boxes:
+            return False
+        bounds = (
+            min(box[0] for box in boxes),
+            min(box[1] for box in boxes),
+            max(box[2] for box in boxes),
+            max(box[3] for box in boxes),
+        )
+        width = float(self.width())
+        height = float(self.height())
+        if width <= 0.0 or height <= 0.0:
+            return False
+        coeffs = self._frame_coeffs()
+        if coeffs is None:
+            # The re-projected fallback draws from the current camera; it is
+            # not proof of a blank frame, so do not treat it as one.
+            return True
+        x0, y0, x1, y1 = _affine_bounds(coeffs, bounds)
+        return not (x1 < 0.0 or y1 < 0.0 or x0 > width or y0 > height)
+
     @property
     def text_upload_count(self) -> int:
         """Number of glyph-quad uploads performed for this item."""
@@ -889,6 +941,8 @@ class EncMeshItem(QQuickItem):
             return False
         self._mesh = mesh
         self._view_scene = None
+        # A new mesh replaces the picture, an empty one included: the caller
+        # asked for that content, so no cell of the previous frame survives it.
         self._static = None
         self._generation += 1
         self._geometry_dirty = True
@@ -922,7 +976,13 @@ class EncMeshItem(QQuickItem):
         self._view_scene = view_scene
         self._mesh = mesh
         self._colored = True
+        # A replacement scene is what the viewport asked for.  A scene with no
+        # contributing part is an explicit "nothing to draw" and takes the
+        # presented cells down; a scene with parts rebuilds them on the next
+        # paint.  Retention is for a rebuild that produces nothing, not for a
+        # scene the caller replaced.
         self._static = None
+        self._drop_cells_on_upload = not getattr(mesh, "parts", ())
         self._generation += 1
         self._geometry_dirty = True
         self._material_dirty = True
@@ -975,17 +1035,22 @@ class EncMeshItem(QQuickItem):
         """Set the local camera origin subtracted before projection.
 
         Changing it re-uploads on the next frame; the subtraction itself runs
-        in ``float64`` so scene-scale coordinates keep their precision.  It
-        also invalidates the static reference frame: the origin is an argument
-        of the projection, not a screen-space offset, so the reference vertices
-        no longer describe the same map.
+        in ``float64`` so scene-scale coordinates keep their precision.  The
+        reference frame stays attached: the matrix path re-projects its sample
+        points with the new origin, so a pan costs no rebuild and leaves no
+        blank frame behind.
         """
         if origin is not None:
             origin = (float(origin[0]), float(origin[1]))
         if origin == self._origin:
             return False
         self._origin = origin
-        self._static = None
+        # The origin is an argument of the projection, not a screen-space
+        # offset, but ``_frame_coeffs`` re-projects the reference frame's own
+        # samples with the *current* origin, so the matrix path already handles
+        # this exactly.  Keeping ``_static`` attached means a pan never blanks
+        # the chart; a non-affine projection still rebuilds in
+        # ``_update_static``.
         self._geometry_dirty = True
         self._text_dirty = True
         self.update()
@@ -1067,6 +1132,10 @@ class EncMeshItem(QQuickItem):
         self._material = None
         self._content_node = None
         self._cell_nodes = []
+        # The per-cell bookkeeping must go with the nodes: a stale list zipped
+        # against the next build's nodes silently truncates the mask.
+        self._cell_vertex_counts = []
+        self._cell_visible = ()
         self._text_node = None
         self._text_geometry = None
         self._text_material = None
@@ -1316,8 +1385,12 @@ class EncMeshItem(QQuickItem):
             outside = x1 < clip[0] or x0 > clip[2] or y1 < clip[1] or y0 > clip[3]
             mask.append(not outside)
         mask = tuple(mask)
-        if mask == self._cell_visible:
-            return
+        # The mask is recorded for diagnostics only: it is never trusted as
+        # proof that the geometries still draw what it says.  A previous
+        # frame (or anything else holding the nodes) can zero a cell's
+        # vertex count while this mask is unchanged, and skipping the
+        # reconciliation below on "same mask" then left the chart blank
+        # until an unrelated scene-graph rebuild reset the cache.
         self._cell_visible = mask
         # The child list is static once built: detaching and re-attaching
         # nodes while an offscreen grab renders the very same subtree faults
@@ -1327,12 +1400,29 @@ class EncMeshItem(QQuickItem):
         for node, count, visible in zip(
             self._cell_nodes, self._cell_vertex_counts, mask
         ):
-            node.geometry().setVertexCount(count if visible else 0)
+            applied = count if visible else 0
+            geometry = node.geometry()
+            if geometry is None or geometry.vertexCount() == applied:
+                # Nothing to tell the renderer, so leave the node clean.  This
+                # is the steady-state path: a pan that keeps the same mask
+                # never marks anything dirty.
+                continue
+            geometry.setVertexCount(applied)
+            # setVertexCount only writes the Python-side value; QSGBatchRenderer
+            # re-reads a geometry node's element count only when the node is
+            # dirty.  Without this, a cell culled while it scrolled off stays
+            # blank after scrolling back in — the "square tiles blink out"
+            # report.  Marked only on an actual change so the steady state
+            # stays dirty-free.
+            node.markDirty(QSGNode.DirtyStateBit.DirtyGeometry)
 
     def _ensure_content(self) -> bool:
         """Attach the cell transform node once there is a cell to draw."""
         if self._content_node is not None:
-            return True
+            # The recorded node may have been deleted under us; treat a dead
+            # wrapper as absent so the cells are built again instead of being
+            # appended to a dangling node.
+            return _wrapper_is_valid(self._content_node)
         frame = self._static
         if frame is None or not any(cell.vertices.shape[0] for cell in frame.cells):
             return False
@@ -1346,24 +1436,54 @@ class EncMeshItem(QQuickItem):
         self._content_node = content
         return True
 
-    def _upload_cells(self) -> None:
-        """Create one static-pattern geometry node per cell under the content."""
+    def _drop_presented_cells(self) -> None:
+        """Detach the presented cells so an empty scene leaves nothing drawn.
+
+        The content node itself stays: it is the item's transform child and a
+        later scene re-uses it.  Only the per-cell nodes and the bookkeeping
+        that describes them go, so no stale list can be zipped against the next
+        build's nodes.
+        """
         content = self._content_node
-        if content is None:
-            return
-        for child in self._cell_nodes:
-            try:
-                content.removeChildNode(child)
-            except Exception:  # pragma: no cover - Qt already dropped it
-                pass
+        if content is not None:
+            for child in self._cell_nodes:
+                try:
+                    content.removeChildNode(child)
+                except Exception:  # pragma: no cover - Qt already dropped it
+                    pass
         self._cell_nodes = []
         self._cell_vertex_counts = []
         self._cell_visible = ()
         self._geometry = None
         self._material = None
+
+    def _upload_cells(self) -> None:
+        """Create one static-pattern geometry node per cell under the content."""
+        content = self._content_node
+        # Reset the per-cell bookkeeping only when there is no content node, so
+        # the lists can never lag behind the nodes they describe.
+        if content is None:
+            self._cell_vertex_counts = []
+            self._cell_visible = ()
+            return
         frame = self._static
         if frame is None:
+            if self._drop_cells_on_upload:
+                # The caller replaced the picture with one that has nothing to
+                # draw; the previous cells must not outlive that request.
+                self._drop_cells_on_upload = False
+                self._drop_presented_cells()
+                return
+            # No buildable frame (empty mesh): the cells already attached are
+            # the last complete picture and stay on screen.
             return
+        # Build the replacement nodes before touching the presented ones: an
+        # empty or all-skipped frame must not blank a chart that is still
+        # drawable.  Nodes are kept one-per-cell, including empty cells, so the
+        # cull mask stays aligned with ``frame.cells``.
+        nodes = []
+        counts = []
+        drawn = 0
         for cell in frame.cells:
             geometry = QSGGeometry(_colored_attributes(), 0)
             geometry.setDrawingMode(QSGGeometry.DrawingMode.DrawTriangles)
@@ -1376,17 +1496,34 @@ class EncMeshItem(QQuickItem):
             cell_node.setMaterial(material)
             cell_node.setFlag(QSGNode.Flag.OwnsGeometry)
             cell_node.setFlag(QSGNode.Flag.OwnsMaterial)
-            if cell.vertices.shape[0]:
-                geometry.allocate(cell.vertices.shape[0])
+            count = int(cell.vertices.shape[0])
+            if count:
+                geometry.allocate(count)
                 _upload_vertices(geometry, cell.vertices, VERTEX_DTYPE.itemsize)
+                drawn += count
+            nodes.append(cell_node)
+            counts.append(count)
+        if not drawn:
+            # Nothing in the new frame draws.  Keep the previous complete frame
+            # attached rather than swapping in an empty one mid-motion.
+            return
+        for child in self._cell_nodes:
+            try:
+                content.removeChildNode(child)
+            except Exception:  # pragma: no cover - Qt already dropped it
+                pass
+        for cell_node in nodes:
             content.appendChildNode(cell_node)
-            self._cell_nodes.append(cell_node)
-            self._cell_vertex_counts.append(int(cell.vertices.shape[0]))
-            if self._geometry is None and cell.vertices.shape[0]:
-                # Kept inspectable: the first cell's buffer stands for the
-                # scene in diagnostics, as the single node did before.
-                self._geometry = geometry
-                self._material = material
+        self._cell_nodes = nodes
+        self._cell_vertex_counts = counts
+        self._cell_visible = ()
+        # No single "the" geometry or material exists in the multi-cell static
+        # scene: aliasing the first cell here made diagnostics read one cell's
+        # buffer (or, after a rebuild, a deleted C++ geometry) and report it as
+        # the whole scene.  ``_cell_vertex_counts`` is the authoritative
+        # per-cell record; ``_geometry``/``_material`` stay None in this mode.
+        self._geometry = None
+        self._material = None
         self._upload_count += 1
 
     def _update_static(self) -> None:
@@ -1420,8 +1557,10 @@ class EncMeshItem(QQuickItem):
             coeffs = self._frame_coeffs()
         if coeffs is None:
             # Nothing to transform (empty scene, or a degenerate probe set that
-            # already rebuilt above): the buffers are already current.
-            if self._content_node is not None:
+            # already rebuilt above): the buffers are already current.  Leave a
+            # retained frame's matrix alone -- resetting it would move the last
+            # complete picture while its replacement assembles.
+            if self._content_node is not None and not self._cell_nodes:
                 self._content_node.setMatrix(QMatrix4x4())
             return
         self._apply_matrix(coeffs)
@@ -1431,7 +1570,11 @@ class EncMeshItem(QQuickItem):
         if node is not self._node or self._built_static != static:
             return False
         if static:
-            return self._content_node is None or _wrapper_is_valid(self._content_node)
+            if self._content_node is None:
+                return True
+            # A content node without the cells it should carry is not usable:
+            # rebuilding is cheap and avoids drawing an empty chart.
+            return bool(self._cell_nodes) and _wrapper_is_valid(self._content_node)
         return (
             self._built_colored == self._colored
             and self._geometry is not None
@@ -1470,8 +1613,12 @@ class EncMeshItem(QQuickItem):
             # was given and never frees a buffer the item still references.
             node.setFlag(QSGNode.Flag.OwnsGeometry)
             node.setFlag(QSGNode.Flag.OwnsMaterial)
-            self._geometry = geometry
-            self._material = material
+            if not static:
+                # The static path records its cells in ``_cell_nodes``; a single
+                # aliased buffer here would be deleted with the node and read as
+                # the whole scene.
+                self._geometry = geometry
+                self._material = material
             self._built_colored = self._colored
             self._built_static = static
 

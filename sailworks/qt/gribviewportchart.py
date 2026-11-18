@@ -69,6 +69,13 @@ CHART_INTERACTIVE_MS = 150
 CHART_WEATHER_READY_WAIT_MS = 2000
 CHART_WEATHER_BUSY_WAIT_MS = 150
 
+#: The bounded weather priority when a chart frame is already on screen.  The
+#: retained frame keeps covering the view while the weather presents, so the
+#: chart does not need the cold-start window and must not be starved by it: a
+#: camera move every settle interval would otherwise re-arm that window for as
+#: long as the user keeps moving.
+CHART_RETAINED_HEAD_START_MS = 150
+
 #: The coastline qualities' initial draw times, as the application's own
 #: ``GSHHSVectorChart`` records them.
 _INITIAL_TIMES = (("c", 0), ("f", 0), ("h", 0), ("i", 0), ("l", 0))
@@ -161,6 +168,19 @@ def _same_static_geometry(frame_viewport, viewport):
         and abs(f_right - right) <= tolerance
         and abs(f_bottom - bottom) <= tolerance
     )
+
+
+def _static_frame_serves(frame, key, viewport):
+    """Whether a retained frame describes this request's content and zoom.
+
+    A frame serves a request only when it was composed for the same palette,
+    device factor and base sources, at the same zoom.  The camera may differ:
+    a pan within the frame's extent is served from its pixels, and only the
+    newly exposed strip is composed.
+    """
+    if (frame.palette, frame.factor, frame.sources) != key:
+        return False
+    return frame.viewport._zoom == viewport._zoom
 
 
 def _intersection_rect(viewport, frame_viewport):
@@ -1336,9 +1356,7 @@ class ViewportChartLayer:
         best = (None, None)
         best_area = 0
         for frame in self._static_frames.values():
-            if (frame.palette, frame.factor, frame.sources) != key:
-                continue
-            if frame.viewport._zoom != viewport._zoom:
+            if not _static_frame_serves(frame, key, viewport):
                 continue
             overlap = _intersection_rect(viewport, frame.viewport)
             if overlap is None:
@@ -1441,12 +1459,35 @@ class ViewportChartLayer:
         self._static_serial += 1
         self._static_frames[(key, self._static_serial)] = frame
         while len(self._static_frames) > STATIC_FRAME_LIMIT:
-            self._static_frames.popitem(last=False)
+            self._evict_static()
         with self._condition:
             self._static_bytes = sum(
                 frame.bytes for frame in self._static_frames.values()
             )
             self._static_count = len(self._static_frames)
+
+    def _evict_static(self):
+        """Drop one retained frame, a preview before a full-quality frame.
+
+        A preview frame is half resolution and every settled composition
+        supersedes it, while the full-quality frame it shares the pool with
+        is what the next pan reuses.  Evicting by age alone lets two or three
+        previews each pan push out the frame that would have served the next
+        settle, so every pan composes the whole chart again.  A preview is
+        dropped first; only when every slot holds a full-quality frame is the
+        oldest of them dropped.
+        """
+        preview = next(
+            (
+                key
+                for key, frame in self._static_frames.items()
+                if frame.factor != self._dpr
+            ),
+            None,
+        )
+        if preview is None:
+            preview = next(iter(self._static_frames))
+        del self._static_frames[preview]
 
     def _count_static(self, report):
         with self._condition:
