@@ -2206,6 +2206,268 @@ def test_a_warm_reversal_reuses_the_frame_it_came_from(tmp_path):
         layer.close()
 
 
+def test_a_covered_pan_reuses_the_retained_raster(tmp_path):
+    """A same-zoom pan inside a retained frame is a blit, not a compose.
+
+    A frame composed for a larger view still covers a smaller view panned a
+    few pixels, so the composition hands its pixels back with no chart
+    composer call at all.  A full recompose for a covered pan is exactly the
+    multi-second stall the retained raster exists to avoid.
+    """
+    layer, composer, _enc, _sources, Event = _static_layer(tmp_path)
+    wide = _camera(width=560, height=440)
+    target = replace(_panned(wide, 20), width=320, height=240)
+    try:
+        _image, first = layer._compose(wide, Event())
+        assert first["static"]["mode"] == "full"
+        calls = len(composer.calls)
+        image, second = layer._compose(target, Event())
+        report = second["static"]
+        assert report["mode"] == "reused"
+        assert report["reason"] == "covered"
+        assert report["composed_pixels"] == 0
+        assert report["reused_pixels"] == int(
+            second["viewport"].width * second["viewport"].height
+        )
+        # No composition ran for the covered pan: the retained surface is cut
+        # to the requested extent and handed back.
+        assert len(composer.calls) == calls
+        counters = layer.observations()["counters"]
+        assert counters["static_reuses"] == 1
+        assert counters["static_full_compositions"] == 1
+        # Every pixel is the retained composition's: nothing was composed.
+        assert image.pixelColor(2, 2).getRgb()[:3] == (255, 0, 0)
+        assert image.pixelColor(image.width() - 2, 2).getRgb()[:3] == (255, 0, 0)
+    finally:
+        layer.close()
+
+
+def test_an_exposed_pan_composes_only_the_strip_it_exposes(tmp_path):
+    """A pan beyond the retained frame composes the strip, not the frame."""
+    layer, composer, _enc, _sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    try:
+        _image, first = layer._compose(camera, Event())
+        assert first["static"]["mode"] == "full"
+        full_pixels = int(first["viewport"].width * first["viewport"].height)
+        panned = _panned(camera, 300)
+        image, second = layer._compose(panned, Event())
+        report = second["static"]
+        assert report["mode"] == "regions"
+        assert report["regions"] >= 1
+        # Only the uncovered strip is composed: its area is the pan distance
+        # tall by the view, never a frame.
+        assert report["composed_pixels"] <= 300 * int(second["viewport"].height)
+        assert report["composed_pixels"] < full_pixels // 2
+        assert report["reused_pixels"] > full_pixels // 2
+        counters = layer.observations()["counters"]
+        assert counters["static_region_compositions"] == 1
+        assert counters["static_full_compositions"] == 1
+        assert (
+            counters["static_pixels_composed"]
+            == full_pixels + report["composed_pixels"]
+        )
+        # The covered side is the retained red composition; the exposed side
+        # was composed now (green).
+        assert image.pixelColor(5, 50).getRgb()[:3] == (255, 0, 0)
+        assert image.pixelColor(image.width() - 5, 50).getRgb()[:3] == (0, 255, 0)
+    finally:
+        layer.close()
+
+
+def test_zoom_palette_or_dpr_change_invalidates_the_retained_raster(tmp_path):
+    """Reuse is a same-scale, same-content decision; anything else recomposes."""
+    layer, _composer, _enc, _sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    try:
+        _image, first = layer._compose(camera, Event())
+        assert first["static"]["mode"] == "full"
+        # A zoom change rescales every pixel: the frame never serves it.
+        _image, zoomed = layer._compose(replace(camera, zoom=9.25), Event())
+        assert zoomed["static"]["mode"] == "full"
+        # A palette change redraws every pixel in other colours.
+        layer._palette = "other"
+        _image, painted = layer._compose(replace(camera, zoom=9.25), Event())
+        assert painted["static"]["mode"] == "full"
+        # A device-pixel-ratio change is another factor: no reuse across it.
+        layer._dpr = 2
+        _image, scaled = layer._compose(replace(camera, zoom=9.25), Event())
+        assert scaled["static"]["mode"] == "full"
+        assert scaled["factor"] == 2
+        counters = layer.observations()["counters"]
+        assert counters["static_full_compositions"] == 4
+        assert counters["static_reuses"] == 0
+    finally:
+        layer.close()
+
+
+def test_a_sub_pixel_pan_reuses_the_retained_raster(tmp_path):
+    """A mouse pan lands on a fraction of a device pixel: snap, never recompose.
+
+    Mouse-driven pans produce fractional device offsets.  Rejecting them cost
+    every painted frame of a real session a full composition, so the blit is
+    translated to the nearest whole device pixel instead: a pure translation
+    of retained pixels, bounded by half a device pixel, never a resample.
+    """
+    from sailworks.qt.gribviewportchart import STATIC_SNAP_PX
+
+    layer, composer, _enc, _sources, Event = _static_layer(tmp_path)
+    wide = _camera(width=560, height=440)
+    target = replace(_panned(wide, 20.5), width=320, height=240)
+    try:
+        _image, first = layer._compose(wide, Event())
+        assert first["static"]["mode"] == "full"
+        calls = len(composer.calls)
+        _image, second = layer._compose(target, Event())
+        report = second["static"]
+        assert report["mode"] == "reused"
+        assert report["shift"] == (-140, -100)
+        assert 0.0 < report["snapped_px"] <= STATIC_SNAP_PX
+        assert report["composed_pixels"] == 0
+        # The retained pixels are translated, so the composer never runs again.
+        assert len(composer.calls) == calls
+        counters = layer.observations()["counters"]
+        assert counters["static_snapped_reuses"] == 1
+        assert counters["static_reuses"] == 1
+        assert counters["static_fractional_rejections"] == 0
+        assert counters["static_full_compositions"] == 1
+    finally:
+        layer.close()
+
+
+def test_a_sub_pixel_pan_exposes_a_strip_and_composes_only_that(tmp_path):
+    """Rounding a sub-pixel pan must still leave region composition engaged."""
+    from sailworks.qt.gribviewportchart import STATIC_SNAP_PX
+
+    layer, composer, _enc, _sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    try:
+        _image, first = layer._compose(camera, Event())
+        assert first["static"]["mode"] == "full"
+        full = int(first["viewport"].width * first["viewport"].height)
+        image, second = layer._compose(_panned(camera, 180.5), Event())
+        report = second["static"]
+        assert report["mode"] == "regions"
+        assert report["regions"] >= 1
+        assert 0 < report["composed_pixels"] < full // 2
+        assert report["reused_pixels"] > 0
+        assert report["snapped_px"] <= STATIC_SNAP_PX
+        # The seam is interior to a region that rendered the content: the
+        # covered side is the retained composition, the exposed side the new
+        # one, with no unpainted column between them.
+        assert image.pixelColor(5, 50).getRgb()[:3] == (255, 0, 0)
+        assert image.pixelColor(image.width() - 5, 50).getRgb()[:3] == (0, 255, 0)
+        counters = layer.observations()["counters"]
+        assert counters["static_region_compositions"] == 1
+        assert counters["static_snapped_reuses"] == 1
+    finally:
+        layer.close()
+
+
+def test_a_covered_pan_blit_is_pixel_identical_to_a_full_composition(tmp_path):
+    """Integer-offset translated reuse is byte-for-byte the same pixels."""
+    import numpy as np
+
+    from threading import Event
+
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.qt.gribviewportchart import MARGIN, ChartCamera
+
+    wide = _camera(width=560, height=440)
+    target = replace(_panned(wide, 20), width=320, height=240)
+    viewport = MapViewport(ChartCamera(target, 1), MARGIN, lambda: None)
+    anchors = []
+    for offset in range(-160, 220, 40):
+        lon = viewport._x_to_lon(viewport._lon_to_x(viewport._center_lon) + offset)
+        anchors.append((target.center_lat, lon, "A"))
+    # One layer reuses the wider frame for the target; the other composes the
+    # target alone.  Both place the same ink by the same projection.
+    reused_layer = _chart_layer(tmp_path)
+    full_layer = _chart_layer(tmp_path)
+    for layer in (reused_layer, full_layer):
+        composer = _GeometryComposer(anchors)
+        layer._dpr = 1
+        layer._composer = lambda composer=composer: composer
+        layer._enc_composer = lambda: None
+        layer._base_sources = lambda: ()
+        layer._isobar_columns = lambda job, camera, cancel: None
+    try:
+        reused_layer._compose(wide, Event())
+        reused, meta = reused_layer._compose(target, Event())
+        assert meta["static"]["mode"] == "reused"
+        assert meta["static"]["composed_pixels"] == 0
+        full, _meta = full_layer._compose(target, Event())
+        assert _meta["static"]["mode"] == "full"
+        reused_array = _image_array(reused)
+        full_array = _image_array(full)
+        assert reused_array.shape == full_array.shape
+        delta = np.abs(reused_array.astype(np.int16) - full_array.astype(np.int16))
+        # The blit is the retained pixels translated by a whole device pixel:
+        # exact identity, not merely close.
+        assert int(delta.max()) == 0
+        assert np.array_equal(reused_array, full_array)
+    finally:
+        reused_layer.close()
+        full_layer.close()
+
+
+def test_a_drag_burst_ends_with_the_final_camera_published(tmp_path):
+    """A burst of demands during a composition still ends in a publication.
+
+    Every intermediate generation is superseded and may not publish, but the
+    newest demand always occupies the pending slot and always gets a worker,
+    so the burst cannot end with a camera that never publishes.
+    """
+    import time as clock
+    from threading import Event
+
+    published = []
+    layer = _chart_layer(tmp_path, on_publish=published.append)
+    entered = Event()
+    release = Event()
+    calls = []
+
+    def compose(camera, cancel):
+        calls.append(camera)
+        if len(calls) == 1:
+            entered.set()
+            release.wait(5)
+        metadata = dict(_chart_metadata(camera), camera=camera)
+        return ("image", metadata)
+
+    layer._compose = compose
+    camera = _camera()
+    try:
+        layer.request(camera)
+        assert entered.wait(5)
+        demands = [
+            _panned(camera, 10),
+            _panned(camera, 20),
+            replace(camera, zoom=9.25),
+            _panned(replace(camera, zoom=9.25), 30),
+        ]
+        generations = [layer.request(demand) for demand in demands]
+        final = demands[-1]
+        release.set()
+        deadline = clock.monotonic() + 5
+        while clock.monotonic() < deadline:
+            if final in layer.observations()["published_generations"]:
+                break
+            clock.sleep(0.01)
+        observations = layer.observations()
+        # The newest demand is the one that publishes, and it publishes its
+        # own camera -- not an intermediate or superseded demand.
+        assert generations[-1] in observations["published_generations"]
+        assert observations["published_generations"] == (generations[-1],)
+        assert published and published[-1][0] == generations[-1]
+        assert published[-1][2]["camera"] == final
+        assert calls[-1] == final
+        assert observations["counters"]["cancelled_active"] >= 1
+    finally:
+        release.set()
+        layer.close()
+
+
 def test_a_resized_view_is_reanchored_not_returned_verbatim(tmp_path):
     """A retained frame of another extent is cropped to the requested view.
 
@@ -2476,7 +2738,7 @@ def test_interactive_chart_is_event_throttled_and_yields_to_weather(monkeypatch)
     weather.busy.return_value = False
     request(widget)
     assert chart.request.call_count == 2
-    chart.request.assert_called_with(widget._camera, preview=True)
+    chart.request.assert_called_with(widget._camera, preview=True, cause="preview")
 
 
 def test_preview_is_blocked_in_flight_and_settle_publishes_full_quality(tmp_path):
