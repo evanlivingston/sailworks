@@ -1612,8 +1612,10 @@ def test_chart_idle_timer_debounces_camera_changes(presenter):
     calls = []
     settled = QEventLoop()
 
-    def request(camera, preview=False):
-        calls.append((time.perf_counter(), camera, preview))
+    def request(camera, replace=False, preview=False, cause=None):
+        # The viewport passes its camera plus a trace-only cause; the double
+        # records both so the call shape matches the layer's contract.
+        calls.append((time.perf_counter(), camera, preview, cause))
         if not preview:
             settled.quit()
         # The double names the retained generation, so the retained-staging
@@ -1654,21 +1656,21 @@ def test_chart_idle_timer_debounces_camera_changes(presenter):
     # entire settle interval on a busy GUI thread, allowing a valid first view
     # to settle before the second camera change is delivered.
     assert len(calls) <= 1
-    assert all(preview for _, _, preview in calls)
+    assert all(preview for _, _, preview, _ in calls)
     widget._camera = "second"
     widget._chart_camera_changed = time.perf_counter()
     changed = widget._chart_camera_changed
     widget._restart_chart_settle()
     widget._request_interactive_chart()
     assert len(calls) <= 1
-    assert all(preview for _, _, preview in calls)
+    assert all(preview for _, _, preview, _ in calls)
     watchdog = QTimer()
     watchdog.setSingleShot(True)
     watchdog.timeout.connect(settled.quit)
     watchdog.start(CHART_IDLE_MS * 20)
     settled.exec()
     watchdog.stop()
-    full = [(when, camera) for when, camera, preview in calls if not preview]
+    full = [(when, camera) for when, camera, preview, _ in calls if not preview]
     assert len(full) == 1
     assert full[0][1] == "second"
     assert full[0][0] - changed >= CHART_IDLE_MS / 1000
@@ -1683,26 +1685,37 @@ def test_chart_worker_finishes_active_and_coalesces_latest_camera(tmp_path):
     cameras, cancelled = [], []
     layer = ViewportChartLayer((), tmp_path)
 
+    class Camera:
+        """Camera double: the chart contract reads the zoom for reuse."""
+
+        def __init__(self, zoom):
+            self.zoom = zoom
+
+    first, intermediate, latest = Camera(4.0), Camera(4.0), Camera(4.0)
+
     def compose(camera, cancel):
         cameras.append(camera)
-        if camera == "first":
+        if camera is first:
             started.set()
             assert release.wait(5)
             cancelled.append(cancel.is_set())
         else:
+            assert camera is latest
             finished.set()
         return QImage(1, 1, QImage.Format.Format_ARGB32), {}
 
     layer._compose = compose
     try:
-        layer.request("first")
+        layer.request(first)
         assert started.wait(5)
-        layer.request("intermediate")
-        layer.request("latest")
+        # Same zoom: the running composition still serves a pan, so it must
+        # finish while only the pending demand is replaced.
+        layer.request(intermediate)
+        layer.request(latest)
         assert not layer._active[2].is_set()
         release.set()
         assert finished.wait(5)
-        assert cameras == ["first", "latest"]
+        assert cameras == [first, latest]
         assert cancelled == [False]
     finally:
         release.set()
@@ -1723,11 +1736,16 @@ def test_chart_weather_busy_rearms_for_a_bounded_head_start(presenter):
     )
 
     requests = []
+
+    def request(camera, replace=False, preview=False, cause=None):
+        # The layer's contract: a camera plus a trace-only cause.
+        requests.append(camera)
+
     model = SimpleNamespace(busy=Mock(return_value=True))
     widget = SimpleNamespace(
         _disposed=False,
         _chart_timer=QTimer(),
-        _chart_model=SimpleNamespace(request=requests.append),
+        _chart_model=SimpleNamespace(request=request),
         _camera="camera",
         _weather_ready_at=1,
         _enc_chart_layer=False,
