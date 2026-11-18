@@ -30,7 +30,12 @@ event:
   composes only the newly exposed rectangles; a forecast-time change composes
   no chart pixel at all and redraws only the contours;
 * the composition is composed at the GUI's own device pixel ratio, and a
-  zoom or a ratio change is composed again rather than resampled.
+  zoom or a ratio change is composed again rather than resampled;
+* a preview composition is never composed below display density on a
+  high-density display.  Only a ratio of 1 halves a preview; at ratio 2 or
+  more the preview is composed at the display's own ratio, because a
+  half-density preview drawn unsmoothed aliases its one-pixel cell linework
+  away until the full-density settle lands.
 
 The ENC cells are the application's own cells: the installed and enabled
 entries of the user's manifest, read and opened by this layer's own worker
@@ -169,6 +174,9 @@ class _StaticFrame:
     sources: tuple
     enc_metadata: dict
     bytes: int
+    # This frame's identity in the retained pool, reported by the trace so a
+    # publication names the frame whose pixels it reused.
+    serial: int = 0
     # The device-pixel offset these pixels actually carry relative to the
     # position ``viewport`` implies.  A snapped blit leaves up to
     # ``STATIC_SNAP_PX`` there; it is carried so the next pan cancels it
@@ -462,7 +470,14 @@ def _trace_composition(generation, cause, metadata):
         shift=static.get("shift"),
         snapped_px=static.get("snapped_px"),
         delta_px=static.get("delta_px"),
-        factor=static.get("factor"),
+        factor=static.get("factor", (metadata or {}).get("factor")),
+        preview=(metadata or {}).get("preview"),
+        requested_extent=(metadata or {}).get("requested_extent"),
+        canvas_extent=(metadata or {}).get("canvas_extent"),
+        required_extent=(metadata or {}).get("required_extent"),
+        shortfall_device_pixels=(metadata or {}).get("shortfall_device_pixels"),
+        reuse_source_serial=static.get("reuse_serial"),
+        reuse_destination_rect=static.get("reuse_rect"),
         composed_pixels=static.get("composed_pixels"),
         reused_pixels=static.get("reused_pixels"),
         timings=(metadata or {}).get("timings"),
@@ -519,6 +534,30 @@ class ChartCamera(MercatorProjection):
 
     def queue_draw(self):
         """The chart layer publishes its own image; no canvas repaint is due."""
+
+
+def _composition_factor(dpr, preview):
+    """The factor a composition is rendered at.
+
+    A settled composition is always at the display's own ratio.  A preview is
+    at the same ratio whenever the display is a high-density one; only at a
+    ratio of 1 is it halved, where halving is the whole saving.  Halving a
+    preview on a Retina display would clock it at half the display's density
+    and its one-pixel cell linework would alias out until the settle.
+    """
+    if preview and dpr < 2:
+        return 0.5 * dpr
+    return dpr
+
+
+def _device_area(viewport, factor):
+    """The device-pixel area of a whole logical viewport at *factor*."""
+    return int(round(viewport.width * viewport.height * factor * factor))
+
+
+def _device_rect_area(rect, factor):
+    """The device-pixel area of a logical surface rectangle at *factor*."""
+    return int(round((rect[2] - rect[0]) * (rect[3] - rect[1]) * factor * factor))
 
 
 def _countries():
@@ -1016,7 +1055,7 @@ class ViewportChartLayer:
         if metadata["time"] != camera.stamp():
             # The isobars belong to the forecast instant.
             return False
-        expected_factor = self._dpr * 0.5 if preview else self._dpr
+        expected_factor = _composition_factor(self._dpr, preview)
         if metadata.get("factor", 1) != expected_factor:
             # The composition was made at another device pixel ratio: it is
             # not current, and it may not be resampled into this one.
@@ -1412,7 +1451,7 @@ class ViewportChartLayer:
 
         import cairo
 
-        factor = self._dpr * 0.5 if preview else self._dpr
+        factor = _composition_factor(self._dpr, preview)
         canvas = ChartCamera(camera, factor)
         viewport = MapViewport(canvas, MARGIN, lambda: None)
         viewport.render_cancelled = cancel.is_set
@@ -1471,6 +1510,20 @@ class ViewportChartLayer:
             return None, None
         image = _surface_image(surface, factor)
         reuse["isobar_only"] = isobar_only
+        requested_extent = (int(viewport.width), int(viewport.height))
+        canvas_extent = (int(image.width()), int(image.height()))
+        required_extent = (
+            int(round(viewport.width * self._dpr)),
+            int(round(viewport.height * self._dpr)),
+        )
+        # A canvas smaller than the display's own extent leaves pixels the
+        # display has no data for.  The shortfall is device pixels on the
+        # worse axis, so it can never be hidden by a logical/device mix-up.
+        shortfall_device_pixels = max(
+            0,
+            required_extent[0] - canvas_extent[0],
+            required_extent[1] - canvas_extent[1],
+        )
         timings = {
             "static_ms": round(static_ms, 3),
             "columns_ms": round(columns_ms, 3),
@@ -1489,6 +1542,14 @@ class ViewportChartLayer:
             # does not match this demand can never be re-served under
             # metadata that claims it does.
             "image_extent": (int(image.width()), int(image.height())),
+            # The extents this composition was asked for, composed, and
+            # required to cover.  ``requested_extent`` is the camera's logical
+            # canvas, ``canvas_extent`` the backing store in device pixels and
+            # ``required_extent`` the camera at the display's ratio.
+            "requested_extent": requested_extent,
+            "canvas_extent": canvas_extent,
+            "required_extent": required_extent,
+            "shortfall_device_pixels": shortfall_device_pixels,
             # The background identity these pixels were painted for.  The
             # viewport presents a deferred switch only on a composition that
             # matches it.
@@ -1520,8 +1581,15 @@ class ViewportChartLayer:
             "factor": factor,
             "regions": 0,
             "region_rects": [],
-            "composed_pixels": int(viewport.width) * int(viewport.height),
+            # Areas are reported in device pixels: the pixels the backing
+            # store actually holds.  A logical area would under-report a
+            # high-density composition by ``factor ** 2``.
+            "composed_pixels": _device_area(viewport, factor),
             "reused_pixels": 0,
+            # The retained frame this composition reused, and where its
+            # pixels landed in the destination surface.
+            "reuse_serial": None,
+            "reuse_rect": None,
             "retained_bytes": 0,
         }
         frame, overlap, shift = self._best_static_frame(key, viewport)
@@ -1545,6 +1613,13 @@ class ViewportChartLayer:
                 with self._condition:
                     self.counters["static_snapped_reuses"] += 1
         if frame is not None and overlap is not None:
+            report["reuse_serial"] = frame.serial
+            report["reuse_rect"] = (
+                int(overlap[0]),
+                int(overlap[1]),
+                int(overlap[2]),
+                int(overlap[3]),
+            )
             if overlap == (0, 0, int(viewport.width), int(viewport.height)):
                 # Every pixel is covered by the retained frame, but its
                 # surface may be sized and anchored for another view.  It is
@@ -1557,7 +1632,7 @@ class ViewportChartLayer:
                 report["mode"] = "reused"
                 report["reason"] = "covered"
                 report["composed_pixels"] = 0
-                report["reused_pixels"] = int(viewport.width) * int(viewport.height)
+                report["reused_pixels"] = _device_area(viewport, factor)
                 if (
                     _same_static_geometry(frame.viewport, viewport)
                     and shift == (0, 0)
@@ -1604,10 +1679,8 @@ class ViewportChartLayer:
                 cr.set_source_surface(region_surface, x, y)
                 cr.paint()
                 report["regions"] += 1
-                report["composed_pixels"] += (rect[2] - rect[0]) * (rect[3] - rect[1])
-            report["reused_pixels"] = (overlap[2] - overlap[0]) * (
-                overlap[3] - overlap[1]
-            )
+                report["composed_pixels"] += _device_rect_area(rect, factor)
+            report["reused_pixels"] = _device_rect_area(overlap, factor)
             enc_metadata = self._enc_report(job, enc)
             if enc_metadata is None:
                 return None
@@ -1751,6 +1824,8 @@ class ViewportChartLayer:
         that produced them; it is stored so the next reuse cancels it.
         """
         surface.flush()
+        self._static_serial += 1
+        serial = self._static_serial
         frame = _StaticFrame(
             surface=surface,
             viewport=viewport,
@@ -1759,10 +1834,10 @@ class ViewportChartLayer:
             sources=self._base_sources(),
             enc_metadata=enc_metadata,
             bytes=_surface_bytes(surface),
+            serial=serial,
             snap=snap,
         )
-        self._static_serial += 1
-        self._static_frames[(key, self._static_serial)] = frame
+        self._static_frames[(key, serial)] = frame
         while len(self._static_frames) > STATIC_FRAME_LIMIT:
             self._evict_static()
         with self._condition:
@@ -1772,21 +1847,23 @@ class ViewportChartLayer:
             self._static_count = len(self._static_frames)
 
     def _evict_static(self):
-        """Drop one retained frame, a preview before a full-quality frame.
+        """Drop one retained frame, a reduced-resolution preview first.
 
-        A preview frame is half resolution and every settled composition
-        supersedes it, while the full-quality frame it shares the pool with
-        is what the next pan reuses.  Evicting by age alone lets two or three
-        previews each pan push out the frame that would have served the next
-        settle, so every pan composes the whole chart again.  A preview is
-        dropped first; only when every slot holds a full-quality frame is the
-        oldest of them dropped.
+        A preview frame at a ratio below the display's is every settled
+        composition's inferior, while the full-quality frame it shares the
+        pool with is what the next pan reuses.  Evicting by age alone lets two
+        or three previews each pan push out the frame that would have served
+        the next settle, so every pan composes the whole chart again.  A
+        reduced preview is dropped first; only when every slot holds a
+        display-density frame is the oldest of them dropped.  At a
+        high-density display a preview is already display-density, so it is
+        not a lesser frame and is not singled out.
         """
         preview = next(
             (
                 key
                 for key, frame in self._static_frames.items()
-                if frame.factor != self._dpr
+                if frame.factor < self._dpr
             ),
             None,
         )

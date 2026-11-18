@@ -2725,6 +2725,169 @@ def test_a_preview_frame_never_evicts_the_full_quality_frame(tmp_path):
         layer.close()
 
 
+def test_a_preview_on_a_retina_display_is_composed_at_display_density(tmp_path):
+    """A preview never renders below display density on a Retina display.
+
+    Halving the preview here composes a quarter of the display's pixels and
+    the unsmoothed blit aliases one-pixel cell linework away until the settle.
+    """
+    layer, _composer, _enc, _sources, Event = _static_layer(tmp_path)
+    layer._dpr = 2
+    camera = _camera(width=320, height=240)
+    try:
+        image, metadata = layer._compose(camera, Event(), preview=True)
+        assert metadata["preview"] is True
+        assert metadata["factor"] == 2
+        viewport = metadata["viewport"]
+        expected = (
+            int(round(viewport.width * 2)),
+            int(round(viewport.height * 2)),
+        )
+        assert (image.width(), image.height()) == expected
+        assert metadata["canvas_extent"] == expected
+        assert metadata["required_extent"] == expected
+        assert metadata["shortfall_device_pixels"] == 0
+        # The rule this replaced composed ``dpr * 0.5`` on every display.
+        old_rule = (
+            int(round(viewport.width * layer._dpr * 0.5)),
+            int(round(viewport.height * layer._dpr * 0.5)),
+        )
+        assert (image.width(), image.height()) != old_rule
+    finally:
+        layer.close()
+
+
+def test_a_preview_at_ratio_one_is_still_half_density(tmp_path):
+    """Halving a preview is the whole saving only where there is no Retina."""
+    layer, _composer, _enc, _sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    try:
+        image, metadata = layer._compose(camera, Event(), preview=True)
+        assert layer._dpr == 1
+        assert metadata["preview"] is True
+        assert metadata["factor"] == 0.5
+        viewport = metadata["viewport"]
+        assert (image.width(), image.height()) == (
+            int(round(viewport.width * 0.5)),
+            int(round(viewport.height * 0.5)),
+        )
+        assert metadata["required_extent"] == (
+            int(round(viewport.width * layer._dpr)),
+            int(round(viewport.height * layer._dpr)),
+        )
+    finally:
+        layer.close()
+
+
+def test_settle_composes_at_the_display_ratio_at_both_densities(tmp_path):
+    """The preview rule leaves the settle path's factor and extent unchanged."""
+    layer, _composer, _enc, _sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    try:
+        for dpr in (1, 2):
+            layer._dpr = dpr
+            image, metadata = layer._compose(camera, Event())
+            assert metadata["preview"] is False
+            assert metadata["factor"] == dpr
+            viewport = metadata["viewport"]
+            expected = (
+                int(round(viewport.width * dpr)),
+                int(round(viewport.height * dpr)),
+            )
+            assert (image.width(), image.height()) == expected
+            assert metadata["required_extent"] == expected
+            assert metadata["shortfall_device_pixels"] == 0
+    finally:
+        layer.close()
+
+
+def test_compose_pixel_counters_are_device_pixels(tmp_path):
+    """Composed and reused areas are the backing store's, never logical ones."""
+    layer, _composer, _enc, _sources, Event = _static_layer(tmp_path)
+    layer._dpr = 2
+    camera = _camera(width=320, height=240)
+    try:
+        _image, first = layer._compose(camera, Event())
+        viewport = first["viewport"]
+        full = int(round(viewport.width * viewport.height * 4))
+        report = first["static"]
+        assert report["mode"] == "full"
+        assert report["composed_pixels"] == full
+        assert report["composed_pixels"] != int(viewport.width * viewport.height)
+        assert report["reused_pixels"] == 0
+        assert first["shortfall_device_pixels"] == 0
+        counters = layer.observations()["counters"]
+        assert counters["static_pixels_composed"] == full
+
+        _image, second = layer._compose(_panned(camera, 300), Event())
+        panned_viewport = second["viewport"]
+        assert second["static"]["composed_pixels"] % 4 == 0
+        assert second["static"]["reused_pixels"] % 4 == 0
+        assert second["static"]["reused_pixels"] > 0
+        assert second["shortfall_device_pixels"] == 0
+        # Every device pixel is either retained or composed now.
+        assert second["static"]["composed_pixels"] + second["static"][
+            "reused_pixels"
+        ] == int(round(panned_viewport.width * panned_viewport.height * 4))
+
+        _image, preview = layer._compose(_panned(camera, 60), Event(), preview=True)
+        assert preview["shortfall_device_pixels"] == 0
+        assert preview["canvas_extent"] == preview["required_extent"]
+    finally:
+        layer.close()
+
+
+def test_chart_compose_trace_records_extents_and_the_reused_frame(
+    monkeypatch, tmp_path
+):
+    """The trace names the required extent, the shortfall and the reused frame."""
+    import json
+
+    from sailworks.qt import enc_trace
+    from sailworks.qt.gribviewportchart import _trace_composition
+
+    target = tmp_path / "trace.jsonl"
+    monkeypatch.setenv(enc_trace.ENV_PATH, str(target))
+    enc_trace.reset()
+    try:
+        _trace_composition(
+            21,
+            "preview",
+            {
+                "camera": _camera(),
+                "preview": True,
+                "factor": 2,
+                "requested_extent": (832, 752),
+                "canvas_extent": (1664, 1504),
+                "required_extent": (1664, 1504),
+                "shortfall_device_pixels": 0,
+                "static": {
+                    "mode": "reused",
+                    "reason": "covered",
+                    "factor": 2,
+                    "composed_pixels": 0,
+                    "reused_pixels": 2502656,
+                    "reuse_serial": 7,
+                    "reuse_rect": (0, 0, 832, 752),
+                },
+            },
+        )
+        written = target.read_text(encoding="utf-8").splitlines()
+    finally:
+        enc_trace.reset()
+
+    record = json.loads(written[0])
+    assert record["event"] == "chart_compose"
+    assert record["preview"] is True
+    assert record["factor"] == 2
+    assert record["requested_extent"] == [832, 752]
+    assert record["canvas_extent"] == [1664, 1504]
+    assert record["required_extent"] == [1664, 1504]
+    assert record["shortfall_device_pixels"] == 0
+    assert record["reuse_source_serial"] == 7
+    assert record["reuse_destination_rect"] == [0, 0, 832, 752]
+
+
 def test_scene_draws_chart_only_for_a_complete_frame_of_this_camera():
     """The raster yields only to a complete scene assembled for this camera.
 
