@@ -40,6 +40,22 @@ class CellPlan:
     coverage: object | None = None
 
 
+@dataclasses.dataclass(frozen=True)
+class UnavailableCell:
+    """A cell the plan could not read, and why, in plan order.
+
+    Selection policy is unchanged: the cell still has the rank the renderer
+    would give it, so the caller can show it where the chart omits it.  It
+    contributes no clip and no coverage claim - the remaining cells keep the
+    ground they would have had, and the raster stays visible over any area
+    nothing readable covers.
+    """
+
+    path: str
+    rank_key: tuple
+    reason: str
+
+
 def _cancelled(cancelled) -> bool:
     return cancelled is not None and bool(cancelled())
 
@@ -68,6 +84,7 @@ def plan_cells(
     cancelled=None,
     coverage_loader=_open_coverage,
     version_of=encscene.cell_version,
+    unavailable=None,
 ):
     """Order ``charts`` the way the raster renderer would, without drawing.
 
@@ -84,6 +101,15 @@ def plan_cells(
     plan returns ``None``, never a partial tuple.  ``coverage_loader`` and
     ``version_of`` are injection points for tests; the defaults read M_COVR
     from the cell file and bound the read with ``encscene.cell_version``.
+
+    ``unavailable`` is an optional list.  When it is given, a cell that
+    cannot be read (missing file, catalog or GDAL open error, decode failure,
+    a cell that changed while it was being planned) is appended to it as an
+    :class:`UnavailableCell` and planning continues with the remaining cells;
+    the cell contributes no clip and no coverage claim, so the raster keeps
+    covering the ground nothing readable draws.  When it is ``None`` the
+    first such failure raises, as before, for callers that treat planning a
+    whole composition as all-or-nothing.
     """
     scale = viewport.get_scale()
     bounding, (min_lon, max_lon, min_lat, max_lat) = _bounding(viewport)
@@ -104,10 +130,23 @@ def plan_cells(
             for a, b, c, d in envelopes
         ):
             continue
-        version = version_of(path)
-        region = coverage_loader(path)
-        if version_of(path) != version:
-            raise ValueError(f"cell changed while it was being planned: {path}")
+        try:
+            version = version_of(path)
+            region = coverage_loader(path)
+            if version_of(path) != version:
+                raise ValueError(f"cell changed while it was being planned: {path}")
+        except Exception as exc:
+            if unavailable is None:
+                raise
+            reason = str(exc) or type(exc).__name__
+            unavailable.append(
+                UnavailableCell(
+                    path=os.fspath(path),
+                    rank_key=chart_scale_rank(native_scale, scale),
+                    reason=reason,
+                )
+            )
+            continue
         known_coverage = region is not None
         own_coverage = region
         region = (

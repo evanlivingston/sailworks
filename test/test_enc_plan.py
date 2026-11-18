@@ -282,3 +282,90 @@ def test_plan_matches_the_helper_sequence(tmp_path):
         assert entry.coverage_known is known
         assert entry.clip.equals(region)
         assert entry.clip.area == pytest.approx(region.area)
+
+
+# ------------------------------------------------- unreadable planned cells
+def test_unavailable_cell_is_named_and_kept_out_of_the_drawn_set(tmp_path):
+    viewport = _Viewport()
+    bounds = shapely.bounds(_view(viewport))
+    good = _cell(tmp_path / "good.gpkg", [(bounds, 1)])
+    missing = str(tmp_path / "missing" / "US4WA1IB.000")
+    charts = [(missing, 2500, None), (good, 2000, None)]
+
+    unavailable = []
+    plan = encplan.plan_cells(viewport, charts, unavailable=unavailable)
+
+    # The readable cell still composes, and the missing one is named with its
+    # rank and a reason instead of vanishing from the ordered set.
+    assert [entry.path for entry in plan] == [good]
+    assert plan[0].coverage_known is True
+    assert plan[0].clip.equals(_view(viewport))
+    (record,) = unavailable
+    assert record.path == missing
+    assert record.rank_key == chart_scale_rank(2500, viewport.get_scale())
+    assert record.reason
+
+
+def test_without_a_failure_list_a_missing_cell_still_raises(tmp_path):
+    viewport = _Viewport()
+    missing = str(tmp_path / "missing" / "US4WA1IB.000")
+
+    with pytest.raises(OSError):
+        encplan.plan_cells(viewport, [(missing, 2500, None)])
+
+
+def test_every_cell_unreadable_yields_an_empty_plan_with_every_reason(tmp_path):
+    viewport = _Viewport()
+    first = str(tmp_path / "missing" / "US4WA1IB.000")
+    second = str(tmp_path / "gone" / "US5WA2IB.000")
+
+    unavailable = []
+    plan = encplan.plan_cells(
+        viewport,
+        [(first, 2500, None), (second, 2000, None)],
+        unavailable=unavailable,
+    )
+
+    assert plan == ()
+    assert [record.path for record in unavailable] == [first, second]
+    assert all(record.reason for record in unavailable)
+
+
+def test_a_cell_that_recovers_returns_to_the_drawn_set(tmp_path):
+    viewport = _Viewport()
+    bounds = shapely.bounds(_view(viewport))
+    better = _cell(tmp_path / "better.gpkg", [(bounds, 1)])
+    worse = _cell(tmp_path / "worse.gpkg", [(bounds, 1)])
+    attempts = {"better": 0}
+
+    def loader(path):
+        if path == better:
+            attempts["better"] += 1
+            if attempts["better"] == 1:
+                raise OSError(f"cannot open ENC cell: {path}")
+        return encplan._open_coverage(path)
+
+    charts = [(worse, 2000, None), (better, 2500, None)]
+
+    first_unavailable = []
+    first = encplan.plan_cells(
+        viewport,
+        charts,
+        coverage_loader=loader,
+        version_of=lambda path: None,
+        unavailable=first_unavailable,
+    )
+    assert [entry.path for entry in first] == [worse]
+    assert [record.path for record in first_unavailable] == [better]
+
+    second_unavailable = []
+    second = encplan.plan_cells(
+        viewport,
+        charts,
+        coverage_loader=loader,
+        version_of=lambda path: None,
+        unavailable=second_unavailable,
+    )
+    assert second_unavailable == []
+    # The recovered cell is back in the drawn set and owns the view again.
+    assert [entry.path for entry in second] == [better]

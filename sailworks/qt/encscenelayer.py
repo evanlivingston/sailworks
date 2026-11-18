@@ -29,6 +29,7 @@ from threading import Condition, Event, Thread
 
 import numpy as np
 
+from sailworks.core.enccharts import chart_scale_rank
 from sailworks.rendering import encplan, encview
 from sailworks.rendering.vectordrawer import encscene, encscenestore
 
@@ -272,18 +273,19 @@ def cell_identity(cell):
 def cell_states(planned, skipped, done=None):
     """Explicit per-cell state, in plan order.
 
-    ``planned`` is the metadata's ordered ``cells_order`` and ``skipped`` is
-    the report's ``(path, reason)`` pairs.  A planned cell the report does not
-    name as skipped contributed geometry and is ``ready``.  On a partial
-    publication ``done`` is the number of resolved cells, so the rest are
-    ``loading``: a cell that is not drawn yet is never silently absent.
+    A planned cell the report does not name as skipped contributed geometry and
+    is ``ready``.  On a partial publication ``done`` is the number of resolved
+    cells, so the rest are ``loading``: a cell that is not drawn yet is never
+    silently absent.  A cell the plan itself could not read is appended to the
+    plan's order with its own reason, so it is reported by that reason even
+    while the rest of the scene is still resolving.
     """
     reasons = {os.path.abspath(os.fspath(path)): reason for path, reason in skipped}
     states = []
     for index, record in enumerate(planned):
         path = record["path"]
         reason = reasons.get(os.path.abspath(path))
-        if done is not None and index >= done:
+        if reason is None and done is not None and index >= done:
             state = STATE_LOADING
         elif reason is None:
             state = STATE_READY
@@ -302,6 +304,19 @@ def cell_states(planned, skipped, done=None):
             }
         )
     return tuple(states)
+
+
+def plan_unavailable(metadata):
+    """The composition's unreadable planned cells as ``(path, reason)`` pairs.
+
+    ``plan_cells`` records a cell it could not read here instead of dropping
+    it silently; merging these into the scene's own ``skipped`` entries is
+    what makes :func:`cell_states` report it as ``unavailable`` with its
+    reason on every publication, partial or final.
+    """
+    if not metadata:
+        return ()
+    return tuple(tuple(entry) for entry in metadata.get("unavailable", ()))
 
 
 def _scene_fields(scene):
@@ -761,6 +776,11 @@ class EncSceneLayer:
                 return False
             published = dict(metadata) if metadata is not None else {}
             published.update(_scene_fields(scene))
+            # A cell the plan itself could not read never reaches assembly, so
+            # its explicit state comes from the plan record, not the scene.
+            published["skipped"] = tuple(
+                published.get("skipped", ())
+            ) + plan_unavailable(published)
             published["cells_order"] = tuple(published.get("cells_order", ()))
             published["cell_states"] = cell_states(
                 published["cells_order"], published["skipped"], done
@@ -872,9 +892,12 @@ class EncSceneLayer:
                         metadata = dict(metadata)
                         metadata.update(report)
                         # Every planned cell is resolved in a finished scene;
-                        # ``skipped`` gives the ones that drew nothing.
+                        # ``skipped`` gives the ones that drew nothing, and the
+                        # plan's own unreadable cells are named alongside them.
+                        unreadable = plan_unavailable(metadata)
                         metadata["cell_states"] = cell_states(
-                            metadata.get("cells_order", ()), report["skipped"]
+                            metadata.get("cells_order", ()),
+                            tuple(report["skipped"]) + unreadable,
                         )
                         metadata.setdefault("timings", {})["assembly_ms"] = round(
                             (ended - began) * 1000.0, 3
@@ -883,7 +906,9 @@ class EncSceneLayer:
                             self.counters["assemblies"] += 1
                             self.counters["publications"] += 1
                             self.counters["cells"] += report["cells"]
-                            self.counters["skipped"] += len(report["skipped"])
+                            self.counters["skipped"] += len(report["skipped"]) + len(
+                                unreadable
+                            )
                             self.counters["unsupported"] += report["unsupported"]
                             self._published = (generation, scene, metadata)
                             # This is the frame motion may fall back to.
@@ -1008,23 +1033,74 @@ class EncSceneLayer:
         if not manifest.class_enabled:
             metadata["reason"] = "ENC charts are disabled"
             return None, metadata
+        # A cell the catalog itself could not read is part of the composition,
+        # not absent from it: it keeps its place and the catalog's reason, so
+        # the caller can name it instead of inferring its disappearance from a
+        # smaller drawable set.  It contributes no clip and no coverage claim,
+        # exactly like a cell the plan cannot read below.
+        unavailable = [
+            encplan.UnavailableCell(
+                path=os.fspath(source.path),
+                rank_key=chart_scale_rank(source.native_scale, viewport.get_scale()),
+                reason=str(source.error),
+            )
+            for source in self._catalog.sources
+            if source.error
+        ]
         usable = tuple(
             source.descriptor for source in self._catalog.sources if not source.error
         )
         if not usable:
             metadata["reason"] = "no readable ENC cell is enabled"
+            metadata["planned_cells"] = len(unavailable)
+            metadata["unavailable"] = tuple(
+                (cell.path, cell.reason) for cell in unavailable
+            )
+            metadata["cells_order"] = tuple(
+                {
+                    "path": os.fspath(cell.path),
+                    "name": os.path.basename(cell.path),
+                    "rank_key": tuple(cell.rank_key),
+                    "version": None,
+                    "coverage_known": False,
+                }
+                for cell in unavailable
+            )
             return None, metadata
         if cancel.is_set():
             return None, metadata
-        plan = encplan.plan_cells(viewport, usable, cancelled=cancel.is_set)
+        # A cell the plan cannot read is recorded here, not raised: the rest of
+        # the ordered set still composes, and the viewport keeps the raster over
+        # whatever ground nothing readable draws.
+        plan = encplan.plan_cells(
+            viewport, usable, cancelled=cancel.is_set, unavailable=unavailable
+        )
         if plan is None or cancel.is_set():
             return None, metadata
-        metadata["planned_cells"] = len(plan)
+        metadata["planned_cells"] = len(plan) + len(unavailable)
+        metadata["unavailable"] = tuple(
+            (cell.path, cell.reason) for cell in unavailable
+        )
         # Reporting only: the ordered identity of the plan, so a consumer can
-        # name every planned cell instead of inferring it from a count.
-        metadata["cells_order"] = tuple(cell_identity(cell) for cell in plan)
+        # name every planned cell instead of inferring it from a count.  A cell
+        # that could not be read is named after the drawable ones with the same
+        # identity shape and its own state record.
+        metadata["cells_order"] = tuple(cell_identity(cell) for cell in plan) + tuple(
+            {
+                "path": os.fspath(cell.path),
+                "name": os.path.basename(cell.path),
+                "rank_key": tuple(cell.rank_key),
+                "version": None,
+                "coverage_known": False,
+            }
+            for cell in unavailable
+        )
         if not plan:
-            metadata["reason"] = "no ENC cell covers this view"
+            metadata["reason"] = (
+                "no readable ENC cell is enabled"
+                if unavailable
+                else "no ENC cell covers this view"
+            )
             return None, metadata
         scene = assemble_scene(
             plan,

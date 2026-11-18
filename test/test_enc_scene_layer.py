@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 
 from sailworks.qt import encscenelayer
+from sailworks.qt.viewportenc import EncSource
 from sailworks.rendering import encplan, encview
 from sailworks.rendering.vectordrawer import encscene
 from test.enc_scene_fixtures import _CancelAfter, cell
@@ -1142,3 +1143,162 @@ def test_without_a_yield_budget_a_busy_worker_still_defers(tmp_path):
     finally:
         layer.close()
         layer._thread.join(TIMEOUT)
+
+
+# ------------------------------------------------ unreadable planned cells
+class _ComposeViewport(_FakeViewport):
+    """A worker-composition viewport at the plan tests' scale."""
+
+    def __init__(self, camera, margin, cancelled):
+        super().__init__(-1.0, -1.0, 12.0, 12.0)
+        self.render_cancelled = None
+
+    def get_scale(self):
+        return 1.0
+
+
+def _compose_patch(monkeypatch):
+    import sailworks.core.mapviewport as mapviewport
+
+    monkeypatch.setattr(mapviewport, "MapViewport", _ComposeViewport)
+
+
+def test_plan_unavailable_merges_into_the_cell_states():
+    missing = "/cells/US4WA1IB.000"
+    planned = (
+        {"path": "/cells/good.000", "name": "good.000"},
+        {"path": missing, "name": "US4WA1IB.000"},
+    )
+    metadata = {
+        "unavailable": ((missing, "FileNotFoundError: no such file"),),
+    }
+
+    states = encscenelayer.cell_states(
+        planned, encscenelayer.plan_unavailable(metadata)
+    )
+
+    assert [(state["state"], state["reason"]) for state in states] == [
+        ("ready", ""),
+        ("unavailable", "FileNotFoundError: no such file"),
+    ]
+
+
+def test_partial_publication_names_an_unreadable_cell_before_it_resolves(
+    tmp_path, cell
+):
+    published = []
+    layer = _layer(tmp_path, on_publish=published.append)
+    scene = _assembled(cell)
+    camera = _Camera()
+    missing = "/cells/US4WA1IB.000"
+    try:
+        with layer._condition:
+            generation = layer._generation
+        metadata = _metadata(camera)
+        metadata["cells_order"] = (
+            encscenelayer.cell_identity(_plan(cell)[0]),
+            {
+                "path": missing,
+                "name": "US4WA1IB.000",
+                "rank_key": (0, 0),
+                "version": None,
+                "coverage_known": False,
+            },
+        )
+        metadata["unavailable"] = ((missing, "FileNotFoundError: no such file"),)
+        assert layer._publish_partial(
+            generation, scene, 1, 2, threading.Event(), metadata
+        )
+
+        assert [(state["state"], state["reason"]) for state in layer.cell_states] == [
+            ("ready", ""),
+            ("unavailable", "FileNotFoundError: no such file"),
+        ]
+        assert published and published[0] is layer.published
+    finally:
+        layer.close()
+
+
+def test_compose_keeps_drawing_when_one_planned_cell_is_missing(
+    tmp_path, cell, monkeypatch
+):
+    _compose_patch(monkeypatch)
+    missing = str(tmp_path / "missing" / "US4WA1IB.000")
+    catalog = _StubCatalog(
+        sources=(
+            SimpleNamespace(descriptor=(missing, 2500, None), error=None),
+            SimpleNamespace(descriptor=(str(cell), 2000, None), error=None),
+        )
+    )
+    layer = _layer(tmp_path, catalog=catalog)
+    try:
+        scene, metadata = layer._compose(_Camera(), threading.Event())
+
+        assert scene is not None and not scene.is_empty
+        assert metadata["planned_cells"] == 2
+        assert [path for path, _ in metadata["unavailable"]] == [missing]
+        assert metadata["unavailable"][0][1]
+        states = encscenelayer.cell_states(
+            metadata["cells_order"], encscenelayer.plan_unavailable(metadata)
+        )
+        assert [state["state"] for state in states] == ["ready", "unavailable"]
+        # A scene with a hole never claims completeness.
+        assert encscenelayer.scene_report(scene)[1]["complete"] is False
+    finally:
+        layer._release()
+
+
+def test_compose_reports_a_catalog_error_as_unavailable(tmp_path, cell, monkeypatch):
+    _compose_patch(monkeypatch)
+    unreadable = str(tmp_path / "broken" / "US4WA1IB.000")
+    catalog = _StubCatalog(
+        sources=(
+            EncSource(path=unreadable, error="could not read cell header"),
+            EncSource(path=str(cell), native_scale=2000),
+        )
+    )
+    layer = _layer(tmp_path, catalog=catalog)
+    try:
+        scene, metadata = layer._compose(_Camera(), threading.Event())
+
+        # The readable cell still draws; the catalog's failure is named
+        # instead of being filtered out of the composition.
+        assert scene is not None and not scene.is_empty
+        assert metadata["planned_cells"] == 2
+        assert [path for path, _ in metadata["unavailable"]] == [unreadable]
+        assert metadata["unavailable"][0][1] == "could not read cell header"
+        states = encscenelayer.cell_states(
+            metadata["cells_order"], encscenelayer.plan_unavailable(metadata)
+        )
+        assert [state["state"] for state in states] == ["ready", "unavailable"]
+        assert states[1]["name"] == "US4WA1IB.000"
+        # An unreadable catalog entry claims no coverage of its own.
+        assert [entry["path"] for entry in metadata["cells_order"]][0] == str(cell)
+    finally:
+        layer._release()
+
+
+def test_compose_with_every_planned_cell_missing_keeps_the_layer_error(
+    tmp_path, monkeypatch
+):
+    _compose_patch(monkeypatch)
+    first = str(tmp_path / "missing" / "US4WA1IB.000")
+    second = str(tmp_path / "gone" / "US5WA2IB.000")
+    catalog = _StubCatalog(
+        sources=(
+            SimpleNamespace(descriptor=(first, 2500, None), error=None),
+            SimpleNamespace(descriptor=(second, 2000, None), error=None),
+        )
+    )
+    layer = _layer(tmp_path, catalog=catalog)
+    try:
+        scene, metadata = layer._compose(_Camera(), threading.Event())
+
+        # Nothing readable: the existing whole-layer error is the report, and
+        # no scene exists to suppress the raster.
+        assert scene is None
+        assert metadata["reason"] == "no readable ENC cell is enabled"
+        assert [path for path, _ in metadata["unavailable"]] == [first, second]
+        assert metadata["planned_cells"] == 2
+    finally:
+        layer._release()

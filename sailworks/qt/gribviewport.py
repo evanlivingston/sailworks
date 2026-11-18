@@ -3505,10 +3505,23 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 if layer is None:
                     return
                 state = layer.state
+                missing = [
+                    cell
+                    for cell in getattr(layer, "cell_states", ())
+                    if cell.get("state") in ("unavailable", "oversized", "error")
+                ]
                 if state == "loading" or getattr(self, "_enc_scene_provisional", False):
                     status = "ENC scene updating…"
                 elif state == "unavailable":
                     status = layer.error or "ENC scene unavailable"
+                elif missing:
+                    # A planned cell could not be read: say so, with the cell
+                    # names, instead of presenting the rest of the chart as the
+                    # whole picture.  The raster already covers its ground.
+                    names = ", ".join(cell.get("name", "") for cell in missing[:3])
+                    if len(missing) > 3:
+                        names += f" (+{len(missing) - 3} more)"
+                    status = f"ENC chart unavailable in part: {names}"
                 else:
                     status = ""
                 scene.setProperty("encStatus", status)
@@ -3717,6 +3730,17 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     ),
                     cells=len(published_cells),
                     cells_order=published_cells,
+                    cell_states=published_states,
+                    drawn=[
+                        state.get("path")
+                        for state in published_states
+                        if state.get("state") == "ready"
+                    ],
+                    unavailable=[
+                        (state.get("path"), state.get("reason"))
+                        for state in published_states
+                        if state.get("state") in ("unavailable", "oversized", "error")
+                    ],
                     assembly_ms=assembly,
                     # What the *previous* frame draws while this one lands:
                     # a retained frame with no vertex or no viewport overlap
