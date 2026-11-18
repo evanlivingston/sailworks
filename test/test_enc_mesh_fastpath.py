@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import shapely
-from shapely.geometry import LineString, MultiPolygon, Polygon, box
+from shapely.geometry import LineString, MultiLineString, MultiPolygon, Polygon, box
 from shapely.ops import unary_union
 
 from sailworks.rendering.vectordrawer import _earcut, encmesh, encstroke
@@ -178,3 +178,84 @@ def test_area_gate_still_fires_when_a_triangulation_under_covers(monkeypatch):
 
     with pytest.raises(UnsupportedGeometry, match="does not match the polygon area"):
         encmesh.triangulate_area(square)
+
+
+# --- C: dashed extraction matches shapely.ops.substring ------------------
+
+
+def _identity(values):
+    return values
+
+
+def _substring_parts(line, on, off):
+    """The pre-optimisation dash split, verbatim, as a reference oracle."""
+    from shapely.ops import substring
+
+    coordinates = np.asarray(line.coords, dtype=np.float64)
+    screen = _identity(coordinates)
+    screen_length = float(np.hypot(*np.diff(screen, axis=0).T).sum())
+    source_length = float(line.length)
+    ratio = source_length / screen_length
+    runs = []
+    position = 0.0
+    while position < source_length:
+        end = min(position + on * ratio, source_length)
+        piece = substring(line, position, end)
+        if not piece.is_empty and len(piece.coords) >= 2:
+            runs.append(piece)
+        position = end + off * ratio
+    return MultiLineString(runs)
+
+
+@pytest.mark.parametrize(
+    "coordinates",
+    [
+        [(0.0, 0.0), (3.0, 0.0), (6.0, 0.0), (9.0, 0.0)],
+        [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)],
+        [(0.0, 0.0), (1.0, 1.0), (2.0, 0.0), (3.0, 1.0), (4.0, 0.0)],
+        [(2.5, 7.5), (12.5, 3.25), (4.0, -6.0)],
+    ],
+)
+@pytest.mark.parametrize("dash", [(3.0, 2.0), (1.0, 0.5), (0.7, 0.0), (100.0, 1.0)])
+def test_dashed_stroke_matches_the_substring_reference_exactly(coordinates, dash):
+    line = LineString(coordinates)
+    reference = stroke_lines(_substring_parts(line, *dash), 0.5)
+    actual = stroke_lines(line, 0.5, projection=_identity, dash=dash)
+    assert actual.shape == reference.shape
+    assert np.array_equal(actual, reference)
+
+
+def test_dash_cut_on_a_vertex_is_emitted_once():
+    # Dash length 3 and vertices every 3 units: every cut lands on a vertex,
+    # and the shared vertex belongs to the first run only.
+    line = LineString([(0.0, 0.0), (3.0, 0.0), (6.0, 0.0), (9.0, 0.0)])
+    parts = encstroke._dashed_parts(line, (3.0, 3.0), _identity)
+    assert parts is not None
+    assert [part.shape[0] for part in parts] == [2, 2]  # no repeated cut vertex
+    assert np.array_equal(
+        np.concatenate(parts),
+        np.asarray(((0, 0), (3, 0), (6, 0), (9, 0)), dtype=np.float64),
+    )
+
+
+def test_stroke_clipping_handles_a_concave_region():
+    region = Polygon(
+        [
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (6.0, 10.0),
+            (5.0, 4.0),
+            (4.0, 10.0),
+            (0.0, 10.0),
+        ]
+    )
+    line = LineString([(0.5, 7.0), (9.5, 7.0)])
+    vertices = stroke_lines(line, 0.4, region=region)
+
+    drawn = unary_union(_triangles(vertices))
+    expected = unary_union(_triangles(stroke_lines(line, 0.4))).intersection(region)
+    assert drawn.area == pytest.approx(expected.area)
+    assert drawn.difference(region).area == pytest.approx(0.0, abs=1e-12)
+    # The notch splits the clipped stroke into more than one piece.
+    assert len(_triangles(vertices)) > 2

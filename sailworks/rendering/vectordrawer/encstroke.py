@@ -109,7 +109,7 @@ def _polygons_of(geometry) -> tuple:
 _WIDTH_SAMPLES = 4  # scale samples per polyline, spread along its arc length
 
 
-def _sampled_widths(coordinates, lengths, stroke_pixels, projection):
+def _sampled_widths(coordinates, lengths, stroke_pixels, projection, samples=None):
     """Width per segment from a few projected sample segments.
 
     The exact width is ``stroke_pixels * length / hypot(dlon * sx, dlat * sy)``
@@ -143,7 +143,10 @@ def _sampled_widths(coordinates, lengths, stroke_pixels, projection):
         dtype=np.intp,
     )
     indices = np.stack((picks, picks + 1), axis=1).ravel()
-    samples = np.asarray(projection(coordinates[indices]), dtype=np.float64)
+    if samples is None:
+        samples = np.asarray(projection(coordinates[indices]), dtype=np.float64)
+    else:
+        samples = np.asarray(samples[indices], dtype=np.float64)
     if samples.shape != (indices.size, 2):
         raise ValueError("projection must preserve the (N, 2) shape")
     span = coordinates[indices[1::2]] - coordinates[indices[::2]]
@@ -183,7 +186,7 @@ def _sampled_widths(coordinates, lengths, stroke_pixels, projection):
     return float(stroke_pixels) * lengths / screen_lengths
 
 
-def _exact_widths(coordinates, lengths, stroke_pixels, projection):
+def _exact_widths(coordinates, lengths, stroke_pixels, projection, samples=None):
     """Source-unit width per segment, projected exactly on every segment.
 
     The scale is measured on the segment itself, so the width is exact for the
@@ -193,7 +196,10 @@ def _exact_widths(coordinates, lengths, stroke_pixels, projection):
     """
     if coordinates.shape[0] < 2:
         return np.zeros(0, dtype=np.float64)
-    samples = np.asarray(projection(coordinates), dtype=np.float64)
+    if samples is None:
+        samples = np.asarray(projection(coordinates), dtype=np.float64)
+    else:
+        samples = np.asarray(samples, dtype=np.float64)
     if samples.shape != (coordinates.shape[0], 2):
         raise ValueError("projection must preserve the (N, 2) shape")
     screen = samples[1:] - samples[:-1]
@@ -203,7 +209,9 @@ def _exact_widths(coordinates, lengths, stroke_pixels, projection):
     return float(stroke_pixels) * lengths / screen_lengths
 
 
-def _stroke_widths(coordinates, lengths, stroke_width, stroke_pixels, projection):
+def _stroke_widths(
+    coordinates, lengths, stroke_width, stroke_pixels, projection, samples=None
+):
     """Source-unit width per segment, or a screen-constant width via projection.
 
     With ``stroke_pixels`` the exact answer divides the pixel width by the
@@ -219,10 +227,10 @@ def _stroke_widths(coordinates, lengths, stroke_width, stroke_pixels, projection
     """
     if stroke_pixels is None:
         return np.full(lengths.shape[0], float(stroke_width), dtype=np.float64)
-    widths = _sampled_widths(coordinates, lengths, stroke_pixels, projection)
+    widths = _sampled_widths(coordinates, lengths, stroke_pixels, projection, samples)
     if widths is not None:
         return widths
-    return _exact_widths(coordinates, lengths, stroke_pixels, projection)
+    return _exact_widths(coordinates, lengths, stroke_pixels, projection, samples)
 
 
 def _prepare_region(region):
@@ -315,37 +323,79 @@ def _clip_stroke_triangles(triangles, region, quad_count, prepared=None) -> np.n
     return np.concatenate(clipped)
 
 
-def _dashed_geometry(geometry, dash, projection):
+def _dashed_parts(geometry, dash, projection):
     """Split every lineal part into the 'on' runs of a screen-space dash.
 
     ``dash`` is ``(on, off)`` in pixels.  The pattern is measured on the
     projected line, so it stays the same on screen at any zoom, and the cuts
     are mapped back to source distance through the line's own length ratio.
-    """
-    from shapely.ops import substring
 
+    Returns a tuple of ``(N, 2)`` coordinate arrays, or ``None`` when the dash
+    pattern is inert (the caller then uses the geometry's own lines).  The run
+    cut points come from ``line_interpolate_point`` and the interior vertices
+    from the source coordinate sequence, so every emitted coordinate is the
+    same value ``shapely.ops.substring`` produced: the dash geometry, and the
+    triangles built from it, are unchanged.  Building coordinate arrays instead
+    of one ``LineString`` per run avoids thousands of per-run Python/GEOS
+    substring calls on a dense outline, which dominated the stroke stage.
+    """
     on, off = (float(dash[0]), float(dash[1]))
     if on <= 0.0 or off < 0.0:
-        return geometry
-    runs = []
+        return None
+    lines = []
+    starts = []
+    ends = []
+    coordinates = []
+    cumulative = []
     for line in _lines(geometry):
-        coordinates = np.asarray(line.coords, dtype=np.float64)
-        if coordinates.shape[0] < 2:
+        points = shapely.get_coordinates(line)
+        if points.shape[0] < 2:
             continue
-        screen = np.asarray(projection(coordinates), dtype=np.float64)
+        screen = np.asarray(projection(points), dtype=np.float64)
         screen_length = float(np.hypot(*np.diff(screen, axis=0).T).sum())
         source_length = float(line.length)
         if screen_length <= 0.0 or source_length <= 0.0:
             continue
         ratio = source_length / screen_length
+        segment_lengths = np.hypot(
+            points[1:, 0] - points[:-1, 0], points[1:, 1] - points[:-1, 1]
+        )
+        distances = np.concatenate((np.zeros(1), np.cumsum(segment_lengths)))
         position = 0.0
         while position < source_length:
             end = min(position + on * ratio, source_length)
-            piece = substring(line, position, end)
-            if not piece.is_empty and len(piece.coords) >= 2:
-                runs.append(piece)
+            lines.append(line)
+            starts.append(position)
+            ends.append(end)
+            coordinates.append(points)
+            cumulative.append(distances)
             position = end + off * ratio
-    return MultiLineString(runs) if runs else LineString()
+    if not lines:
+        return ()
+    source = np.asarray(lines, dtype=object)
+    start_xy = shapely.get_coordinates(
+        shapely.line_interpolate_point(source, np.asarray(starts, dtype=np.float64))
+    )
+    end_xy = shapely.get_coordinates(
+        shapely.line_interpolate_point(source, np.asarray(ends, dtype=np.float64))
+    )
+    parts = []
+    for index in range(len(lines)):
+        points = coordinates[index]
+        distances = cumulative[index]
+        inner = points[(distances > starts[index]) & (distances < ends[index])]
+        piece = np.concatenate(
+            (start_xy[index][None, :], inner, end_xy[index][None, :]), axis=0
+        )
+        # A cut exactly on a vertex can repeat it; the substring result holds
+        # each vertex once, and the repeated point would only make a
+        # zero-length segment the width expansion already drops.
+        keep = np.ones(piece.shape[0], dtype=bool)
+        keep[1:] = np.any(piece[1:] != piece[:-1], axis=1)
+        piece = piece[keep]
+        if piece.shape[0] >= 2:
+            parts.append(piece)
+    return tuple(parts)
 
 
 def stroke_lines(
@@ -379,8 +429,11 @@ def stroke_lines(
     elif not float(stroke_width) > 0.0:
         raise ValueError("stroke_width must be positive source units")
 
+    parts = None
     if dash is not None and projection is not None:
-        geometry = _dashed_geometry(geometry, dash, projection)
+        parts = _dashed_parts(geometry, dash, projection)
+    if parts is None:
+        parts = tuple(shapely.get_coordinates(line) for line in _lines(geometry))
 
     clip_geometry = None
     prepared_region = None
@@ -391,13 +444,11 @@ def stroke_lines(
         prepared_region = _prepare_region(clip_geometry)
 
     chunks = []
-    for line in _lines(geometry):
-        coordinates = np.asarray(line.coords, dtype=np.float64)
+    kept_parts = []
+    for coordinates in parts:
         if coordinates.shape[0] < 2:
             continue
-        starts = coordinates[:-1]
-        ends = coordinates[1:]
-        delta = ends - starts
+        delta = coordinates[1:] - coordinates[:-1]
         lengths = np.hypot(delta[:, 0], delta[:, 1])
         keep = lengths > 0.0
         if not keep.any():
@@ -406,12 +457,33 @@ def stroke_lines(
         # always, then the end of every kept segment.  A dropped zero-length
         # segment contributes no geometry, so the polyline is unchanged.
         points = coordinates[np.concatenate((np.ones(1, dtype=bool), keep))]
-        lengths = lengths[keep]
+        kept_parts.append((points, lengths[keep]))
+    if not kept_parts:
+        return np.empty((0, 2), dtype=np.float64)
+
+    # The width of a screen-constant stroke is measured on the projected
+    # polyline, so every part needs its vertices projected.  One projection of
+    # all parts replaces one numpy round trip per part; the projection is
+    # elementwise, so each part reads the same values the per-part call
+    # produced.  Parts are sliced back out in the same order.
+    projected = None
+    if stroke_pixels is not None:
+        stacked = np.concatenate([points for points, _ in kept_parts], axis=0)
+        projected = np.asarray(projection(stacked), dtype=np.float64)
+        if projected.shape != stacked.shape:
+            raise ValueError("projection must preserve the (N, 2) shape")
+
+    offset = 0
+    for points, lengths in kept_parts:
+        samples = None
+        if projected is not None:
+            samples = projected[offset : offset + points.shape[0]]
+            offset += points.shape[0]
         starts = points[:-1]
         ends = points[1:]
         delta = ends - starts
         widths = _stroke_widths(
-            points, lengths, stroke_width, stroke_pixels, projection
+            points, lengths, stroke_width, stroke_pixels, projection, samples
         )
         unit = delta / lengths[:, None]
         normal = np.column_stack((-unit[:, 1], unit[:, 0])) * (widths / 2.0)[:, None]
