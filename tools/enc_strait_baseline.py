@@ -1273,9 +1273,6 @@ def main(argv=None):
                 "SAILWORKS_ENC_HEAD_FIRST",
                 "SAILWORKS_ENC_MESH_WORKERS",
                 "SAILWORKS_ENC_COMPOSE_MARGIN",
-                "SAILWORKS_ENC_BAKED_DIR",
-                "SAILWORKS_ENC_BAKED_ZOOM",
-                "SAILWORKS_ENC_BAKED_BANDS",
             )
         },
         "repeat_index": args.repeat_index,
