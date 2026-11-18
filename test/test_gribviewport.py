@@ -2411,6 +2411,121 @@ def test_a_covered_pan_blit_is_pixel_identical_to_a_full_composition(tmp_path):
         full_layer.close()
 
 
+def test_repeated_sub_pixel_pans_do_not_accumulate_the_snap(tmp_path):
+    """A drag of half-pixel steps stays bounded; the snap is not re-applied.
+
+    Each blit rounds a fractional device offset, leaving at most
+    ``STATIC_SNAP_PX`` on the retained pixels.  Those pixels are the input to
+    the next pan, so unless the residual is carried on the frame every step
+    adds up to another half pixel and the retained block slides away from a
+    full composition of the same camera.  The residual is carried, so it
+    cancels instead of accumulating: after a whole drag the frame is the
+    pixels a full composition would have drawn.
+    """
+    from threading import Event
+
+    import numpy as np
+
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.qt.gribviewportchart import (
+        MARGIN,
+        STATIC_SNAP_PX,
+        ChartCamera,
+    )
+
+    camera = _camera(width=320, height=240)
+    viewport = MapViewport(ChartCamera(camera, 1), MARGIN, lambda: None)
+    anchors = []
+    for offset in range(-160, 220, 40):
+        lon = viewport._x_to_lon(viewport._lon_to_x(viewport._center_lon) + offset)
+        anchors.append((camera.center_lat, lon, "A"))
+    layer = _chart_layer(tmp_path)
+    composer = _GeometryComposer(anchors)
+    layer._dpr = 1
+    layer._composer = lambda: composer
+    layer._enc_composer = lambda: None
+    layer._base_sources = lambda: ()
+    layer._isobar_columns = lambda job, camera, cancel: None
+    reports = []
+    try:
+        for _step in range(9):
+            image, meta = layer._compose(camera, Event())
+            reports.append(meta["static"])
+            last = camera
+            camera = _panned(camera, 7.5)
+            # Whatever residual the blit left is on the frame and is bounded.
+            frame = next(iter(layer._static_frames.values()))
+            assert abs(frame.snap[0]) <= STATIC_SNAP_PX
+            assert abs(frame.snap[1]) <= STATIC_SNAP_PX
+        reference_layer = _chart_layer(tmp_path)
+        reference_layer._dpr = 1
+        reference_layer._composer = lambda: _GeometryComposer(anchors)
+        reference_layer._enc_composer = lambda: None
+        reference_layer._base_sources = lambda: ()
+        reference_layer._isobar_columns = lambda job, camera, cancel: None
+        try:
+            reference, _meta = reference_layer._compose(last, Event())
+        finally:
+            reference_layer.close()
+    finally:
+        layer.close()
+
+    assert reports[0]["mode"] == "full"
+    assert all(report["mode"] == "regions" for report in reports[1:])
+    assert all(report["snapped_px"] <= STATIC_SNAP_PX for report in reports)
+    for report in reports[1:]:
+        assert report["delta_px"] == (-7.5, 0.0)
+        assert report["factor"] == 1
+        assert report["region_rects"]
+    # Eight half-pixel steps: no drift, the same pixels as a full composition.
+    assert np.array_equal(_image_array(image), _image_array(reference))
+
+
+def test_chart_compose_trace_records_the_reuse_geometry(monkeypatch, tmp_path):
+    """The opt-in trace names the offset, its residual and the strips composed."""
+    import json
+
+    from sailworks.qt import enc_trace
+    from sailworks.qt.gribviewportchart import _trace_composition
+
+    target = tmp_path / "trace.jsonl"
+    monkeypatch.setenv(enc_trace.ENV_PATH, str(target))
+    enc_trace.reset()
+    try:
+        _trace_composition(
+            12,
+            "pan",
+            {
+                "static": {
+                    "mode": "regions",
+                    "reason": "exposed",
+                    "regions": 1,
+                    "region_rects": [(825, 0, 832, 752)],
+                    "shift": (-7, 0),
+                    "snapped_px": 0.0,
+                    "delta_px": (-7.5, 0.0),
+                    "factor": 1,
+                    "composed_pixels": 5264,
+                    "reused_pixels": 620400,
+                },
+                "camera": _camera(),
+            },
+        )
+        written = target.read_text(encoding="utf-8").splitlines()
+    finally:
+        enc_trace.reset()
+
+    record = json.loads(written[0])
+    assert record["event"] == "chart_compose"
+    assert record["generation"] == 12
+    assert record["cause"] == "pan"
+    assert record["shift"] == [-7, 0]
+    assert record["snapped_px"] == 0.0
+    assert record["delta_px"] == [-7.5, 0.0]
+    assert record["factor"] == 1
+    assert record["region_rects"] == [[825, 0, 832, 752]]
+
+
 def test_a_drag_burst_ends_with_the_final_camera_published(tmp_path):
     """A burst of demands during a composition still ends in a publication.
 

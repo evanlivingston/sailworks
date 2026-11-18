@@ -169,6 +169,11 @@ class _StaticFrame:
     sources: tuple
     enc_metadata: dict
     bytes: int
+    # The device-pixel offset these pixels actually carry relative to the
+    # position ``viewport`` implies.  A snapped blit leaves up to
+    # ``STATIC_SNAP_PX`` there; it is carried so the next pan cancels it
+    # instead of rounding from already-snapped metadata a second time.
+    snap: tuple = (0.0, 0.0)
 
 
 def _viewport_bounds(viewport):
@@ -296,14 +301,21 @@ def _static_shift(frame, viewport, factor):
     ``snapped_px``.  An integer offset is unchanged, so those blits stay
     byte-for-byte identical to a full composition.
 
+    The frame's own ``snap`` is subtracted first.  A previous reuse may have
+    left the pixels a fraction of a device pixel off the position its
+    viewport describes; without this term each pan would snap from that
+    already-snapped position again and the error would grow by up to half a
+    pixel per published frame.  Cancelling it keeps the residual inside half
+    a device pixel for any number of pans.
+
     Returns ``None`` only for an offset that rounding cannot express within
     the bound, which cannot happen for finite coordinates; the check is the
     explicit statement of the bound rather than a reachable branch.
     """
     left, top, _right, _bottom = _viewport_bounds(viewport)
     f_left, f_top, _f_right, _f_bottom = _viewport_bounds(frame.viewport)
-    dx = (f_left - left) * factor
-    dy = (f_top - top) * factor
+    dx = (f_left - left) * factor - frame.snap[0]
+    dy = (f_top - top) * factor - frame.snap[1]
     rx = int(round(dx))
     ry = int(round(dy))
     if abs(dx - rx) > STATIC_SNAP_PX + 1e-9 or abs(dy - ry) > STATIC_SNAP_PX + 1e-9:
@@ -315,9 +327,26 @@ def _static_shift_error(frame, viewport, factor):
     """The snap's own error, in device pixels, for the report and the trace."""
     left, top, _right, _bottom = _viewport_bounds(viewport)
     f_left, f_top, _f_right, _f_bottom = _viewport_bounds(frame.viewport)
-    dx = (f_left - left) * factor
-    dy = (f_top - top) * factor
+    dx = (f_left - left) * factor - frame.snap[0]
+    dy = (f_top - top) * factor - frame.snap[1]
     return max(abs(dx - round(dx)), abs(dy - round(dy)))
+
+
+def _static_residual(frame, shift, viewport, factor):
+    """The offset the retained pixels carry after landing at ``shift``.
+
+    A feature the frame holds at pixel ``p`` sits at ``p + snap`` in its own
+    view; painting it at ``shift`` puts it at ``p + snap + shift``, while a
+    full composition of this view would put it at ``p + delta``.  The
+    difference is what the next reuse must cancel, and it stays within
+    ``STATIC_SNAP_PX`` because ``shift`` is the rounded ``delta - snap``.
+    """
+    left, top, _right, _bottom = _viewport_bounds(viewport)
+    f_left, f_top, _f_right, _f_bottom = _viewport_bounds(frame.viewport)
+    return (
+        frame.snap[0] + shift[0] - (f_left - left) * factor,
+        frame.snap[1] + shift[1] - (f_top - top) * factor,
+    )
 
 
 def _paint_static(surface, frame, viewport, factor):
@@ -429,6 +458,11 @@ def _trace_composition(generation, cause, metadata):
         static_mode=static.get("mode"),
         static_reason=static.get("reason"),
         regions=static.get("regions"),
+        region_rects=static.get("region_rects"),
+        shift=static.get("shift"),
+        snapped_px=static.get("snapped_px"),
+        delta_px=static.get("delta_px"),
+        factor=static.get("factor"),
         composed_pixels=static.get("composed_pixels"),
         reused_pixels=static.get("reused_pixels"),
         timings=(metadata or {}).get("timings"),
@@ -1482,7 +1516,10 @@ class ViewportChartLayer:
             "reason": "none",
             "shift": None,
             "snapped_px": 0.0,
+            "delta_px": None,
+            "factor": factor,
             "regions": 0,
+            "region_rects": [],
             "composed_pixels": int(viewport.width) * int(viewport.height),
             "reused_pixels": 0,
             "retained_bytes": 0,
@@ -1492,8 +1529,16 @@ class ViewportChartLayer:
             # A frame at a fractional device offset is translated to the
             # nearest whole device pixel rather than rejected: a mouse pan
             # produces exactly those offsets, and rounding is a translation of
-            # retained pixels, never a resample.  The bound is reported.
+            # retained pixels, never a resample.  The bound is reported, and
+            # the residual it leaves is carried on the retained frame so it is
+            # cancelled by the next pan instead of accumulating.
             report["shift"] = shift
+            left, top, _right, _bottom = _viewport_bounds(viewport)
+            f_left, f_top, _f_right, _f_bottom = _viewport_bounds(frame.viewport)
+            report["delta_px"] = (
+                round((f_left - left) * factor, 4),
+                round((f_top - top) * factor, 4),
+            )
             snapped = _static_shift_error(frame, viewport, factor)
             report["snapped_px"] = round(snapped, 4)
             if snapped > 1e-6:
@@ -1513,7 +1558,11 @@ class ViewportChartLayer:
                 report["reason"] = "covered"
                 report["composed_pixels"] = 0
                 report["reused_pixels"] = int(viewport.width) * int(viewport.height)
-                if _same_static_geometry(frame.viewport, viewport) and shift == (0, 0):
+                if (
+                    _same_static_geometry(frame.viewport, viewport)
+                    and shift == (0, 0)
+                    and frame.snap == (0.0, 0.0)
+                ):
                     self._count_static(report)
                     self._touch_static(frame)
                     report["retained_bytes"] = self._retained_static_bytes()
@@ -1523,7 +1572,14 @@ class ViewportChartLayer:
                 enc_metadata = self._enc_report(job, self._enc_composer())
                 if enc_metadata is None:
                     return None
-                self._retain_static(key, surface, viewport, factor, enc_metadata)
+                self._retain_static(
+                    key,
+                    surface,
+                    viewport,
+                    factor,
+                    enc_metadata,
+                    _static_residual(frame, shift, viewport, factor),
+                )
                 self._count_static(report)
                 report["retained_bytes"] = self._retained_static_bytes()
                 return surface, enc_metadata, report
@@ -1533,6 +1589,9 @@ class ViewportChartLayer:
                 int(viewport.width), int(viewport.height), overlap
             )
             report["composed_pixels"] = 0
+            report["region_rects"] = [
+                (int(r[0]), int(r[1]), int(r[2]), int(r[3])) for r in regions
+            ]
             enc = self._enc_composer()
             for rect in regions:
                 if cancel.is_set():
@@ -1554,7 +1613,14 @@ class ViewportChartLayer:
                 return None
             report["mode"] = "regions"
             report["reason"] = "exposed"
-            self._retain_static(key, surface, viewport, factor, enc_metadata)
+            self._retain_static(
+                key,
+                surface,
+                viewport,
+                factor,
+                enc_metadata,
+                _static_residual(frame, shift, viewport, factor),
+            )
             self._count_static(report)
             report["retained_bytes"] = self._retained_static_bytes()
             return surface, enc_metadata, report
@@ -1676,8 +1742,14 @@ class ViewportChartLayer:
         with self._condition:
             return self._static_bytes
 
-    def _retain_static(self, key, surface, viewport, factor, enc_metadata):
-        """Keep the isobar-free surface, bounded by count and by quality."""
+    def _retain_static(
+        self, key, surface, viewport, factor, enc_metadata, snap=(0.0, 0.0)
+    ):
+        """Keep the isobar-free surface, bounded by count and by quality.
+
+        ``snap`` is the residual device offset the pixels carry after the blit
+        that produced them; it is stored so the next reuse cancels it.
+        """
         surface.flush()
         frame = _StaticFrame(
             surface=surface,
@@ -1687,6 +1759,7 @@ class ViewportChartLayer:
             sources=self._base_sources(),
             enc_metadata=enc_metadata,
             bytes=_surface_bytes(surface),
+            snap=snap,
         )
         self._static_serial += 1
         self._static_frames[(key, self._static_serial)] = frame
