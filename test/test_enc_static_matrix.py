@@ -20,7 +20,12 @@ from PySide6.QtWidgets import QApplication
 
 from sailworks.qt import encgpu
 from sailworks.qt import viewporttransform as _vt
-from sailworks.qt.gribviewport import _viewport_widget_class
+from sailworks.qt.gribviewport import (
+    _viewport_widget_class,
+    enc_scene_covers_view,
+    scene_presents_chart,
+)
+
 from sailworks.qt.viewporttransform import (
     ENC_COMPOSE_TRIGGER,
     PanReference,
@@ -1266,3 +1271,82 @@ def test_a_partial_publication_never_replaces_the_ready_scene(app):
     assert item.view_scene is partial, "the complete scene must replace it"
     assert shown._enc_scene_ready_generation == 2
     assert item.compose_margin == margin
+
+
+# ------------------------------------------------------------ coverage claims
+# ``scene_covers_view`` is what suppresses the raster layer, so a true answer
+# may only describe the cells the frame actually draws, over the whole item.
+# A composition whose plan collapsed to a couple of cells still overlaps the
+# view; the older overlap test was satisfied by that and let the raster hide
+# behind a frame that painted a fraction of the chart.
+
+
+def _six_cell_cover(camera):
+    """A six-cell composition covering the padded view, and its cell spans."""
+    margin = enc_compose_margin(camera)
+    positions, _ = _column_scene(camera, columns=6, margin=margin)
+    return positions, _split_cells(positions, cells=6), margin
+
+
+def _drawing_item(app, camera, positions, cells, margin):
+    item, _ = _presented(
+        app,
+        camera,
+        _Scene(positions, cells),
+        _projection(camera),
+        margin=margin,
+    )
+    item.setVisible(True)
+    return item
+
+
+def test_a_full_six_cell_scene_reports_coverage(app):
+    camera = _Camera()
+    positions, cells, margin = _six_cell_cover(camera)
+    item = _drawing_item(app, camera, positions, cells, margin)
+    assert len(cells) == 6
+    assert item.shown_vertex_count() == int(positions.shape[0])
+    assert item.scene_covers_view() is True
+
+
+def test_a_one_or_two_cell_subset_of_a_six_cell_view_is_not_coverage(app):
+    camera = _Camera()
+    positions, cells, margin = _six_cell_cover(camera)
+    for subset in ((3,), (2, 4)):
+        item = _drawing_item(
+            app, camera, positions, [cells[index] for index in subset], margin
+        )
+        assert item.shown_vertex_count() > 0, "the subset still draws cells"
+        assert (
+            item.scene_covers_view() is False
+        ), f"cells {subset} of a six-cell view claimed coverage"
+
+
+def test_coverage_is_geometric_not_the_planned_cell_set(app):
+    """Two cells that tile the view cover it, whatever the plan asked for.
+
+    The claim is about drawn pixels, so a composition that reaches the whole
+    item with fewer, larger cells is full coverage and may suppress the
+    raster.  Identity with a previous plan is not part of the question: the
+    item is never told what that plan was.
+    """
+    camera = _Camera()
+    margin = enc_compose_margin(camera)
+    positions, cells = _column_scene(camera, columns=2, margin=margin)
+    item = _drawing_item(app, camera, positions, cells, margin)
+    assert len(cells) == 2
+    assert item.scene_covers_view() is True
+
+
+def test_the_raster_gate_follows_the_drawn_cell_set(app):
+    """A partial cell set keeps the raster available; a full set suppresses it."""
+    camera = _Camera()
+    positions, cells, margin = _six_cell_cover(camera)
+    metadata = {"camera": camera, "complete": True}
+
+    full = _drawing_item(app, camera, positions, cells, margin)
+    assert scene_presents_chart(metadata, camera, full) is True
+
+    partial = _drawing_item(app, camera, positions, [cells[2], cells[3]], margin)
+    assert enc_scene_covers_view(partial) is False
+    assert scene_presents_chart(metadata, camera, partial) is False

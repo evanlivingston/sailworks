@@ -530,6 +530,19 @@ LEGACY_CPU_PROJECT = os.environ.get("ENC_LEGACY_CPU_PROJECT", "").strip() not in
 #: projection is not affine over the scene and a matrix would be wrong.
 AFFINE_TOLERANCE = 0.005
 
+#: Samples per axis used to prove the presented cells cover the viewport.
+#: Coverage suppresses the raster, so the test has to be about the whole view,
+#: not about whether *a* cell reaches it: a single cell in one corner satisfies
+#: an overlap test and paints a hole where the rest of the chart should be.
+#: A five-point grid per axis (edges included) is 25 point-in-box tests, which
+#: is free next to the per-frame matrix solve it sits behind.
+COVERAGE_SAMPLES = 5
+
+#: Slack, in item pixels, added to a cell's projected extent while proving
+#: coverage.  The stored vertices are ``float32`` offsets (ulp ``~2e-4`` px),
+#: so this absorbs rounding without letting a real gap through.
+COVERAGE_TOLERANCE = 0.5
+
 #: Process-wide count of non-affine fallback activations.  The static-frame
 #: path normally transforms one reference frame with a matrix; when
 #: :meth:`EncMeshItem._frame_coeffs` returns ``None`` the item rebuilds and
@@ -600,6 +613,32 @@ def _affine_bounds(coeffs, bounds):
         float(mapped[:, 0].max()),
         float(mapped[:, 1].max()),
     )
+
+
+def coverage_boxes_cover(boxes, width: float, height: float) -> bool:
+    """Whether ``boxes`` cover the ``width`` x ``height`` item rect.
+
+    ``boxes`` are the item-pixel extents of the cells the frame actually
+    draws.  Every sample point of a :data:`COVERAGE_SAMPLES` grid, edge points
+    included, must fall inside at least one box: a subset of the planned cells
+    covers some of the view, never all of it, which is exactly the state that
+    must not be reported as coverage.
+    """
+    if not boxes or width <= 0.0 or height <= 0.0:
+        return False
+    steps = COVERAGE_SAMPLES - 1
+    half = COVERAGE_TOLERANCE
+    for row in range(COVERAGE_SAMPLES):
+        y = height * row / steps
+        for column in range(COVERAGE_SAMPLES):
+            x = width * column / steps
+            if not any(
+                box[0] - half <= x <= box[2] + half
+                and box[1] - half <= y <= box[3] + half
+                for box in boxes
+            ):
+                return False
+    return True
 
 
 class _CellGeometry:
@@ -879,36 +918,56 @@ class EncMeshItem(QQuickItem):
         return int(sum(count for count, shown in zip(counts, mask) if shown))
 
     def scene_covers_view(self) -> bool:
-        """Whether any cell of the presented frame reaches the item's viewport.
+        """Whether the cells this frame *draws* cover the whole viewport.
 
-        The retained frame draws through a matrix solved for the current
-        camera, so its own reference bbox mapped by that matrix is what the
-        user actually sees.  A frame composed for a camera a zoom or a long pan
-        left behind can map entirely outside the item: keeping it then draws
-        exactly nothing, which is indistinguishable from a blank chart.
+        The raster layer is held back on a true result, so this is a claim
+        about the pixels on screen and nothing else.  It is answered from the
+        presented frame's own cell geometry under the current camera matrix,
+        never from the plan that was requested: a composition whose plan
+        collapsed (fewer usable cells, cells skipped during assembly, a plan
+        built for a narrower camera) carries a cell set that reaches the view
+        without covering it.  Mapping that set's union and asking whether it
+        *overlaps* the item - the earlier test - is satisfied by one cell in a
+        corner, so the raster stayed suppressed and the rest of the chart was
+        blank until a full set landed.
+
+        Two independent things are therefore required:
+
+        * the camera matrix exists, so the drawn extent is measurable at all.
+          Without one the frame was re-projected for this camera and its
+          extent cannot be proven from the retained buffers; the raster then
+          composes instead of being suppressed on an assumption;
+        * every sample point of the item rect falls inside a cell that is
+          actually drawn (:attr:`_cell_visible`), not merely inside a cell the
+          frame happens to keep attached with a zero vertex count.
+
+        No extra hysteresis is needed.  Culling runs against the compose rect,
+        which is padded by the scene's own margin on every side of the item,
+        so a cell that still contributes to the item cannot be culled while
+        the item is in view; the mask only changes for cells entirely outside
+        the padding, which cannot change the answer here.  Coverage therefore
+        flips once, with the drawn cell set, and not per frame.
         """
         if not self._cell_nodes or self._static is None:
             return False
-        boxes = [cell.bounds for cell in self._static.cells if cell.bounds is not None]
-        if not boxes:
-            return False
-        bounds = (
-            min(box[0] for box in boxes),
-            min(box[1] for box in boxes),
-            max(box[2] for box in boxes),
-            max(box[3] for box in boxes),
-        )
         width = float(self.width())
         height = float(self.height())
         if width <= 0.0 or height <= 0.0:
             return False
         coeffs = self._frame_coeffs()
         if coeffs is None:
-            # The re-projected fallback draws from the current camera; it is
-            # not proof of a blank frame, so do not treat it as one.
-            return True
-        x0, y0, x1, y1 = _affine_bounds(coeffs, bounds)
-        return not (x1 < 0.0 or y1 < 0.0 or x0 > width or y0 > height)
+            return False
+        cells = self._static.cells
+        mask = self._cell_visible
+        trust_mask = len(mask) == len(cells)
+        boxes = []
+        for index, cell in enumerate(cells):
+            if cell.bounds is None:
+                continue
+            if trust_mask and not mask[index]:
+                continue
+            boxes.append(_affine_bounds(coeffs, cell.bounds))
+        return coverage_boxes_cover(boxes, width, height)
 
     @property
     def text_upload_count(self) -> int:

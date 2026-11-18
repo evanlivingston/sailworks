@@ -3979,9 +3979,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
 
             ``visible`` is the item's own flag, ``vertices`` the number of
             vertices the last cull actually draws and ``covers_view`` whether
-            the presented frame's mapped bbox reaches the viewport.  A build
-            is never allowed to make this report ``visible False`` or
-            ``vertices 0`` while a frame is retained.
+            the cells it draws cover the whole item.  A build is never allowed
+            to make this report ``visible False`` or ``vertices 0`` while a
+            frame is retained.
             """
             item = getattr(self, "_enc_scene_item", None)
             shown = getattr(item, "shown_vertex_count", None)

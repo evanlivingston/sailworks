@@ -106,18 +106,23 @@ def _premultiplied(colours):
 
 
 def _two_cell_view_scene():
-    """Two contributing cells: six vertices, then three, in plan order."""
+    """Two contributing cells tiling a 64x64 item: six vertices, then three.
+
+    The cells must reach the item the lifecycle test sizes them to, because
+    coverage is now a containment claim over the item rather than an overlap
+    test: a scene that paints one corner reports no coverage.
+    """
     positions = np.array(
         [
             (0, 0),
-            (8, 0),
-            (0, 8),
-            (8, 0),
-            (8, 8),
-            (0, 8),
-            (20, 0),
-            (28, 0),
-            (20, 8),
+            (40, 0),
+            (0, 64),
+            (40, 0),
+            (40, 64),
+            (0, 64),
+            (40, 0),
+            (64, 0),
+            (40, 64),
         ],
         dtype=np.float64,
     )
