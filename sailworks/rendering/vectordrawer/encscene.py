@@ -25,6 +25,7 @@ ATTRIBUTE_FIELDS = {"DEPARE": ("DRVAL1", "DRVAL2"), "BOYLAT": ("COLOUR",)}
 _CANCEL_STRIDE = 64  # envelope tests between cancellation polls
 _GRID_MAX_SIDE = 64  # coarse-index cap, so query work stays bounded
 _OVERSIZED_MARKERS = 64  # bounded negative markers for oversized cells
+_OVERSIZED_MEMO_MAX = 16  # bounded process-level oversized verdicts
 
 
 def _cancelled(cancelled) -> bool:
@@ -69,6 +70,72 @@ def cell_version(path) -> tuple[int, int, int, int]:
     """The version identity of a cell file: ``(dev, ino, size, mtime_ns)``."""
     stat = os.stat(os.fspath(path))
     return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+
+#: Process-level memo of files measured oversized, keyed by file identity
+#: ``(real path, size, mtime_ns)`` and holding the measured byte count.  The
+#: verdict is a property of the file bytes and the cap that judged them, so an
+#: unchanged file need not be decoded twice: a cache whose cap is below the
+#: recorded count refuses without rebuilding.  A cache with a larger cap still
+#: builds, so an acceptable cell is never served from this memo.  Owned by the
+#: single worker that owns the scene caches; no lock.
+_oversized_memo: OrderedDict[tuple[str, int, int], int] = OrderedDict()
+
+
+def _file_identity(path) -> tuple[str, int, int] | None:
+    """The identity an oversized verdict stays valid for; ``None`` if unreadable."""
+    try:
+        stat = os.stat(os.fspath(path))
+    except OSError:
+        return None
+    return (os.path.realpath(os.fspath(path)), stat.st_size, stat.st_mtime_ns)
+
+
+def _version_identity(path, version) -> tuple[str, int, int] | None:
+    """The memo identity of an already-verified version, with no new stat.
+
+    ``cell_version`` is ``(dev, ino, size, mtime_ns)``; the memo keys on the
+    real path plus the size and modification time, exactly as
+    :func:`_file_identity` does, so write and read keys still match.
+    """
+    try:
+        parts = tuple(version)
+        real = os.path.realpath(os.fspath(path))
+        return (real, int(parts[2]), int(parts[3]))
+    except (OSError, TypeError, ValueError, IndexError):
+        return None
+
+
+def _remember_oversized(path, nbytes, version) -> None:
+    """Record the measured size of a file just judged oversized at *version*.
+
+    *version* is the identity the caller already validated against the scene
+    it measured, so the memo names the bytes that were actually counted.  A
+    fresh stat here would record a newer identity against a stale count when a
+    write lands after that validation, and the memo would then refuse a cell
+    that fits until the file was touched again.
+    """
+    identity = _version_identity(path, version)
+    if identity is None:
+        return
+    _oversized_memo[identity] = int(nbytes)
+    _oversized_memo.move_to_end(identity)
+    while len(_oversized_memo) > _OVERSIZED_MEMO_MAX:
+        _oversized_memo.popitem(last=False)
+
+
+def _known_oversized_nbytes(path) -> int | None:
+    """The measured size for this exact file identity, if one was refused."""
+    identity = _file_identity(path)
+    if identity is None or identity not in _oversized_memo:
+        return None
+    _oversized_memo.move_to_end(identity)
+    return _oversized_memo[identity]
+
+
+def _clear_oversized_memo() -> None:
+    """Drop every memoized oversized verdict; tests use this for isolation."""
+    _oversized_memo.clear()
 
 
 def _bound_version(path, version) -> tuple[int, int, int, int]:
@@ -327,7 +394,9 @@ class SceneCache:
 
     Single-worker ownership: do not share across threads/processes; no lock.
     An oversized scene is refused, marked negatively and not rebuilt for that
-    version.  A current version purges older entries and markers for the path.
+    version.  The refusal is also memoized at process level by file identity,
+    so a new cache instance refuses the same unchanged file without decoding
+    it again.  A current version purges older entries and markers for the path.
     """
 
     def __init__(self, max_bytes):
@@ -358,6 +427,12 @@ class SceneCache:
 
     def is_oversized(self, path, version) -> bool:
         return self._key(path, version) in self._oversized
+
+    def _mark_oversized(self, key) -> None:
+        self.oversized += 1
+        self._oversized[key] = None
+        while len(self._oversized) > _OVERSIZED_MARKERS:
+            self._oversized.popitem(last=False)
 
     def _purge_path(self, path) -> None:
         for entry in [key for key in self._entries if key[0] == path]:
@@ -396,10 +471,12 @@ class SceneCache:
             return False
         self._purge_path(key[0])
         if scene.nbytes > self.max_bytes:
-            self.oversized += 1
-            self._oversized[key] = None
-            while len(self._oversized) > _OVERSIZED_MARKERS:
-                self._oversized.popitem(last=False)
+            self._mark_oversized(key)
+            _remember_oversized(
+                scene.path,
+                scene.nbytes,
+                current if current is not None else scene.version,
+            )
             return False
         while self._bytes + scene.nbytes > self.max_bytes and self._entries:
             victim = next((key for key in self._entries if key not in pinned), None)
@@ -424,7 +501,10 @@ class SceneCache:
         cell change returns ``None``.  An oversized scene returns ``None`` and
         leaves a bounded marker so that version is not rebuilt indefinitely.
         ``pin`` is forwarded to :meth:`put`, so the cell being built cannot
-        evict another cell the same plan still needs.  ``timings`` is an opt-in
+        evict another cell the same plan still needs.  A file already measured
+        oversized at its current identity is refused from the process-level
+        memo before the loader runs, so a fresh cache does not decode an
+        unchanged oversized cell again.  ``timings`` is an opt-in
         diagnostic mapping receiving ``"scene_cache"`` (the resident lookup) and
         ``"scene_load"`` (the loader, which includes the persisted store read
         and a fresh OGR decode on a miss), so a resident scene, a store hit and
@@ -439,6 +519,15 @@ class SceneCache:
         if scene is not None:
             return scene
         if self.is_oversized(path, actual):
+            return None
+        known = _known_oversized_nbytes(path)
+        if known is not None and known > self.max_bytes:
+            # Measured oversized for this exact file: refuse without decoding
+            # it again, and keep the marker so the caller can still report the
+            # ``oversized`` reason.
+            key = self._key(path, actual)
+            self._purge_path(key[0])
+            self._mark_oversized(key)
             return None
         if _cancelled(cancelled):
             return None

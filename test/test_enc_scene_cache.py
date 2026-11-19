@@ -6,12 +6,14 @@ The shared GPKG fixture and geometry helpers live in ``test.enc_scene_fixtures``
 import os
 
 import pytest
-from osgeo import ogr
+from osgeo import ogr, osr
 
 from sailworks.rendering.vectordrawer import encscene, encscenestore
 from test.enc_scene_fixtures import (
     _bbox,
     _CancelAfter,
+    _multipolygon,
+    _polygon,
     _write_cell,
     cell,
     scene,
@@ -40,6 +42,27 @@ def _two_cells(tmp_path):
 def _bump_mtime(path):
     stat = os.stat(path)
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+
+@pytest.fixture(autouse=True)
+def _fresh_oversized_memo():
+    """Keep the process-level oversized memo from leaking between tests."""
+    encscene._clear_oversized_memo()
+    yield
+    encscene._clear_oversized_memo()
+
+
+def _counting_deep_nbytes(monkeypatch):
+    """Record every call into the deep size measurement."""
+    real = encscene._deep_nbytes
+    calls = []
+
+    def counting(value, seen):
+        calls.append(id(value))
+        return real(value, seen)
+
+    monkeypatch.setattr(encscene, "_deep_nbytes", counting)
+    return calls
 
 
 def test_version_key_is_file_identity(cell):
@@ -208,6 +231,180 @@ def test_oversized_version_is_marked_and_not_rebuilt(tmp_path):
     assert len(calls) == 2
     assert cache.is_oversized(path, version) is False
     assert cache.is_oversized(path, new_version)
+
+
+def test_repeat_oversized_open_skips_the_measurement(tmp_path, monkeypatch):
+    path = tmp_path / "a.gpkg"
+    _write_cell(path)
+    version = encscene.cell_version(path)
+    scene = encscene.open_cell_scene(path, version)
+    cap = scene.nbytes - 1
+    loads = []
+
+    def loader(cancelled):
+        loads.append(cancelled)
+        return encscene.open_cell_scene(path, encscene.cell_version(path), cancelled)
+
+    measured = _counting_deep_nbytes(monkeypatch)
+    first = encscene.SceneCache(cap)
+    assert first.get_or_build(path, version, loader) is None
+    assert loads == [None]
+    assert measured
+    assert first.is_oversized(path, version)
+
+    # The repeat composition builds a fresh cache; the verdict must survive it.
+    second = encscene.SceneCache(cap)
+    loads.clear()
+    measured.clear()
+    assert second.get_or_build(path, version, loader) is None
+    assert loads == []
+    assert measured == []
+    assert second.is_oversized(path, version)
+
+
+def test_touching_an_oversized_cell_forces_a_fresh_measurement(tmp_path, monkeypatch):
+    path = tmp_path / "a.gpkg"
+    _write_cell(path)
+    version = encscene.cell_version(path)
+    scene = encscene.open_cell_scene(path, version)
+    cap = scene.nbytes - 1
+    loads = []
+
+    def loader(cancelled):
+        loads.append(cancelled)
+        return encscene.open_cell_scene(path, encscene.cell_version(path), cancelled)
+
+    assert encscene.SceneCache(cap).get_or_build(path, version, loader) is None
+    loads.clear()
+
+    cache = encscene.SceneCache(cap)
+    assert cache.get_or_build(path, version, loader) is None
+    assert loads == []
+
+    measured = _counting_deep_nbytes(monkeypatch)
+    _bump_mtime(path)
+    new_version = encscene.cell_version(path)
+    assert new_version != version
+    assert cache.get_or_build(path, new_version, loader) is None
+    assert len(loads) == 1
+    assert measured
+    assert cache.is_oversized(path, new_version)
+
+
+def test_acceptable_cell_is_never_served_from_the_oversized_memo(tmp_path, monkeypatch):
+    path = tmp_path / "a.gpkg"
+    _write_cell(path)
+    version = encscene.cell_version(path)
+    scene = encscene.open_cell_scene(path, version)
+    assert encscene.SceneCache(scene.nbytes - 1).put(scene) is False
+    loads = []
+
+    def loader(cancelled):
+        loads.append(cancelled)
+        return encscene.open_cell_scene(path, encscene.cell_version(path), cancelled)
+
+    measured = _counting_deep_nbytes(monkeypatch)
+    accepting = encscene.SceneCache(scene.nbytes)
+    built = accepting.get_or_build(path, version, loader)
+    assert built is not None
+    assert loads == [None]
+    assert measured
+    assert accepting.get(path, version) is built
+
+
+def _write_lean_cell(path):
+    """A valid one-feature cell: far fewer records than ``_write_cell``."""
+    datasource = ogr.GetDriverByName("GPKG").CreateDataSource(str(path))
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(4326)
+    layer = datasource.CreateLayer("DEPARE", srs, ogr.wkbMultiPolygon)
+    layer.CreateField(ogr.FieldDefn("DRVAL1", ogr.OFTReal))
+    layer.CreateField(ogr.FieldDefn("DRVAL2", ogr.OFTReal))
+    feature = ogr.Feature(layer.GetLayerDefn())
+    feature.SetGeometry(_multipolygon(_polygon([(0, 0), (1, 0), (1, 1), (0, 1)])))
+    feature.SetField("DRVAL1", 5.0)
+    feature.SetField("DRVAL2", 6.0)
+    assert layer.CreateFeature(feature) == ogr.OGRERR_NONE
+    datasource = None
+
+
+def test_oversized_memo_keys_off_the_verified_version(tmp_path, monkeypatch):
+    """A write landing after the put's version check must not poison the memo.
+
+    The put verified *version* against the scene it measured, then the file
+    became the lean cell below.  Keying the memo off a fresh stat here would
+    record the lean file's identity against the big count, and a later cache
+    with room for the lean cell would refuse it until the file was touched.
+    """
+    path = tmp_path / "a.gpkg"
+    _write_cell(path)
+    verified = encscene.cell_version(path)
+    big = encscene.open_cell_scene(path, verified)
+
+    path.unlink()
+    _write_lean_cell(path)
+    lean_version = encscene.cell_version(path)
+    lean = encscene.open_cell_scene(path, lean_version)
+    assert lean_version != verified
+    # The cap fits the lean cell but not the bytes the big scene measured.
+    cap = big.nbytes // 2
+    assert lean.nbytes < cap < big.nbytes
+
+    # The put validated `verified`, as it did before the write landed; a fresh
+    # stat now returns the lean file's identity.
+    with monkeypatch.context() as patch:
+        patch.setattr(encscene, "cell_version", lambda path: verified)
+        assert encscene.SceneCache(cap).put(big) is False
+
+    # The verdict names the measured file: its count against the verified
+    # identity, not against the file that replaced it.
+    identity = (os.path.realpath(str(path)), verified[2], verified[3])
+    assert encscene._oversized_memo[identity] == big.nbytes
+    assert encscene._known_oversized_nbytes(path) is None
+
+    # A cell that fits the cap is built, not refused by the stale verdict.
+    loads = []
+
+    def loader(cancelled):
+        loads.append(cancelled)
+        return encscene.open_cell_scene(path, encscene.cell_version(path), cancelled)
+
+    accepting = encscene.SceneCache(cap)
+    built = accepting.get_or_build(path, lean_version, loader)
+    assert loads == [None]
+    assert built is not None
+    assert accepting.get(path, lean_version) is built
+    assert accepting.is_oversized(path, lean_version) is False
+    assert accepting.resident_bytes == built.nbytes
+
+
+def test_memoized_refusal_is_the_same_refusal(tmp_path):
+    path = tmp_path / "a.gpkg"
+    _write_cell(path)
+    version = encscene.cell_version(path)
+    scene = encscene.open_cell_scene(path, version)
+    cap = scene.nbytes - 1
+
+    def loader(cancelled):
+        return encscene.open_cell_scene(path, encscene.cell_version(path), cancelled)
+
+    measured = encscene.SceneCache(cap)
+    assert measured.get_or_build(path, version, loader) is None
+    memoized = encscene.SceneCache(cap)
+    assert memoized.get_or_build(path, version, loader) is None
+    for cache in (measured, memoized):
+        assert cache.is_oversized(path, version)
+        assert cache.get(path, version) is None
+        assert cache.resident_bytes == 0
+        assert cache.oversized == 1
+
+
+def test_oversized_memo_is_bounded(tmp_path):
+    for index in range(encscene._OVERSIZED_MEMO_MAX + 4):
+        path = tmp_path / f"cell{index}.gpkg"
+        path.write_bytes(b"x")
+        encscene._remember_oversized(path, 10, encscene.cell_version(path))
+    assert len(encscene._oversized_memo) == encscene._OVERSIZED_MEMO_MAX
 
 
 # ------------------------------------------------------- the persisted store
