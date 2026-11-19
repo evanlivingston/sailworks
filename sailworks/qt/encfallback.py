@@ -193,6 +193,50 @@ def _paint(image, canvas, clip, clip_wkb, cell_path, palette, offset=(0, 0)):
         del surface, buffer
 
 
+def _clip_rect(canvas, clip):
+    """The clip's projected extent, or ``None`` when it has no usable extent.
+
+    ``None`` means the extent cannot be established: no ring survives the
+    projection, or one of them projects to a non-finite coordinate.  The rect
+    is exact and unclamped, so it describes where the clip lands even when
+    that is outside the frame.
+    """
+    rings = [np.asarray(ring, dtype=np.float64) for ring in _clip_path(canvas, clip)]
+    rings = [ring for ring in rings if ring.shape[0] > 0]
+    if not rings:
+        return None
+    points = np.concatenate(rings)
+    if not np.all(np.isfinite(points)):
+        return None
+    return (
+        float(points[:, 0].min()),
+        float(points[:, 1].min()),
+        float(points[:, 0].max()),
+        float(points[:, 1].max()),
+    )
+
+
+def overlay_clip_rect(clip_wkb, projection, width, height):
+    """The clip's projected rect in the frame *projection* describes.
+
+    This is the one geometry the overlay's image and its presentation must
+    both agree on: the renderer sizes its bounded image from it, and a caller
+    that has to say where the ground lands in the frame -- the item that
+    presents it, and the tests that pin it -- reads it here rather than
+    re-deriving the projection.  *projection* and *width*/*height* are in the
+    same pixel grid: pass the scene's logical projection with the logical
+    frame, or :func:`device_projection` with the device frame.
+
+    ``None`` when the clip encloses no ground or its projection is not finite.
+    """
+    clip = _clip(clip_wkb)
+    if clip is None:
+        return None
+    min_lon, min_lat, max_lon, max_lat = clip.bounds
+    canvas = _ProjectedCanvas(projection, width, height, (min_lat + max_lat) / 2.0)
+    return _clip_rect(canvas, clip)
+
+
 def _clip_pixel_bounds(canvas, clip, width, height, pad=2):
     """The frame box the clip can touch, in device pixels.
 
@@ -203,17 +247,13 @@ def _clip_pixel_bounds(canvas, clip, width, height, pad=2):
     must paint the whole frame; a box with no pixels means the clip lies
     outside this frame and paints nothing at all.
     """
-    rings = [np.asarray(ring, dtype=np.float64) for ring in _clip_path(canvas, clip)]
-    rings = [ring for ring in rings if ring.shape[0] > 0]
-    if not rings:
+    rect = _clip_rect(canvas, clip)
+    if rect is None:
         return None
-    points = np.concatenate(rings)
-    if not np.all(np.isfinite(points)):
-        return None
-    left = int(np.floor(points[:, 0].min())) - pad
-    top = int(np.floor(points[:, 1].min())) - pad
-    right = int(np.ceil(points[:, 0].max())) + pad + 1
-    bottom = int(np.ceil(points[:, 1].max())) + pad + 1
+    left = int(np.floor(rect[0])) - pad
+    top = int(np.floor(rect[1])) - pad
+    right = int(np.ceil(rect[2])) + pad + 1
+    bottom = int(np.ceil(rect[3])) + pad + 1
     return (
         max(0, left),
         max(0, top),
@@ -526,13 +566,39 @@ def fallback_compose_fields(
     }
 
 
+def _premultiplied(image):
+    """*image* in a format Qt composites with alpha, never as black.
+
+    An ``Format_ARGB32`` image carries straight (unpremultiplied) colour: a
+    fully transparent pixel holds whatever RGB the producer left there, and
+    Qt Quick uploads and composites the texture as premultiplied, so those
+    pixels render as opaque black.  Every image the viewport paints, stores or
+    presents is therefore premultiplied; anything else is converted on the way
+    in rather than trusted.
+    """
+    if image is None or image.isNull():
+        return image
+    if image.format() in (
+        QImage.Format.Format_ARGB32,
+        QImage.Format.Format_RGB32,
+        QImage.Format.Format_RGBA8888,
+        QImage.Format.Format_RGBA64,
+    ):
+        return image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
+    return image
+
+
 class ENCFallbackItem(QQuickPaintedItem):
     """The refused cells' ground, painted beneath the GPU scene.
 
-    The image is rendered at device-pixel size and drawn into the item's
-    logical rect without smoothing, so Qt's own device-pixel-ratio transform
-    maps one image pixel to one device pixel: the chart's thin lines stay
-    crisp instead of being resampled twice.
+    The image is rendered at device-pixel size for the camera's own frame and
+    drawn one image pixel to one device pixel.  The presented rect is derived
+    from the painter's device scale -- the grid the window actually composes
+    on -- and never from the item's size, so a container that is larger,
+    smaller or resized between publications cannot stretch the ground to a
+    second scale: the pixels stay where the camera's projection put them, and
+    everything outside the image (and outside the clip within it) is
+    transparent premultiplied black, not black paint.
     """
 
     def __init__(self, parent=None):
@@ -549,7 +615,7 @@ class ENCFallbackItem(QQuickPaintedItem):
         if image is None or image.isNull():
             self.clear()
             return
-        self._image = image
+        self._image = _premultiplied(image)
         self.setVisible(True)
         self.update()
 
@@ -559,12 +625,34 @@ class ENCFallbackItem(QQuickPaintedItem):
         self.setVisible(False)
         self.update()
 
+    def _image_rect(self, painter):
+        """The image's rect in item coordinates: one image pixel per device one."""
+        world = painter.transform()
+        scale_x = abs(float(world.m11())) or 1.0
+        scale_y = abs(float(world.m22())) or 1.0
+        return QRectF(
+            0.0,
+            0.0,
+            self._image.width() / scale_x,
+            self._image.height() / scale_y,
+        )
+
     def paint(self, painter):
         image = self._image
         if image.isNull() or image.width() <= 0 or image.height() <= 0:
             return
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
-        painter.drawImage(QRectF(0.0, 0.0, self.width(), self.height()), image)
+        # The item's texture is reused between paints, so the ground of a
+        # previous frame must be cleared rather than left under this one: a
+        # clipped-away region would otherwise keep showing stale chart.
+        painter.save()
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        painter.fillRect(
+            QRectF(0.0, 0.0, self.width(), self.height()),
+            Qt.GlobalColor.transparent,
+        )
+        painter.restore()
+        painter.drawImage(self._image_rect(painter), image)
 
 
 class ENCFallbackOverlay(QObject):

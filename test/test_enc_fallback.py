@@ -1,14 +1,16 @@
 """The headless one-cell ENC fallback paints inside its clip and nowhere else."""
 
 import os
+from pathlib import Path
 from types import MethodType, SimpleNamespace
 
 import numpy as np
 import pytest
 import shapely
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage
-from PySide6.QtQuick import QQuickItem
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter
+from PySide6.QtQuick import QQuickItem, QQuickView
+from PySide6.QtTest import QTest
 
 from sailworks.core.mapviewport import MercatorProjection
 from sailworks.qt import encfallback, enc_trace, gribviewport
@@ -891,3 +893,222 @@ def test_current_serial_is_composed_and_traced(monkeypatch):
     assert [kind for kind, _ in events] == ["fallback_cache"]
     # A hit or miss must be attributable to the generation that asked for it.
     assert events[0][1] == {"hit": False, "generation": 5, "serial": 3}
+
+
+# --- The pixel grid the ground is presented on ----------------------------
+#
+# The defect these pin was invisible to every test above because each one
+# painted and compared in the same grid.  On screen the overlay is a
+# device-pixel image presented inside a QQuickPaintedItem, and the item used
+# to stretch that image onto its own logical rect: one ratio too many, and the
+# wrong ground at the wrong scale whenever the container, the camera frame and
+# the adopted device ratio disagreed.
+
+BACKGROUND = (12, 34, 56)
+
+
+def _colour(image, x, y):
+    """``(r, g, b, a)`` of one pixel, endian-independent."""
+    pixel = image.pixelColor(int(x), int(y))
+    return (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha())
+
+
+def _filled(width, height, colour=BACKGROUND):
+    image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(QColor(*colour))
+    return image
+
+
+def _composited(overlay, background):
+    painter = QPainter(background)
+    try:
+        painter.drawImage(0, 0, overlay)
+    finally:
+        painter.end()
+    return background
+
+
+def test_the_overlay_is_premultiplied_and_transparent_outside_the_clip(cell):
+    projection = _projection(*CENTER, ZOOM, WIDTH, HEIGHT)
+    wkb = shapely.to_wkb(shapely.Polygon(CLIP))
+
+    overlay = render_cell_overlay(str(cell), wkb, projection, WIDTH, HEIGHT, "cm93")
+
+    # Unpremultiplied ARGB32 composites every alpha-0 pixel as opaque black.
+    assert overlay.format() == QImage.Format.Format_ARGB32_Premultiplied
+    # A pixel the clip cannot reach is premultiplied transparent black, not
+    # merely "alpha 0 with stale colour".
+    outside = _pixel(projection, 8.0, 8.0)
+    assert _colour(overlay, *outside) == (0, 0, 0, 0)
+
+    # Compositing cannot tint the background there: the overlay contributes
+    # nothing at all outside the clip.
+    composited = _composited(overlay, _filled(WIDTH, HEIGHT))
+    assert _colour(composited, *outside) == BACKGROUND + (255,)
+
+
+def test_the_clip_rect_follows_the_scene_projection_at_each_ratio():
+    clip = shapely.Polygon(CLIP)
+    wkb = shapely.to_wkb(clip)
+    logical = _projection(*CENTER, ZOOM, WIDTH, HEIGHT)
+    ring = shapely.get_coordinates(clip)
+
+    rects = {}
+    for dpr in (1.0, 2.0):
+        width = int(round(WIDTH * dpr))
+        height = int(round(HEIGHT * dpr))
+        rect = encfallback.overlay_clip_rect(
+            wkb, device_projection(logical, dpr), width, height
+        )
+        projected = logical(ring) * dpr
+        assert rect == pytest.approx(
+            (
+                projected[:, 0].min(),
+                projected[:, 1].min(),
+                projected[:, 0].max(),
+                projected[:, 1].max(),
+            )
+        )
+        rects[dpr] = rect
+
+    # Linear in the ratio: a rect that is scaled twice (or not at all) breaks
+    # this, and it is the whole "2x on one side only" failure.
+    assert [value * 2.0 for value in rects[1.0]] == pytest.approx(list(rects[2.0]))
+
+
+def test_compositing_at_ratio_two_leaves_every_outside_pixel_the_background(cell):
+    dpr = 2.0
+    width = int(round(WIDTH * dpr))
+    height = int(round(HEIGHT * dpr))
+    logical = _projection(*CENTER, ZOOM, WIDTH, HEIGHT)
+    projection = device_projection(logical, dpr)
+    wkb = shapely.to_wkb(shapely.Polygon(CLIP))
+
+    overlay = render_cell_overlay(str(cell), wkb, projection, width, height, "cm93")
+    composited = _composited(overlay, _filled(width, height))
+    pixels = _pixel_bytes(composited).reshape(height, width, 4)
+
+    # The projected clip's own rect is the only place ground may appear; the
+    # box is widened by the antialiased edge only.
+    rect = encfallback.overlay_clip_rect(wkb, projection, width, height)
+    left = max(0, int(np.floor(rect[0])))
+    top = max(0, int(np.floor(rect[1])))
+    right = min(width, int(np.ceil(rect[2])) + 1)
+    bottom = min(height, int(np.ceil(rect[3])) + 1)
+    assert (right - left) * (bottom - top) < width * height * 0.2
+
+    outside = np.ones((height, width), dtype=bool)
+    outside[top:bottom, left:right] = False
+    expected = np.array(
+        (BACKGROUND[2], BACKGROUND[1], BACKGROUND[0], 255), dtype=np.uint8
+    )
+    assert np.array_equal(
+        pixels[outside], np.broadcast_to(expected, pixels[outside].shape)
+    )
+    assert not np.array_equal(
+        pixels[~outside], np.broadcast_to(expected, pixels[~outside].shape)
+    )
+
+
+def test_the_item_keeps_the_image_on_the_device_grid():
+    item = encfallback.ENCFallbackItem()
+    item.setWidth(300.0)
+    item.setHeight(200.0)
+
+    image = QImage(200, 200, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.transparent)
+    marker = QColor(255, 0, 0, 255)
+    for x in range(100, 104):
+        for y in range(100, 104):
+            image.setPixelColor(x, y, marker)
+    item.set_image(image)
+
+    # The item's own texture: 300x200 logical is 600x400 device at two device
+    # pixels per item pixel.  It starts saturated so any pixel the paint leaves
+    # alone is visible as stale ground.
+    texture = _filled(600, 400, (0, 0, 255))
+    painter = QPainter(texture)
+    try:
+        painter.scale(2.0, 2.0)
+        item.paint(painter)
+    finally:
+        painter.end()
+
+    # One image pixel, one device pixel: the 200x200 image covers the first
+    # 200x200 device pixels, so the marker stays at its own coordinates.
+    assert _colour(texture, 101, 101) == (255, 0, 0, 255)
+    # Placing the image at its size in item coordinates would put the marker
+    # at device (201, 201); stretching it onto the item's logical rect would
+    # put it at device (300, 200).  Neither may show the marker.
+    assert _colour(texture, 201, 201) == (0, 0, 0, 0)
+    assert _colour(texture, 301, 201) == (0, 0, 0, 0)
+    # Paint owns the whole item rect, so no previous ground survives outside
+    # the image.
+    assert _colour(texture, 350, 250) == (0, 0, 0, 0)
+
+    # Composited, that untouched ground is the window's own, not black paint.
+    composited = _composited(texture, _filled(600, 400))
+    assert _colour(composited, 350, 250) == BACKGROUND + (255,)
+
+
+def test_a_presented_image_is_converted_to_premultiplied():
+    item = encfallback.ENCFallbackItem()
+    unpremultiplied = QImage(4, 4, QImage.Format.Format_ARGB32)
+    unpremultiplied.fill(QColor(200, 10, 10, 0))
+
+    item.set_image(unpremultiplied)
+
+    assert item.image().format() == QImage.Format.Format_ARGB32_Premultiplied
+    # The transparent pixel is exact premultiplied black, which is what the
+    # compositor requires for "nothing here".
+    assert _colour(item.image(), 1, 1) == (0, 0, 0, 0)
+
+
+# --- The layers that host the overlay --------------------------------------
+#
+# Both layers are plain ``Item``s whose only content is the item the viewport
+# parents into them from Python.  Their visibility is a QML binding over the
+# child list, so it only holds if a child added (and removed) imperatively is
+# observed by that binding: a layer stuck at ``children.length == 0`` would
+# hide the overlay no matter what the worker painted into it.
+
+SHADERS = Path(__file__).resolve().parents[1] / "sailworks/qt/shaders"
+
+
+@pytest.fixture(scope="module")
+def scene_root():
+    """The real chart scene, shown offscreen so its bindings evaluate."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    QGuiApplication.instance() or QGuiApplication([])
+    view = QQuickView()
+    view.setSource(QUrl.fromLocalFile(str(SHADERS / "ViewportChartScene.qml")))
+    assert not view.errors(), view.errors()
+    root = view.rootObject()
+    assert root is not None
+    root.setProperty("width", 96)
+    root.setProperty("height", 96)
+    view.resize(96, 96)
+    view.show()
+    QTest.qWait(20)
+    try:
+        yield root
+    finally:
+        view.close()
+
+
+def test_the_host_layer_follows_the_item_parented_into_it(scene_root):
+    for name in ("encFallbackLayer", "encSceneLayer"):
+        layer = scene_root.findChild(QQuickItem, name)
+        assert layer is not None, name
+        assert layer.property("visible") is False, f"{name} starts hosting an item"
+
+        # What the viewport does from Python: attach one item and size it.
+        item = QQuickItem(layer)
+        item.setWidth(96.0)
+        item.setHeight(96.0)
+        QTest.qWait(1)
+        assert layer.property("visible") is True, f"{name} ignored its item"
+
+        item.setParentItem(None)
+        QTest.qWait(1)
+        assert layer.property("visible") is False, f"{name} stayed visible"
