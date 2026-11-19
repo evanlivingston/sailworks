@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import shapely
+from osgeo import ogr, osr
 from shapely.geometry import (
     GeometryCollection,
     LineString,
@@ -24,6 +25,8 @@ from shapely.geometry import (
     box,
 )
 
+from sailworks.rendering import encview
+from sailworks.rendering.vectordrawer import encscene
 from sailworks.rendering.vectordrawer.encmesh import (
     AREA_FILL,
     AREA_OUTLINE,
@@ -366,3 +369,118 @@ def test_simplify_zero_is_a_no_op():
     plain = build_scene_mesh(scene, stroke_width=0.01)
     explicit = build_scene_mesh(scene, stroke_width=0.01, simplify=0.0)
     np.testing.assert_array_equal(plain.positions, explicit.positions)
+
+
+# --- SCAMIN ---------------------------------------------------------------
+
+#: Coarser than the cell's SCAMIN below, so the gated feature must be culled.
+COARSE = 100_000.0
+#: Finer than the cell's SCAMIN, so every feature must be kept.
+FINE = 10_000.0
+SCAMIN = 20_000
+
+
+def _scamin_cell(tmp_path):
+    """A one-layer GPKG cell: one feature with SCAMIN, one without."""
+    path = tmp_path / "scamin.gpkg"
+    datasource = ogr.GetDriverByName("GPKG").CreateDataSource(str(path))
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(4326)
+    layer = datasource.CreateLayer("DEPCNT", srs, ogr.wkbLineString)
+    layer.CreateField(ogr.FieldDefn(encscene.SCAMIN_FIELD, ogr.OFTInteger))
+
+    def add(points, scamin=None):
+        geometry = ogr.Geometry(ogr.wkbLineString)
+        for x, y in points:
+            geometry.AddPoint_2D(x, y)
+        feature = ogr.Feature(layer.GetLayerDefn())
+        feature.SetGeometry(geometry)
+        if scamin is not None:
+            feature.SetField(encscene.SCAMIN_FIELD, scamin)
+        assert layer.CreateFeature(feature) == ogr.OGRERR_NONE
+
+    add([(0, 0), (4, 4)], SCAMIN)
+    add([(4, 0), (0, 4)])
+    datasource = None
+    return path
+
+
+def _query(path, display_scale):
+    scene = encscene.open_cell_scene(path, encscene.cell_version(path))
+    bounding = ogr.CreateGeometryFromWkb(shapely.to_wkb(box(0, 0, 5, 5)))
+    return scene.query(bounding, display_scale=display_scale)
+
+
+def test_scamin_culls_only_at_coarser_scales(tmp_path):
+    """Pin the comparison direction: cull when the display scale is coarser.
+
+    S-57 SCAMIN is a *minimum* display scale, so a feature belongs on charts at
+    or finer than its value.  The repo compares scale the same way everywhere
+    else (``enccharts.chart_scale_visible`` hides a cell when
+    ``display_scale > native_scale * 16``).  An inverted comparison would keep
+    the feature when zoomed out and blank it when zoomed in; this asserts both
+    ends, including the inclusive boundary.
+    """
+    path = _scamin_cell(tmp_path)
+    assert {record.fid for record in _query(path, COARSE)} == {2}
+    assert {record.fid for record in _query(path, FINE)} == {1, 2}
+    assert {record.fid for record in _query(path, float(SCAMIN))} == {1, 2}
+
+
+def test_scamin_absent_is_never_culled(tmp_path):
+    path = _scamin_cell(tmp_path)
+    assert {record.fid for record in _query(path, 10**9)} == {2}
+
+
+def test_scamin_cull_reduces_mesh_geometry(tmp_path):
+    path = _scamin_cell(tmp_path)
+    coarse = build_scene_mesh(
+        SimpleNamespace(records=_query(path, COARSE)), stroke_width=0.01
+    )
+    fine = build_scene_mesh(
+        SimpleNamespace(records=_query(path, FINE)), stroke_width=0.01
+    )
+    assert fine.vertex_count > coarse.vertex_count
+    assert fine.triangle_count > coarse.triangle_count
+    assert coarse.vertex_count > 0
+
+
+def test_scamin_scale_is_part_of_the_mesh_key():
+    """Two scales that differ only in their SCAMIN gate must not collide."""
+    coverage = box(0, 0, 10, 10)
+    cell = SimpleNamespace(
+        path="scamin.000",
+        version=(1, 2, 3, 4),
+        coverage_known=True,
+        coverage=coverage,
+        clip=coverage,
+    )
+    owner = encview.MeshCache(10_000_000)
+    projection = lambda points: np.asarray(points, dtype=np.float64) * 1000.0
+    coarse = encview._prepare_cell(
+        cell, 0, coverage, "enc", projection, 1.0, owner, display_scale=COARSE
+    )
+    fine = encview._prepare_cell(
+        cell, 0, coverage, "enc", projection, 1.0, owner, display_scale=FINE
+    )
+    assert coarse.key[:-1] == fine.key[:-1]
+    assert coarse.key[-1] == COARSE
+    assert fine.key[-1] == FINE
+    assert coarse.key != fine.key
+
+
+def test_display_bucket_never_hides_a_feature_that_should_be_visible(tmp_path):
+    """Bucketing may admit a feature early, never cull one that is visible.
+
+    SCAMIN is a *minimum* scale, so a feature is kept when the gate value is at
+    or below it.  ``build_view_scene`` feeds the gate the bucket's *finest*
+    scale, which is at or below the camera's own.  A SCAMIN sitting between the
+    two is therefore drawn, where the exact scale would already have culled it.
+    """
+    path = _scamin_cell(tmp_path)
+    actual = 22_000.0
+    floor = encview.bucket_display_scale(actual)
+    assert floor <= SCAMIN < actual
+    # The exact scale culls the gated feature; the bucketed floor keeps it.
+    assert {record.fid for record in _query(path, actual)} == {2}
+    assert {record.fid for record in _query(path, floor)} == {1, 2}

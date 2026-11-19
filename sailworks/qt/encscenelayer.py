@@ -30,7 +30,8 @@ from threading import Condition, Event, Thread
 import numpy as np
 import shapely
 
-from sailworks.core.enccharts import chart_scale_rank
+from sailworks.core.enccharts import chart_scale_rank, display_scale_denominator
+from sailworks.qt import enc_trace
 from sailworks.rendering import encplan, encview
 from sailworks.rendering.vectordrawer import encscene, encscenestore
 
@@ -205,6 +206,17 @@ def _cache_counters(mesh_cache, scene_cache, scene_store):
     }
 
 
+def display_scale_for(viewport):
+    """The camera's scale denominator, or ``None`` when it cannot state one."""
+    get_scale = getattr(viewport, "get_scale", None)
+    try:
+        # ``None`` for a viewport that cannot state its scale: the SCAMIN gate
+        # is then off rather than wrong.
+        return display_scale_denominator(get_scale()) if callable(get_scale) else None
+    except (TypeError, ValueError):
+        return None
+
+
 def assemble_scene(
     plan,
     viewport,
@@ -242,6 +254,7 @@ def assemble_scene(
     :func:`encview.build_view_scene`, so each assembly stage (including the
     store/OGR split inside ``cell_open``) is attributed.
     """
+    display_scale = display_scale_for(viewport)
     return encview.build_view_scene(
         plan,
         scene_cache,
@@ -256,6 +269,7 @@ def assemble_scene(
         mesh_scale=mesh_scale,
         loader=loader,
         timings=timings,
+        display_scale=display_scale,
     )
 
 
@@ -507,6 +521,14 @@ class EncSceneLayer:
         self._content_generation = 0
         self._content_stamp = None
         self._content_fingerprint = None
+        #: The queued neighbour prefetch: ``(cancel, camera)``, or ``None``.
+        #: One at a time, and dropped the moment a real demand arrives.
+        self._prefetch = None
+        #: What the last current composition built, so the prefetch can warm
+        #: the ground beside it: ``camera``, ``plan``, ``viewport``,
+        #: ``projection``, ``display_scale``, and the ``travel`` vector since
+        #: the composition before it.
+        self._prefetch_basis = None
         self.counters = dict(
             requests=0,
             reuses=0,
@@ -515,6 +537,8 @@ class EncSceneLayer:
             partial_publications=0,
             superseded_rejected=0,
             cancelled=0,
+            prefetch_runs=0,
+            prefetch_cancelled=0,
             failures=0,
             clip_failures=0,
             yielded=0,
@@ -710,6 +734,12 @@ class EncSceneLayer:
             if self._pending is not None:
                 self._pending[2].set()
                 self.counters["cancelled"] += 1
+            # A real request always wins: anything the idle prefetch holds is
+            # dropped here, and its worker re-checks the event between cells.
+            if self._prefetch is not None:
+                self._prefetch[0].set()
+                self._prefetch = None
+                self.counters["prefetch_cancelled"] += 1
             self._pending = (generation, camera, Event())
             self._state = STATE_LOADING
             self._error = ""
@@ -756,6 +786,129 @@ class EncSceneLayer:
         if notify is not None:
             self._notify_state(notify)
         return request[0]
+
+    # ------------------------------------------------------------ prefetch
+    def prefetch(self, camera=None):
+        """Queue a neighbour-granule warm-up behind the current demand.
+
+        GUI thread.  Best effort by construction: it only starts from a
+        composed, covered view, sits behind any pending demand, and is dropped
+        by :meth:`request` the moment a real one arrives.  Returns whether a
+        job was queued.
+        """
+        with self._condition:
+            if self._closed or self._state != STATE_READY:
+                return False
+            if self._pending is not None or self._prefetch is not None:
+                return False
+            basis = self._prefetch_basis
+            if basis is None or camera != basis["camera"]:
+                return False
+            self._prefetch = (Event(), camera)
+            self._condition.notify_all()
+        return True
+
+    def cancel_prefetch(self):
+        """Drop a queued or running prefetch: a real demand always wins."""
+        with self._condition:
+            if self._prefetch is None:
+                return False
+            self._prefetch[0].set()
+            self._prefetch = None
+            self.counters["prefetch_cancelled"] += 1
+        return True
+
+    def _prefetch_run(self, cancel, camera):
+        """Warm the granule beside the last composition (worker thread).
+
+        The normal mesh path with the granule named rather than derived, so the
+        entries land where a real request for that ground will look.  It
+        publishes nothing, mints no generation and touches no presented item;
+        the only output is mesh-cache entries for the one neighbour the camera
+        is travelling towards (``encview.PREFETCH_GRANULES``), bounded by the
+        cache's own byte budget and abandoned as soon as a real request lands.
+        """
+        traced = enc_trace.enabled()
+        basis = self._prefetch_basis
+        self.counters["prefetch_runs"] += 1
+        if (
+            basis is None
+            or camera != basis["camera"]
+            or cancel.is_set()
+            or self._scene_cache is None
+            or self._mesh_cache is None
+            or self._scene_store is None
+        ):
+            if traced:
+                enc_trace.event("enc_prefetch_skip", reason="stale")
+            return
+        region = encview._view_region(basis["plan"], basis["viewport"])
+        step = encview._absolute_granule_step(region)
+        granule = None
+        if step is not None:
+            granule = encview._granule_region(region, step=step)
+        if granule is None:
+            # Unknown extent: there is no neighbour to name, so do nothing.
+            if traced:
+                enc_trace.event("enc_prefetch_skip", reason="granule")
+            return
+        candidate, skip = encview.prefetch_candidate(
+            granule,
+            step=step,
+            travel=basis.get("travel"),
+            display_scale=basis["display_scale"],
+            current_scale=display_scale_for(basis["viewport"]),
+        )
+        if candidate is None:
+            # No travel direction, a zoom step since, or no nameable
+            # neighbour: all cheaper to skip than to guess at.
+            if traced:
+                enc_trace.event("enc_prefetch_skip", reason=skip)
+            return
+        if traced:
+            enc_trace.event(
+                "enc_prefetch_start",
+                cells=len(basis["plan"]),
+                granules=1,
+                granule=encview._granule_key(candidate),
+            )
+        if cancel.is_set():
+            if traced:
+                enc_trace.event(
+                    "enc_prefetch_cancel",
+                    granule=encview._granule_key(candidate),
+                    reason="demand",
+                )
+            return
+        started = time.perf_counter() if traced else None
+        report = encview.prefetch_granule(
+            basis["plan"],
+            self._scene_cache,
+            granule=candidate,
+            projection=basis["projection"],
+            stroke_pixels=STROKE_PIXELS,
+            palette=self._palette,
+            cancelled=cancel.is_set,
+            mesh_cache=self._mesh_cache,
+            loader=_stored_loader(self._scene_store),
+            display_scale=basis["display_scale"],
+            mesh_scale=1.0,
+        )
+        if not traced:
+            return
+        fields = {
+            "granule": encview._granule_key(candidate),
+            "ms": round((time.perf_counter() - started) * 1000.0, 3),
+            "built": report["built"],
+            "resident": report["resident"],
+            "skipped": report["skipped"],
+        }
+        if report["cancelled"]:
+            enc_trace.event("enc_prefetch_cancel", reason="demand", **fields)
+        elif report["reason"] is not None:
+            enc_trace.event("enc_prefetch_skip", reason=report["reason"], **fields)
+        else:
+            enc_trace.event("enc_prefetch_finish", **fields)
 
     def _reuse(self, camera, replace):
         if replace:
@@ -871,6 +1024,10 @@ class EncSceneLayer:
                 if request is not None:
                     request[2].set()
                     self.counters["cancelled"] += 1
+            if self._prefetch is not None:
+                self._prefetch[0].set()
+                self._prefetch = None
+                self.counters["prefetch_cancelled"] += 1
             self._pending = None
             self._condition.notify_all()
 
@@ -992,13 +1149,32 @@ class EncSceneLayer:
         try:
             while True:
                 with self._condition:
-                    while self._pending is None and not self._closed:
+                    while (
+                        self._pending is None
+                        and self._prefetch is None
+                        and not self._closed
+                    ):
                         self._condition.wait()
                     if self._closed:
                         return
-                    request = self._pending
-                    self._pending = None
-                    self._active = request
+                    if self._pending is None:
+                        # Nothing real is waiting, so the idle prefetch may use
+                        # the worker.  It holds no pending slot, publishes
+                        # nothing, and is dropped the moment a demand arrives.
+                        request = None
+                        prefetch = self._prefetch
+                        self._prefetch = None
+                    else:
+                        prefetch = None
+                        request = self._pending
+                        self._pending = None
+                        self._active = request
+                if prefetch is not None:
+                    try:
+                        self._prefetch_run(*prefetch)
+                    except Exception:  # noqa: BLE001 - a warm-up never fails us
+                        pass
+                    continue
                 generation, camera, cancel = request
                 began = time.perf_counter()
                 error = ""
@@ -1187,6 +1363,10 @@ class EncSceneLayer:
         # ``_run`` adds ``assembly_ms`` to, so a publication carries the stage
         # breakdown beside the total it belongs to.
         timings = {}
+        if enc_trace.enabled():
+            # Per-cell detail for the trace; absent when tracing is off, so the
+            # build pays nothing for it.
+            timings["cells"] = {}
         metadata = {
             "camera": camera,
             "time": camera.stamp(),
@@ -1259,9 +1439,14 @@ class EncSceneLayer:
         # A cell the plan cannot read is recorded here, not raised: the rest of
         # the ordered set still composes, and the viewport keeps the raster over
         # whatever ground nothing readable draws.
+        plan_started = time.perf_counter() if enc_trace.enabled() else None
         plan = encplan.plan_cells(
             viewport, usable, cancelled=cancel.is_set, unavailable=unavailable
         )
+        if plan_started is not None:
+            timings["plan"] = timings.get("plan", 0.0) + (
+                time.perf_counter() - plan_started
+            )
         if plan is None or cancel.is_set():
             return None, metadata
         metadata["planned_cells"] = len(plan) + len(unavailable)
@@ -1289,6 +1474,25 @@ class EncSceneLayer:
                 else "no ENC cell covers this view"
             )
             return None, metadata
+        if generation == self._generation and not cancel.is_set():
+            # What an idle prefetch needs to warm the ground beside this view:
+            # references only, read again solely while no demand is pending.
+            previous = self._prefetch_basis
+            travel = None
+            if previous is not None:
+                before = previous["camera"]
+                travel = (
+                    camera.center_lon - before.center_lon,
+                    camera.center_lat - before.center_lat,
+                )
+            self._prefetch_basis = {
+                "camera": camera,
+                "plan": plan,
+                "viewport": viewport,
+                "projection": projection_for(viewport),
+                "display_scale": display_scale_for(viewport),
+                "travel": travel,
+            }
         scene = assemble_scene(
             plan,
             viewport,

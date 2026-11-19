@@ -77,6 +77,32 @@ def _stage(timings, name, started):
         timings[name] = timings.get(name, 0.0) + (time.perf_counter() - started)
 
 
+def _cell_detail(timings):
+    """The per-cell detail mapping, or ``None`` when the caller did not ask.
+
+    The caller seeds it (``timings["cells"]``) only when tracing is on, so a
+    build that nobody traces records no per-cell duration and pays no extra
+    ``perf_counter`` for one.
+    """
+    return None if timings is None else timings.get("cells")
+
+
+def _add_cell_ms(timings, path, stage, milliseconds):
+    """Accumulate one per-cell duration in milliseconds; a no-op unless asked."""
+    detail = _cell_detail(timings)
+    if detail is None or milliseconds is None:
+        return
+    record = detail.setdefault(os.path.basename(os.fspath(path)), {})
+    record[stage] = round(record.get(stage, 0.0) + milliseconds, 3)
+
+
+def _cell_ms(timings, path, stage, started):
+    """Accumulate one per-cell duration from a ``perf_counter`` start."""
+    if _cell_detail(timings) is None or started is None:
+        return
+    _add_cell_ms(timings, path, stage, (time.perf_counter() - started) * 1000.0)
+
+
 def _cancelled(cancelled) -> bool:
     return cancelled is not None and bool(cancelled())
 
@@ -279,6 +305,7 @@ class MeshCache:
         stroke_pixels,
         granule=None,
         trim=None,
+        display_scale=None,
     ) -> tuple:
         """Identity of one reusable cell mesh.
 
@@ -299,6 +326,13 @@ class MeshCache:
         must change when the better-cell set changes even though the cell,
         its granule and its style have not: the digest is exactly that
         identity, and equal digests mean equal geometry.
+
+        ``display_scale`` is the nominal scale denominator whose SCAMIN gate
+        decided which features reached the mesh.  The gate is
+        ``display_scale > SCAMIN``, so the resulting geometry is a function of
+        this number: it belongs in the key even when ``scale_bucket`` and
+        ``tolerance`` quantise to the same values, or two different scales
+        could share a mesh that one of them would have culled.
         """
         return (
             os.path.abspath(os.fspath(path)),
@@ -309,6 +343,7 @@ class MeshCache:
             float(stroke_pixels),
             granule,
             trim,
+            None if display_scale is None else float(display_scale),
         )
 
     @property
@@ -530,6 +565,45 @@ def _palette_key(palette):
         return palette
     name = getattr(palette, "name", None)
     return name if isinstance(name, str) else type(palette).__qualname__
+
+
+#: Width of one display-scale bucket, as a fraction of an octave.  A quarter
+#: octave is about 19%: wider than the small zoom steps of a wheel or pinch, so
+#: the same view keeps its meshes, and narrow enough that a mesh never carries
+#: more than one step of extra detail (at most ~9.5% below the actual scale).
+DISPLAY_SCALE_BUCKET_OCTAVES = 0.25
+
+
+def bucket_display_scale(display_scale):
+    """Quantise a display-scale denominator onto a fixed power-of-two ladder.
+
+    The ladder is absolute - ``2 ** (k * 0.25)`` for integer ``k`` - so two
+    cameras at the same zoom land in the same bucket wherever they are on the
+    chart.  Unlike :func:`_scale_bucket` it is not derived from the view, which
+    is what lets a mesh cached at one camera be reused by the next.
+
+    The result is the bucket's *finest* scale (the smallest denominator), from
+    ``floor``: ``bucket <= display_scale``.  That is the conservative direction
+    for the SCAMIN gate, which keeps a feature when
+    ``display_scale <= SCAMIN``.  Feeding the gate a smaller number can only
+    admit features whose SCAMIN lies between the exact scale and the bucket
+    floor; it can never drop one the exact scale would have drawn.  The same
+    value keys the mesh, so a cached mesh always matches the gate it was built
+    under and bucketing cannot hide a feature that should be visible.
+
+    ``None``, a non-finite value or a non-positive value applies no gate and
+    keys no scale.
+    """
+    if display_scale is None:
+        return None
+    try:
+        value = float(display_scale)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(value) or value <= 0.0:
+        return None
+    steps = np.floor(np.log2(value) / DISPLAY_SCALE_BUCKET_OCTAVES)
+    return float(2.0 ** (float(steps) * DISPLAY_SCALE_BUCKET_OCTAVES))
 
 
 def _scale_bucket(projection, geometry):
@@ -758,6 +832,9 @@ class _CellTask:
     #: coverage, which is wider than ``clip_region`` wherever a better-ranked
     #: cell owns the ground.  ``None`` falls back to the fill clip.
     point_region: object = None
+    #: The camera's nominal display-scale denominator at build time, or
+    #: ``None`` when the caller applies no SCAMIN gate.
+    display_scale: float | None = None
     #: The quantised rectangle this mesh was clipped to, when it is cacheable.
     granule: tuple | None = None
 
@@ -797,26 +874,70 @@ def _same_extent(left, right):
 #: itself, so a pan smaller than one step reuses the same granule.
 GRANULE_STEPS = 4
 
+#: Source degrees the absolute granule grid is built on.  A step is a
+#: power-of-two multiple of this, so every camera at the same zoom - wherever it
+#: sits - snaps to the same global grid lines; ``180`` and ``90`` are exact
+#: multiples of it, so the grid is continuous across the antimeridian.
+GRANULE_BASE_DEGREES = 1.0 / 64.0
+
 #: Source degrees a granule bound is rounded to, so two cameras on the same grid
 #: line produce the same key.
 GRANULE_DECIMALS = 9
 
 
-def _granule_region(region):
-    """The quantised rectangle a reusable mesh is clipped to.
+def _absolute_granule_step(region):
+    """The fixed degree step of the absolute granule grid for this view.
 
-    The planned view snapped *outward* onto a grid a quarter of its own span, so
-    the granule always contains the planned view: clipping to it can never omit
-    a visible pixel.  Two cameras that land on the same grid lines share the
-    granule, so a pan of a few percent of the view keeps the same key and its
-    meshes stay resident.  ``None`` when ``region`` has no usable extent.
+    ``GRANULE_STEPS`` granules per view, rounded *down* to a power-of-two
+    multiple of :data:`GRANULE_BASE_DEGREES`.  Only the discrete level enters
+    the step, never the exact rectangle, so the grid is global: two cameras at
+    the same zoom share grid lines whatever their viewport, and a zoom that
+    stays inside one level keeps its keys.  Rounding down keeps the step at or
+    under a quarter of the view, so an outward ``ceil`` granule is at most
+    one and a half views on a side - never more ground than the view-relative
+    step meshes today.  ``None`` when ``region`` has no usable extent.
     """
     bounds = _bounds(region)
     if bounds is None:
         return None
     x0, y0, x1, y1 = bounds
-    step_x = (x1 - x0) / GRANULE_STEPS
-    step_y = (y1 - y0) / GRANULE_STEPS
+    span = max(x1 - x0, y1 - y0)
+    if not np.isfinite(span) or span <= 0.0:
+        return None
+    target = span / GRANULE_STEPS
+    level = int(np.floor(np.log2(target / GRANULE_BASE_DEGREES)))
+    step = GRANULE_BASE_DEGREES * 2.0**level
+    if not np.isfinite(step) or step <= 0.0:
+        return None
+    return step
+
+
+def _granule_region(region, step=None):
+    """The quantised rectangle a reusable mesh is clipped to.
+
+    The planned view snapped *outward* (``ceil``) onto a grid step, so the
+    granule always contains the planned view: clipping to it can never omit a
+    visible pixel.  Two cameras that land on the same grid lines share the
+    granule, so a pan inside one step keeps the same key and its meshes stay
+    resident.
+
+    ``step`` is the fixed degree step of the absolute grid (see
+    :func:`_absolute_granule_step`); when it is ``None`` the step is a quarter
+    of ``region``'s own span, which is the view-relative fallback used when the
+    mesh has no fixed reference frame.  ``None`` when ``region`` has no usable
+    extent.
+    """
+    bounds = _bounds(region)
+    if bounds is None:
+        return None
+    x0, y0, x1, y1 = bounds
+    if step is None:
+        step_x = (x1 - x0) / GRANULE_STEPS
+        step_y = (y1 - y0) / GRANULE_STEPS
+    else:
+        if not np.isfinite(step) or step <= 0.0:
+            return None
+        step_x = step_y = float(step)
     if not (step_x > 0.0 and step_y > 0.0):
         return None
     if not np.isfinite([x0, y0, x1, y1, step_x, step_y]).all():
@@ -953,10 +1074,21 @@ def _prepare_cell(
     mesh_scale=None,
     reuse_granules=True,
     trimmed=None,
+    display_scale=None,
+    granule_override=None,
 ):
-    """Resolve a cell's clip, query region and cache key, without touching it."""
+    """Resolve a cell's clip, query region and cache key, without touching it.
+
+    ``granule_override`` names the granule outright, for a caller that already
+    knows it - the idle prefetch.  ``base`` is the same ground the normal path
+    clips to, so the key and the geometry are exactly what a later request
+    landing on that granule would ask for.
+    """
     known = bool(cell.coverage_known)
     own = cell.coverage if known else None
+    # The mesh's fixed reference frame, if the caller asked for one.  Resolved
+    # up front because the granule grid is absolute only in that frame.
+    mesh_projection = _reference_projection(projection, mesh_scale)
     # The ground this cell keeps once better-ranked cells have claimed theirs.
     # ``trimmed`` is the same object as ``own`` when nothing was subtracted, so
     # an untrimmed cell keeps exactly its old key and old clip.
@@ -980,7 +1112,17 @@ def _prepare_cell(
         planned = cell.clip if cell.clip is not None else own
         clip_region = planned
         cacheable = False
-        if owner is not None and cell.clip is not None:
+        if owner is not None and granule_override is not None:
+            # The prefetch's granule is fixed by the caller, not derived from
+            # this view.  Clipping to ``base`` intersected with it can only
+            # hold more of the granule than a view needs, never less, so the
+            # mesh it caches is always sufficient for the request that later
+            # lands on the same ground.
+            clip_region = shapely.intersection(base, granule_override)
+            if not clip_region.is_empty:
+                granule = granule_override
+                cacheable = True
+        elif owner is not None and cell.clip is not None:
             if _same_extent(base, cell.clip):
                 # The whole cell - or the whole ground it still owns - is
                 # visible, so its clip is already view-free: key the mesh on
@@ -989,7 +1131,17 @@ def _prepare_cell(
                 clip_region = cell.clip
                 cacheable = granule is not None
             elif reuse_granules and region is not None:
-                candidate = _granule_region(region)
+                # In the fixed reference frame the granule comes from the
+                # global grid, so its key survives a pan, a viewport and a
+                # zoom inside one level instead of changing with the view.
+                candidate = _granule_region(
+                    region,
+                    step=(
+                        _absolute_granule_step(region)
+                        if mesh_projection is not None
+                        else None
+                    ),
+                )
                 if candidate is not None and _granule_owned(
                     base, planned, region, candidate
                 ):
@@ -1031,7 +1183,6 @@ def _prepare_cell(
     # bucket; an unknown-coverage cell falls back to the queried view.  In the
     # fixed reference frame the tolerance is the finest the chart offers, which
     # is what makes the mesh reusable across zoom levels.
-    mesh_projection = _reference_projection(projection, mesh_scale)
     tolerance_projection = (
         mesh_projection if mesh_projection is not None else projection
     )
@@ -1054,6 +1205,7 @@ def _prepare_cell(
                 stroke_pixels,
                 granule_key,
                 trim_identity,
+                display_scale,
             )
         else:
             bucket = _scale_bucket(projection, clip_region)
@@ -1067,6 +1219,7 @@ def _prepare_cell(
                     stroke_pixels,
                     granule_key,
                     trim_identity,
+                    display_scale,
                 )
     return _CellTask(
         index=index,
@@ -1079,6 +1232,7 @@ def _prepare_cell(
         projection=(mesh_projection if mesh_projection is not None else projection),
         point_region=point_region,
         granule=None if granule is None else _granule_key(granule),
+        display_scale=None if display_scale is None else float(display_scale),
     )
 
 
@@ -1177,7 +1331,11 @@ def _mesh_cell(
         query_geometry = _ogr_geometry(task.query_region)
         started = time.perf_counter()
         records = (
-            () if query_geometry is None else scene.query(query_geometry, cancelled)
+            ()
+            if query_geometry is None
+            else scene.query(
+                query_geometry, cancelled, display_scale=task.display_scale
+            )
         )
         _stage(timings, "query", started)
         if records is None or _cancelled(cancelled):
@@ -1283,6 +1441,7 @@ def build_view_scene(
     workers=None,
     mesh_scale=None,
     reuse_granules=True,
+    display_scale=None,
 ):
     """Assemble one ordered scene from ``plan``.
 
@@ -1314,6 +1473,20 @@ def build_view_scene(
     (``SimplifyPreserveTopology``), which bounds the geometric error to the
     tolerance in source degrees and keeps the cold build proportional to the
     view, not to the source vertex count.
+
+    ``display_scale`` is the camera's nominal scale denominator, from
+    :func:`sailworks.core.encharts.display_scale_denominator`.  It gates each
+    feature on its S-57 SCAMIN before the geometry is decoded, so a feature
+    that is not displayable at this scale costs no intersection test, no
+    triangles and no strokes.  ``None`` applies no gate.  The denominator is
+    quantised onto a fixed quarter-octave ladder (:func:`bucket_display_scale`)
+    before it reaches either the gate or the mesh key, so a small zoom step
+    reuses the mesh.  The bucket is the ladder's finest value, never coarser
+    than the camera's scale: a feature can only be admitted early, never culled
+    while it should be visible.  The quantised value is part of the mesh-cache
+    key because the kept set is a function of it; the key's view-derived
+    ``scale_bucket`` and ``tolerance`` alone can coincide across a SCAMIN
+    boundary.
 
     ``reuse_granules`` (default true) is what makes mesh reuse survive a pan.
     When a cell's own coverage contains the whole planned (inflated) view, the
@@ -1406,6 +1579,11 @@ def build_view_scene(
     if workers < 1:
         raise ValueError("workers must be at least 1")
 
+    # Both the SCAMIN gate and the mesh key use the bucket's *finest* scale,
+    # so ordinary zoom steps reuse a mesh and the gate stays conservative: see
+    # :func:`bucket_display_scale`.
+    display_scale = bucket_display_scale(display_scale)
+
     owner = default_mesh_cache() if mesh_cache is _DEFAULT else mesh_cache
     region = _view_region(plan, bounding)
     palette_key = _palette_key(palette)
@@ -1432,6 +1610,7 @@ def build_view_scene(
             mesh_scale=mesh_scale,
             reuse_granules=reuse_granules,
             trimmed=trimmed_by_index[index],
+            display_scale=display_scale,
         )
         for index, cell in enumerate(plan)
     ]
@@ -1490,6 +1669,8 @@ def build_view_scene(
             timings=timings,
         )
         _stage(timings, "cell_open", started)
+        # Per cell, so a composition names the cell that dominates the acquire.
+        _cell_ms(timings, cell.path, "open", started)
         if scene is not None:
             return scene
         if _cancelled(cancelled):
@@ -1501,6 +1682,7 @@ def build_view_scene(
         )
         return SkippedCell(cell.path, cell.version, reason)
 
+    loop_started = time.perf_counter() if _cell_detail(timings) is not None else None
     if workers == 1:
         # Sequential: one cell at a time, unchanged.
         for task in tasks:
@@ -1517,6 +1699,9 @@ def build_view_scene(
                 continue
             if _cancelled(cancelled):
                 return None
+            cell_mesh_started = (
+                time.perf_counter() if _cell_detail(timings) is not None else None
+            )
             outcome = _mesh_cell(
                 task,
                 scene,
@@ -1527,6 +1712,7 @@ def build_view_scene(
                 timings=timings,
                 pin=mesh_pins,
             )
+            _cell_ms(timings, task.cell.path, "mesh", cell_mesh_started)
             if outcome.cancelled:
                 return None
             contributions.append(outcome.contribution)
@@ -1541,6 +1727,9 @@ def build_view_scene(
         def _run(task, scene):
             """One submitted cell; never raises, so one cell cannot lose the view."""
             local = {} if timings is not None else None
+            cell_mesh_started = (
+                time.perf_counter() if _cell_detail(timings) is not None else None
+            )
             try:
                 outcome = _mesh_cell(
                     task,
@@ -1552,6 +1741,10 @@ def build_view_scene(
                     timings=local,
                     pin=mesh_pins,
                 )
+                if cell_mesh_started is not None and local is not None:
+                    local["mesh_ms"] = (
+                        time.perf_counter() - cell_mesh_started
+                    ) * 1000.0
             except Exception as exc:
                 return _CellOutcome(
                     skipped=SkippedCell(
@@ -1605,8 +1798,12 @@ def build_view_scene(
                         return None
                     if outcome.timings and timings is not None:
                         # Merged on this thread, so ``timings`` has one writer.
+                        cell_mesh_ms = outcome.timings.pop("mesh_ms", None)
                         for name, value in outcome.timings.items():
                             timings[name] = timings.get(name, 0.0) + value
+                        _add_cell_ms(
+                            timings, tasks[index].cell.path, "mesh", cell_mesh_ms
+                        )
                     if outcome.cancelled:
                         return None
                     if outcome.skipped is not None:
@@ -1623,6 +1820,10 @@ def build_view_scene(
             # discarded; nothing is waited for, so cancellation returns at once.
             executor.shutdown(wait=False, cancel_futures=True)
 
+    # The meshing loop's wall time, acquire included; the trace reports the
+    # mesh phase with the per-cell acquire it contains removed.
+    if loop_started is not None:
+        _stage(timings, "mesh", loop_started)
     if _cancelled(cancelled):
         return None
 
@@ -1632,3 +1833,232 @@ def build_view_scene(
     )
     _stage(timings, "assemble", started)
     return result
+
+
+#: How many neighbouring granules one idle prefetch warms: one, the neighbour
+#: the camera is moving towards.  Measured in a real session, four blanket
+#: neighbours built ~6 s of background meshing across 0.6-2.2 s each and none
+#: of the four was ever requested - the next zooms landed in other granules.
+PREFETCH_GRANULES = 1
+
+#: The most cells one prefetched granule may build.  A granule needing more
+#: ground than this is left to the real request: warming it would spend more
+#: than the stall it hides.
+PREFETCH_CELLS = 8
+
+
+def neighbour_granules(granule, step=None, limit=PREFETCH_GRANULES, travel=None):
+    """The granules immediately beside ``granule`` on the absolute grid.
+
+    ``step`` is the grid step the granule was snapped to (see
+    :func:`_absolute_granule_step`); omitted, the granule's own extent is used.
+    ``travel`` is an optional ``(dx, dy)`` in source degrees - the camera's
+    movement since the previous view - and orders the four neighbours by how
+    much of that movement each one continues, so a pan warms the ground it is
+    heading for first.  Without one, the order is fixed and nearest-first: all
+    four touch the same granule, so the tie is broken by axis.
+    """
+    bounds = _bounds(granule)
+    if bounds is None:
+        return []
+    x0, y0, x1, y1 = bounds
+    if step is None:
+        step = max(x1 - x0, y1 - y0)
+    try:
+        step = float(step)
+    except (TypeError, ValueError):
+        return []
+    if not np.isfinite(step) or step <= 0.0:
+        return []
+    try:
+        count = int(limit)
+    except (TypeError, ValueError):
+        return []
+    if count <= 0:
+        return []
+    offsets = (
+        (step, 0.0),
+        (-step, 0.0),
+        (0.0, step),
+        (0.0, -step),
+    )
+    if travel is not None:
+        try:
+            dx, dy = float(travel[0]), float(travel[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            dx = dy = 0.0
+        if np.isfinite([dx, dy]).all() and (dx != 0.0 or dy != 0.0):
+            offsets = tuple(
+                sorted(
+                    offsets,
+                    key=lambda offset: -(offset[0] * dx + offset[1] * dy),
+                )
+            )
+    return [
+        shapely.box(x0 + ox, y0 + oy, x1 + ox, y1 + oy) for ox, oy in offsets[:count]
+    ]
+
+
+def prefetch_candidate(
+    granule,
+    step=None,
+    travel=None,
+    *,
+    display_scale=None,
+    current_scale=None,
+):
+    """The one granule an idle prefetch should warm, or why it should not.
+
+    ``travel`` is the camera's movement since the previous view, in source
+    degrees.  Without one there is no direction of travel to warm, and a
+    blanket neighbour was measured as pure background cost, so nothing is
+    prefetched.  A warm is only worth its meshing when the request that
+    arrives later keys it at the same scale bucket, so ``display_scale`` (the
+    bucket this warm would use) and ``current_scale`` (the bucket the view is
+    presented at) must agree: after a zoom step the neighbour it would build
+    is ground the next request will not look for.
+
+    Returns ``(granule, None)`` for the travel-direction neighbour, otherwise
+    ``(None, reason)`` with ``reason`` one of ``"no_travel"``,
+    ``"wrong_bucket"`` or ``"granule"``.
+    """
+    if granule is None or _bounds(granule) is None:
+        return None, "granule"
+    if travel is None:
+        return None, "no_travel"
+    try:
+        dx, dy = float(travel[0]), float(travel[1])
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None, "no_travel"
+    if not np.isfinite([dx, dy]).all() or (dx == 0.0 and dy == 0.0):
+        return None, "no_travel"
+    if bucket_display_scale(display_scale) != bucket_display_scale(current_scale):
+        return None, "wrong_bucket"
+    neighbours = neighbour_granules(granule, step=step, limit=1, travel=(dx, dy))
+    if not neighbours:
+        return None, "granule"
+    return neighbours[0], None
+
+
+def prefetch_granule(
+    plan,
+    scene_cache,
+    *,
+    granule,
+    projection,
+    stroke_pixels,
+    palette,
+    cancelled=None,
+    mesh_cache=None,
+    loader=encscene.open_cell_scene,
+    timings=None,
+    display_scale=None,
+    mesh_scale=None,
+    cell_limit=PREFETCH_CELLS,
+):
+    """Warm ``mesh_cache`` for ``plan``'s cells over one neighbour granule.
+
+    The normal build path with the granule named instead of derived: the same
+    cells, the same trim, the same scale bucket and display scale, so the keys
+    land exactly where a later request for this ground will look for them.
+    Nothing is published and no generation is touched - the only output is
+    mesh-cache entries - so a caller may run this whenever the camera is idle.
+
+    Returns a small report: ``built`` meshes inserted, ``resident`` keys that
+    were already cached, ``skipped`` cells the cache or loader refused, and
+    ``cancelled`` when ``cancelled`` fired part way.  ``reason`` is set when
+    the whole granule was refused without touching a cell (``uncacheable``),
+    when every key it would warm is already cached (``resident``), or when it
+    asks for more cells than ``cell_limit`` (``oversized``).
+    """
+    plan = tuple(plan)
+    report = {
+        "built": 0,
+        "resident": 0,
+        "skipped": 0,
+        "cancelled": False,
+        "reason": None,
+    }
+    if mesh_cache is None or scene_cache is None or granule is None:
+        report["reason"] = "uncacheable"
+        return report
+    if _cancelled(cancelled):
+        report["cancelled"] = True
+        return report
+    if _bounds(granule) is None:
+        report["reason"] = "uncacheable"
+        return report
+    display_scale = bucket_display_scale(display_scale)
+    palette_key = _palette_key(palette)
+    trimmed_by_index = _trimmed_coverages(plan)
+    tasks = []
+    for index, cell in enumerate(plan):
+        task = _prepare_cell(
+            cell,
+            index,
+            granule,
+            palette_key,
+            projection,
+            stroke_pixels,
+            mesh_cache,
+            mesh_scale=mesh_scale,
+            trimmed=trimmed_by_index[index],
+            display_scale=display_scale,
+            granule_override=granule,
+        )
+        if task.key is not None:
+            tasks.append(task)
+    if not tasks:
+        # Nothing here can be keyed the way a real request would: unknown
+        # coverage, an unsupported cell, or a granule this cell does not hold.
+        report["reason"] = "uncacheable"
+        return report
+    if all(mesh_cache.get(task.key) is not None for task in tasks):
+        # A real request for this ground would hit every key already, so the
+        # warm is over before it starts: no scene is read and no cell meshed.
+        report["resident"] = len(tasks)
+        report["reason"] = "resident"
+        return report
+    if len(tasks) > max(0, int(cell_limit)):
+        report["reason"] = "oversized"
+        return report
+    pins = frozenset(task.key for task in tasks)
+    for task in tasks:
+        if _cancelled(cancelled):
+            report["cancelled"] = True
+            return report
+        if mesh_cache.get(task.key) is not None:
+            report["resident"] += 1
+            continue
+        scene = scene_cache.get_or_build(
+            task.cell.path,
+            task.cell.version,
+            lambda cancel, task=task: loader(task.cell.path, task.cell.version, cancel),
+            cancelled,
+            pin=pins,
+            timings=timings,
+        )
+        if scene is None or isinstance(scene, SkippedCell):
+            report["skipped"] += 1
+            if _cancelled(cancelled):
+                report["cancelled"] = True
+                return report
+            continue
+        outcome = _mesh_cell(
+            task,
+            scene,
+            stroke_pixels=stroke_pixels,
+            palette=palette,
+            owner=mesh_cache,
+            cancelled=cancelled,
+            timings=timings,
+            pin=pins,
+        )
+        if outcome.cancelled:
+            report["cancelled"] = True
+            return report
+        if outcome.skipped is not None:
+            report["skipped"] += 1
+        else:
+            report["built"] += 1
+    return report

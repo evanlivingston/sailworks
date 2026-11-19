@@ -78,6 +78,9 @@ def _schema_hash() -> str:
         [field.name for field in fields(encscene.LayerCandidates)],
         sorted(encscene.SKIP_LAYERS),
         sorted((key, value) for key, value in encscene.ATTRIBUTE_FIELDS.items()),
+        # The SCAMIN gate is per feature, so a scene built before the gate
+        # existed must not be reused as if it could cull.
+        encscene.SCAMIN_FIELD,
         encscene._GRID_MAX_SIDE,
     )
     return hashlib.sha256(repr(tokens).encode("utf-8")).hexdigest()[:16]

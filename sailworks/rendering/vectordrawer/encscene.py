@@ -22,6 +22,15 @@ from osgeo import ogr
 SKIP_LAYERS = {"DSID", "M_COVR", "M_QUAL", "M_NSYS", "M_CSCL", "M_SDAT", "M_VDAT"}
 ATTRIBUTE_FIELDS = {"DEPARE": ("DRVAL1", "DRVAL2"), "BOYLAT": ("COLOUR",)}
 
+#: S-57 minimum display scale.  A feature belongs on charts equal to or finer
+#: than this denominator, so it is omitted when the display scale is coarser:
+#: ``display_scale > SCAMIN``.  That is the direction the repo already uses
+#: for scale gates - :func:`sailworks.core.encharts.chart_scale_visible` hides
+#: a cell when ``display_scale > native_scale * 16`` and
+#: :mod:`encsounding` hides soundings when ``scale > SCALE_LIMIT`` - and it is
+#: pinned by ``test_enc_mesh.test_scamin_culls_only_at_coarser_scales``.
+SCAMIN_FIELD = "SCAMIN"
+
 _CANCEL_STRIDE = 64  # envelope tests between cancellation polls
 _GRID_MAX_SIDE = 64  # coarse-index cap, so query work stays bounded
 _OVERSIZED_MARKERS = 64  # bounded negative markers for oversized cells
@@ -215,12 +224,19 @@ class CellScene:
     def __len__(self) -> int:
         return len(self.records)
 
-    def query(self, bounding, cancelled=None):
+    def query(self, bounding, cancelled=None, display_scale=None):
         """Return intersecting records in source order, or ``None`` if cancelled.
 
         Grid candidates are confirmed with the same exact ``Intersects`` test an
         OGR spatial filter applies; a cancelled query never returns a partial
         tuple.
+
+        ``display_scale`` is the camera's nominal scale denominator (see
+        :func:`sailworks.core.encharts.display_scale_denominator`).  A record
+        whose SCAMIN is coarser than it is skipped before its WKB is
+        converted, so it contributes nothing to the query.  A record with no
+        SCAMIN is always kept: absence never culls.  ``None`` disables the
+        gate.
         """
         if bounding is None:
             raise ValueError("query requires a bounding geometry")
@@ -238,10 +254,28 @@ class CellScene:
                 if emaxx < qminx or eminx > qmaxx or emaxy < qminy or eminy > qmaxy:
                     continue
                 record = self.records[layer.start + offset]
+                if display_scale is not None:
+                    scamin = feature_scamin(record)
+                    if scamin is not None and float(display_scale) > scamin:
+                        continue
                 geometry = ogr.CreateGeometryFromWkb(record.wkb)
                 if geometry is not None and geometry.Intersects(bounding):
                     found.append(record)
         return tuple(found)
+
+
+def feature_scamin(record):
+    """The record's S-57 SCAMIN denominator, or ``None`` when it has none.
+
+    Only a positive integer is a gate.  A missing, zero or non-numeric value
+    means "no minimum scale stated", which must never cull the feature.
+    """
+    value = record.attribute(SCAMIN_FIELD)
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 def _make_grid(envelopes) -> tuple[tuple[float, float, float, float, int], tuple]:
@@ -302,6 +336,12 @@ def _build_cell_scene(datasource, path, version, cancelled=None):
         if name in SKIP_LAYERS or definition.GetGeomFieldCount() == 0:
             continue
         fields = ATTRIBUTE_FIELDS.get(name, ())
+        # SCAMIN is read for every portrayed layer, not only those with an
+        # explicit attribute slice: the scale gate is per feature, and a layer
+        # that carries the field must not lose it.  A cell without the field
+        # yields no attribute, and absence never culls.
+        if definition.GetFieldIndex(SCAMIN_FIELD) >= 0 and SCAMIN_FIELD not in fields:
+            fields += (SCAMIN_FIELD,)
         field_indexes = [(key, definition.GetFieldIndex(key)) for key in fields]
         layer.SetSpatialFilter(None)
         layer.SetAttributeFilter(None)

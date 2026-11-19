@@ -94,7 +94,15 @@ def _box(min_x, min_y, max_x, max_y):
     )
 
 
-def _build(plan, cache, mesh_cache, *, bounding=None, cancelled=None):
+def _build(
+    plan,
+    cache,
+    mesh_cache,
+    *,
+    bounding=None,
+    cancelled=None,
+    display_scale=None,
+):
     return encview.build_view_scene(
         plan,
         cache,
@@ -104,6 +112,7 @@ def _build(plan, cache, mesh_cache, *, bounding=None, cancelled=None):
         cancelled=cancelled,
         bounding=bounding,
         mesh_cache=mesh_cache,
+        display_scale=display_scale,
     )
 
 
@@ -668,3 +677,412 @@ def test_the_byte_cap_evicts_the_oldest_pinned_mesh():
     assert cache.get(second) is not None
     assert cache.resident_bytes == 200
     assert len(cache._entries) == 2
+
+
+# --------------------------------------------------- absolute granule grid
+def _granule_of(mesh_cache, path):
+    """The newest cached granule for ``path`` (a miss leaves the old entry)."""
+    return [key[6] for key in mesh_cache._entries if key[0] == path][-1]
+
+
+def _fixed(plan, cache, mesh_cache, view):
+    """One assembly in the fixed reference frame over ``view``."""
+    return _fixed_frame_build(
+        plan,
+        cache,
+        mesh_cache,
+        12.0,
+        bounding=_box(*view.bounds),
+    )
+
+
+def test_the_granule_is_a_global_grid_not_the_view(tmp_path):
+    # A cell far larger than the view: only the granule rule applies.  In the
+    # fixed frame the grid is the global one, so two slightly different
+    # rectangles at the same zoom share their keys.
+    cell = _cell(tmp_path, "absolute.000", _area(0, 0, 10, 10))
+    coverage = shapely.box(0, 0, 10, 10)
+    cache = encscene.SceneCache(1_000_000)
+    assert cache.put(cell)
+    mesh_cache = encview.MeshCache(1_000_000)
+
+    view = shapely.box(4.0, 2.0, 4.1, 2.1)
+    first = _fixed(
+        (_plan(cell.path, cell.version, view, True, coverage),),
+        cache,
+        mesh_cache,
+        view,
+    )
+    assert first is not None and mesh_cache.triangulations == 1
+
+    # Every bound sits on the 1/GRANULE_BASE_DEGREES lattice, which is what
+    # makes the grid global: a view-relative step would put bounds anywhere.
+    for bound in _granule_of(mesh_cache, cell.path):
+        scaled = bound * (1.0 / encview.GRANULE_BASE_DEGREES)
+        assert abs(scaled - round(scaled)) < 1e-6
+
+    # A rectangle a hair wider is still the same granule: the step comes from
+    # the zoom level, not from the exact rectangle.
+    wider = shapely.box(4.0, 2.0, 4.101, 2.1)
+    second = _fixed(
+        (_plan(cell.path, cell.version, wider, True, coverage),),
+        cache,
+        mesh_cache,
+        wider,
+    )
+    assert second is not None
+    assert second.mesh_hits == 1 and second.mesh_built == 0
+    assert mesh_cache.triangulations == 1
+    np.testing.assert_array_equal(first.positions, second.positions)
+
+
+def test_panning_inside_one_granule_hits_the_cache(tmp_path):
+    cell = _cell(tmp_path, "granulehit.000", _area(0, 0, 10, 10))
+    coverage = shapely.box(0, 0, 10, 10)
+    cache = encscene.SceneCache(1_000_000)
+    assert cache.put(cell)
+    mesh_cache = encview.MeshCache(1_000_000)
+
+    view = shapely.box(4.0, 2.0, 4.1, 2.1)
+    assert (
+        _fixed(
+            (_plan(cell.path, cell.version, view, True, coverage),),
+            cache,
+            mesh_cache,
+            view,
+        )
+        is not None
+    )
+    granule = _granule_of(mesh_cache, cell.path)
+
+    # A 1% pan stays on the same grid lines.
+    pan = shapely.box(4.003, 2.0, 4.103, 2.1)
+    second = _fixed(
+        (_plan(cell.path, cell.version, pan, True, coverage),),
+        cache,
+        mesh_cache,
+        pan,
+    )
+    assert second is not None
+    assert second.mesh_hits == 1 and second.mesh_built == 0
+    assert mesh_cache.triangulations == 1
+    assert _granule_of(mesh_cache, cell.path) == granule
+    # The reused mesh covers the new clip, not only the clip it was built for.
+    assert granule[0] <= pan.bounds[0] and granule[2] >= pan.bounds[2]
+    le = np.asarray(second.positions, dtype=np.float64)[:, :2]
+    assert le[:, 0].max() >= pan.bounds[2]
+
+
+def test_crossing_a_granule_line_misses(tmp_path):
+    cell = _cell(tmp_path, "crossing.000", _area(0, 0, 10, 10))
+    coverage = shapely.box(0, 0, 10, 10)
+    cache = encscene.SceneCache(1_000_000)
+    assert cache.put(cell)
+    mesh_cache = encview.MeshCache(1_000_000)
+
+    view = shapely.box(4.0, 2.0, 4.1, 2.1)
+    assert (
+        _fixed(
+            (_plan(cell.path, cell.version, view, True, coverage),),
+            cache,
+            mesh_cache,
+            view,
+        )
+        is not None
+    )
+    first_granule = _granule_of(mesh_cache, cell.path)
+    assert mesh_cache.triangulations == 1
+
+    # A whole granule to the right: the cached clip does not reach it.
+    across = shapely.box(4.2, 2.0, 4.3, 2.1)
+    second = _fixed(
+        (_plan(cell.path, cell.version, across, True, coverage),),
+        cache,
+        mesh_cache,
+        across,
+    )
+    assert second is not None
+    assert mesh_cache.triangulations == 2
+    assert second.mesh_misses == 1 and second.mesh_built == 1
+    assert _granule_of(mesh_cache, cell.path) != first_granule
+
+
+def test_a_granule_hit_keeps_the_better_cell_ground_out(tmp_path):
+    lower = _cell(tmp_path, "excludelower.000", _area(0, 0, 10, 10))
+    better = _cell(tmp_path, "excludebetter.000", _area(0, 0, 4.98, 10))
+    coverage = shapely.box(0, 0, 10, 10)
+    better_coverage = shapely.box(0, 0, 4.98, 10)
+    cache = encscene.SceneCache(1_000_000)
+    assert cache.put(lower) and cache.put(better)
+    mesh_cache = encview.MeshCache(1_000_000)
+
+    view = shapely.box(4.95, 2.0, 5.05, 2.1)
+    first = _fixed(
+        _trimmed_plan(lower, coverage, better, better_coverage, view),
+        cache,
+        mesh_cache,
+        view,
+    )
+    assert first is not None and first.mesh_built == 2
+
+    pan = shapely.box(4.953, 2.0, 5.053, 2.1)
+    second = _fixed(
+        _trimmed_plan(lower, coverage, better, better_coverage, pan),
+        cache,
+        mesh_cache,
+        pan,
+    )
+    assert second is not None
+    assert second.mesh_hits == 2 and second.mesh_built == 0
+    # A granule larger than the view must still exclude the better cell's
+    # ground (it reaches x=5): a mesh that ignored the trim would carry
+    # vertices from x=0.
+    le = np.asarray(second.positions, dtype=np.float64)[:, :2]
+    assert le[:, 0].min() > 4.5
+
+
+def test_display_bucket_ladder_is_absolute_and_never_coarser():
+    """The ladder is fixed in scale space, and its value is a floor.
+
+    ``bucket <= scale`` is what keeps the SCAMIN gate conservative: the gate
+    keeps a feature when the value it compares is at or below the feature's
+    SCAMIN, so a smaller value can only admit features.
+    """
+    for scale in (1.0, 1_000.0, 1_024.0, 22_000.0, 90_000.0):
+        bucket = encview.bucket_display_scale(scale)
+        assert bucket <= scale
+        # A ladder value is its own bucket, and 10% above it is still inside.
+        assert encview.bucket_display_scale(bucket) == bucket
+        assert encview.bucket_display_scale(bucket * 1.1) == bucket
+    assert encview.bucket_display_scale(None) is None
+    assert encview.bucket_display_scale(0.0) is None
+
+
+def test_a_small_zoom_step_reuses_the_mesh(tmp_path):
+    cell = _cell(tmp_path, "bucket.000", _area(0, 0, 2, 2))
+    coverage = shapely.box(0, 0, 2, 2)
+    cache = encscene.SceneCache(1_000_000)
+    assert cache.put(cell)
+    mesh_cache = encview.MeshCache(1_000_000)
+    plan = (_plan(cell.path, cell.version, coverage, True, coverage),)
+
+    # ~11% apart, so both land on the same quarter-octave step.
+    assert encview.bucket_display_scale(900.0) == encview.bucket_display_scale(1_000.0)
+    first = _build(
+        plan, cache, mesh_cache, bounding=_box(0, 0, 2, 2), display_scale=900.0
+    )
+    assert first is not None and mesh_cache.triangulations == 1
+
+    second = _build(
+        plan, cache, mesh_cache, bounding=_box(0, 0, 2, 2), display_scale=1_000.0
+    )
+    assert second is not None
+    assert second.mesh_hits == 1 and second.mesh_built == 0
+    assert mesh_cache.triangulations == 1
+
+
+def test_a_scale_in_another_bucket_misses(tmp_path):
+    cell = _cell(tmp_path, "bucket.000", _area(0, 0, 2, 2))
+    coverage = shapely.box(0, 0, 2, 2)
+    cache = encscene.SceneCache(1_000_000)
+    assert cache.put(cell)
+    mesh_cache = encview.MeshCache(1_000_000)
+    plan = (_plan(cell.path, cell.version, coverage, True, coverage),)
+
+    assert encview.bucket_display_scale(1_000.0) != encview.bucket_display_scale(
+        2_000.0
+    )
+    first = _build(
+        plan, cache, mesh_cache, bounding=_box(0, 0, 2, 2), display_scale=1_000.0
+    )
+    assert first is not None and mesh_cache.triangulations == 1
+
+    second = _build(
+        plan, cache, mesh_cache, bounding=_box(0, 0, 2, 2), display_scale=2_000.0
+    )
+    assert second is not None
+    assert second.mesh_misses == 1 and second.mesh_built == 1
+    assert mesh_cache.triangulations == 2
+
+
+def _granule_for(region):
+    """The absolute granule ``region`` is snapped to, and the grid step."""
+    step = encview._absolute_granule_step(region)
+    assert step is not None
+    granule = encview._granule_region(region, step=step)
+    assert granule is not None
+    return step, granule
+
+
+def _prefetch(plan, cache, mesh_cache, granule, **kwargs):
+    return encview.prefetch_granule(
+        plan,
+        cache,
+        granule=granule,
+        projection=_projection,
+        stroke_pixels=1.5,
+        palette="cm93",
+        mesh_cache=mesh_cache,
+        **kwargs,
+    )
+
+
+def test_prefetch_warms_a_neighbour_granule_for_a_later_hit(tmp_path):
+    cell = _cell(tmp_path, "prefetch.000", _area(0, 0, 10, 10))
+    coverage = shapely.box(0, 0, 10, 10)
+    cache = encscene.SceneCache(1_000_000)
+    assert cache.put(cell)
+    mesh_cache = encview.MeshCache(1_000_000)
+
+    # A power-of-two grid step, so the neighbour's bounds are exactly the
+    # grid lines a camera arriving there will snap to.
+    view = shapely.box(4.0, 2.0, 4.5, 2.5)
+    plan = (_plan(cell.path, cell.version, view, True, coverage),)
+    assert _build(plan, cache, mesh_cache) is not None
+    assert mesh_cache.triangulations == 1
+
+    step, granule = _granule_for(view)
+    right = encview.neighbour_granules(granule, step=step, limit=1)[0]
+    report = _prefetch(plan, cache, mesh_cache, right)
+    assert report == {
+        "built": 1,
+        "resident": 0,
+        "skipped": 0,
+        "cancelled": False,
+        "reason": None,
+    }
+    assert mesh_cache.triangulations == 2
+
+    # The camera reaches that granule: the mesh a real request needs is there,
+    # because the prefetch keyed it exactly as the request would have.
+    moved = shapely.box(*right.bounds)
+    moved_plan = (_plan(cell.path, cell.version, moved, True, coverage),)
+    built = _build(moved_plan, cache, mesh_cache)
+    assert built is not None
+    assert built.mesh_hits == 1 and built.mesh_built == 0
+    assert mesh_cache.triangulations == 2
+
+
+def test_prefetch_skips_resident_granules_and_bounds_its_neighbours(tmp_path):
+    cell = _cell(tmp_path, "prefetchbound.000", _area(0, 0, 10, 10))
+    coverage = shapely.box(0, 0, 10, 10)
+    cache = encscene.SceneCache(1_000_000)
+    assert cache.put(cell)
+    mesh_cache = encview.MeshCache(1_000_000)
+
+    view = shapely.box(4.0, 2.0, 4.5, 2.5)
+    plan = (_plan(cell.path, cell.version, view, True, coverage),)
+    step, granule = _granule_for(view)
+    neighbours = encview.neighbour_granules(granule, step=step)
+    assert len(neighbours) == encview.PREFETCH_GRANULES
+
+    first = _prefetch(plan, cache, mesh_cache, neighbours[0])
+    assert first["built"] == 1 and first["resident"] == 0
+    again = _prefetch(plan, cache, mesh_cache, neighbours[0])
+    assert again["built"] == 0 and again["resident"] == 1
+    assert mesh_cache.triangulations == 1
+
+
+def test_a_prefetched_granule_is_never_an_uncacheable_cell(tmp_path):
+    cell = _cell(tmp_path, "prefetchskip.000", _area(0, 0, 10, 10))
+    cache = encscene.SceneCache(1_000_000)
+    assert cache.put(cell)
+    mesh_cache = encview.MeshCache(1_000_000)
+
+    # Unknown coverage cannot be keyed the way a real request would: the whole
+    # granule is refused instead of warming something a request will not find.
+    view = shapely.box(4.0, 2.0, 4.5, 2.5)
+    plan = (_plan(cell.path, cell.version, view, False),)
+    step, granule = _granule_for(view)
+    report = _prefetch(plan, cache, mesh_cache, granule)
+    assert report["built"] == 0 and report["reason"] == "uncacheable"
+    assert mesh_cache.triangulations == 0
+
+
+def test_neighbour_granules_follow_the_direction_of_travel():
+    granule = shapely.box(0.0, 0.0, 1.0, 1.0)
+    east = encview.neighbour_granules(granule, step=1.0, travel=(1.0, 0.0))
+    assert shapely.equals(east[0], shapely.box(1.0, 0.0, 2.0, 1.0))
+    south = encview.neighbour_granules(granule, step=1.0, travel=(0.0, -1.0))
+    assert shapely.equals(south[0], shapely.box(0.0, -1.0, 1.0, 0.0))
+    assert encview.neighbour_granules(granule, step=1.0, limit=0) == []
+
+
+#: One scale and another that buckets differently, for the prefetch rule.
+_SAME_SCALE = 1_000.0
+_OTHER_BUCKET = 2_000.0
+
+
+def _candidate(granule, travel, display_scale=_SAME_SCALE, current_scale=_SAME_SCALE):
+    return encview.prefetch_candidate(
+        granule,
+        step=1.0,
+        travel=travel,
+        display_scale=display_scale,
+        current_scale=current_scale,
+    )
+
+
+def test_prefetch_picks_only_the_neighbour_in_the_travel_direction():
+    granule = shapely.box(0.0, 0.0, 1.0, 1.0)
+    assert len(encview.neighbour_granules(granule, step=1.0)) == 1
+    assert encview.PREFETCH_GRANULES == 1
+
+    ahead, reason = _candidate(granule, (0.0, -1.0))
+    assert reason is None
+    assert shapely.equals(ahead, shapely.box(0.0, -1.0, 1.0, 0.0))
+    assert shapely.equals(
+        ahead,
+        encview.neighbour_granules(granule, step=1.0, limit=1, travel=(0.0, -1.0))[0],
+    )
+
+    ahead, reason = _candidate(granule, (0.3, 0.0))
+    assert reason is None
+    # A diagonally-weighted pan still names exactly one granule, never two.
+    assert shapely.equals(ahead, shapely.box(1.0, 0.0, 2.0, 1.0))
+
+
+def test_prefetch_without_travel_prefetches_nothing():
+    granule = shapely.box(0.0, 0.0, 1.0, 1.0)
+    for travel in (None, (0.0, 0.0), (float("nan"), 1.0), ("x", "y")):
+        assert _candidate(granule, travel) == (None, "no_travel")
+
+
+def test_prefetch_skips_a_granule_at_another_scale_bucket():
+    granule = shapely.box(0.0, 0.0, 1.0, 1.0)
+    assert encview.bucket_display_scale(_SAME_SCALE) != encview.bucket_display_scale(
+        _OTHER_BUCKET
+    )
+    assert _candidate(
+        granule, (1.0, 0.0), display_scale=_SAME_SCALE, current_scale=_OTHER_BUCKET
+    ) == (None, "wrong_bucket")
+    ahead, reason = _candidate(granule, (1.0, 0.0))
+    assert reason is None and ahead is not None
+
+
+def test_a_resident_prefetch_granule_is_skipped_without_building(tmp_path):
+    cell = _cell(tmp_path, "prefetchresident.000", _area(0, 0, 10, 10))
+    coverage = shapely.box(0, 0, 10, 10)
+    cache = encscene.SceneCache(1_000_000)
+    assert cache.put(cell)
+    mesh_cache = encview.MeshCache(1_000_000)
+
+    view = shapely.box(4.0, 2.0, 4.5, 2.5)
+    plan = (_plan(cell.path, cell.version, view, True, coverage),)
+    step, granule = _granule_for(view)
+    ahead, reason = encview.prefetch_candidate(
+        granule,
+        step=step,
+        travel=(1.0, 0.0),
+        display_scale=_SAME_SCALE,
+        current_scale=_SAME_SCALE,
+    )
+    assert reason is None and ahead is not None
+
+    first = _prefetch(plan, cache, mesh_cache, ahead, display_scale=_SAME_SCALE)
+    assert first["built"] == 1 and first["reason"] is None
+    again = _prefetch(plan, cache, mesh_cache, ahead, display_scale=_SAME_SCALE)
+    assert again["built"] == 0
+    assert again["resident"] == 1
+    assert again["reason"] == "resident"
+    assert mesh_cache.triangulations == 1
