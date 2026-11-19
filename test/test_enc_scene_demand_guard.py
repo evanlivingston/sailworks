@@ -11,12 +11,16 @@ the presentation rules themselves are covered in
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from threading import Event
 from types import MethodType, SimpleNamespace
+
+import shapely
 
 from sailworks.qt import enc_trace
 from sailworks.qt import gribviewport as gv
 from sailworks.qt.encscenelayer import EncSceneLayer
 from sailworks.qt.gribviewport import ViewportCamera, _viewport_widget_class
+from sailworks.rendering import encview
 
 
 class _Layer:
@@ -29,8 +33,18 @@ class _Layer:
         self.mints = []
         self.requests = 0
         self.resumes = 0
+        self.prefetches = 0
+        self.prefetch_cancels = 0
         self.yielded = None
         self.cells_key = ("cells", "a")
+
+    def prefetch(self, camera=None):
+        self.prefetches += 1
+        return True
+
+    def cancel_prefetch(self):
+        self.prefetch_cancels += 1
+        return True
 
     def request(self, camera, replace=False):
         self.requests += 1
@@ -343,3 +357,321 @@ def test_a_real_layer_bumps_content_generation_at_its_change_points(tmp_path):
         SimpleNamespace(generation=(("a", True, 2),), class_enabled=True)
     )
     assert layer.content_generation == 3
+
+
+def test_a_covered_demand_is_remembered_and_not_asked_again():
+    layer = _Layer()
+    widget = _widget(layer)
+    assert widget._request_enc_scene() == 1
+    gv.enc_scene_demand_settled(widget, "covered", 1)
+    layer.state = "ready"
+    requests, resumes = layer.requests, layer.resumes
+
+    # The demand guard's own bookkeeping drifting (another producer's record)
+    # must not re-open a demand whose camera and cell content are unchanged:
+    # the layer can only hand back the generation it already holds, so the ask
+    # is skipped without even probing ``resume``.
+    widget._enc_scene_demand_state = "in_flight"
+    for _ in range(5):
+        widget._enc_scene_request_cause = "settle"
+        assert widget._request_enc_scene() == 1
+    assert layer.requests == requests and layer.resumes == resumes
+    assert layer.mints == [1]
+
+    # Cell content changing is a genuinely different demand.
+    layer.cells_key = ("cells", "b")
+    widget._enc_scene_request_cause = "settle"
+    assert widget._request_enc_scene() == 2
+    assert layer.mints == [1, 2]
+
+    # And so is a camera move, after the new generation is covered.
+    gv.enc_scene_demand_settled(widget, "covered", 2)
+    widget._camera = _camera(zoom=12.5)
+    assert widget._request_enc_scene() == 3
+    assert layer.mints == [1, 2, 3]
+
+
+def test_a_covered_skip_is_traced_once_per_generation(monkeypatch):
+    """Five identical settle ticks: no layer work, one informative record."""
+    events = []
+    monkeypatch.setattr(enc_trace, "enabled", lambda: True)
+    monkeypatch.setattr(
+        enc_trace, "event", lambda kind, **fields: events.append((kind, fields))
+    )
+
+    layer = _Layer()
+    widget = _widget(layer)
+    assert widget._request_enc_scene() == 1
+    gv.enc_scene_demand_settled(widget, "covered", 1)
+    layer.state = "ready"
+    events.clear()
+
+    for _ in range(5):
+        widget._enc_scene_request_cause = "settle"
+        assert widget._request_enc_scene() == 1
+    assert layer.requests == 1 and layer.resumes == 0 and layer.mints == [1]
+
+    skipped = [fields for kind, fields in events if kind == "scene_request_skipped"]
+    assert len(skipped) == 1
+    assert skipped[0]["reason"] == "covered"
+    assert skipped[0]["cause"] == "settle"
+    assert skipped[0]["generation"] == 1
+
+
+def test_a_cover_ask_is_not_swallowed_by_a_covered_demand():
+    layer = _Layer()
+    widget = _widget(layer)
+    assert widget._request_enc_scene() == 1
+    gv.enc_scene_demand_settled(widget, "covered", 1)
+
+    # A cover replacement is a deliberate widening, even for the same camera.
+    widget._enc_scene_request_cause = "cover"
+    assert widget._request_enc_scene() == 2
+    assert layer.mints == [1, 2]
+
+
+# ------------------------------------------------------------------ prefetch
+def _covered_widget(layer, camera=None):
+    """A widget whose demand is covered at the camera it settled on."""
+    widget = _widget(layer, camera)
+    widget._enc_prefetch_timer = _Timer()
+    widget._enc_prefetch_armed_demand = None
+    key = gv.enc_scene_demand_key(widget, widget._camera, layer)
+    widget._enc_scene_demand_state = "covered"
+    widget._enc_scene_demand_key = key
+    widget._enc_scene_covered_demand = (key, widget._enc_scene_demand_generation)
+    setattr(
+        widget,
+        "_enc_prefetch_neighbours",
+        MethodType(_viewport_widget_class()._enc_prefetch_neighbours, widget),
+    )
+    return widget
+
+
+def test_the_prefetch_is_armed_only_by_a_covered_settle():
+    layer = _Layer(state="ready")
+    widget = _covered_widget(layer)
+    widget._enc_scene_demand_state = "in_flight"
+
+    # Still loading: the request that fills the view must not be competed with.
+    assert gv.enc_scene_prefetch_settled(widget) is False
+    assert widget._enc_prefetch_timer.started == []
+
+    widget._enc_scene_demand_state = "covered"
+    assert gv.enc_scene_prefetch_settled(widget) is True
+    assert widget._enc_prefetch_timer.started == [gv.ENC_PREFETCH_DELAY_MS]
+    # The same settled demand arms once, not on every settle tick.
+    assert gv.enc_scene_prefetch_settled(widget) is False
+    assert widget._enc_prefetch_timer.started == [gv.ENC_PREFETCH_DELAY_MS]
+
+
+def test_a_covered_terminal_outcome_arms_the_prefetch():
+    layer = _Layer()
+    widget = _widget(layer)
+    widget._enc_prefetch_timer = _Timer()
+    widget._enc_prefetch_armed_demand = None
+    assert widget._request_enc_scene() == 1
+
+    gv.enc_scene_demand_settled(widget, "covered", 1)
+    assert widget._enc_prefetch_timer.started == [gv.ENC_PREFETCH_DELAY_MS]
+
+
+def test_the_prefetch_never_runs_while_the_view_is_uncovered():
+    layer = _Layer(state="ready")
+    widget = _covered_widget(layer)
+    widget._enc_scene_demand_state = "in_flight"
+
+    widget._enc_prefetch_neighbours()
+    assert layer.prefetches == 0
+
+    # A newer camera invalidates the covered record even once it is covered
+    # again: the delay cannot outlive the quiet window that armed it.
+    widget._enc_scene_demand_state = "covered"
+    widget._enc_scene_covered_demand = (("another", "demand"), 1)
+    widget._enc_prefetch_neighbours()
+    assert layer.prefetches == 0
+
+    widget._enc_scene_covered_demand = (
+        widget._enc_scene_demand_key,
+        widget._enc_scene_demand_generation,
+    )
+    widget._enc_prefetch_neighbours()
+    assert layer.prefetches == 1
+
+
+def test_a_new_demand_cancels_a_queued_prefetch(tmp_path):
+    layer = EncSceneLayer(tmp_path, None)
+    # No worker is started: the test only exercises the queue's hand-off.
+    layer._thread = SimpleNamespace()
+    camera = _camera()
+    cancel = Event()
+    layer._prefetch = (cancel, camera)
+    generation = layer.request(camera)
+    assert generation is not None
+    assert cancel.is_set()
+    assert layer._prefetch is None
+    layer.close()
+
+
+def test_a_prefetch_never_publishes_or_advances_a_generation(tmp_path, monkeypatch):
+    published = []
+    layer = EncSceneLayer(tmp_path, None, on_publish=published.append)
+    camera = _camera()
+    layer._scene_cache = object()
+    layer._mesh_cache = object()
+    layer._scene_store = object()
+    layer._prefetch_basis = {
+        "camera": camera,
+        "plan": (),
+        "viewport": None,
+        "projection": None,
+        "display_scale": None,
+        "travel": (1.0, 0.0),
+    }
+    monkeypatch.setattr(
+        encview,
+        "_view_region",
+        lambda plan, viewport: shapely.box(0.0, 0.0, 1.0, 1.0),
+    )
+    warmed = []
+
+    def fake_prefetch(plan, cache, **kwargs):
+        warmed.append(kwargs["granule"])
+        return {
+            "built": 0,
+            "resident": 1,
+            "skipped": 0,
+            "cancelled": False,
+            "reason": None,
+        }
+
+    monkeypatch.setattr(encview, "prefetch_granule", fake_prefetch)
+    layer._generation = 7
+    layer._published = ("sentinel",)
+
+    layer._prefetch_run(Event(), camera)
+
+    # One granule only, the neighbour in the direction of travel, and only the
+    # mesh cache moved.
+    assert encview.PREFETCH_GRANULES == 1
+    assert len(warmed) == 1
+    assert layer._generation == 7
+    assert layer._published == ("sentinel",)
+    assert published == []
+
+
+def test_a_prefetch_without_travel_warms_nothing(tmp_path, monkeypatch):
+    published = []
+    layer = EncSceneLayer(tmp_path, None, on_publish=published.append)
+    camera = _camera()
+    layer._scene_cache = object()
+    layer._mesh_cache = object()
+    layer._scene_store = object()
+    layer._prefetch_basis = {
+        "camera": camera,
+        "plan": (),
+        "viewport": None,
+        "projection": None,
+        "display_scale": None,
+        "travel": None,
+    }
+    monkeypatch.setattr(
+        encview,
+        "_view_region",
+        lambda plan, viewport: shapely.box(0.0, 0.0, 1.0, 1.0),
+    )
+    warmed = []
+    monkeypatch.setattr(
+        encview,
+        "prefetch_granule",
+        lambda plan, cache, **kwargs: warmed.append(kwargs["granule"]),
+    )
+    layer._generation = 7
+    layer._published = ("sentinel",)
+
+    layer._prefetch_run(Event(), camera)
+
+    # No direction of travel: there is no neighbour worth guessing at.
+    assert warmed == []
+    assert layer._generation == 7
+    assert layer._published == ("sentinel",)
+    assert published == []
+
+
+def _ready_widget(layer, cell_states):
+    """A widget whose demand settled at ``ready`` with the given cell states."""
+    widget = _widget(layer)
+    widget._enc_prefetch_timer = _Timer()
+    widget._enc_prefetch_armed_demand = None
+    widget._enc_scene_demand_key = gv.enc_scene_demand_key(
+        widget, widget._camera, layer
+    )
+    # ``covers_view`` false keeps the demand at ``in_flight``: the settle path
+    # never records it as covered, which is exactly the live case this fixes.
+    widget._enc_scene_demand_state = "in_flight"
+    widget._enc_scene_cell_states = tuple(cell_states)
+    setattr(
+        widget,
+        "_enc_prefetch_neighbours",
+        MethodType(_viewport_widget_class()._enc_prefetch_neighbours, widget),
+    )
+    return widget
+
+
+def test_a_ready_composition_with_cell_gaps_arms_the_prefetch():
+    layer = _Layer(state="ready")
+    widget = _ready_widget(
+        layer,
+        (
+            {"path": "a", "state": "ready"},
+            {"path": "b", "state": "ready"},
+            {"path": "c", "state": "ready"},
+            {"path": "d", "state": "ready"},
+        ),
+    )
+
+    # Four cells drawn and the layer ready, but the bands leave genuine gaps:
+    # the composition does not cover the view, and it still arms.
+    assert gv.enc_scene_prefetch_settled(widget) is True
+    assert widget._enc_prefetch_timer.started == [gv.ENC_PREFETCH_DELAY_MS]
+    # Once per demand, not on every settle tick.
+    assert gv.enc_scene_prefetch_settled(widget) is False
+    assert widget._enc_prefetch_timer.started == [gv.ENC_PREFETCH_DELAY_MS]
+
+
+def test_a_loading_or_empty_composition_does_not_arm():
+    loading = _ready_widget(_Layer(state="loading"), ({"state": "ready"},))
+    assert gv.enc_scene_prefetch_settled(loading) is False
+    assert loading._enc_prefetch_timer.started == []
+
+    empty = _ready_widget(_Layer(state="ready"), ())
+    assert gv.enc_scene_prefetch_settled(empty) is False
+    assert empty._enc_prefetch_timer.started == []
+
+    refused = _ready_widget(_Layer(state="ready"), ({"state": "unavailable"},))
+    assert gv.enc_scene_prefetch_settled(refused) is False
+    assert refused._enc_prefetch_timer.started == []
+
+    resolving = _ready_widget(
+        _Layer(state="ready"), ({"state": "ready"}, {"state": "loading"})
+    )
+    assert gv.enc_scene_prefetch_settled(resolving) is False
+    assert resolving._enc_prefetch_timer.started == []
+
+
+def test_a_new_demand_cancels_an_armed_prefetch():
+    layer = _Layer(state="ready")
+    widget = _ready_widget(layer, ({"path": "a", "state": "ready"},))
+    assert gv.enc_scene_prefetch_settled(widget) is True
+    assert widget._enc_prefetch_armed_demand is not None
+
+    # A real request before the quiet delay elapses wins over the idle warm.
+    widget._camera = _camera(center_lon=-124.0)
+    assert widget._request_enc_scene() == 1
+    assert widget._enc_prefetch_armed_demand is None
+    assert layer.state == "loading"
+    assert gv.enc_scene_prefetch_settled(widget) is False
+
+    # Even if the old timer still fires, the run re-check refuses it.
+    widget._enc_prefetch_neighbours()
+    assert layer.prefetches == 0

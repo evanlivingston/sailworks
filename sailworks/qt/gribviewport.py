@@ -2320,6 +2320,74 @@ def enc_scene_demand_token(demand):
     return f"{value:08x}"
 
 
+#: How long a settled, covered ENC view must stay quiet before its neighbouring
+#: granules are warmed.  Long enough that a gesture in progress never starts a
+#: prefetch, short enough to finish before the camera reaches that ground.
+ENC_PREFETCH_DELAY_MS = 400
+
+
+def enc_scene_prefetch_eligible(widget):
+    """Whether a settled demand has drawn enough to warm its neighbours.
+
+    A ``covered`` demand already means the whole view is drawn.  Everything
+    else must show a finished composition (layer ``ready`` with no queued
+    request) that drew at least one cell and left no cell still resolving.
+
+    ``covers_view`` is deliberately not required.  Adjacent-scale bands leave
+    genuine gaps between their cells, so a complete, ``ready`` composition can
+    draw four cells and still not cover every pixel of the viewport.  Requiring
+    coverage meant the neighbour prefetch never armed outside the rare case
+    where the picked cells happened to tile the view exactly.  A cell that was
+    refused or is still loading is a different matter: the composition is then
+    incomplete, and this returns ``False``.
+    """
+    layer = getattr(widget, "_enc_scene_model", None)
+    state = getattr(widget, "_enc_scene_demand_state", None)
+    if layer is None or state == "failed":
+        return False
+    if state == "covered":
+        return True
+    if getattr(layer, "state", None) != "ready":
+        return False
+    if getattr(layer, "_pending", None) is not None:
+        # A real request is queued or composing: the prefetch would compete.
+        return False
+    cell_states = tuple(getattr(widget, "_enc_scene_cell_states", ()) or ())
+    if not any(
+        isinstance(cell, dict) and cell.get("state") == "ready" for cell in cell_states
+    ):
+        return False
+    return not any(
+        isinstance(cell, dict) and cell.get("state") == "loading"
+        for cell in cell_states
+    )
+
+
+def enc_scene_prefetch_settled(widget, delay_ms=None):
+    """Arm the neighbour prefetch now that the demand has settled and is quiet.
+
+    A still-loading scene, a demand that drew nothing, or a cell that is still
+    resolving leaves :func:`enc_scene_prefetch_eligible` false: nothing here
+    may compete with the request that is about to fill the view.  One arm per
+    demand, so a settle tick on the same camera neither restarts the delay nor
+    repeats it.
+    """
+    if getattr(widget, "_disposed", False):
+        return False
+    timer = getattr(widget, "_enc_prefetch_timer", None)
+    layer = getattr(widget, "_enc_scene_model", None)
+    if timer is None or layer is None:
+        return False
+    if not enc_scene_prefetch_eligible(widget):
+        return False
+    demand = getattr(widget, "_enc_scene_demand_key", None)
+    if demand is None or demand == getattr(widget, "_enc_prefetch_armed_demand", None):
+        return False
+    widget._enc_prefetch_armed_demand = demand
+    timer.start(ENC_PREFETCH_DELAY_MS if delay_ms is None else delay_ms)
+    return True
+
+
 def enc_scene_demand_settled(widget, state, generation=None):
     """Record a terminal outcome, only for the generation that owns it."""
     if generation is None:
@@ -2329,6 +2397,16 @@ def enc_scene_demand_settled(widget, state, generation=None):
     if getattr(widget, "_enc_scene_demand_state", None) != "in_flight":
         return
     widget._enc_scene_demand_state = state
+    if state == "covered":
+        # Remember what was covered, so a settle tick on the same camera does
+        # not ask the layer for content it already holds.
+        widget._enc_scene_covered_demand = (
+            getattr(widget, "_enc_scene_demand_key", None),
+            generation,
+        )
+        # The view is drawn and the camera is quiet: this is the only moment
+        # the neighbouring granules are worth warming.
+        enc_scene_prefetch_settled(widget)
 
 
 def enc_scene_demand_failed(widget, generation=None):
@@ -2344,6 +2422,7 @@ def enc_scene_demand_failed(widget, generation=None):
         return
     if getattr(widget, "_enc_scene_demand_state", None) in ("in_flight", "covered"):
         widget._enc_scene_demand_state = "failed"
+    widget._enc_scene_covered_demand = None
 
 
 def _viewport_widget_class():  # noqa: C901 - lazy factory
@@ -2572,6 +2651,17 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._enc_scene_demand_key = None
             self._enc_scene_demand_state = None
             self._enc_scene_demand_generation = None
+            #: ``(demand, generation)`` the layer already *covered*.  A settle
+            #: tick that finds the camera and cell content unchanged skips the
+            #: ask outright: the content is still whatever that generation
+            #: published, so a second request can only describe the same frame.
+            #: A changed demand (camera or cell version) or a newer generation
+            #: makes the record stale and the ask proceeds.
+            self._enc_scene_covered_demand = None
+            #: The generation whose covered-skip was last traced.  A settle
+            #: tick that skips the same covered demand is silent after the
+            #: first record, so one unchanged camera does not fill the trace.
+            self._enc_scene_covered_skip_generation = None
             #: Why the next request is being made (``settle``, ``retry`` or
             #: ``cover``); set by the producer that asks, read and cleared by
             #: ``_request_enc_scene`` for its trace record.
@@ -2953,6 +3043,15 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     self._enc_scene_retry_timer.timeout.connect(self._retry_enc_scene)
                     self._enc_scene_retry_attempt = 0
                     self._enc_scene_retry_camera = None
+                    # The neighbour prefetch: armed by a covered settle, fired
+                    # once the camera has been quiet for the delay, and always
+                    # behind a real request.
+                    self._enc_prefetch_timer = QTimer(self)
+                    self._enc_prefetch_timer.setSingleShot(True)
+                    self._enc_prefetch_timer.timeout.connect(
+                        self._enc_prefetch_neighbours
+                    )
+                    self._enc_prefetch_armed_demand = None
                 self._route_overlay = self._weather.findChild(QObject, "routeOverlay")
                 self._navigation_overlay = self._weather.findChild(
                     QObject, "navigationOverlay"
@@ -3682,6 +3781,42 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 return None
             demand = enc_scene_demand_key(self, camera, layer)
             token = enc_scene_demand_token(demand)
+            # A demand this view already had covered is not asked again: the
+            # camera and the cell content in its key are unchanged, so the
+            # layer can only hand back the generation it already holds.  This
+            # returns before any ``layer.state``/``resume`` probe, so a settle
+            # tick on an unchanged camera does no layer work at all.  The
+            # record is dropped whenever a newer generation is minted or the
+            # demand fails, so a genuine camera or cell-version change still
+            # re-requests.  The skip is traced once per covered generation:
+            # repeating the record every tick would say nothing new.
+            covered = getattr(self, "_enc_scene_covered_demand", None)
+            if (
+                not replace
+                and cause != "cover"
+                and covered is not None
+                and covered[0] == demand
+                and covered[1] == getattr(self, "_enc_scene_demand_generation", None)
+            ):
+                if enc_trace.enabled() and covered[1] != getattr(
+                    self, "_enc_scene_covered_skip_generation", None
+                ):
+                    self._enc_scene_covered_skip_generation = covered[1]
+                    enc_trace.event(
+                        "scene_request_skipped",
+                        cause=cause,
+                        demand=token,
+                        reason="covered",
+                        generation=covered[1],
+                        elapsed_ms=enc_trace.elapsed_ms(
+                            getattr(self, "_enc_trace_demand_at", None)
+                        ),
+                        **enc_trace.camera_fields(camera),
+                    )
+                # A covered settle is the only moment neighbours are worth
+                # warming: the view is drawn and the camera is unchanged.
+                enc_scene_prefetch_settled(self)
+                return covered[1]
             # A ``cover`` ask is a deliberate, budgeted replacement and the
             # cover path has already spent one unit of its per-demand budget;
             # every other producer is subject to the demand guard.
@@ -3706,16 +3841,25 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         # Nothing is composing and nothing is left to resume:
                         # the generation failed rather than staying open.
                         self._enc_scene_demand_state = state = "failed"
+                        self._enc_scene_covered_demand = None
                     elif layer_state == "ready":
                         # The layer holds this demand's own scene.  Whether or
                         # not its placement reached this item, asking again can
                         # only return that same generation.
                         self._enc_scene_demand_state = state = "covered"
+                        self._enc_scene_covered_demand = (
+                            demand,
+                            getattr(self, "_enc_scene_demand_generation", None),
+                        )
                         reason = "covered"
                     else:
                         reason = "in_flight"
                 elif state == "covered":
                     # The layer already holds this demand's content.
+                    self._enc_scene_covered_demand = (
+                        demand,
+                        getattr(self, "_enc_scene_demand_generation", None),
+                    )
                     reason = state
                 if reason is not None:
                     if enc_trace.enabled():
@@ -3737,6 +3881,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             if item is not None:
                 item.setWidth(camera.width)
                 item.setHeight(camera.height)
+            # A real demand always wins: an armed or running prefetch is
+            # dropped before the ask, so it can never delay this generation.
+            self._enc_prefetch_armed_demand = None
+            cancel_prefetch = getattr(layer, "cancel_prefetch", None)
+            if callable(cancel_prefetch):
+                cancel_prefetch()
             generation = layer.request(camera, replace=replace)
             if generation is None:
                 # A closed layer minted nothing: recording a key with no
@@ -3760,6 +3910,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._enc_scene_demand_key = demand
             self._enc_scene_demand_generation = generation
             self._enc_scene_demand_state = "in_flight"
+            # A new generation is not yet covered: only its own terminal
+            # outcome may let a later settle tick skip the ask.
+            self._enc_scene_covered_demand = None
             # A different camera is a fresh demand: its retry schedule starts
             # over.  Retries for the same camera keep their backoff step, so a
             # retry loop cannot reset itself.
@@ -3818,6 +3971,36 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 return
             self._enc_scene_request_cause = "retry"
             self._request_enc_scene()
+
+        def _enc_prefetch_neighbours(self):
+            """Warm the granule ahead of the settled view (GUI thread).
+
+            Reached only from the armed timer, and re-checked here: a camera
+            change, a lost covered record or a newer demand all make this a
+            no-op, so the delay can never outlive the quiet window that armed
+            it.  The layer decides whether to warm it, and in which direction;
+            a real request drops the job.
+            """
+            if self._disposed:
+                return
+            layer = getattr(self, "_enc_scene_model", None)
+            camera = self._camera
+            if layer is None or camera is None:
+                return
+            if not enc_scene_prefetch_eligible(self):
+                return
+            # The quiescent window that armed this timer may have ended: a
+            # newer demand clears the arm, and a camera move changes the key.
+            # The covered record is kept as an independent witness for a
+            # settled, wholly drawn view (the pre-existing covered path).
+            key = enc_scene_demand_key(self, camera, layer)
+            armed = getattr(self, "_enc_prefetch_armed_demand", None)
+            covered = getattr(self, "_enc_scene_covered_demand", None)
+            if armed != key and (covered is None or covered[0] != key):
+                return
+            prefetch = getattr(layer, "prefetch", None)
+            if callable(prefetch):
+                prefetch(camera)
 
         def _withdraw_enc_scene(self):
             """Hide the presented ENC scene: it is not current content."""
@@ -3941,6 +4124,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     phases = self._enc_trace_phases = {}
                 if assembly is not None:
                     phases["worker"] = float(assembly)
+                # Non-overlapping top-level phases plus the flat stage
+                # breakdown behind them; both in milliseconds.
+                published_phases = enc_trace.build_phases(timings)
+                stage_ms = enc_trace.phase_ms(
+                    timings, already_ms=("assembly_ms",), exclude=("cells",)
+                )
+                cells_ms = enc_trace.cell_detail(timings.get("cells"))
                 shown = getattr(item, "shown_vertex_count", None)
                 reaches = getattr(item, "scene_covers_view", None)
                 enc_trace.event(
@@ -3965,6 +4155,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         if state.get("state") in ("unavailable", "oversized", "error")
                     ],
                     assembly_ms=assembly,
+                    # Top-level phases sum to no more than ``assembly_ms``;
+                    # ``stage_ms`` is the nested breakdown behind them and
+                    # ``phase_cells`` names the heaviest cells (bounded).
+                    phases=published_phases,
+                    stage_ms=stage_ms,
+                    phase_cells=cells_ms,
                     # What the *previous* frame draws while this one lands:
                     # a retained frame with no vertex or no viewport overlap
                     # is the "nothing on screen" state, not a slow update.
