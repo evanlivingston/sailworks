@@ -32,9 +32,12 @@ from sailworks.rendering.vectordrawer.encmesh import (
     AREA_OUTLINE,
     LINE,
     MARKER,
+    VIEW_TOLERANCE_PIXELS,
     build_scene_mesh,
+    quantize_tolerance,
     stroke_lines,
     triangulate_area,
+    view_tolerance,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -369,6 +372,80 @@ def test_simplify_zero_is_a_no_op():
     plain = build_scene_mesh(scene, stroke_width=0.01)
     explicit = build_scene_mesh(scene, stroke_width=0.01, simplify=0.0)
     np.testing.assert_array_equal(plain.positions, explicit.positions)
+
+
+# --- view tolerance -------------------------------------------------------
+
+
+def test_tolerance_grows_with_coarser_scale():
+    """A coarser camera never simplifies less: the budget is monotonic.
+
+    The floor still applies, so the sequence is non-decreasing rather than
+    strictly proportional, and each value is a cache-key bucket.
+    """
+    per_pixel = [2.0**-k for k in range(16, 4, -1)]  # fine to coarse
+    tolerances = [view_tolerance(span, span, 1.0, 1.0) for span in per_pixel]
+
+    assert tolerances == sorted(tolerances)
+    assert tolerances[-1] > tolerances[0]
+    assert tolerances == [
+        quantize_tolerance(span * VIEW_TOLERANCE_PIXELS) for span in per_pixel
+    ]
+
+
+def test_high_zoom_tolerance_matches_the_previous_half_pixel_rule():
+    """Zoom 13 keeps exactly the bucket the old ``* 0.5`` rule produced.
+
+    The reference zoom-13 camera spans 0.000171446 degrees per pixel.  Its
+    next power-of-two bucket starts at 0.712 px, so the budget leaves the
+    zoomed-in tolerance - and the detail it keeps - untouched.
+    """
+    degrees_per_pixel = 0.000171446
+    tolerance = view_tolerance(degrees_per_pixel, degrees_per_pixel, 1.0, 1.0)
+
+    assert tolerance == 2**-14
+    assert tolerance == quantize_tolerance(degrees_per_pixel * 0.5)
+    assert tolerance / degrees_per_pixel == pytest.approx(0.356, abs=1e-3)
+
+
+def test_tolerance_stays_within_the_pixel_budget():
+    """No view simplifies by more than the budget, and the floor is kept."""
+    for quarter in range(32, 61):  # zoom 8.0 to 15.0
+        zoom = quarter / 4.0
+        per_pixel = 0.000685788 / 2.0 ** (zoom - 11.0)
+        tolerance = view_tolerance(per_pixel, per_pixel, 1.0, 1.0)
+
+        assert tolerance / per_pixel <= VIEW_TOLERANCE_PIXELS
+        assert quantize_tolerance(tolerance) == tolerance
+
+
+def test_tolerance_leaves_fills_and_colours_unchanged():
+    """Simplification is a vertex-count decision, not a styling one."""
+    scene = _scene(
+        (0, "DEPARE", box(0.0, 0.0, 2.0, 2.0)),
+        (0, "LNDARE", box(3.0, 3.0, 5.0, 4.0)),
+    )
+    plain = build_scene_mesh(scene, stroke_width=0.1, palette="cm93")
+    coarse = build_scene_mesh(
+        scene, stroke_width=0.1, palette="cm93", simplify=2.0**-15
+    )
+
+    assert [part.kind for part in coarse.parts] == [part.kind for part in plain.parts]
+    assert [part.colour for part in coarse.parts] == [
+        part.colour for part in plain.parts
+    ]
+    fills_before = [part for part in plain.parts if part.kind == AREA_FILL]
+    fills_after = [part for part in coarse.parts if part.kind == AREA_FILL]
+    assert len(fills_before) == len(fills_after) == 2
+    for before, after in zip(fills_before, fills_after):
+        np.testing.assert_array_equal(
+            coarse.positions[
+                after.first_vertex : after.first_vertex + after.vertex_count
+            ],
+            plain.positions[
+                before.first_vertex : before.first_vertex + before.vertex_count
+            ],
+        )
 
 
 # --- SCAMIN ---------------------------------------------------------------

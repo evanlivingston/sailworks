@@ -679,15 +679,17 @@ def _bounds(geometry):
 
 
 def _tolerance_bucket(projection, geometry):
-    """The drawer's quantised half-pixel simplification tolerance, in degrees.
+    """The scene path's quantised sub-pixel simplification tolerance, in degrees.
 
     Mirrors ``S57ChartDrawer.draw``: degrees per pixel from the region's
-    projected span, halved, then floored to a power of two.  The projected
-    span is what makes the bucket stable while panning and different when
-    zooming, exactly like :func:`_scale_bucket`; the quantisation keeps the
-    tolerance to a small set of values so cached geometry can be shared across
-    a pan.  ``None`` means the projection could not be probed, so the mesh must
-    not be cached against a tolerance it cannot reproduce.
+    projected span, scaled by
+    :data:`~sailworks.rendering.vectordrawer.encmesh.VIEW_TOLERANCE_PIXELS`,
+    then floored to a power of two.  The projected span is what makes the
+    bucket stable while panning and different when zooming, exactly like
+    :func:`_scale_bucket`; the quantisation keeps the tolerance to a small set
+    of values so cached geometry can be shared across a pan.  ``None`` means
+    the projection could not be probed, so the mesh must not be cached against
+    a tolerance it cannot reproduce.
     """
     bounds = _bounds(geometry)
     if bounds is None:

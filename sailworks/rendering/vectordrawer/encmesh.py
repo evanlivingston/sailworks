@@ -183,13 +183,26 @@ def _stage(timings, name, started):
         timings[name] = timings.get(name, 0.0) + (time.perf_counter() - started)
 
 
+#: Simplification budget for the scene path, in logical pixels of screen space.
+#:
+#: The cascade floors the budget to a power of two, so the *effective*
+#: tolerance is always a bucket below it - a nominal half pixel lands at a
+#: quarter pixel wherever the floor bites.  Measured on the two heaviest cells
+#: (US3WA1EF, US3WA1ED) at zoom 9.5, 11 and 13, the vertex count falls steeply
+#: up to ~0.45 px and flattens past 0.5 px, and 0.6 px is the largest budget
+#: that leaves zoom 13 on today's bucket (its next bucket starts at 0.712 px).
+#: Any view therefore simplifies by at most 0.6 px of error, and zoom 11 and 13
+#: keep exactly the 0.356 px they had under the previous half-pixel rule.
+VIEW_TOLERANCE_PIXELS = 0.6
+
+
 def quantize_tolerance(tolerance: float) -> float:
-    """Round a half-pixel tolerance DOWN to a power of two.
+    """Round a tolerance DOWN to a power of two.
 
     This is the Cairo drawer's rule (:meth:`S57ChartDrawer.draw`): the tolerance
-    is half a pixel in source degrees and is floored to a power of two, so
-    simplified geometry never exceeds half a pixel of error and the tolerance
-    is a small, stable set of buckets that a cache can key on.
+    in source degrees is floored to a power of two, so simplified geometry
+    never exceeds the tolerance it was given and the tolerance is a small,
+    stable set of buckets that a cache can key on.
     """
     tolerance = float(tolerance)
     if not math.isfinite(tolerance) or tolerance <= 0.0:
@@ -203,19 +216,22 @@ def view_tolerance(
     width_pixels: float,
     height_pixels: float,
 ) -> float:
-    """The drawer's simplified-geometry tolerance for a view, in degrees.
+    """The scene path's simplified-geometry tolerance for a view, in degrees.
 
-    ``min(lon_span / width, lat_span / height) * 0.5``, quantised down by
-    :func:`quantize_tolerance`.  The drawer uses the allocated viewport size;
-    the scene path uses the projected span of the region it is meshing, which
-    is the same degrees-per-pixel at the same camera.
+    ``min(lon_span / width, lat_span / height) * VIEW_TOLERANCE_PIXELS``,
+    quantised down by :func:`quantize_tolerance`.  The drawer uses the
+    allocated viewport size; the scene path uses the projected span of the
+    region it is meshing, which is the same degrees-per-pixel at the same
+    camera.  The budget is in logical pixels, so the error a simplified vertex
+    can introduce is bounded by it however the viewport is sized.
     """
     width_pixels = float(width_pixels)
     height_pixels = float(height_pixels)
     if width_pixels <= 0.0 or height_pixels <= 0.0:
         return 0.0
     return quantize_tolerance(
-        min(float(lon_span) / width_pixels, float(lat_span) / height_pixels) * 0.5
+        min(float(lon_span) / width_pixels, float(lat_span) / height_pixels)
+        * VIEW_TOLERANCE_PIXELS
     )
 
 
