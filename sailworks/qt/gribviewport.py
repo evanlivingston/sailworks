@@ -477,6 +477,13 @@ ENC_SCENE_RETRY_MAX_MS = 960
 #: chart-source poll instead of polling a second faster forever.
 ENC_SCENE_RETRY_ATTEMPTS = 10
 
+#: Cover-stale replacement requests allowed per demand key.  The cover probe is
+#: a slack probe: it asks for a wider frame while the current one still covers,
+#: so its answer is never terminal.  Left unbounded it publishes, re-arms and
+#: asks forever; this budget keeps the pre-emptive widening while stopping the
+#: loop.  A changed demand key (camera, size, cell content) starts it over.
+ENC_SCENE_COVER_RETRY_MAX = 2
+
 
 def scene_chart_deferral_pending(generation, published):
     """Whether a scene request names a job whose publication has not landed.
@@ -2257,6 +2264,88 @@ def _prepare_wave_layer(viewport):
         setattr(viewport, name, default)
 
 
+def enc_scene_cells_key(layer):
+    """The cell set a scene request would read, as far as it is knowable.
+
+    ``layer.request`` is handed only a camera, so the requested cells are
+    whatever that camera's forecast instant and portrayal select.  A layer may
+    expose a cheaper explicit identity; it is preferred when present, and the
+    camera's own cell-selecting fields complete the key.
+    """
+    try:
+        probe = getattr(layer, "cells_key", None)
+        if callable(probe):
+            probe = probe()
+    except Exception:
+        # A layer whose identity property raises cannot name its cells; the
+        # rest of the key still identifies the demand.
+        return None
+    if probe is not None and not isinstance(probe, (str, int, float, tuple, frozenset)):
+        return repr(probe)
+    return probe
+
+
+def enc_scene_demand_key(widget, camera, layer=None):
+    """What a scene request actually depends on; equal means one demand.
+
+    The figures are exact: a camera the layer's own reuse considers different
+    must be a different demand, so pan and zoom never wait for a coalescer.
+    """
+    if camera is None:
+        return None
+    if layer is None:
+        layer = getattr(widget, "_enc_scene_model", None)
+    instant = getattr(camera, "time", None)
+    return (
+        getattr(camera, "center_lat", None),
+        getattr(camera, "center_lon", None),
+        getattr(camera, "zoom", None),
+        getattr(camera, "width", None),
+        getattr(camera, "height", None),
+        getattr(camera, "density", None),
+        bool(getattr(camera, "over_land", True)),
+        bool(getattr(camera, "geographic", True)),
+        getattr(camera, "source", None),
+        None if instant is None else instant.isoformat(),
+        max(1, int(round(float(getattr(widget, "_camera_dpr", 1.0) or 1.0)))),
+        None if layer is None else enc_scene_cells_key(layer),
+    )
+
+
+def enc_scene_demand_token(demand):
+    """A short process-stable token for trace records (FNV-1a)."""
+    value = 0x811C9DC5
+    for byte in repr(demand).encode("utf-8"):
+        value = ((value ^ byte) * 0x01000193) & 0xFFFFFFFF
+    return f"{value:08x}"
+
+
+def enc_scene_demand_settled(widget, state, generation=None):
+    """Record a terminal outcome, only for the generation that owns it."""
+    if generation is None:
+        return
+    if generation != getattr(widget, "_enc_scene_demand_generation", None):
+        return
+    if getattr(widget, "_enc_scene_demand_state", None) != "in_flight":
+        return
+    widget._enc_scene_demand_state = state
+
+
+def enc_scene_demand_failed(widget, generation=None):
+    """The demand's generation will not publish: a retry may ask again.
+
+    A ``covered`` record is cleared too: a layer withdrawal or a layer-level
+    ``unavailable`` means the content the record described is gone, so the
+    guard must not outlive it.
+    """
+    if generation is not None and generation != getattr(
+        widget, "_enc_scene_demand_generation", None
+    ):
+        return
+    if getattr(widget, "_enc_scene_demand_state", None) in ("in_flight", "covered"):
+        widget._enc_scene_demand_state = "failed"
+
+
 def _viewport_widget_class():  # noqa: C901 - lazy factory
     """Build the native render-context class on demand.
 
@@ -2475,6 +2564,23 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             #: not touch the presented scene.
             self._enc_scene_pending_generation = None
             self._enc_scene_generation = None
+            #: The demand guard: what the newest scene request actually depends
+            #: on, the outcome of its last generation and its short trace token.
+            #: An unchanged demand cannot mint a second generation while that
+            #: outcome is in flight or already covered; a changed key, a
+            #: failure, or a budgeted cover replacement may.
+            self._enc_scene_demand_key = None
+            self._enc_scene_demand_state = None
+            self._enc_scene_demand_generation = None
+            #: Why the next request is being made (``settle``, ``retry`` or
+            #: ``cover``); set by the producer that asks, read and cleared by
+            #: ``_request_enc_scene`` for its trace record.
+            self._enc_scene_request_cause = None
+            #: Cover-stale replacement budget: the demand key it was opened
+            #: for and how many replacement asks it has spent.  A changed
+            #: demand key resets both.
+            self._enc_scene_cover_key = None
+            self._enc_scene_cover_requests = 0
             self._chart_palette = chart_palette
             self._environment_provider = None
             self._environment = None
@@ -3560,16 +3666,82 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
 
             The scene carries positions in the viewport's logical pixels, so
             the item is sized to the camera the request was made for.
+
+            One unchanged demand owns at most one generation.  A demand is the
+            camera, viewport, pixel ratio and cell content a request depends
+            on; while that key is unchanged, a generation that is in flight
+            and one that covered the view each refuse a second ask.  Only a
+            changed key, a genuine failure, or a budgeted cover replacement
+            mints another generation.
             """
+            cause = getattr(self, "_enc_scene_request_cause", None) or "settle"
+            self._enc_scene_request_cause = None
             layer = getattr(self, "_enc_scene_model", None)
             camera = self._camera
             if layer is None or camera is None:
                 return None
+            demand = enc_scene_demand_key(self, camera, layer)
+            token = enc_scene_demand_token(demand)
+            # A ``cover`` ask is a deliberate, budgeted replacement and the
+            # cover path has already spent one unit of its per-demand budget;
+            # every other producer is subject to the demand guard.
+            if (
+                not replace
+                and cause != "cover"
+                and getattr(self, "_enc_scene_demand_key", None) == demand
+            ):
+                state = getattr(self, "_enc_scene_demand_state", None)
+                reason = None
+                if state == "in_flight":
+                    # A yield drops the worker's copy of the request but
+                    # leaves the demand open: resume that same generation
+                    # instead of minting a newer one that supersedes the work
+                    # the retry was meant to continue.
+                    layer_state = getattr(layer, "state", None)
+                    resume = getattr(layer, "resume", None)
+                    resumed = resume() if callable(resume) else None
+                    if resumed is not None:
+                        reason = "in_flight"
+                    elif layer_state in ("idle", "unavailable"):
+                        # Nothing is composing and nothing is left to resume:
+                        # the generation failed rather than staying open.
+                        self._enc_scene_demand_state = state = "failed"
+                    elif layer_state == "ready":
+                        # The layer holds this demand's own scene.  Whether or
+                        # not its placement reached this item, asking again can
+                        # only return that same generation.
+                        self._enc_scene_demand_state = state = "covered"
+                        reason = "covered"
+                    else:
+                        reason = "in_flight"
+                elif state == "covered":
+                    # The layer already holds this demand's content.
+                    reason = state
+                if reason is not None:
+                    if enc_trace.enabled():
+                        enc_trace.event(
+                            "scene_request_skipped",
+                            cause=cause,
+                            demand=token,
+                            reason=reason,
+                            generation=getattr(
+                                self, "_enc_scene_demand_generation", None
+                            ),
+                            elapsed_ms=enc_trace.elapsed_ms(
+                                getattr(self, "_enc_trace_demand_at", None)
+                            ),
+                            **enc_trace.camera_fields(camera),
+                        )
+                    return getattr(self, "_enc_scene_demand_generation", None)
             item = getattr(self, "_enc_scene_item", None)
             if item is not None:
                 item.setWidth(camera.width)
                 item.setHeight(camera.height)
             generation = layer.request(camera, replace=replace)
+            if generation is None:
+                # A closed layer minted nothing: recording a key with no
+                # terminal state would re-ask on every settle tick forever.
+                return None
             # A moved camera makes the painted ground describe the old view.
             # It is dropped now and re-requested once the new scene publishes
             # the projection that belongs to this camera.  The ratio is the
@@ -3581,6 +3753,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             # The newest request owns the next publication; anything older is
             # stale the moment it asks.
             self._enc_scene_pending_generation = generation
+            # The guard's own record: this key now has one outstanding
+            # generation, and only its terminal outcome releases the demand.
+            # The cover budget is keyed alongside it; the cover path resets it
+            # when it observes a changed demand.
+            self._enc_scene_demand_key = demand
+            self._enc_scene_demand_generation = generation
+            self._enc_scene_demand_state = "in_flight"
             # A different camera is a fresh demand: its retry schedule starts
             # over.  Retries for the same camera keep their backoff step, so a
             # retry loop cannot reset itself.
@@ -3591,6 +3770,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self._enc_trace_demand_generation = generation
                 enc_trace.event(
                     "scene_request",
+                    cause=cause,
+                    demand=token,
                     generation=generation,
                     elapsed_ms=enc_trace.elapsed_ms(
                         getattr(self, "_enc_trace_demand_at", None)
@@ -3635,6 +3816,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 return
             if getattr(self, "_enc_scene_pending_generation", None) is None:
                 return
+            self._enc_scene_request_cause = "retry"
             self._request_enc_scene()
 
         def _withdraw_enc_scene(self):
@@ -3707,6 +3889,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             if item is None:
                 return
             if payload is None:
+                # A layer-wide withdrawal is not supersession by a newer
+                # demand: the outstanding generation will publish nothing.
+                enc_scene_demand_failed(self)
                 if enc_trace.enabled():
                     enc_trace.event(
                         "scene_publish",
@@ -3721,6 +3906,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 return
             generation, scene, metadata = payload
             if scene is None:
+                # A withdrawal naming this demand's own generation is a
+                # cancellation or an invalidation, never a newer demand: the
+                # guard records it as a failure so a retry may ask again.
+                enc_scene_demand_failed(self, generation)
                 if enc_trace.enabled():
                     enc_trace.event(
                         "scene_publish",
@@ -4023,6 +4212,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 # A failed scene takes the picture down only when nothing is
                 # presented and the layer retains no complete scene.  A
                 # retained frame is a better report than a blank chart.
+                # The demand itself failed, so a retry may ask again.
+                enc_scene_demand_failed(self)
                 if presented is None and partial is None and retained is None:
                     self._withdraw_enc_scene()
             elif state == "idle":
@@ -8160,23 +8351,56 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     enc_compose_margin(frame),
                     self._camera_dpr,
                 )
+            generation = getattr(self, "_enc_scene_generation", None)
             if not stale:
+                # The presented generation covers this view: the demand's
+                # terminal outcome is ``covered`` and it is not asked again.
+                # ``stale`` itself is only the slack probe below, never a
+                # terminal answer.
+                enc_scene_demand_settled(self, "covered", generation)
                 return
             # One replacement request per presented generation, however far the
             # gesture runs: the layer cancels superseded work and the settle
             # timer asks again anyway.  Until it arrives the uncovered strip is
             # bounded by the padding the composition reached past the view.
             request = getattr(self, "_request_enc_scene", None)
-            generation = getattr(self, "_enc_scene_generation", None)
             if (
                 request is None
                 or getattr(self, "_enc_scene_cover_generation", None) == generation
             ):
                 return
             self._enc_scene_cover_generation = generation
+            # The slack probe asks before the ring is actually gone, so its
+            # answer is not "uncoverable": a small per-demand budget bounds
+            # the pre-emptive widening instead of terminalising the demand.
+            demand = enc_scene_demand_key(
+                self,
+                getattr(self, "_camera", None),
+                getattr(self, "_enc_scene_model", None),
+            )
+            if getattr(self, "_enc_scene_cover_key", None) != demand:
+                self._enc_scene_cover_key = demand
+                self._enc_scene_cover_requests = 0
+            used = getattr(self, "_enc_scene_cover_requests", 0)
+            if used >= ENC_SCENE_COVER_RETRY_MAX:
+                if enc_trace.enabled():
+                    enc_trace.event(
+                        "scene_request_skipped",
+                        cause="cover",
+                        demand=enc_scene_demand_token(demand),
+                        reason="cover_budget",
+                        generation=getattr(self, "_enc_scene_demand_generation", None),
+                        elapsed_ms=enc_trace.elapsed_ms(
+                            getattr(self, "_enc_trace_demand_at", None)
+                        ),
+                        **enc_trace.camera_fields(getattr(self, "_camera", None)),
+                    )
+                return
+            self._enc_scene_cover_requests = used + 1
             updating = getattr(self, "_mark_enc_scene_updating", None)
             if updating is not None:
                 updating()
+            self._enc_scene_request_cause = "cover"
             request()
 
         @staticmethod

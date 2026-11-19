@@ -467,6 +467,10 @@ class EncSceneLayer:
         self._condition = Condition()
         self._pending = None
         self._active = None
+        #: The demand the worker yielded for weather priority.  It stays open:
+        #: ``resume`` re-posts this same generation instead of minting a newer
+        #: one that would supersede the work the retry was meant to continue.
+        self._yielded = None
         self._generation = 0
         self._published = None
         #: The last complete (READY) publication.  It is kept across camera
@@ -493,6 +497,16 @@ class EncSceneLayer:
         # The device pixel ratio only invalidates a published scene; the
         # projection stays in logical pixels.
         self._dpr = max(1, int(round(float(dpr))))
+        #: Monotonic identity of the cell content a demand would read.  The
+        #: manifest's own stamp (a stat of the user's settings file) is the
+        #: cheap signal that installed cells, their enabled state or the ENC
+        #: class flag may have changed; a palette replacement and a catalog
+        #: refresh that observes a new manifest generation bump the same
+        #: counter.  The viewport's demand key carries it, so a stationary
+        #: camera still asks again when new cells arrive.
+        self._content_generation = 0
+        self._content_stamp = None
+        self._content_fingerprint = None
         self.counters = dict(
             requests=0,
             reuses=0,
@@ -618,6 +632,58 @@ class EncSceneLayer:
             }
 
     # ----------------------------------------------------------- requests
+    @property
+    def content_generation(self):
+        """Identity of the cell content the next request would read.
+
+        The user's settings file lists the installed cells, their enabled
+        state and the ENC class flag, so its own stamp is the cheap signal
+        that the effective cell set may have changed.  Observing a new stamp
+        bumps the monotonic counter; the settings file is not parsed here.
+        A palette replacement and a catalog refresh that sees a new manifest
+        generation bump the same counter (``set_palette``/``_note_content``).
+        """
+        from sailworks.qt.viewportenc import manifest_stamp
+
+        stamp = manifest_stamp(self._data_dir)
+        with self._condition:
+            if self._content_stamp is None:
+                self._content_stamp = stamp
+            elif stamp != self._content_stamp:
+                self._content_stamp = stamp
+                self._content_generation += 1
+            return self._content_generation
+
+    @property
+    def cells_key(self):
+        """Cheap identity of the cell set and portrayal a demand reads.
+
+        A request carries only a camera; the cells come from the catalog, so
+        the content generation covers installed/enabled cells, class toggles
+        and palette replacements.  The data directory stays in the key for a
+        layer that is ever pointed at another one.
+        """
+        return (str(self._data_dir), self.content_generation)
+
+    def _note_content(self, manifest):
+        """Bump the content generation when the catalog's cells changed.
+
+        Runs on the worker after ``catalog.refresh()``: the manifest's
+        generation covers the installed cells' identities and their enabled
+        state, so a downloaded or replaced cell is observable here even when
+        the settings file's own stamp did not change.  The first observed
+        content is the baseline; it does not bump, so startup asks once.
+        """
+        fingerprint = (
+            getattr(manifest, "generation", None),
+            getattr(manifest, "class_enabled", True),
+        )
+        with self._condition:
+            previous = self._content_fingerprint
+            self._content_fingerprint = fingerprint
+            if previous is not None and fingerprint != previous:
+                self._content_generation += 1
+
     def request(self, camera, replace=False):
         """Ask for a scene at this camera (GUI thread).
 
@@ -631,6 +697,8 @@ class EncSceneLayer:
             reused = self._reuse(camera, replace)
             if reused is not None:
                 return reused
+            # A fresh demand supersedes any demand left open by a yield.
+            self._yielded = None
             self._generation += 1
             generation = self._generation
             # Only a fresh demand restarts the courtesy clock.  A retry of an
@@ -658,6 +726,36 @@ class EncSceneLayer:
         with self._condition:
             self._condition.notify_all()
         return generation
+
+    def resume(self):
+        """Re-post the demand the worker yielded; never mint a generation.
+
+        A yield returns the worker to its loop because the weather pipeline
+        has priority, not because the scene was refused.  The same request
+        tuple goes back into the pending slot, so the retry continues the
+        outstanding generation instead of superseding it.  Returns that
+        generation, or ``None`` when nothing is open to resume.
+        """
+        notify = None
+        with self._condition:
+            if self._closed or self._yielded is None:
+                return None
+            request = self._yielded
+            if request[0] != self._generation:
+                self._yielded = None
+                return None
+            if self._pending is not None:
+                # A newer demand already owns the slot; nothing to re-post.
+                return self._pending[0]
+            self._yielded = None
+            self._pending = request
+            if self._state != STATE_LOADING:
+                self._state = STATE_LOADING
+                notify = STATE_LOADING
+            self._condition.notify_all()
+        if notify is not None:
+            self._notify_state(notify)
+        return request[0]
 
     def _reuse(self, camera, replace):
         if replace:
@@ -690,6 +788,11 @@ class EncSceneLayer:
         if metadata.get("time") != camera.stamp():
             return False
         if metadata.get("dpr", 1) != self._dpr:
+            return False
+        content = metadata.get("content")
+        if content is not None and content != self.content_generation:
+            # New cells (or a new palette) arrived after this scene was
+            # composed: it is no longer this demand's content.
             return False
         viewport = metadata.get("camera")
         return _same_view(viewport, camera)
@@ -735,6 +838,9 @@ class EncSceneLayer:
             if palette == self._palette:
                 return False
             self._palette = palette
+            # The palette is part of the rendered content: a demand made
+            # after this replacement is a different demand.
+            self._content_generation += 1
             was_published = self._published is not None or self._last_ready is not None
             self._published = None
             # The palette is part of a scene's identity; the retained complete
@@ -913,6 +1019,7 @@ class EncSceneLayer:
                 notify_state = None
                 with self._condition:
                     self._active = None
+                    self._yielded = None
                     if (
                         yielded
                         and not cancel.is_set()
@@ -928,6 +1035,9 @@ class EncSceneLayer:
                         else:
                             self._state = STATE_IDLE
                             notify_state = STATE_IDLE
+                        # The demand is deferred, not refused: keep it so the
+                        # retry resumes this same generation.
+                        self._yielded = request
                         self.counters["yielded"] += 1
                     elif (
                         cancel.is_set()
@@ -1101,6 +1211,12 @@ class EncSceneLayer:
             generation = self._generation
         self._catalog.refresh()
         manifest = self._catalog.manifest
+        # A downloaded/replaced cell or a class toggle is visible here even
+        # when the settings stamp did not move; it bumps the content identity
+        # so the viewport's demand key changes and a stationary camera asks
+        # again.
+        self._note_content(manifest)
+        metadata["content"] = self.content_generation
         if not manifest.class_enabled:
             metadata["reason"] = "ENC charts are disabled"
             return None, metadata
