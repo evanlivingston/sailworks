@@ -1,24 +1,29 @@
 """The headless one-cell ENC fallback paints inside its clip and nowhere else."""
 
+import os
 from types import MethodType, SimpleNamespace
 
 import numpy as np
 import pytest
 import shapely
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
 from PySide6.QtQuick import QQuickItem
 
 from sailworks.core.mapviewport import MercatorProjection
-from sailworks.qt import enc_trace, gribviewport
+from sailworks.qt import encfallback, enc_trace, gribviewport
 from sailworks.qt.encfallback import (
     ENCFallbackOverlay,
+    clear_render_cache,
     device_projection,
     fallback_accepts,
     fallback_clips,
     fallback_compose_fields,
     fallback_request,
+    render_cache_key,
     render_cell_overlay,
     render_clips_overlay,
+    render_clips_overlay_cached,
 )
 from sailworks.qt.gribviewport import _viewport_widget_class
 from sailworks.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
@@ -615,3 +620,274 @@ def test_a_held_publication_still_notifies_the_overlay():
     # The overlay's content does not depend on adoption: the held complete
     # scene still paints the cells it refused.
     assert fallback.calls == [(metadata, 6, 2.0)]
+
+
+# --- Bounded rendering, memoization and stale composes ---------------------
+
+
+@pytest.fixture(autouse=True)
+def _empty_render_cache():
+    clear_render_cache()
+    yield
+    clear_render_cache()
+
+
+class _KeyedCamera:
+    """A camera stub with the fields the render cache key reads."""
+
+    def __init__(
+        self, center_lat=5.0, center_lon=5.0, zoom=ZOOM, width=WIDTH, height=HEIGHT
+    ):
+        self.center_lat = center_lat
+        self.center_lon = center_lon
+        self.zoom = zoom
+        self.width = width
+        self.height = height
+
+
+def _pixel_bytes(image):
+    """The image's ARGB bytes as ``(height, width, 4)``."""
+    data = np.frombuffer(bytes(image.constBits()), dtype=np.uint8)
+    rows = data.reshape(image.height(), image.bytesPerLine())
+    return rows[:, : image.width() * 4].reshape(image.height(), image.width(), 4)
+
+
+def _compose_clips(cell, clip=CLIP):
+    return [{"path": str(cell), "clip_wkb": shapely.to_wkb(shapely.Polygon(clip))}]
+
+
+def test_clip_bounds_cover_only_the_clip(cell):
+    projection = _projection(*CENTER, ZOOM, WIDTH, HEIGHT)
+    clip = shapely.Polygon(CLIP)
+    canvas = encfallback._ProjectedCanvas(projection, WIDTH, HEIGHT, 2.0)
+
+    bounds = encfallback._clip_pixel_bounds(canvas, clip, WIDTH, HEIGHT)
+
+    left, top, right, bottom = bounds
+    assert 0 <= left < right <= WIDTH
+    assert 0 <= top < bottom <= HEIGHT
+    assert (right - left) * (bottom - top) < WIDTH * HEIGHT * 0.1
+
+    # The clamp keeps a clip that leaves the frame from addressing pixels
+    # outside it; a clip entirely off the frame bounds to no pixels.
+    far = shapely.Polygon([(100, 100), (101, 100), (101, 101), (100, 101)])
+    empty = encfallback._clip_pixel_bounds(canvas, far, WIDTH, HEIGHT)
+    assert empty[2] <= empty[0] or empty[3] <= empty[1]
+
+
+def test_bounded_render_matches_the_full_frame_inside_the_clip(cell):
+    projection = _projection(*CENTER, ZOOM, WIDTH, HEIGHT)
+    clip = shapely.Polygon(CLIP)
+    wkb = shapely.to_wkb(clip)
+
+    # The full-frame paint, exactly as the overlay painted before the clip
+    # was bounded: one frame-sized surface, the same canvas, no offset.
+    reference = QImage(WIDTH, HEIGHT, QImage.Format.Format_ARGB32_Premultiplied)
+    reference.fill(Qt.GlobalColor.transparent)
+    canvas = encfallback._ProjectedCanvas(projection, WIDTH, HEIGHT, 2.0)
+    encfallback._paint(reference, canvas, clip, wkb, str(cell), "cm93")
+
+    bounded = render_cell_overlay(
+        str(cell), wkb, projection, WIDTH, HEIGHT, palette="cm93"
+    )
+
+    # Compare the whole padded box the bounded paint covers, not only the
+    # pixels strictly inside the clip: a wrong or doubled offset, a missing
+    # pad or a mis-clamped bound leaves a difference at the edges.
+    bounded_pixels = _pixel_bytes(bounded)
+    reference_pixels = _pixel_bytes(reference)
+    left, top, right, bottom = encfallback._clip_pixel_bounds(
+        canvas, clip, WIDTH, HEIGHT
+    )
+    window = (slice(top, bottom), slice(left, right))
+    assert window[0].stop > window[0].start and window[1].stop > window[1].start
+    assert np.array_equal(bounded_pixels[window], reference_pixels[window])
+
+    # Compare pixel for pixel inside the projected clip, where the ground is.
+    ring = projection(shapely.get_coordinates(clip))
+    xs, ys = np.meshgrid(np.arange(WIDTH) + 0.5, np.arange(HEIGHT) + 0.5)
+    inside = shapely.contains_xy(shapely.Polygon(ring), xs, ys)
+    assert inside.sum() > 0
+
+    assert np.array_equal(bounded_pixels[inside], reference_pixels[inside])
+
+
+def test_repeat_compose_avoids_the_drawer(monkeypatch, cell):
+    calls = []
+    original = S57ChartDrawer.draw
+
+    def counting(drawer, *args, **kwargs):
+        calls.append(1)
+        return original(drawer, *args, **kwargs)
+
+    monkeypatch.setattr(S57ChartDrawer, "draw", counting)
+    projection = _projection(*CENTER, ZOOM, WIDTH, HEIGHT)
+    clips = _compose_clips(cell)
+    camera = _KeyedCamera()
+
+    first, hit = render_clips_overlay_cached(
+        clips, projection, WIDTH, HEIGHT, camera=camera, dpr=1.0
+    )
+    second, repeat = render_clips_overlay_cached(
+        clips, projection, WIDTH, HEIGHT, camera=camera, dpr=1.0
+    )
+
+    assert hit is False
+    assert repeat is True
+    assert len(calls) == 1
+    assert second is first
+    # The cached frame is the painted one, not an empty stand-in.
+    assert _alpha(second, *_pixel(projection, 2.0, 2.0)) == 255
+
+
+def test_changed_camera_or_dpr_misses_the_cache(monkeypatch, cell):
+    calls = []
+    original = S57ChartDrawer.draw
+
+    def counting(drawer, *args, **kwargs):
+        calls.append(1)
+        return original(drawer, *args, **kwargs)
+
+    monkeypatch.setattr(S57ChartDrawer, "draw", counting)
+    projection = _projection(*CENTER, ZOOM, WIDTH, HEIGHT)
+    clips = _compose_clips(cell)
+
+    hits = []
+    for camera, dpr in (
+        (_KeyedCamera(), 1.0),
+        (_KeyedCamera(center_lon=5.25), 1.0),
+        (_KeyedCamera(), 2.0),
+    ):
+        _, hit = render_clips_overlay_cached(
+            clips, projection, WIDTH, HEIGHT, camera=camera, dpr=dpr
+        )
+        hits.append(hit)
+
+    assert hits == [False, False, False]
+    assert len(calls) == 3
+
+
+def test_render_cache_evicts_to_its_byte_budget(monkeypatch, cell):
+    """The budget, not the number of frames, bounds the cached pixels."""
+    monkeypatch.setattr(encfallback, "RENDER_CACHE_BUDGET", 2_000)
+    projection = _projection(*CENTER, ZOOM, WIDTH, HEIGHT)
+    clips = _compose_clips(cell)
+    frames = []
+
+    def fake_render(clips, projection, width, height, palette=None):
+        image = QImage(20, 10, QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)
+        frames.append(image)
+        return image
+
+    monkeypatch.setattr(encfallback, "render_clips_overlay", fake_render)
+    cameras = [_KeyedCamera(center_lon=5.0 + step * 0.25) for step in range(4)]
+
+    for camera in cameras:
+        image, hit = render_clips_overlay_cached(
+            clips, projection, WIDTH, HEIGHT, camera=camera, dpr=1.0
+        )
+        assert hit is False
+        assert image is frames[-1]
+
+    # Each 20x10 frame costs 800 bytes, so the fourth insertion pushes the
+    # resident pixels past 2000 and the least recently used frame goes.
+    assert len(frames) == 4
+    assert len(encfallback._render_cache) == 2
+    assert encfallback._render_cache_bytes == 1_600
+    assert encfallback._render_cache_bytes <= encfallback.RENDER_CACHE_BUDGET
+
+    # The frame just painted is not the one evicted.
+    newest, hit = render_clips_overlay_cached(
+        clips, projection, WIDTH, HEIGHT, camera=cameras[-1], dpr=1.0
+    )
+    assert hit is True
+    assert newest is frames[-1]
+
+    clear_render_cache()
+    assert not encfallback._render_cache
+    assert encfallback._render_cache_bytes == 0
+
+
+def test_cache_key_captures_the_render_inputs(cell):
+    clips = _compose_clips(cell)
+    base = render_cache_key(clips, _KeyedCamera(), WIDTH, HEIGHT, 1.0)
+
+    assert render_cache_key(clips, _KeyedCamera(), WIDTH, HEIGHT, 1.0) == base
+    assert (
+        render_cache_key(clips, _KeyedCamera(center_lat=5.5), WIDTH, HEIGHT, 1.0)
+        != base
+    )
+    assert (
+        render_cache_key(clips, _KeyedCamera(center_lon=5.5), WIDTH, HEIGHT, 1.0)
+        != base
+    )
+    assert (
+        render_cache_key(clips, _KeyedCamera(zoom=ZOOM + 1), WIDTH, HEIGHT, 1.0) != base
+    )
+    assert render_cache_key(clips, _KeyedCamera(), WIDTH * 2, HEIGHT, 1.0) != base
+    assert render_cache_key(clips, _KeyedCamera(), WIDTH, HEIGHT, 2.0) != base
+    assert render_cache_key(clips, _KeyedCamera(), WIDTH, HEIGHT, 1.0, "other") != base
+
+    # A rewritten cell changes the key through its size and mtime alone.
+    info = os.stat(cell)
+    os.utime(cell, ns=(info.st_atime_ns, info.st_mtime_ns + 10**9))
+    assert render_cache_key(clips, _KeyedCamera(), WIDTH, HEIGHT, 1.0) != base
+
+
+def test_superseded_serial_is_not_rendered(monkeypatch):
+    events = []
+    renders = []
+
+    def record(kind, **fields):
+        events.append((kind, fields))
+
+    def render(*args, **kwargs):
+        renders.append(args)
+        return QImage(), False
+
+    monkeypatch.setattr(enc_trace, "event", record)
+    monkeypatch.setattr(encfallback, "render_clips_overlay_cached", render)
+    overlay = _overlay()
+    camera = _Camera()
+    clips = ({"path": "/cells/a.gpkg", "clip_wkb": b"clip"},)
+    # The view has moved on: this job's serial is no longer the current one.
+    overlay._token = (2, camera)
+
+    payload = overlay._compose(
+        ((1, camera), clips, _projection_passthrough, WIDTH, HEIGHT, 4, 1.0)
+    )
+
+    assert payload is None
+    assert renders == []
+    assert events == [
+        (
+            "fallback_skip",
+            {"reason": "stale", "generation": 4, "serial": 1, "clips": 1},
+        )
+    ]
+    assert overlay.item.image().isNull()
+
+
+def test_current_serial_is_composed_and_traced(monkeypatch):
+    events = []
+
+    def record(kind, **fields):
+        events.append((kind, fields))
+
+    monkeypatch.setattr(enc_trace, "event", record)
+    overlay = _overlay()
+    camera = _Camera()
+    clips = ({"path": "/cells/a.gpkg", "clip_wkb": b"clip"},)
+    token = (3, camera)
+    overlay._token = token
+
+    payload = overlay._compose(
+        (token, clips, _projection_passthrough, WIDTH, HEIGHT, 5, 1.0)
+    )
+
+    assert payload is not None
+    assert payload[0] == token
+    assert [kind for kind, _ in events] == ["fallback_cache"]
+    # A hit or miss must be attributable to the generation that asked for it.
+    assert events[0][1] == {"hit": False, "generation": 5, "serial": 3}

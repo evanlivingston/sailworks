@@ -18,6 +18,7 @@ is constructed unless the ENC scene layer is enabled.
 import os
 import threading
 import time
+from collections import OrderedDict
 
 import cairo
 import numpy as np
@@ -140,8 +141,14 @@ def _clip_path(canvas, clip):
     return [canvas.project(ring) for ring in rings]
 
 
-def _paint(image, canvas, clip, clip_wkb, cell_path, palette):
-    """Paint the cell into *image*; raises whatever the paint path raises."""
+def _paint(image, canvas, clip, clip_wkb, cell_path, palette, offset=(0, 0)):
+    """Paint the cell into *image*; raises whatever the paint path raises.
+
+    *offset* is the device-pixel position of the image's top-left corner in
+    the frame the canvas projects into.  The drawing commands stay in frame
+    coordinates and cairo translates them, so a bounded render rasterizes
+    exactly as a full-frame one does: the offset is integral.
+    """
     buffer = image.bits()
     surface = cairo.ImageSurface.create_for_data(
         buffer,
@@ -154,6 +161,7 @@ def _paint(image, canvas, clip, clip_wkb, cell_path, palette):
     try:
         cr = cairo.Context(surface)
         cr.save()
+        cr.translate(-float(offset[0]), -float(offset[1]))
         for ring in _clip_path(canvas, clip):
             if len(ring) == 0:
                 continue
@@ -185,6 +193,35 @@ def _paint(image, canvas, clip, clip_wkb, cell_path, palette):
         del surface, buffer
 
 
+def _clip_pixel_bounds(canvas, clip, width, height, pad=2):
+    """The frame box the clip can touch, in device pixels.
+
+    The box is the clip's projected extent widened by *pad* pixels, so the
+    antialiased edge of the clip path itself always has a pixel to land on,
+    and then clamped to the frame.  ``None`` means the extent cannot be
+    established (an empty or non-finite projection), in which case the caller
+    must paint the whole frame; a box with no pixels means the clip lies
+    outside this frame and paints nothing at all.
+    """
+    rings = [np.asarray(ring, dtype=np.float64) for ring in _clip_path(canvas, clip)]
+    rings = [ring for ring in rings if ring.shape[0] > 0]
+    if not rings:
+        return None
+    points = np.concatenate(rings)
+    if not np.all(np.isfinite(points)):
+        return None
+    left = int(np.floor(points[:, 0].min())) - pad
+    top = int(np.floor(points[:, 1].min())) - pad
+    right = int(np.ceil(points[:, 0].max())) + pad + 1
+    bottom = int(np.ceil(points[:, 1].max())) + pad + 1
+    return (
+        max(0, left),
+        max(0, top),
+        min(width, right),
+        min(height, bottom),
+    )
+
+
 def render_cell_overlay(cell_path, clip_wkb, projection, width, height, palette=None):
     """Paint one cell into a transparent image, clipped to *clip_wkb*.
 
@@ -193,6 +230,13 @@ def render_cell_overlay(cell_path, clip_wkb, projection, width, height, palette=
     ``clip_wkb`` is the refused plan clip's polygon in chart coordinates.  The
     image is ``width`` x ``height`` device pixels, transparent everywhere the
     clip does not reach.
+
+    The paint itself is bounded to the clip's projected box: an image of that
+    box is painted with an offset transform and then composited at its place
+    in the frame.  The clip is a few percent of the viewport, so this is the
+    difference between painting the whole frame and painting the ground that
+    was actually asked for.  The composited result is what a full-frame paint
+    would have produced inside the clip.
 
     Raises ``FileNotFoundError`` when *cell_path* does not exist.  A clip
     without area, and a cell that cannot be opened or drawn, paint nothing:
@@ -213,12 +257,35 @@ def render_cell_overlay(cell_path, clip_wkb, projection, width, height, palette=
 
     min_lon, min_lat, max_lon, max_lat = clip.bounds
     canvas = _ProjectedCanvas(projection, width, height, (min_lat + max_lat) / 2.0)
+
+    bounds = _clip_pixel_bounds(canvas, clip, width, height)
+    if bounds is None:
+        target, offset = image, (0, 0)
+    else:
+        left, top, right, bottom = bounds
+        if right <= left or bottom <= top:
+            # The clip touches no pixel of this frame.
+            return image
+        target = QImage(right - left, bottom - top, image.format())
+        if target.isNull():
+            target, offset = image, (0, 0)
+        else:
+            target.fill(Qt.GlobalColor.transparent)
+            offset = (left, top)
+
     try:
-        _paint(image, canvas, clip, clip_wkb, cell_path, palette)
+        _paint(target, canvas, clip, clip_wkb, cell_path, palette, offset)
     except Exception:
         # A fallback that cannot paint leaves the ground to whatever is above
         # it; it must not fail the worker that asked for it.
-        image.fill(Qt.GlobalColor.transparent)
+        target.fill(Qt.GlobalColor.transparent)
+
+    if target is not image:
+        painter = QPainter(image)
+        try:
+            painter.drawImage(offset[0], offset[1], target)
+        finally:
+            painter.end()
     return image
 
 
@@ -259,6 +326,110 @@ def render_clips_overlay(clips, projection, width, height, palette=None):
     finally:
         painter.end()
     return image
+
+
+#: How many composed frames the fallback keeps memoized at most.
+RENDER_CACHE_LIMIT = 8
+#: How much composed pixel data the fallback keeps memoized.  A frame is a
+#: full-size ARGB image, so a count alone would bound very different amounts:
+#: at 1920x1386 and DPR 2 one entry is ~42 MB.
+RENDER_CACHE_BUDGET = 64 * 1024 * 1024
+
+_render_cache = OrderedDict()
+_render_cache_bytes = 0
+_render_cache_lock = threading.Lock()
+
+
+def _image_nbytes(image):
+    """The approximate pixel cost of one cached frame."""
+    return image.width() * image.height() * 4
+
+
+def _cell_stamp(path):
+    """A cell's content stand-in: its real path, size and modification time."""
+    try:
+        info = os.stat(path)
+    except OSError:
+        return (str(path), None, None)
+    return (os.path.realpath(str(path)), int(info.st_size), int(info.st_mtime_ns))
+
+
+def render_cache_key(clips, camera, width, height, dpr, palette=None):
+    """Everything the composed pixels depend on, as a hashable key.
+
+    The cell's path, size and modification time stand in for its content; the
+    clip's WKB is the exact geometry the paint clips to; the camera's own
+    latitude, longitude and zoom determine the projection; and the device
+    frame plus ratio fix the pixel grid.  Anything that changes the pixels
+    changes the key, so the cache invalidates itself and never needs an
+    explicit flush.
+    """
+    cells = []
+    for entry in clips or ():
+        path = entry.get("path") if entry else None
+        if not path:
+            continue
+        cells.append((_cell_stamp(path), bytes(entry.get("clip_wkb") or b"")))
+    return (
+        "enc-fallback",
+        1,
+        tuple(cells),
+        getattr(camera, "center_lat", None),
+        getattr(camera, "center_lon", None),
+        getattr(camera, "zoom", None),
+        int(width),
+        int(height),
+        float(dpr or 1.0),
+        palette or DEFAULT_PALETTE,
+    )
+
+
+def clear_render_cache():
+    """Drop every memoized compose."""
+    global _render_cache_bytes
+    with _render_cache_lock:
+        _render_cache.clear()
+        _render_cache_bytes = 0
+
+
+def render_clips_overlay_cached(
+    clips, projection, width, height, camera=None, dpr=1.0, palette=None
+):
+    """``render_clips_overlay`` memoized: ``(image, hit)``.
+
+    A repeat compose for an unchanged key hands back the image already
+    painted, so a republish or a re-place of the same ground costs no drawer.
+    The cache is a byte-bounded LRU: a pan walks through keys and the least
+    recently used frame falls out first until the resident pixels fit
+    :data:`RENDER_CACHE_BUDGET` (and at most :data:`RENDER_CACHE_LIMIT`
+    entries).  The frame just painted is always kept, so an entry larger than
+    the whole budget still memoizes instead of thrashing.  The key changes with
+    the cells' content, the clip, the camera and the device frame, which is
+    also the whole of the invalidation policy.
+    """
+    key = render_cache_key(clips, camera, width, height, dpr, palette)
+    with _render_cache_lock:
+        cached = _render_cache.get(key)
+        if cached is not None:
+            _render_cache.move_to_end(key)
+            return cached, True
+
+    image = render_clips_overlay(clips, projection, width, height, palette)
+    if image is not None and not image.isNull():
+        global _render_cache_bytes
+        with _render_cache_lock:
+            previous = _render_cache.pop(key, None)
+            if previous is not None:
+                _render_cache_bytes -= _image_nbytes(previous)
+            _render_cache[key] = image
+            _render_cache_bytes += _image_nbytes(image)
+            while len(_render_cache) > 1 and (
+                _render_cache_bytes > RENDER_CACHE_BUDGET
+                or len(_render_cache) > RENDER_CACHE_LIMIT
+            ):
+                _, evicted = _render_cache.popitem(last=False)
+                _render_cache_bytes -= _image_nbytes(evicted)
+    return image, False
 
 
 def device_projection(projection, scale):
@@ -492,7 +663,7 @@ class ENCFallbackOverlay(QObject):
         if camera is not None and published is not None and camera != published:
             self._serial += 1
             # A token no job will ever carry: whatever is in flight is stale.
-            self._token = (self._serial, camera)
+            self._set_token((self._serial, camera))
             return
         if moved_dpr:
             clips = self._clips
@@ -509,7 +680,8 @@ class ENCFallbackOverlay(QObject):
         clear that had nothing to discard must not fill the trace.
         """
         had_image = not self._item.image().isNull()
-        self._token = None
+        with self._lock:
+            self._token = None
         self._clips = ()
         self._canvas = None
         self._item.clear()
@@ -518,12 +690,31 @@ class ENCFallbackOverlay(QObject):
 
     def stop(self):
         """End the worker; a paint in flight finishes into nothing."""
-        self._stopped = True
-        self._token = None
         with self._lock:
+            self._stopped = True
+            self._token = None
             self._job = None
             self._wake.notify_all()
         self.clear("stopped")
+
+    def _set_token(self, token):
+        """Publish the request the view is waiting for.
+
+        The worker reads the token under the same lock, so the staleness
+        decision it takes before painting cannot straddle a camera change.
+        """
+        with self._lock:
+            self._token = token
+
+    def _current(self, token):
+        """Whether *token* is still the request the view is waiting for."""
+        with self._lock:
+            return (
+                not self._stopped
+                and token is not None
+                and self._token is not None
+                and self._token == token
+            )
 
     def _adopt_dpr(self, dpr):
         """Take the viewport's current ratio; true when it actually moved."""
@@ -557,6 +748,7 @@ class ENCFallbackOverlay(QObject):
             width,
             height,
             generation,
+            self._dpr,
         )
         self._clips = clips
         self._canvas = (projection, camera, generation)
@@ -583,24 +775,54 @@ class ENCFallbackOverlay(QObject):
                     return
                 job = self._job
                 self._job = None
-            token, clips, projection, width, height, generation = job
-            started = time.perf_counter()
-            try:
-                image = render_clips_overlay(clips, projection, width, height)
-            except Exception:
-                # A fallback that cannot paint leaves the ground to the scene
-                # above it; it must not take the worker down.
-                image = QImage()
-            fields = fallback_compose_fields(
-                generation,
-                token[0],
-                clips,
-                width,
-                height,
-                enc_trace.elapsed_ms(started),
-                image is None or image.isNull(),
+            payload = self._compose(job)
+            if payload is not None:
+                self.rendered.emit(payload)
+
+    def _compose(self, job):
+        """Paint one queued job, or ``None`` when it was already superseded.
+
+        The staleness decision is the one ``fallback_accepts`` makes for a
+        finished render, taken before the paint rather than after it: a frame
+        whose token the view has already left would be dropped on hand-back,
+        so painting it at all is work no one will see.  A skipped job is
+        traced and never published.
+        """
+        token, clips, projection, width, height, generation, dpr = job
+        if not self._current(token):
+            enc_trace.event(
+                "fallback_skip",
+                reason="stale",
+                generation=generation,
+                serial=token[0] if token else None,
+                clips=len(clips or ()),
             )
-            self.rendered.emit((token, image, fields))
+            return None
+        started = time.perf_counter()
+        try:
+            image, cached = render_clips_overlay_cached(
+                clips, projection, width, height, camera=token[1], dpr=dpr
+            )
+        except Exception:
+            # A fallback that cannot paint leaves the ground to the scene
+            # above it; it must not take the worker down.
+            image, cached = QImage(), False
+        enc_trace.event(
+            "fallback_cache",
+            hit=bool(cached),
+            generation=generation,
+            serial=token[0] if token else None,
+        )
+        fields = fallback_compose_fields(
+            generation,
+            token[0],
+            clips,
+            width,
+            height,
+            enc_trace.elapsed_ms(started),
+            image is None or image.isNull(),
+        )
+        return (token, image, fields)
 
     @Slot(object)
     def _painted(self, payload):
