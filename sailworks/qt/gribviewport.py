@@ -6137,7 +6137,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             if self._chart_model is None or self._camera is None:
                 return
             if enc_scene_covers_view(getattr(self, "_enc_scene_item", None)):
-                panstats.published("raster_skip")
+                panstats.skipped("raster_skip")
                 # The presented scene already draws this view; a coarse
                 # raster preview would only duplicate it and re-anchor the
                 # picture mid-drag.  Same predicate as the settle path, so
@@ -6302,7 +6302,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._chart_scene_suppressed_at = None
             self._chart_scene_suppressed_camera = None
             if enc_scene_covers_view(getattr(self, "_enc_scene_item", None)):
-                panstats.published("raster_skip")
+                panstats.skipped("raster_skip")
                 if enc_trace.enabled():
                     enc_trace.event(
                         "chart_raster_skipped",
@@ -8568,10 +8568,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             if self._disposed:
                 return "unavailable"
             self._enc_trace_begin_demand(camera)
-            panstats.camera_changed(camera)
             # Module-level so a test double needs no metrics attribute; it is
             # a no-op while the collector is off and idempotent per window.
             panstats.ensure_connected(self)
+            # One environment check, then no clock at all while the collector
+            # is off: the handler's cost is measured only to be reported.
+            camera_started = time.perf_counter() if panstats.enabled() else None
             began = time.perf_counter()
             state = "loading"
             try:
@@ -8780,6 +8782,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self.cameraChanged.emit(camera)
                 return state
             finally:
+                if camera_started is not None:
+                    panstats.camera_changed(
+                        camera,
+                        (time.perf_counter() - camera_started) * 1000.0,
+                    )
                 self._presentation_spans.append((began, time.perf_counter(), state))
                 if len(self._presentation_spans) > 4096:
                     del self._presentation_spans[: len(self._presentation_spans) - 4096]

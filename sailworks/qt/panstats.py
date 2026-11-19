@@ -12,6 +12,17 @@ Motion is classified by the camera, not by the frame: a presented frame (or
 any other recorded event) counts as *moving* when the last ``camera_changed``
 was less than ``MOVING_WINDOW_MS`` earlier.  The window matches the chart
 settle clock's own idle window, so "moving" means the same thing to both.
+
+A long gap between two presented frames is a *hitch*.  Each hitch keeps the
+gap and the markers (publications, holds, resumes, camera adoptions) that
+occurred between the two frames, so a spike in the frame percentiles can be
+attributed to the work that caused it instead of being a bare number.
+
+The per-camera handler is timed by its caller and handed in as
+``elapsed_ms``, so the collector never owns a second clock over the work.
+Those times are summarised (p50/p95/max) and attributed to the frame window
+they fell in: ``camera_busy_pct`` is handler time over moving-frame wall time,
+and each hitch record carries the handler time inside its gap.
 """
 
 from __future__ import annotations
@@ -27,6 +38,18 @@ ENV_VAR = "SAILWORKS_PAN_STATS"
 #: A frame is moving when the camera changed inside this window.
 MOVING_WINDOW_MS = 100.0
 
+#: A moving-frame interval longer than this is recorded as a hitch.
+HITCH_MS = 100.0
+
+#: How many recent markers the attribution ring keeps.
+RING_SIZE = 64
+
+#: How many markers a single hitch record may carry.
+HITCH_MARKERS_MAX = 8
+
+#: How many hitch records the JSON detail keeps.
+HITCH_RECORDS_MAX = 20
+
 #: Values that mean "enabled, print only" rather than a file path.
 _SWITCH_VALUES = frozenset({"1", "true", "yes", "on", "0", "false", "no", "off"})
 
@@ -40,17 +63,29 @@ _idle_intervals = []
 _moving_seconds = 0.0
 _idle_seconds = 0.0
 _publishes_moving = 0
+_raster_skips = 0
 _holds = 0
 _resumes = 0
+_marker_ring = None
+_hitch_count = 0
+_hitch_max_ms = 0.0
+_hitch_kind_counts = {}
+_hitch_records = []
 _connections = {}
 _quit_hooked = False
+_camera_ms = []
+_camera_ms_pending = 0.0
+_camera_ms_moving = 0.0
 
 
 def reset():
     """Drop all collected state; safe whether enabled or not."""
     global _started, _last_event_at, _last_camera_at, _camera_changes
     global _last_frame_at, _moving_intervals, _idle_intervals
-    global _moving_seconds, _idle_seconds, _publishes_moving, _holds, _resumes
+    global _moving_seconds, _idle_seconds, _publishes_moving, _raster_skips
+    global _holds, _resumes, _marker_ring, _hitch_count, _hitch_max_ms
+    global _hitch_kind_counts, _hitch_records
+    global _camera_ms, _camera_ms_pending, _camera_ms_moving
     _started = None
     _last_event_at = None
     _last_camera_at = None
@@ -61,8 +96,17 @@ def reset():
     _moving_seconds = 0.0
     _idle_seconds = 0.0
     _publishes_moving = 0
+    _raster_skips = 0
     _holds = 0
     _resumes = 0
+    _marker_ring = None
+    _hitch_count = 0
+    _hitch_max_ms = 0.0
+    _hitch_kind_counts = {}
+    _hitch_records = []
+    _camera_ms = []
+    _camera_ms_pending = 0.0
+    _camera_ms_moving = 0.0
 
 
 def enabled():
@@ -91,15 +135,30 @@ def _stamp(now):
     _last_event_at = now
 
 
-def camera_changed(camera=None):
-    """Record one camera adoption (``camera`` is accepted for readability)."""
-    global _last_camera_at, _camera_changes
+def _mark(kind, now):
+    """Append one attribution marker to the bounded ring."""
+    global _marker_ring
+    if _marker_ring is None:
+        from collections import deque
+
+        _marker_ring = deque(maxlen=RING_SIZE)
+    _marker_ring.append((kind, now))
+
+
+def camera_changed(camera=None, elapsed_ms=None):
+    """Record one camera adoption and the handler time it took, if known."""
+    global _last_camera_at, _camera_changes, _camera_ms_pending
     if not enabled():
         return
     now = time.perf_counter()
     _stamp(now)
     _camera_changes += 1
     _last_camera_at = now
+    if elapsed_ms is not None:
+        elapsed_ms = float(elapsed_ms)
+        _camera_ms.append(elapsed_ms)
+        _camera_ms_pending += elapsed_ms
+    _mark("camera", now)
 
 
 def frame_presented(render_ms=None):
@@ -110,6 +169,7 @@ def frame_presented(render_ms=None):
     summary rates are built from presentation intervals, not from it.
     """
     global _last_frame_at, _moving_seconds, _idle_seconds
+    global _camera_ms_pending, _camera_ms_moving
     if not enabled():
         return
     now = time.perf_counter()
@@ -117,25 +177,76 @@ def frame_presented(render_ms=None):
     previous = _last_frame_at
     _last_frame_at = now
     if previous is None:
+        # Nothing has been presented yet, so no window has opened: handler
+        # time before the first frame belongs to no interval.
+        _camera_ms_pending = 0.0
         return
     interval_ms = (now - previous) * 1000.0
+    camera_ms = _camera_ms_pending
+    _camera_ms_pending = 0.0
     if _moving(now):
         _moving_intervals.append(interval_ms)
         _moving_seconds += interval_ms / 1000.0
+        _camera_ms_moving += camera_ms
     else:
         _idle_intervals.append(interval_ms)
         _idle_seconds += interval_ms / 1000.0
+    if interval_ms > HITCH_MS and (_moving(previous) or _moving(now)):
+        _record_hitch(interval_ms, previous, now, camera_ms)
+
+
+def _record_hitch(gap_ms, previous, now, camera_ms=0.0):
+    """Keep one hitch, attributed to the markers inside its window.
+
+    ``camera_ms`` is the total camera-handler time inside the gap, so a hitch
+    caused by handler saturation can be read directly instead of inferred
+    from the marker kinds alone.
+    """
+    global _hitch_count, _hitch_max_ms
+    _hitch_count += 1
+    if gap_ms > _hitch_max_ms:
+        _hitch_max_ms = gap_ms
+    recent = [entry for entry in (_marker_ring or ()) if entry[1] > previous]
+    window = recent[-HITCH_MARKERS_MAX:]
+    markers = [
+        {"kind": kind, "age_ms": round((now - at) * 1000.0, 1)} for kind, at in window
+    ]
+    _hitch_records.append(
+        {
+            "gap_ms": round(gap_ms, 1),
+            "camera_ms": round(camera_ms, 1),
+            "markers": markers,
+        }
+    )
+    if len(_hitch_records) > HITCH_RECORDS_MAX:
+        del _hitch_records[: len(_hitch_records) - HITCH_RECORDS_MAX]
+    for kind in dict.fromkeys(marker["kind"] for marker in markers):
+        _hitch_kind_counts[kind] = _hitch_kind_counts.get(kind, 0) + 1
 
 
 def published(kind=None):
-    """Record a publication; ``kind`` names the source for the caller."""
+    """Record a real publication; ``kind`` names the source for the caller."""
     global _publishes_moving
     if not enabled():
+        return
+    if kind == "raster_skip":
+        # A skip publishes nothing: it would otherwise inflate the count.
+        skipped(kind)
         return
     now = time.perf_counter()
     _stamp(now)
     if _moving(now):
         _publishes_moving += 1
+    _mark("published(%s)" % (kind or "unknown",), now)
+
+
+def skipped(kind=None):
+    """Record a publication deliberately not made, e.g. a covered raster."""
+    global _raster_skips
+    if not enabled():
+        return
+    _stamp(time.perf_counter())
+    _raster_skips += 1
 
 
 def held(kind=None):
@@ -143,8 +254,10 @@ def held(kind=None):
     global _holds
     if not enabled():
         return
-    _stamp(time.perf_counter())
+    now = time.perf_counter()
+    _stamp(now)
     _holds += 1
+    _mark("held", now)
 
 
 def resumed(kind=None):
@@ -152,8 +265,10 @@ def resumed(kind=None):
     global _resumes
     if not enabled():
         return
-    _stamp(time.perf_counter())
+    now = time.perf_counter()
+    _stamp(now)
     _resumes += 1
+    _mark("resumed", now)
 
 
 def _rate(count, seconds):
@@ -168,6 +283,20 @@ def _percentile(values, percent):
     ordered = sorted(values)
     rank = max(1, int(math.ceil(percent / 100.0 * len(ordered))))
     return ordered[rank - 1]
+
+
+def _hitch_top():
+    """The marker kind most often present in a hitch window, or ``none``."""
+    if not _hitch_kind_counts:
+        return "none"
+    return max(_hitch_kind_counts, key=_hitch_kind_counts.get)
+
+
+def _camera_busy_pct():
+    """Camera-handler time as a percentage of moving-frame wall time."""
+    if _moving_seconds <= 0.0:
+        return 0.0
+    return 100.0 * (_camera_ms_moving / 1000.0) / _moving_seconds
 
 
 def summary():
@@ -189,6 +318,14 @@ def summary():
         "holds": _holds,
         "resumes": _resumes,
         "session_s": round(elapsed, 1),
+        "hitches": _hitch_count,
+        "hitch_max_ms": round(_hitch_max_ms, 1),
+        "hitch_top": _hitch_top(),
+        "raster_skips": _raster_skips,
+        "camera_ms_p50": round(_percentile(_camera_ms, 50), 1),
+        "camera_ms_p95": round(_percentile(_camera_ms, 95), 1),
+        "camera_ms_max": round(max(_camera_ms), 1) if _camera_ms else 0.0,
+        "camera_busy_pct": round(_camera_busy_pct(), 1),
     }
 
 
@@ -207,12 +344,25 @@ def summary_line(record=None):
         "publishes_moving={publishes_moving:d} "
         "holds={holds:d} "
         "resumes={resumes:d} "
-        "session_s={session_s:.1f}"
+        "session_s={session_s:.1f} "
+        "hitches={hitches:d} "
+        "hitch_max_ms={hitch_max_ms:.1f} "
+        "hitch_top={hitch_top} "
+        "raster_skips={raster_skips:d} "
+        "camera_ms_p50={camera_ms_p50:.1f} "
+        "camera_ms_p95={camera_ms_p95:.1f} "
+        "camera_ms_max={camera_ms_max:.1f} "
+        "camera_busy_pct={camera_busy_pct:.1f}"
     ).format(**record)
 
 
 def flush():
-    """Print the summary and append the JSON record when a path is set."""
+    """Print the summary and append the JSON record when a path is set.
+
+    The printed line and the summary fields stay in their existing order; the
+    JSON record gains a bounded ``hitch_records`` detail list, because a
+    single-line summary cannot carry per-hitch attribution.
+    """
     if not enabled():
         return ""
     record = summary()
@@ -220,9 +370,11 @@ def flush():
     print(line, flush=True)
     path = _path()
     if path:
+        detail = dict(record)
+        detail["hitch_records"] = [dict(item) for item in _hitch_records]
         try:
             with open(path, "a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record) + "\n")
+                handle.write(json.dumps(detail) + "\n")
         except OSError:
             pass
     return line
