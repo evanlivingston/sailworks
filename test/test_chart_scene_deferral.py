@@ -435,6 +435,7 @@ def test_a_presented_scene_stops_the_raster_entirely(viewport_class):
         _enc_scene_model=SimpleNamespace(_published=(41, None, {"camera": CAMERA})),
         _enc_scene_item=_SceneItem(),
         _request_enc_scene=lambda: 42,
+        _flush_held_enc_scene_adoption=lambda: None,
         _scene_draws_chart=lambda: True,
         _chart_state_now=lambda: {},
         counters={"chart_requests": 0},
@@ -893,6 +894,7 @@ def test_the_scene_is_asked_when_the_chart_never_composes(viewport_class):
         _chart_scene_deferral=None,
         _restart_chart_settle=lambda: None,
         _request_enc_scene=lambda: asked.append(1) or 7,
+        _flush_held_enc_scene_adoption=lambda: None,
     )
     viewport_class._request_chart(state)
     assert asked == [1]

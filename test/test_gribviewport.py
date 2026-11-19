@@ -3377,6 +3377,7 @@ def _settle_state(scene_item):
         _enc_scene_model=SimpleNamespace(_published=(1, None, None)),
         _enc_scene_item=scene_item,
         _request_enc_scene=lambda: 7,
+        _flush_held_enc_scene_adoption=lambda: None,
         _chart_state_now=lambda: {},
         counters={"chart_requests": 0},
     )

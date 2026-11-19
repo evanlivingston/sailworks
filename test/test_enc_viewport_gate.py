@@ -634,6 +634,7 @@ def test_initial_weather_miss_does_not_block_enc_request():
         _model=SimpleNamespace(state="unavailable", busy=lambda: False),
         _chart_camera_changed=0,
         _restart_chart_settle=Mock(),
+        _flush_held_enc_scene_adoption=lambda: None,
         counters={"chart_requests": 0},
         _chart_state_now=lambda: {},
     )
@@ -655,6 +656,7 @@ def test_independent_chart_request_does_not_wait_for_weather():
         _enc_chart_layer=False,
         _model=SimpleNamespace(state="loading", busy=lambda: True),
         _chart_camera_changed=0,
+        _flush_held_enc_scene_adoption=lambda: None,
         counters={"chart_requests": 0},
         _chart_state_now=lambda: {},
     )
@@ -675,6 +677,7 @@ def test_settled_chart_gives_busy_weather_a_bounded_head_start(monkeypatch):
         _chart_model=SimpleNamespace(request=requests.append),
         _camera="camera",
         _weather_ready_at=1,
+        _flush_held_enc_scene_adoption=lambda: None,
         _model=SimpleNamespace(state="ready", busy=lambda: True),
         _chart_camera_changed=100.0,
         _chart_timer=timer,
@@ -711,6 +714,7 @@ def test_weather_head_start_does_not_rearm_across_continuous_camera_moves(monkey
         _chart_head_start_basis=100.0,
         _chart_visible_generation=None,
         _chart_timer=timer,
+        _flush_held_enc_scene_adoption=lambda: None,
         counters={"chart_requests": 0},
         _chart_state_now=lambda: {},
     )
@@ -752,6 +756,7 @@ def test_retained_chart_bounds_the_weather_head_start(monkeypatch):
         _chart_head_start_basis=100.0,
         _chart_visible_generation=1,
         _chart_timer=timer,
+        _flush_held_enc_scene_adoption=lambda: None,
         counters={"chart_requests": 0},
         _chart_state_now=lambda: {},
     )
@@ -785,6 +790,7 @@ def test_scene_request_does_not_wait_for_the_weather_head_start(monkeypatch):
         _chart_visible_generation=None,
         _chart_timer=Mock(),
         _request_enc_scene=scene,
+        _flush_held_enc_scene_adoption=lambda: None,
         counters={"chart_requests": 0},
         _chart_state_now=lambda: {},
     )
@@ -845,6 +851,7 @@ def test_world_basemap_request_does_not_wait_for_weather():
         _camera="camera",
         _weather_ready_at=None,
         _chart_without_weather=True,
+        _flush_held_enc_scene_adoption=lambda: None,
         _enc_chart_layer=False,
         _model=SimpleNamespace(state="loading", busy=lambda: False),
         _chart_camera_changed=0,

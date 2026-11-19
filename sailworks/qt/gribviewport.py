@@ -28,7 +28,7 @@ import time
 from typing import Any, cast
 
 from sailworks.core.mapmotion import DragVelocity, PanInertia
-from sailworks.qt import enc_trace
+from sailworks.qt import enc_trace, panstats
 from sailworks.qt.gpuweatherfields import (
     FIELD_COLUMNS,
     FieldIdentity,
@@ -595,6 +595,24 @@ ENC_SCENE_COVER_RETRY_MAX = 2
 #: second chart-source poll, so a stalled layer still shows its progress
 #: within one poll.
 ENC_SCENE_HOLD_MAX_MS = 4000
+
+#: How still the camera must be before a scene publication is adopted.
+#: A drag moves the camera every ~12 ms (measured over a pan gesture), and
+#: every published frame is placed for the camera it was composed at: adopting
+#: one mid-gesture re-anchors the picture under the hand.  A frame that lands
+#: inside the gesture is therefore held until the camera has not changed for
+#: this long.  The window is the chart settle timer's own 100 ms idle window
+#: plus one publication interval, so a *pause* satisfies it and a drag does
+#: not: at the 12 ms cadence sixteen changes fall inside 150 ms, so only a
+#: genuine stop reaches it, and 150 ms is still short enough to land between
+#: two strokes of a slow pan.
+ENC_SCENE_ADOPT_SETTLE_MS = 150
+
+#: The longest a publication may wait for that pause.  A drag that never stops
+#: for ``ENC_SCENE_ADOPT_SETTLE_MS`` must not starve the scene of every
+#: replacement, so the hold is bounded at one second - roughly eight times the
+#: settle window - and the newest pending frame is then applied under motion.
+ENC_SCENE_ADOPT_CEILING_MS = 1000
 
 
 def scene_chart_deferral_pending(generation, published):
@@ -2760,6 +2778,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             #: any other generation is a superseded job's cancellation and may
             #: not touch the presented scene.
             self._enc_scene_pending_generation = None
+            #: The newest publication held because the camera was still
+            #: moving, and when the first of this hold's publications was
+            #: held.  One slot only: a later publication replaces it, so a
+            #: long drag cannot grow a queue.  The timestamp bounds the hold
+            #: at ``ENC_SCENE_ADOPT_CEILING_MS``.
+            self._enc_scene_adopt_pending = None
+            self._enc_scene_adopt_pending_at = None
             self._enc_scene_generation = None
             #: The demand guard: what the newest scene request actually depends
             #: on, the outcome of its last generation and its short trace token.
@@ -3815,6 +3840,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._chart.setProperty("chartLoading", False)
             self._chart.setProperty("chartUnavailable", False)
             self.counters["chart_publications"] += 1
+            panstats.published("chart")
+            if panstats.enabled():
+                # Presentation of this frame is the next afterRendering.
+                self._panstats_render_basis = time.perf_counter()
             stage_times = getattr(self, "_chart_stage_times", None)
             staged_at = stage_times.pop(generation, None) if stage_times else None
             publish_to_adopt = None
@@ -4188,7 +4217,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 return
             self._withdraw_enc_scene()
 
-        def _enc_scene_published(self, payload, release_expired=False):
+        def _enc_scene_published(
+            self, payload, release_expired=False, adopt_forced=False
+        ):
             """A scene publication or withdrawal from the layer (queued here).
 
             Every message names the generation it speaks for; a withdrawal is
@@ -4203,7 +4234,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 return
             if payload is None:
                 # A layer-wide withdrawal is not supersession by a newer
-                # demand: the outstanding generation will publish nothing.
+                # demand: the outstanding generation will publish nothing, and
+                # anything still waiting for a pause is dead with it.
+                self._cancel_enc_scene_adopt_hold()
                 enc_scene_demand_failed(self)
                 if enc_trace.enabled():
                     enc_trace.event(
@@ -4235,6 +4268,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 apply_scene_publication(self, generation, None)
                 self._withdraw_enc_scene_if_current(generation)
                 return
+            # A withdrawal of the very frame waiting for a pause cancels that
+            # wait: nothing may adopt a scene its own job has cancelled.
+            held = getattr(self, "_enc_scene_adopt_pending", None)
+            if held is not None and held[0] == generation:
+                self._cancel_enc_scene_adopt_hold()
             # The ordered plan and the explicit per-cell state travel with the
             # scene: a planned cell that drew nothing is named here rather
             # than silently absent.  They are published *with* the scene, not
@@ -4313,6 +4351,18 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     dpr=getattr(self, "_camera_dpr", None),
                 )
             partial = metadata is not None and bool(metadata.get("partial"))
+            # A frame is placed for the camera it was composed at, so adopting
+            # one while the camera is still moving re-anchors the picture under
+            # the hand.  The newest publication waits for a pause of
+            # ``ENC_SCENE_ADOPT_SETTLE_MS`` instead; the ceiling forces the
+            # oldest hold through, and a forced frame runs the ordinary path
+            # below untouched.  The gate sits *outside* the first-raster and
+            # partial holds, so a held partial re-enters both when it lands.
+            now = time.perf_counter()
+            moving = getattr(self, "_enc_scene_camera_moving", None)
+            if not adopt_forced and moving is not None and moving(now):
+                self._hold_enc_scene_adoption(payload, now)
+                return
             hold = getattr(self, "_hold_scene_for_first_raster", None)
             if not partial and hold is not None and hold(generation, payload):
                 return
@@ -4364,6 +4414,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._enc_scene_cells_order = published_cells
             self._enc_scene_cell_states = published_states
             apply_scene_publication(self, generation, metadata)
+            panstats.published("enc_scene")
             self._enc_scene_generation = generation
             # The scene carries lon/lat: project it with the view that made it,
             # otherwise the item draws degrees and nothing lands on screen.
@@ -4464,6 +4515,115 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 isinstance(state, dict) and state.get("state") == "loading"
                 for state in cell_states
             )
+
+        def _enc_scene_camera_moving(self, now=None):
+            """Whether the camera changed inside the adopt settle window.
+
+            The last camera change is the chart settle clock's own basis: it
+            is stamped by the camera-change branch that also restarts the
+            settle timer, so the two agree about what "moving" means.  With no
+            stamp - a widget that never saw a camera change - the view counts
+            as still, so first load adopts immediately, as it always did.
+            """
+            last = getattr(self, "_chart_camera_changed", None)
+            if last is None:
+                return False
+            if now is None:
+                now = time.perf_counter()
+            return (now - last) * 1000.0 < ENC_SCENE_ADOPT_SETTLE_MS
+
+        def _arm_enc_scene_adopt_flush(self, now):
+            """Let the settle timer wake the held publication.
+
+            The chart settle timer is the one single-shot path that already
+            fires on a quiet camera; no second timer is added.  It is armed for
+            whichever comes first: the end of the settle window, or the
+            ceiling that bounds a drag which never pauses.
+            """
+            timer = getattr(self, "_chart_timer", None)
+            if timer is None:
+                return
+            last = getattr(self, "_chart_camera_changed", None)
+            seen_ms = 0.0 if last is None else (now - last) * 1000.0
+            due_ms = ENC_SCENE_ADOPT_SETTLE_MS - seen_ms
+            started = getattr(self, "_enc_scene_adopt_pending_at", None)
+            if started is not None:
+                left_ms = ENC_SCENE_ADOPT_CEILING_MS - (now - started) * 1000.0
+                due_ms = min(due_ms, left_ms)
+            timer.start(max(1, int(math.ceil(due_ms))))
+
+        def _hold_enc_scene_adoption(self, payload, now):
+            """Keep the newest publication until the camera pauses.
+
+            One slot: the arrival replaces whatever was pending, so a drag
+            cannot accumulate a queue and only the newest frame - the one
+            composed for the camera the pointer is closest to - can adopt.
+            The clock starts at the *first* held publication, which is what
+            the ceiling measures.
+            """
+            first = getattr(self, "_enc_scene_adopt_pending_at", None)
+            if first is None:
+                self._enc_scene_adopt_pending_at = now
+                first = now
+            previous = getattr(self, "_enc_scene_adopt_pending", None)
+            self._enc_scene_adopt_pending = payload
+            panstats.held("enc_scene")
+            self._arm_enc_scene_adopt_flush(now)
+            if enc_trace.enabled():
+                previous_generation = None if previous is None else previous[0]
+                enc_trace.event(
+                    "scene_adopt_held",
+                    generation=payload[0],
+                    superseded=previous_generation,
+                    held_ms=round((now - first) * 1000.0, 1),
+                    settle_ms=ENC_SCENE_ADOPT_SETTLE_MS,
+                    ceiling_ms=ENC_SCENE_ADOPT_CEILING_MS,
+                    elapsed_ms=enc_trace.elapsed_ms(
+                        getattr(self, "_enc_trace_demand_at", None)
+                    ),
+                )
+
+        def _cancel_enc_scene_adopt_hold(self):
+            """Drop a publication held for a pause without applying it."""
+            self._enc_scene_adopt_pending = None
+            self._enc_scene_adopt_pending_at = None
+
+        def _flush_held_enc_scene_adoption(self, now=None):
+            """Apply the held publication once the camera has paused.
+
+            Reached from the settle timer and from the top of the chart
+            request, so a pause mid-drag adopts without waiting for release.
+            The frame goes back through ``_enc_scene_published``, which keeps
+            the partial rules intact: a held partial that is itself incomplete
+            is withheld again, by the same gate as any other partial.
+            """
+            payload = getattr(self, "_enc_scene_adopt_pending", None)
+            if payload is None:
+                return False
+            if now is None:
+                now = time.perf_counter()
+            started = getattr(self, "_enc_scene_adopt_pending_at", None)
+            held_ms = 0.0 if started is None else (now - started) * 1000.0
+            forced = held_ms >= ENC_SCENE_ADOPT_CEILING_MS
+            if not forced and self._enc_scene_camera_moving(now):
+                self._arm_enc_scene_adopt_flush(now)
+                return False
+            self._cancel_enc_scene_adopt_hold()
+            if getattr(self, "_disposed", False):
+                return False
+            panstats.resumed("enc_scene")
+            if enc_trace.enabled():
+                enc_trace.event(
+                    "scene_adopt_resumed",
+                    generation=payload[0],
+                    held_ms=round(held_ms, 1),
+                    forced=forced,
+                    elapsed_ms=enc_trace.elapsed_ms(
+                        getattr(self, "_enc_trace_demand_at", None)
+                    ),
+                )
+            self._enc_scene_published(payload, adopt_forced=forced)
+            return True
 
         def _hold_enc_scene_partial(self, payload):
             """Keep an uncovered partial off screen, but only for a budget.
@@ -5977,6 +6137,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             if self._chart_model is None or self._camera is None:
                 return
             if enc_scene_covers_view(getattr(self, "_enc_scene_item", None)):
+                panstats.published("raster_skip")
                 # The presented scene already draws this view; a coarse
                 # raster preview would only duplicate it and re-anchor the
                 # picture mid-drag.  Same predicate as the settle path, so
@@ -6098,6 +6259,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             flight and coalesces the latest demand, so this remains bounded
             and cannot delay the weather.
             """
+            # The settle timer is the only timer a held publication waits on:
+            # a pause of ``ENC_SCENE_ADOPT_SETTLE_MS`` is enough to adopt, so
+            # a frame lands mid-drag instead of waiting for release.
+            self._flush_held_enc_scene_adoption()
             # The scene is asked before any raster scheduling: in scene mode it
             # *is* the chart, so a weather head start, a chart deferral or a
             # missing raster layer must not starve it.  Withholding it until
@@ -6137,6 +6302,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._chart_scene_suppressed_at = None
             self._chart_scene_suppressed_camera = None
             if enc_scene_covers_view(getattr(self, "_enc_scene_item", None)):
+                panstats.published("raster_skip")
                 if enc_trace.enabled():
                     enc_trace.event(
                         "chart_raster_skipped",
@@ -8210,6 +8376,22 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 "key"
             ) == getattr(self, "_image_fill_requested_key", None)
 
+        # -- optional pan metrics (SAILWORKS_PAN_STATS) --------------------
+        def _panstats_after_rendering(self):
+            """Record one presented frame, with its render time when known.
+
+            The basis is stamped where a frame is handed to the scene, so the
+            interval measured here is the before->after render time rather
+            than an extra counter of the viewport's own.
+            """
+            now = time.perf_counter()
+            basis = getattr(self, "_panstats_render_basis", None)
+            render_ms = None
+            if basis is not None:
+                self._panstats_render_basis = None
+                render_ms = (now - basis) * 1000.0
+            panstats.frame_presented(render_ms)
+
         # -- optional diagnostic trace (SAILWORKS_ENC_TRACE) ---------------
         def _enc_trace_begin_demand(self, camera):
             """Start a demand-scoped trace cycle; a no-op unless enabled."""
@@ -8386,6 +8568,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             if self._disposed:
                 return "unavailable"
             self._enc_trace_begin_demand(camera)
+            panstats.camera_changed(camera)
+            # Module-level so a test double needs no metrics attribute; it is
+            # a no-op while the collector is off and idempotent per window.
+            panstats.ensure_connected(self)
             began = time.perf_counter()
             state = "loading"
             try:

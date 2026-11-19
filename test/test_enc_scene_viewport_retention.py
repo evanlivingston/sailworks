@@ -12,9 +12,13 @@ window or GPU item is needed.
 
 from __future__ import annotations
 
+import time
 from types import MethodType, SimpleNamespace
 
+from sailworks.qt import enc_trace
 from sailworks.qt.gribviewport import (
+    ENC_SCENE_ADOPT_CEILING_MS,
+    ENC_SCENE_ADOPT_SETTLE_MS,
     ViewportCamera,
     _viewport_widget_class,
     enc_scene_covers_view,
@@ -85,6 +89,11 @@ def _widget(layer_state="ready", error="", covers_view=True, reaches_view=None):
         # against the widget's camera; no chart composition runs in this stub.
         _camera=None,
         _chart_timer=None,
+        # The last camera change, on the chart settle clock.  ``None`` means
+        # the view has never moved, which counts as still.
+        _chart_camera_changed=None,
+        _enc_scene_adopt_pending=None,
+        _enc_scene_adopt_pending_at=None,
         _map_pan_reference=None,
         _camera_dpr=1.0,
         _weather=_Weather(),
@@ -100,6 +109,11 @@ def _widget(layer_state="ready", error="", covers_view=True, reaches_view=None):
         "_hold_enc_scene_partial",
         "_cancel_enc_scene_partial_hold",
         "_release_held_enc_scene_partial",
+        "_enc_scene_camera_moving",
+        "_hold_enc_scene_adoption",
+        "_arm_enc_scene_adopt_flush",
+        "_cancel_enc_scene_adopt_hold",
+        "_flush_held_enc_scene_adoption",
         "_enc_scene_state_changed",
         "_schedule_enc_scene_retry",
         "_update_enc_status",
@@ -515,3 +529,149 @@ def test_a_loading_partial_survives_an_idle_deferral():
     assert widget._enc_scene_item.visible is True
     assert widget._enc_scene_item.scene == "scene-8"
     assert widget._weather.props["encStatus"] == "ENC scene updating…"
+
+
+class _SettleTimer:
+    """The chart settle timer's single-shot surface, recorded."""
+
+    def __init__(self):
+        self.started = []
+
+    def start(self, delay):
+        self.started.append(delay)
+
+
+def _moving_widget(**kwargs):
+    """A widget whose camera changed just now, with the settle clock stamped."""
+    widget = _widget(**kwargs)
+    widget._chart_camera_changed = time.perf_counter()
+    widget._chart_timer = _SettleTimer()
+    return widget
+
+
+def _stopped(widget, after_ms=200.0):
+    """Move the last camera change into the past: the camera is still."""
+    widget._chart_camera_changed = time.perf_counter() - after_ms / 1000.0
+
+
+def test_a_publication_while_moving_is_held_and_not_adopted(monkeypatch):
+    events = []
+    monkeypatch.setattr(enc_trace, "enabled", lambda: True)
+    monkeypatch.setattr(
+        enc_trace, "event", lambda name, **fields: events.append((name, fields))
+    )
+    monkeypatch.setattr(enc_trace, "elapsed_ms", lambda *args, **kwargs: 0.0)
+    widget = _moving_widget()
+
+    widget._enc_scene_published((7, "moving", {}))
+
+    # Nothing is placed: the frame was composed for a camera the pointer has
+    # already left, so adopting it would re-anchor the picture under the hand.
+    assert widget._enc_scene_item.scene == "previous"
+    assert widget._enc_scene_generation == 0
+    assert widget._enc_scene_adopt_pending[0] == 7
+    # The existing settle timer carries the wait; no second timer is armed.
+    assert widget._chart_timer.started == [ENC_SCENE_ADOPT_SETTLE_MS]
+    held = [fields for name, fields in events if name == "scene_adopt_held"]
+    assert len(held) == 1
+    assert held[0]["generation"] == 7
+    assert held[0]["superseded"] is None
+    assert held[0]["settle_ms"] == ENC_SCENE_ADOPT_SETTLE_MS
+    assert held[0]["ceiling_ms"] == ENC_SCENE_ADOPT_CEILING_MS
+
+
+def test_a_later_publication_supersedes_the_held_one():
+    widget = _moving_widget()
+    widget._enc_scene_published((7, "first", {}))
+
+    widget._enc_scene_published((8, "second", {}))
+
+    # One slot, latest wins: no queue grows behind a long drag.
+    assert widget._enc_scene_adopt_pending[0] == 8
+    assert widget._enc_scene_item.scene == "previous"
+
+    _stopped(widget)
+
+    assert widget._flush_held_enc_scene_adoption() is True
+    assert widget._enc_scene_item.scene == "second"
+    assert widget._enc_scene_generation == 8
+
+
+def test_a_pause_of_the_settle_window_applies_the_held_publication_once():
+    widget = _moving_widget()
+    widget._enc_scene_published((7, "held", {}))
+
+    # Still inside the window: the frame stays held.
+    assert widget._flush_held_enc_scene_adoption() is False
+    assert widget._enc_scene_item.scene == "previous"
+
+    _stopped(widget, ENC_SCENE_ADOPT_SETTLE_MS + 50.0)
+
+    assert widget._flush_held_enc_scene_adoption() is True
+    assert widget._enc_scene_item.scene == "held"
+    assert widget._enc_scene_adopt_pending is None
+    # Exactly once: the slot is empty, so the same timer firing again is a
+    # no-op rather than a second adoption.
+    assert widget._flush_held_enc_scene_adoption() is False
+    assert widget._enc_scene_item.scene == "held"
+
+
+def test_the_ceiling_forces_an_apply_during_continuous_motion():
+    widget = _moving_widget()
+    widget._enc_scene_published((7, "late", {}))
+    # The camera changed a moment ago - the drag never paused - but the frame
+    # has been held for the whole ceiling, so the scene must not starve.
+    widget._enc_scene_adopt_pending_at = (
+        time.perf_counter() - (ENC_SCENE_ADOPT_CEILING_MS + 50.0) / 1000.0
+    )
+
+    assert widget._flush_held_enc_scene_adoption() is True
+    assert widget._enc_scene_item.scene == "late"
+    assert widget._enc_scene_generation == 7
+
+
+def test_an_idle_publication_applies_immediately():
+    widget = _widget()
+    _stopped(widget)
+
+    widget._enc_scene_published((7, "idle", {}))
+
+    assert widget._enc_scene_adopt_pending is None
+    assert widget._enc_scene_item.scene == "idle"
+    assert widget._enc_scene_generation == 7
+
+
+def test_a_held_partial_still_obeys_the_withhold_rules_when_applied():
+    widget = _moving_widget()
+    _stopped(widget)
+    widget._enc_scene_published((7, "complete", {}))
+    assert widget._enc_scene_item.scene == "complete"
+
+    widget._chart_camera_changed = time.perf_counter()
+    widget._enc_scene_published((8, "partial", {"partial": True}))
+    # Held for the pause while moving, not yet presented.
+    assert widget._enc_scene_adopt_pending[0] == 8
+    assert widget._enc_scene_item.scene == "complete"
+
+    _stopped(widget)
+
+    assert widget._flush_held_enc_scene_adoption() is True
+    # Released through the ordinary path, the partial is progress, not the
+    # view: the complete frame stays up and the partial is withheld again.
+    assert widget._enc_scene_item.scene == "complete"
+    assert widget._enc_scene_held_partial is not None
+    assert widget._enc_scene_held_partial[0] == 8
+
+
+def test_tracing_off_changes_nothing(monkeypatch):
+    monkeypatch.setattr(enc_trace, "enabled", lambda: False)
+    widget = _moving_widget()
+
+    widget._enc_scene_published((7, "held", {}))
+    assert widget._enc_scene_item.scene == "previous"
+
+    _stopped(widget, ENC_SCENE_ADOPT_SETTLE_MS + 50.0)
+
+    assert widget._flush_held_enc_scene_adoption() is True
+    assert widget._enc_scene_item.scene == "held"
+    assert widget._enc_scene_generation == 7
