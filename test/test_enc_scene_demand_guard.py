@@ -830,7 +830,7 @@ def _publication_widget():
         setattr(widget, name, MethodType(getattr(widget_class, name), widget))
     widget._enc_scene_hold_timer.callback = widget._release_held_enc_scene_partial
     widget._update_enc_status = lambda: None
-    widget._place_enc_scene = lambda: None
+    widget._place_enc_scene = lambda cause=None: None
     widget._restart_chart_settle = lambda: None
     return widget
 

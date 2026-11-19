@@ -146,6 +146,18 @@ def _matrix_positions(item):
     return np.vstack(rows)
 
 
+@pytest.fixture(autouse=True)
+def _the_layer_owns_its_pan(monkeypatch):
+    """Measure the layer's own pan placement, not the container experiment.
+
+    ``CONTAINER_CARRIES_PAN`` is covered in ``test/test_gribviewport.py``;
+    these checks model the placement it replaces.
+    """
+    from sailworks.qt import gribviewport as _gv
+
+    monkeypatch.setattr(_gv, "CONTAINER_CARRIES_PAN", False)
+
+
 def _presented(app, camera, scene, projection, origin=None, legacy=None, margin=None):
     kwargs = {} if legacy is None else {"legacy_project": legacy}
     item = encgpu.EncMeshItem(text_enabled=False, **kwargs)
@@ -1384,7 +1396,7 @@ def test_a_partial_publication_never_replaces_the_ready_scene(app):
         _camera_dpr=1.0,
         _disposed=False,
         _update_enc_status=lambda: None,
-        _place_enc_scene=lambda: None,
+        _place_enc_scene=lambda **_: None,
     )
     # The publication path decides retention by consulting two further
     # predicates on ``self``.  Bind the production implementations, as for

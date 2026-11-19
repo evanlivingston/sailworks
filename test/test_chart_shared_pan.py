@@ -13,6 +13,18 @@ from sailworks.qt.gribviewportchart import ChartCamera, MARGIN, chart_placement
 from sailworks.qt.viewporttransform import PanReference, CameraChange
 
 
+@pytest.fixture(autouse=True)
+def _the_layer_owns_its_pan(monkeypatch):
+    """Measure the layer's own pan placement, not the container experiment.
+
+    ``CONTAINER_CARRIES_PAN`` is covered in ``test/test_gribviewport.py``;
+    these checks model the two placements it replaces.
+    """
+    from sailworks.qt import gribviewport as _gv
+
+    monkeypatch.setattr(_gv, "CONTAINER_CARRIES_PAN", False)
+
+
 def _cameras():
     stamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
     composed = ViewportCamera(
@@ -92,6 +104,9 @@ def _make_widget(composed, current, viewport, reference, dpr=1.0):
         widget_class._rebase_retained_imagery, widget
     )
     widget._place_enc_scene = MethodType(widget_class._place_enc_scene, widget)
+    widget._enc_trace_begin_demand = MethodType(
+        widget_class._enc_trace_begin_demand, widget
+    )
     widget._native_publication_dpr = MethodType(
         widget_class._native_publication_dpr, widget
     )

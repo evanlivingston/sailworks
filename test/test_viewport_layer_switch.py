@@ -11,6 +11,7 @@ import time
 import unittest
 from importlib.util import find_spec
 from pathlib import Path
+import pytest
 from types import MethodType, SimpleNamespace
 from unittest.mock import patch
 
@@ -32,6 +33,18 @@ if find_spec("PySide6") is not None:
     from PySide6.QtGui import QColor, QImage
     from PySide6.QtQuick import QQuickImageProvider, QQuickView
     from PySide6.QtTest import QTest
+
+
+@pytest.fixture(autouse=True)
+def _the_layer_owns_its_pan(monkeypatch):
+    """Measure the layer's own pan placement, not the container experiment.
+
+    ``CONTAINER_CARRIES_PAN`` is covered in ``test/test_gribviewport.py``;
+    these checks model the two placements it replaces.
+    """
+    from sailworks.qt import gribviewport as _gv
+
+    monkeypatch.setattr(_gv, "CONTAINER_CARRIES_PAN", False)
 
 
 def _application():
@@ -579,7 +592,7 @@ class TestReadyTransitionFade(unittest.TestCase):
         )
         self.assertLess(
             block.index('self._chart.setProperty("fadeMs", fade_ms)'),
-            block.index("self._place_chart()"),
+            block.index('self._place_chart(cause="publication")'),
         )
 
 

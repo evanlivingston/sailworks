@@ -74,6 +74,107 @@ from sailworks.qt.worldunderlaycache import load_for, save_for
 
 logger = logging.getLogger("sailworks")
 
+# EXPERIMENT (issue 213 phase 1): let the shared ``mapContent`` translation be
+# the only motion a camera change adds to retained content.  When this is set
+# the chart image and the ENC scene stop cancelling that translation with a
+# placement of their own, so the container's single transform is the whole
+# movement.  Set it back to False to restore the two independent placements.
+CONTAINER_CARRIES_PAN = True
+
+
+def _retained_chart_size(item, width, height):
+    """Whether the item on screen already has the pixel size being placed."""
+    try:
+        current_width = float(item.property("imageWidth"))
+        current_height = float(item.property("imageHeight"))
+    except (TypeError, ValueError):
+        return False
+    return current_width > 0.0 and (current_width, current_height) == (
+        float(width),
+        float(height),
+    )
+
+
+def _trace_placement_skip(kind, reason, cause, camera):
+    """Record one placement the shared container carried instead."""
+    if not enc_trace.enabled():
+        return
+    enc_trace.event(
+        kind,
+        reason=reason,
+        cause=cause,
+        **enc_trace.camera_fields(camera),
+    )
+
+
+def place_retained_chart(
+    item,
+    x,
+    y,
+    width,
+    height,
+    *,
+    cause="camera",
+    camera=None,
+    carries=None,
+):
+    """Write the retained chart rectangle onto its scene item.
+
+    With ``CONTAINER_CARRIES_PAN`` a camera change whose placement keeps the
+    retained pixels' size is a pure translation: the shared container already
+    applies it, so writing ``imageX``/``imageY`` would add the pan a second
+    time.  The size is still written, and a size change (a zoom or a new
+    composition) is expressed by the container in no way at all, so it is
+    placed in full.  A publication is placed in full so the new frame anchors
+    itself.  Returns the trace reason when the offset was left to the
+    container, otherwise ``None``.
+    """
+    if carries is None:
+        carries = CONTAINER_CARRIES_PAN
+    if carries and cause == "camera" and _retained_chart_size(item, width, height):
+        item.setProperty("imageWidth", width)
+        item.setProperty("imageHeight", height)
+        _trace_placement_skip("chart_place_skip", "container_carries", cause, camera)
+        return "container_carries"
+    item.setProperty("imageX", x)
+    item.setProperty("imageY", y)
+    item.setProperty("imageWidth", width)
+    item.setProperty("imageHeight", height)
+    return None
+
+
+def place_enc_scene_item(
+    item,
+    fallback,
+    x,
+    y,
+    *,
+    cause="camera",
+    rescaled=False,
+    camera=None,
+    carries=None,
+):
+    """Apply the retained ENC scene's offset, or let the container carry it.
+
+    ``rescaled`` says the item's projection was just re-solved for the current
+    camera: the container translates, it does not scale, so that placement is
+    written.  Otherwise a camera change is a pan the container already applies
+    and the offset is left alone.  Returns the trace reason when skipped,
+    otherwise ``None``.
+    """
+    if carries is None:
+        carries = CONTAINER_CARRIES_PAN
+    if carries and cause == "camera" and not rescaled:
+        _trace_placement_skip("enc_place_skip", "container_carries", cause, camera)
+        return "container_carries"
+    item.setX(x)
+    item.setY(y)
+    if fallback is not None:
+        # The image layer shares this item's parent and translation: the same
+        # placement keeps its ground under the same cells.
+        fallback.place(x, y)
+    return None
+
 
 def world_placement(camera):
     """Place the canonical world; adjacent copies cover the longitude seam."""
@@ -3684,7 +3785,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             # toggle requested fade; any other promotion is immediate, so a
             # loading state is never disguised as chart data.
             self._chart.setProperty("fadeMs", fade_ms)
-            self._place_chart()
+            self._place_chart(cause="publication")
             self._chart_front_slot = slot
             self._chart.setProperty("frontSlot", slot)
             self._chart.setProperty(f"slot{old_slot}Token", "")
@@ -4286,7 +4387,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             adopt_ms = (time.perf_counter() - adopt_started) * 1000.0
             # Cancel the container pan: this scene's projection already
             # includes the camera that composed it.
-            self._place_enc_scene()
+            self._place_enc_scene(cause="publication")
             item.setVisible(True)
             # The adopted frame is now what the user sees.  If it does not
             # draw this viewport, the raster must cover the gap: release the
@@ -4618,7 +4719,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._chart_force_replace = True
             self._restart_chart_settle()
 
-        def _place_chart(self):
+        def _place_chart(self, cause="camera"):
             """Place the retained chart image from its own composition camera."""
             if self._chart is None or self._chart_viewport is None:
                 return
@@ -4672,10 +4773,15 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     x, y, width, height = chart_placement(
                         self._chart_viewport, self._camera
                     )
-            self._chart.setProperty("imageX", x)
-            self._chart.setProperty("imageY", y)
-            self._chart.setProperty("imageWidth", width)
-            self._chart.setProperty("imageHeight", height)
+            place_retained_chart(
+                self._chart,
+                x,
+                y,
+                width,
+                height,
+                cause=cause,
+                camera=self._camera,
+            )
 
         def set_base(self, image, target, source_camera=None):
             """Compose the app's basemap inside Quick, below ENC and weather.
@@ -5870,10 +5976,25 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             """
             if self._chart_model is None or self._camera is None:
                 return
-            scene_draws = getattr(self, "_scene_draws_chart", None)
-            if scene_draws is not None and scene_draws():
-                # The resident scene already draws this view; a coarse raster
-                # preview would only duplicate it.
+            if enc_scene_covers_view(getattr(self, "_enc_scene_item", None)):
+                # The presented scene already draws this view; a coarse
+                # raster preview would only duplicate it and re-anchor the
+                # picture mid-drag.  Same predicate as the settle path, so
+                # the two cannot disagree about what the scene covers.
+                if enc_trace.enabled():
+                    enc_trace.event(
+                        "chart_raster_skipped",
+                        reason="scene_covers",
+                        generation=None,
+                        preview=True,
+                        cause="preview",
+                        elapsed_ms=enc_trace.elapsed_ms(
+                            getattr(self, "_enc_trace_demand_at", None)
+                        ),
+                        **enc_trace.camera_fields(
+                            getattr(self, "_enc_trace_demand_camera", None)
+                        ),
+                    )
                 return
             if (
                 getattr(self, "_background_pending", None) is not None
@@ -6004,81 +6125,37 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 # The view is still moving: the chart waits for it to settle.
                 self._chart_timer.start(max(1, math.ceil(CHART_IDLE_MS - elapsed)))
                 return
-            # The raster is held back only while the ENC frame actually on
-            # screen draws this view.  A scene that exists but does not cover
-            # (zero vertices, no viewport overlap, a zoomed-out stale frame)
-            # is no substitute: the raster must compose now, never defer.
-            if not enc_scene_covers_view(getattr(self, "_enc_scene_item", None)):
-                self._chart_scene_deferral = None
-                self._chart_scene_suppressed_at = None
-                self._chart_scene_suppressed_camera = None
-            else:
-                scene_draws = getattr(self, "_scene_draws_chart", None)
-                if scene_draws is not None and scene_draws():
-                    # A complete scene already draws this camera's chart.
-                    # Composing the raster now would only duplicate it and
-                    # cost seconds for a frame the user cannot see.
-                    self._chart_scene_deferral = None
-                    painted = getattr(self, "_chart_visible_generation", None)
-                    if painted is not None:
-                        # A raster is already painted.  Scene suppression
-                        # exists to stop the raster duplicating a scene that
-                        # is still presenting; with pixels on screen it holds
-                        # nothing back and re-arms on every camera time step,
-                        # which is what kept the startup deferral loop alive
-                        # for 8 s.  Let the demand compose instead.
-                        self._chart_scene_suppressed_at = None
-                        self._chart_scene_suppressed_camera = None
-                    else:
-                        expired = scene_suppression_expired(
-                            self, self._camera, now, CHART_SCENE_SUPPRESS_MAX_MS
-                        )
-                        suppressed_at = getattr(
-                            self, "_chart_scene_suppressed_at", None
-                        )
-                        held_ms = (
-                            0.0
-                            if suppressed_at is None
-                            else ((now - suppressed_at) * 1000.0)
-                        )
-                        if enc_trace.enabled():
-                            enc_trace.event(
-                                "chart_deferred",
-                                generation=scene_generation,
-                                cause=(
-                                    "scene_suppression_expired"
-                                    if expired
-                                    else "scene_complete"
-                                ),
-                                suppressed_ms=round(held_ms, 1),
-                                budget_ms=CHART_SCENE_SUPPRESS_MAX_MS,
-                                elapsed_ms=enc_trace.elapsed_ms(
-                                    getattr(self, "_enc_trace_demand_at", None)
-                                ),
-                                **enc_trace.camera_fields(self._camera),
-                            )
-                        if not expired:
-                            # Bounded anyway: the scene's coverage is computed
-                            # against the camera it was assembled for, and a
-                            # presented frame can report coverage of its own
-                            # bounding geometry while drawing only part of the
-                            # cells.  The raster may not wait past the budget,
-                            # or a partially presented scene would leave the
-                            # view on a fraction of its chart until an
-                            # unrelated demand.
-                            if self._chart_timer is not None:
-                                remaining = CHART_SCENE_SUPPRESS_MAX_MS - held_ms
-                                self._chart_timer.start(
-                                    max(
-                                        1,
-                                        math.ceil(min(CHART_SCENE_SKIP_MS, remaining)),
-                                    )
-                                )
-                            return
-                        self._chart_scene_suppressed_at = None
-                        self._chart_scene_suppressed_camera = None
-                elif defer_chart_for_scene(self, scene_generation, now):
-                    return
+            # A map engine draws in map coordinates: while the ENC frame
+            # actually on screen reaches this viewport it *is* the chart, so
+            # the raster neither composes nor waits.  Deferring it only
+            # postponed the snap, and every publication re-anchored the view
+            # mid-drag.  A scene that exists but does not cover (zero
+            # vertices, no viewport overlap, a zoomed-out stale frame) or one
+            # that is hidden draws nothing here: the raster composes exactly
+            # as it does without a scene layer.
+            self._chart_scene_deferral = None
+            self._chart_scene_suppressed_at = None
+            self._chart_scene_suppressed_camera = None
+            if enc_scene_covers_view(getattr(self, "_enc_scene_item", None)):
+                if enc_trace.enabled():
+                    enc_trace.event(
+                        "chart_raster_skipped",
+                        reason="scene_covers",
+                        generation=scene_generation,
+                        preview=False,
+                        cause=cause,
+                        elapsed_ms=enc_trace.elapsed_ms(
+                            getattr(self, "_enc_trace_demand_at", None)
+                        ),
+                        **enc_trace.camera_fields(self._camera),
+                    )
+                # Re-check shortly: coverage can end when the scene is hidden
+                # or zoomed out of the viewport without a camera settle, and
+                # the raster must return without waiting for an unrelated
+                # demand.
+                if self._chart_timer is not None:
+                    self._chart_timer.start(CHART_SCENE_SKIP_MS)
+                return
             head_start = None
             if (
                 self._weather_ready_at is None
@@ -8575,7 +8652,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._place_enc_scene()
             return anchor_changed
 
-        def _place_enc_scene(self):
+        def _place_enc_scene(self, cause="camera"):
             """Cancel the retained map's pan on the camera-absolute ENC scene.
 
             ``mapContent`` is translated so reference-local layers keep their
@@ -8620,13 +8697,15 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 frame = camera
                 rescaled = True
             x, y = enc_scene_placement(reference, frame, self._camera_dpr)
-            item.setX(x)
-            item.setY(y)
-            fallback = getattr(self, "_enc_fallback", None)
-            if fallback is not None:
-                # The image layer shares this item's parent and translation:
-                # the same placement keeps its ground under the same cells.
-                fallback.place(x, y)
+            place_enc_scene_item(
+                item,
+                getattr(self, "_enc_fallback", None),
+                x,
+                y,
+                cause=cause,
+                rescaled=rescaled,
+                camera=self._camera,
+            )
             if camera is None or frame is None:
                 return
             if rescaled:

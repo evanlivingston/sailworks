@@ -405,12 +405,14 @@ class _FakeChartModel:
         return None
 
 
-def test_a_painted_raster_stops_the_scene_suppression_loop(viewport_class):
-    """Once the first raster is on screen the deferral loop must end.
+def test_a_presented_scene_stops_the_raster_entirely(viewport_class):
+    """A scene that covers the view is the chart: the raster does not compose.
 
-    Suppression holds a raster back only while the scene is the only chart.
-    With pixels painted there is nothing to hold, and every further deferral
-    re-arms on a camera time tick.  The demand must compose instead.
+    A painted raster used to justify composing again, which re-anchored the
+    picture on every publication and snapped the view mid-drag.  The scene
+    draws in map coordinates, so with it covering the view the raster neither
+    composes nor defers; only a short re-check is armed so that raster returns
+    as soon as coverage ends.
     """
     import time
 
@@ -442,11 +444,12 @@ def test_a_painted_raster_stops_the_scene_suppression_loop(viewport_class):
 
     viewport_class._request_chart(state)
 
-    # No deferral, no suppression timer, and the demand composed.
-    assert chart_model.requests and chart_model.requests[0][1] == "settle"
-    assert timer.started == []
+    # Nothing composed; a single re-check keeps the return prompt.
+    assert chart_model.requests == []
+    assert len(timer.started) == 1
     assert state._chart_scene_suppressed_at is None
     assert state._chart_scene_suppressed_camera is None
+    assert state.counters["chart_requests"] == 0
 
 
 def test_the_first_raster_takes_a_short_startup_head_start():

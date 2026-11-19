@@ -3141,3 +3141,349 @@ def test_satellite_status_text_is_bounded_and_informative():
     assert text.startswith("Satellite unavailable — ")
     assert "\n" not in text
     assert len(text) <= len("Satellite unavailable — ") + 72
+
+
+# ------------------------------------------------- container-carried placement
+class _ChartItem:
+    """Records the properties a retained chart placement writes."""
+
+    def __init__(self, width=None, height=None):
+        self.props = {}
+        if width is not None:
+            self.props["imageWidth"] = width
+            self.props["imageHeight"] = height
+
+    def property(self, name):
+        return self.props.get(name)
+
+    def setProperty(self, name, value):
+        self.props[name] = value
+
+
+class _SceneItem:
+    """Records the offset a retained ENC scene placement writes."""
+
+    def __init__(self):
+        self.x = None
+        self.y = None
+
+    @property
+    def offset(self):
+        return None if self.x is None and self.y is None else (self.x, self.y)
+
+    def setX(self, x):
+        self.x = x
+
+    def setY(self, y):
+        self.y = y
+
+
+class _SceneFallback:
+    def __init__(self):
+        self.placed = None
+
+    def place(self, x, y):
+        self.placed = (x, y)
+
+
+def test_the_container_carries_a_camera_change_by_default():
+    # Flip this expectation with CONTAINER_CARRIES_PAN.
+    assert gribviewport.CONTAINER_CARRIES_PAN is True
+
+
+def test_a_camera_change_leaves_the_retained_chart_offset_to_the_container():
+    item = _ChartItem(640.0, 480.0)
+    reason = gribviewport.place_retained_chart(
+        item, 12.0, 34.0, 640.0, 480.0, cause="camera", carries=True
+    )
+    assert reason == "container_carries"
+    assert "imageX" not in item.props
+    assert "imageY" not in item.props
+    assert (item.props["imageWidth"], item.props["imageHeight"]) == (640.0, 480.0)
+
+
+def test_a_camera_change_that_resizes_still_places_the_retained_chart():
+    # The container translates; it cannot scale, so a zoom or a new frame is
+    # placed in full.
+    item = _ChartItem(640.0, 480.0)
+    reason = gribviewport.place_retained_chart(
+        item, 8.0, 9.0, 1280.0, 960.0, cause="camera", carries=True
+    )
+    assert reason is None
+    assert (item.props["imageX"], item.props["imageY"]) == (8.0, 9.0)
+    assert (item.props["imageWidth"], item.props["imageHeight"]) == (1280.0, 960.0)
+
+
+def test_a_publication_reanchors_the_retained_chart():
+    item = _ChartItem(640.0, 480.0)
+    reason = gribviewport.place_retained_chart(
+        item, 3.0, 4.0, 640.0, 480.0, cause="publication", carries=True
+    )
+    assert reason is None
+    assert (item.props["imageX"], item.props["imageY"]) == (3.0, 4.0)
+
+
+def test_flipping_the_constant_restores_the_retained_chart_placement():
+    item = _ChartItem(640.0, 480.0)
+    reason = gribviewport.place_retained_chart(
+        item, 5.0, 6.0, 640.0, 480.0, cause="camera", carries=False
+    )
+    assert reason is None
+    assert (item.props["imageX"], item.props["imageY"]) == (5.0, 6.0)
+
+
+def test_a_camera_change_leaves_the_enc_offset_to_the_container():
+    item = _SceneItem()
+    fallback = _SceneFallback()
+    reason = gribviewport.place_enc_scene_item(
+        item, fallback, 7.0, 11.0, cause="camera", rescaled=False, carries=True
+    )
+    assert reason == "container_carries"
+    assert item.offset is None
+    assert fallback.placed is None
+
+
+def test_a_rescaled_enc_scene_is_still_placed():
+    item = _SceneItem()
+    fallback = _SceneFallback()
+    reason = gribviewport.place_enc_scene_item(
+        item, fallback, 7.0, 11.0, cause="camera", rescaled=True, carries=True
+    )
+    assert reason is None
+    assert item.offset == (7.0, 11.0)
+    assert fallback.placed == (7.0, 11.0)
+
+
+def test_a_publication_reanchors_the_enc_scene():
+    item = _SceneItem()
+    fallback = _SceneFallback()
+    reason = gribviewport.place_enc_scene_item(
+        item, fallback, 7.0, 11.0, cause="publication", rescaled=False, carries=True
+    )
+    assert reason is None
+    assert item.offset == (7.0, 11.0)
+    assert fallback.placed == (7.0, 11.0)
+
+
+@pytest.mark.parametrize(
+    "placer, reason_kind",
+    [
+        ("chart", "chart_place_skip"),
+        ("enc", "enc_place_skip"),
+    ],
+)
+def test_a_carried_placement_is_traced(monkeypatch, placer, reason_kind):
+    events = []
+    monkeypatch.setattr(gribviewport.enc_trace, "enabled", lambda: True)
+    monkeypatch.setattr(
+        gribviewport.enc_trace,
+        "event",
+        lambda kind, **fields: events.append((kind, fields)),
+    )
+    camera = _camera()
+    if placer == "chart":
+        gribviewport.place_retained_chart(
+            _ChartItem(640.0, 480.0),
+            1.0,
+            2.0,
+            640.0,
+            480.0,
+            cause="camera",
+            camera=camera,
+            carries=True,
+        )
+    else:
+        gribviewport.place_enc_scene_item(
+            _SceneItem(),
+            None,
+            1.0,
+            2.0,
+            cause="camera",
+            camera=camera,
+            carries=True,
+        )
+    assert events, "the skipped placement must be counted"
+    kind, fields = events[-1]
+    assert kind == reason_kind
+    assert fields["reason"] == "container_carries"
+    assert fields["cause"] == "camera"
+
+
+def test_the_camera_paths_use_the_container_experiment():
+    source = inspect.getsource(gribviewport)
+    assert "place_retained_chart(" in source
+    assert "place_enc_scene_item(" in source
+    # One switch controls both paths: neither call site overrides it.
+    assert 'cause="publication"' in source
+
+
+class _CoveringScene:
+    """A scene item whose drawn geometry can start or stop covering the view."""
+
+    def __init__(self, covering=True):
+        self.covering = covering
+
+    def isVisible(self):
+        return True
+
+    def shown_vertex_count(self):
+        return 120 if self.covering else 0
+
+    def setVisible(self, visible):
+        self.covering = bool(visible)
+
+    def scene_covers_view(self):
+        return self.covering
+
+
+class _RecordingTimer:
+    def __init__(self):
+        self.started = []
+
+    def start(self, milliseconds):
+        self.started.append(milliseconds)
+
+    def stop(self):
+        pass
+
+
+class _SettleChartModel:
+    def __init__(self):
+        self.requests = []
+
+    def request(self, camera, cause=None, replace=False, preview=False):
+        self.requests.append(cause)
+        return None
+
+
+def _settle_state(scene_item):
+    import time
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        _camera=_camera(),
+        _chart_model=_SettleChartModel(),
+        _chart_timer=_RecordingTimer(),
+        _chart_camera_changed=time.perf_counter() - 10.0,
+        _chart_scene_deferral=None,
+        _chart_visible_generation=None,
+        _chart_pending=None,
+        _chart_request_times=None,
+        _chart_force_replace=False,
+        _chart_without_weather=False,
+        _weather_ready_at=123.0,
+        _enc_chart_layer=False,
+        _model=SimpleNamespace(busy=lambda: False, state="ready"),
+        _enc_scene_model=SimpleNamespace(_published=(1, None, None)),
+        _enc_scene_item=scene_item,
+        _request_enc_scene=lambda: 7,
+        _chart_state_now=lambda: {},
+        counters={"chart_requests": 0},
+    )
+
+
+def _preview_state(scene_item):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        _camera=_camera(),
+        _chart_model=_SettleChartModel(),
+        _chart_interactive_at=None,
+        _chart_visible_generation=None,
+        _background_pending=None,
+        _chart_without_weather=False,
+        _weather_ready_at=123.0,
+        _enc_chart_layer=False,
+        _model=SimpleNamespace(busy=lambda: False, state="ready"),
+        _enc_scene_item=scene_item,
+        _chart_state_now=lambda: {},
+        counters={"chart_requests": 0},
+    )
+
+
+def _record_trace(monkeypatch):
+    events = []
+    monkeypatch.setattr(gribviewport.enc_trace, "enabled", lambda: True)
+    monkeypatch.setattr(
+        gribviewport.enc_trace,
+        "event",
+        lambda kind, **fields: events.append((kind, fields)),
+    )
+    return events
+
+
+def test_a_settle_does_not_compose_while_the_scene_covers(monkeypatch):
+    """A presented scene draws this view: the raster must not compose at all."""
+    events = _record_trace(monkeypatch)
+    state = _settle_state(_CoveringScene(covering=True))
+    request = gribviewport._viewport_widget_class()._request_chart
+
+    request(state)
+
+    assert state._chart_model.requests == []
+    assert state.counters["chart_requests"] == 0
+    kind, fields = events[-1]
+    assert kind == "chart_raster_skipped"
+    assert fields["reason"] == "scene_covers"
+    assert fields["preview"] is False
+    assert fields["cause"] == "settle"
+
+
+def test_a_settle_composes_when_the_scene_does_not_cover(monkeypatch):
+    """A scene with no drawn vertices is no substitute for the raster."""
+    events = _record_trace(monkeypatch)
+    state = _settle_state(_CoveringScene(covering=False))
+    request = gribviewport._viewport_widget_class()._request_chart
+
+    request(state)
+
+    assert state._chart_model.requests == ["settle"]
+    assert [kind for kind, _fields in events if kind == "chart_raster_skipped"] == []
+
+
+def test_a_settle_composes_with_no_scene(monkeypatch):
+    """Raster mode is unchanged: no scene layer composes on the settle."""
+    _record_trace(monkeypatch)
+    state = _settle_state(None)
+    request = gribviewport._viewport_widget_class()._request_chart
+
+    request(state)
+
+    assert state._chart_model.requests == ["settle"]
+
+
+def test_the_raster_returns_when_the_scene_stops_covering(monkeypatch):
+    """Coverage ending resumes the next settle, with no stuck blank."""
+    _record_trace(monkeypatch)
+    scene = _CoveringScene(covering=True)
+    state = _settle_state(scene)
+    request = gribviewport._viewport_widget_class()._request_chart
+
+    request(state)
+    assert state._chart_model.requests == []
+    # The re-check is armed so coverage ending without a camera settle is
+    # noticed promptly.
+    assert state._chart_timer.started
+
+    scene.setVisible(False)
+    request(state)
+
+    assert state._chart_model.requests == ["settle"]
+
+
+def test_preview_is_unchanged_by_the_settle_gate(monkeypatch):
+    """The preview uses the same predicate and still fires when uncovered."""
+    events = _record_trace(monkeypatch)
+    request = gribviewport._viewport_widget_class()._request_interactive_chart
+
+    covered = _preview_state(_CoveringScene(covering=True))
+    request(covered)
+    assert covered._chart_model.requests == []
+    kind, fields = events[-1]
+    assert kind == "chart_raster_skipped"
+    assert fields["preview"] is True
+    assert fields["reason"] == "scene_covers"
+
+    exposed = _preview_state(_CoveringScene(covering=False))
+    request(exposed)
+    assert exposed._chart_model.requests == ["preview"]
