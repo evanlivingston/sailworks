@@ -2444,6 +2444,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._enc_scene_item: Any = None
             self._enc_scene_model = None
             self._enc_scene_state = "idle"
+            #: The image layer beneath the mesh that paints the ground of the
+            #: cells the scene refused.  Absent unless the scene layer is on,
+            #: so the default path constructs neither it nor its worker.
+            self._enc_fallback_container = None
+            self._enc_fallback = None
             #: The camera the presented ENC scene was composed for; its
             #: projection is already in that camera's pixels.
             self._enc_scene_camera = None
@@ -2790,6 +2795,22 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     # The item is the GUI thread's only handle on the scene:
                     # the layer's worker never touches it.
                     self._enc_scene_item = enc_scene_item(container)
+                    # The refused cells' ground sits between the raster and
+                    # the mesh: a cell the scene could not draw is still
+                    # chart content, in the camera's own projection.
+                    fallback_container = self._weather.findChild(
+                        QQuickItem, "encFallbackLayer"
+                    )
+                    if fallback_container is None:
+                        raise RuntimeError(
+                            "The GRIB viewport could not load its ENC fallback"
+                        )
+                    from .encfallback import ENCFallbackOverlay
+
+                    self._enc_fallback_container = fallback_container
+                    self._enc_fallback = ENCFallbackOverlay(
+                        fallback_container, dpr=self.devicePixelRatio()
+                    )
                     self._enc_scene_model = EncSceneLayer(
                         data_dir=chart_data_dir,
                         palette=self._chart_palette,
@@ -3549,6 +3570,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 item.setWidth(camera.width)
                 item.setHeight(camera.height)
             generation = layer.request(camera, replace=replace)
+            # A moved camera makes the painted ground describe the old view.
+            # It is dropped now and re-requested once the new scene publishes
+            # the projection that belongs to this camera.  The ratio is the
+            # one ``set_camera`` recorded for this camera, which is also the
+            # one ``enc_scene_placement`` places the mesh with.
+            fallback = getattr(self, "_enc_fallback", None)
+            if fallback is not None:
+                fallback.camera_changed(camera, dpr=getattr(self, "_camera_dpr", None))
             # The newest request owns the next publication; anything older is
             # stale the moment it asks.
             self._enc_scene_pending_generation = generation
@@ -3618,6 +3647,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             item = getattr(self, "_enc_scene_item", None)
             if item is not None:
                 item.setVisible(False)
+            # The refused cells' ground described the withdrawn scene, so it
+            # leaves with it.
+            fallback = getattr(self, "_enc_fallback", None)
+            if fallback is not None:
+                fallback.clear("withdrawn")
             trace_raster_visibility(self, "scene_withdrawn")
 
         def _mark_enc_scene_updating(self):
@@ -3802,6 +3836,16 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             # includes the camera that composed it.
             self._place_enc_scene()
             item.setVisible(True)
+            # The refused cells' ground is this scene's own: its clip, its
+            # camera, its projection.  Empty clips clear the layer rather
+            # than leaving the previous scene's ground up.
+            fallback = getattr(self, "_enc_fallback", None)
+            if fallback is not None:
+                fallback.publish(
+                    metadata,
+                    generation=generation,
+                    dpr=getattr(self, "_camera_dpr", None),
+                )
             # The adopted frame is now what the user sees.  If it does not
             # draw this viewport, the raster must cover the gap: release the
             # composition the metadata-only "skip" cancelled a moment ago.
@@ -7377,6 +7421,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 return
             self._disposed = True
             self._enc_trace_disconnect()
+            fallback = getattr(self, "_enc_fallback", None)
+            if fallback is not None:
+                # The worker is a daemon: stopping it only drops the demand,
+                # a paint already running finishes into nothing.
+                fallback.stop()
             for name in ("_enc_trace_timeout_timer", "_enc_trace_counter_timer"):
                 timer = getattr(self, name, None)
                 if timer is not None:
@@ -8089,6 +8138,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             x, y = enc_scene_placement(reference, frame, self._camera_dpr)
             item.setX(x)
             item.setY(y)
+            fallback = getattr(self, "_enc_fallback", None)
+            if fallback is not None:
+                # The image layer shares this item's parent and translation:
+                # the same placement keeps its ground under the same cells.
+                fallback.place(x, y)
             if camera is None or frame is None:
                 return
             if rescaled:

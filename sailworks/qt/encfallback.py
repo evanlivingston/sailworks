@@ -1,0 +1,603 @@
+"""One ENC cell painted headlessly into an image for a refused plan clip.
+
+The GPU scene can refuse a cell's plan clip; the fallback beneath it needs
+that one cell painted at the camera's own projection.  This module paints it:
+a cairo surface over a ``QImage`` buffer, the application's own
+``S57ChartDrawer``, and the scene's published projection -- the same callable
+``projection_for`` hands the ENC meshes, which maps lon/lat degrees to the
+viewport's logical pixels.  No QML and no GL context is involved, so the paint
+is safe to run off the GUI thread.
+
+The module also owns the layer that presents those images: ``ENCFallbackItem``
+is one ``QQuickPaintedItem`` the viewport parents beneath its mesh item, and
+``ENCFallbackOverlay`` is the controller that renders on a daemon worker and
+hands the image back on the GUI thread.  Neither the item nor the controller
+is constructed unless the ENC scene layer is enabled.
+"""
+
+import os
+import threading
+import time
+
+import cairo
+import numpy as np
+import shapely
+from osgeo import ogr
+from PySide6.QtCore import QObject, QRectF, Qt, Signal, Slot
+from PySide6.QtGui import QImage, QPainter
+from PySide6.QtQuick import QQuickPaintedItem
+
+from sailworks.qt import enc_trace
+from sailworks.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
+
+#: The palette the drawer uses when the caller does not name one.
+DEFAULT_PALETTE = "cm93"
+
+
+class _HeadlessSettings:
+    """The settings the drawers read, without the application's manager."""
+
+    def __init__(self, palette):
+        self.chartPalette = palette
+
+    def register_on_change(self, key, callback):
+        """The palette does not change while a fallback is being painted."""
+        return None
+
+
+class _ProjectedCanvas:
+    """The canvas API the drawers expect, over the scene's projection.
+
+    ``S57ChartDrawer`` projects through its canvas: it asks for the allocated
+    size, the display scale and the screen coordinates of lon/lat points.  The
+    scene publishes exactly the last of those, as a callable; the size is the
+    image's own and the scale is derived from that same callable.
+    """
+
+    def __init__(self, projection, width, height, latitude):
+        self._projection = projection
+        self._width = width
+        self._height = height
+        # The metre scale is only read as a display gate by the drawer, and
+        # Mercator's scale depends on latitude; the clip's own latitude is the
+        # one the fallback is painted at.
+        self._latitude = latitude
+
+    def get_allocated_width(self):
+        return self._width
+
+    def get_allocated_height(self):
+        return self._height
+
+    def get_scale_factor(self):
+        return 1.0
+
+    def project(self, points):
+        """The scene's projection, as an ``(N, 2)`` array."""
+        points = np.asarray(points, dtype=np.float64)
+        if points.shape[0] == 0:
+            return np.empty((0, 2), dtype=np.float64)
+        return np.asarray(self._projection(points), dtype=np.float64)
+
+    def convert_geographic_to_screen_batch(self, lats, lons):
+        screen = self.project(np.column_stack((lons, lats)))
+        return screen[:, 0], screen[:, 1]
+
+    def convert_geographic_to_screen(self, map_point):
+        lat, lon = map_point.get_degrees()
+        x, y = self.convert_geographic_to_screen_batch(np.array([lat]), np.array([lon]))
+        return float(x[0]), float(y[0])
+
+    def get_scale(self):
+        """Meters per pixel, from the projection's own longitude scale.
+
+        This is ``MercatorProjection.get_scale``'s formula with the pixels per
+        degree measured through the published projection, so it describes the
+        projection the fallback is painted at rather than a second one.
+        """
+        equator = self.project(np.array([[0.0, self._latitude], [1.0, self._latitude]]))
+        per_degree = abs(float(equator[1, 0] - equator[0, 0]))
+        if per_degree <= 0.0:
+            return float("inf")
+        circumference = 2 * np.pi * 6378137
+        return np.cos(np.radians(self._latitude)) * circumference / (360.0 * per_degree)
+
+    def render_cancelled(self):
+        return False
+
+    def queue_draw(self):
+        return None
+
+
+def _clip(clip_wkb):
+    """The clip polygon, or ``None`` when it cannot enclose any ground."""
+    try:
+        clip = shapely.from_wkb(clip_wkb) if clip_wkb else None
+    except Exception:
+        return None
+    if clip is None or clip.is_empty or not clip.is_valid or clip.area <= 0.0:
+        return None
+    if not clip.geom_type.endswith("Polygon"):
+        return None
+    return clip
+
+
+def _clip_path(canvas, clip):
+    """The clip polygon's rings, in image pixels.
+
+    The rings keep the orientation they were stored with, because a WKB
+    polygon's interior ring is not required to wind against its exterior.  The
+    path is clipped with the even-odd fill rule, which cuts a hole whatever its
+    winding: the holes of a plan clip are the ground a higher-priority cell
+    already owns, so filling one would draw that ground twice.
+    """
+    rings = []
+    polygons = clip.geoms if clip.geom_type == "MultiPolygon" else (clip,)
+    for polygon in polygons:
+        rings.append(shapely.get_coordinates(polygon.exterior))
+        for interior in polygon.interiors:
+            rings.append(shapely.get_coordinates(interior))
+    return [canvas.project(ring) for ring in rings]
+
+
+def _paint(image, canvas, clip, clip_wkb, cell_path, palette):
+    """Paint the cell into *image*; raises whatever the paint path raises."""
+    buffer = image.bits()
+    surface = cairo.ImageSurface.create_for_data(
+        buffer,
+        cairo.FORMAT_ARGB32,
+        image.width(),
+        image.height(),
+        image.bytesPerLine(),
+    )
+    vector_file = None
+    try:
+        cr = cairo.Context(surface)
+        cr.save()
+        for ring in _clip_path(canvas, clip):
+            if len(ring) == 0:
+                continue
+            cr.move_to(float(ring[0][0]), float(ring[0][1]))
+            for x, y in ring[1:]:
+                cr.line_to(float(x), float(y))
+            cr.close_path()
+        cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
+        cr.clip()
+
+        # The bounding is also the drawer's simplification tolerance, so it
+        # must be the clip and never the world: the clip is a plan's own,
+        # already intersected with the viewport.
+        bounding = ogr.CreateGeometryFromWkb(bytes(clip_wkb))
+        if bounding is None:
+            return
+        vector_file = ogr.Open(cell_path)
+        if vector_file is None:
+            raise FileNotFoundError("cannot open ENC cell %s" % (cell_path,))
+        drawer = S57ChartDrawer(_HeadlessSettings(palette or DEFAULT_PALETTE))
+        drawer.draw(canvas, cr, vector_file, bounding)
+        del drawer
+        cr.restore()
+        surface.flush()
+    finally:
+        # The chart handle and the prepared geometry live exactly as long as
+        # the paint: nothing the caller handed in outlives this call.
+        del vector_file
+        del surface, buffer
+
+
+def render_cell_overlay(cell_path, clip_wkb, projection, width, height, palette=None):
+    """Paint one cell into a transparent image, clipped to *clip_wkb*.
+
+    ``projection`` is the scene's published projection: a callable mapping an
+    ``(N, 2)`` array of lon/lat degrees to the viewport's pixel coordinates.
+    ``clip_wkb`` is the refused plan clip's polygon in chart coordinates.  The
+    image is ``width`` x ``height`` device pixels, transparent everywhere the
+    clip does not reach.
+
+    Raises ``FileNotFoundError`` when *cell_path* does not exist.  A clip
+    without area, and a cell that cannot be opened or drawn, paint nothing:
+    the transparent image is returned, so a fallback failure never reaches the
+    worker as an exception.
+    """
+    if not os.path.exists(cell_path):
+        raise FileNotFoundError("no ENC cell at %s" % (cell_path,))
+
+    image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.transparent)
+    if image.isNull():
+        return image
+
+    clip = _clip(clip_wkb)
+    if clip is None:
+        return image
+
+    min_lon, min_lat, max_lon, max_lat = clip.bounds
+    canvas = _ProjectedCanvas(projection, width, height, (min_lat + max_lat) / 2.0)
+    try:
+        _paint(image, canvas, clip, clip_wkb, cell_path, palette)
+    except Exception:
+        # A fallback that cannot paint leaves the ground to whatever is above
+        # it; it must not fail the worker that asked for it.
+        image.fill(Qt.GlobalColor.transparent)
+    return image
+
+
+def render_clips_overlay(clips, projection, width, height, palette=None):
+    """Composite several refused cells into one transparent image.
+
+    *clips* has the shape the layer publishes as ``unavailable_clips``: an
+    iterable of mappings with ``path`` and ``clip_wkb``.  Each cell is painted
+    on its own and then composited in plan order, so a cell that cannot be
+    painted leaves the ones around it untouched -- the same one-cell
+    guarantee ``render_cell_overlay`` gives.  ``QPainter`` over a ``QImage``
+    runs on the raster engine, which Qt documents as safe outside the GUI
+    thread.
+    """
+    image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.transparent)
+    if image.isNull():
+        return image
+    painter = QPainter(image)
+    try:
+        for entry in clips or ():
+            if not entry or not entry.get("path"):
+                continue
+            try:
+                overlay = render_cell_overlay(
+                    entry["path"],
+                    entry.get("clip_wkb"),
+                    projection,
+                    width,
+                    height,
+                    palette,
+                )
+            except FileNotFoundError:
+                # A cell that vanished since the plan is already the scene's
+                # business; the overlay simply has no ground for it.
+                continue
+            painter.drawImage(0, 0, overlay)
+    finally:
+        painter.end()
+    return image
+
+
+def device_projection(projection, scale):
+    """*projection* at device-pixel scale.
+
+    The overlay image is allocated at device-pixel size and drawn into the
+    item's logical rect, so the scene's logical-pixel projection has to be
+    scaled by the device pixel ratio for the two to line up one to one.
+    """
+    if scale == 1.0:
+        return projection
+
+    def project(points):
+        projected = np.asarray(projection(points), dtype=np.float64)
+        if projected.shape[0] == 0:
+            return projected
+        return projected * scale
+
+    return project
+
+
+def fallback_clips(metadata):
+    """The refused cells an overlay can paint for *metadata*'s scene.
+
+    Only entries naming a path and a clip are kept: ground the overlay cannot
+    place stays the scene's business instead of becoming a transparent
+    request.
+    """
+    if not metadata:
+        return ()
+    clips = []
+    for entry in metadata.get("unavailable_clips") or ():
+        if not entry or not entry.get("path") or not entry.get("clip_wkb"):
+            continue
+        clips.append(dict(entry))
+    return tuple(clips)
+
+
+def fallback_request(metadata):
+    """``(clips, projection, camera)`` to paint for a publication, or ``None``.
+
+    The projection travels with the scene that published it, so it describes
+    exactly one camera: a publication that names none, or that refused no
+    cell, paints nothing.
+    """
+    clips = fallback_clips(metadata)
+    if not clips:
+        return None
+    projection = metadata.get("projection")
+    if projection is None:
+        return None
+    return clips, projection, metadata.get("camera")
+
+
+def fallback_accepts(payload, token):
+    """Whether a completed render still describes the requested view.
+
+    *payload* is ``(token, image[, fields])`` from the worker.  Only the
+    newest request is current: a render whose token names an earlier request
+    belongs to a camera or a scene the view has already left, and painting it
+    would place the previous view's ground under this one.
+    """
+    if payload is None:
+        return False
+    job_token, image = payload[0], payload[1]
+    if token is None or job_token is None or job_token != token:
+        return False
+    return image is not None and not image.isNull()
+
+
+def fallback_compose_fields(
+    generation, serial, clips, width, height, elapsed_ms, failed
+):
+    """The one-line record of a completed fallback render.
+
+    Names come from the plan entry's own ``name``; a layer that named none
+    still leaves the cell identifiable by its file.
+    """
+    names = []
+    for entry in clips or ():
+        name = entry.get("name")
+        if not name:
+            name = os.path.basename(str(entry.get("path", "")))
+        names.append(name)
+    return {
+        "generation": generation,
+        "serial": serial,
+        "clips": len(clips or ()),
+        "cells": names,
+        "width": width,
+        "height": height,
+        "elapsed_ms": elapsed_ms,
+        "failed": bool(failed),
+    }
+
+
+class ENCFallbackItem(QQuickPaintedItem):
+    """The refused cells' ground, painted beneath the GPU scene.
+
+    The image is rendered at device-pixel size and drawn into the item's
+    logical rect without smoothing, so Qt's own device-pixel-ratio transform
+    maps one image pixel to one device pixel: the chart's thin lines stay
+    crisp instead of being resampled twice.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._image = QImage()
+        self.setVisible(False)
+
+    def image(self):
+        """The image on display; null when nothing is painted."""
+        return self._image
+
+    def set_image(self, image):
+        """Present *image*, or clear for a null one."""
+        if image is None or image.isNull():
+            self.clear()
+            return
+        self._image = image
+        self.setVisible(True)
+        self.update()
+
+    def clear(self):
+        """Paint nothing; the scene above is the whole picture again."""
+        self._image = QImage()
+        self.setVisible(False)
+        self.update()
+
+    def paint(self, painter):
+        image = self._image
+        if image.isNull() or image.width() <= 0 or image.height() <= 0:
+            return
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+        painter.drawImage(QRectF(0.0, 0.0, self.width(), self.height()), image)
+
+
+class ENCFallbackOverlay(QObject):
+    """Paints a scene's refused cells into the item beneath the GPU scene.
+
+    The GUI thread owns the item, the token it is waiting for and the last
+    known clips; the paint runs on one daemon worker that keeps only the
+    newest request, so a pan cannot queue a paint per frame.  A render whose
+    token is no longer current is dropped, so a camera change or a newer
+    publication never shows the previous view's ground.
+    """
+
+    rendered = Signal(object)  # noqa: N815 - Qt signal name
+
+    def __init__(self, container, dpr=1.0, parent=None):
+        super().__init__(parent)
+        self._item = ENCFallbackItem(container)
+        self._item.setWidth(container.width())
+        self._item.setHeight(container.height())
+        container.widthChanged.connect(lambda: self._item.setWidth(container.width()))
+        container.heightChanged.connect(
+            lambda: self._item.setHeight(container.height())
+        )
+        self._dpr = max(1.0, float(dpr or 1.0))
+        self._lock = threading.Lock()
+        self._wake = threading.Condition(self._lock)
+        self._job = None
+        self._token = None
+        self._serial = 0
+        self._clips = ()
+        #: ``(projection, camera, generation)`` of the last publication.
+        self._canvas = None
+        self._thread = None
+        self._stopped = False
+        # The worker emits off the GUI thread: only this thread may touch the
+        # item, so the hand-back is explicitly queued.
+        self.rendered.connect(self._painted, Qt.ConnectionType.QueuedConnection)
+
+    @property
+    def item(self):
+        """The QML item this overlay paints into."""
+        return self._item
+
+    def place(self, x, y):
+        """Move the item exactly where the mesh item was just placed.
+
+        Both items share the chart's translated parent; the viewport calls
+        this with the same ``enc_scene_placement`` values it sets on the mesh,
+        so a pan moves the painted ground with the cells it belongs to.
+        """
+        self._item.setX(float(x))
+        self._item.setY(float(y))
+
+    def publish(self, metadata, generation=None, dpr=None):
+        """A scene publication: paint what it refused, or clear."""
+        moved_dpr = self._adopt_dpr(dpr)
+        request = fallback_request(metadata)
+        if request is None:
+            self.clear("no_clips")
+            return
+        if moved_dpr:
+            # The image on screen was painted for the old ratio: drop it
+            # rather than let it stretch until the new paint lands.
+            self.clear("dpr_changed")
+        clips, projection, camera = request
+        self._start(clips, projection, camera, generation)
+
+    def camera_changed(self, camera, dpr=None):
+        """The view moved: only the projection of its own camera may paint.
+
+        ``dpr`` is the viewport's current device pixel ratio -- the same value
+        it places the mesh with -- so a move to another display re-renders at
+        the new ratio instead of stretching an image painted for the old one.
+        """
+        rerendered_dpr = self._adopt_dpr(dpr)
+        if self._canvas is None:
+            self.clear("no_clips")
+            return
+        projection, published, generation = self._canvas
+        if camera is not None and published is not None and camera != published:
+            # The published projection describes the old view; the new
+            # camera's own scene will carry its own.  Anything in flight is
+            # dropped with the token, so the old ground never lands.
+            self.clear("camera_changed")
+            return
+        if rerendered_dpr:
+            clips = self._clips
+            self.clear("dpr_changed")
+            self._start(clips, projection, published, generation)
+            return
+        if self._item.image().isNull():
+            self._start(self._clips, projection, published, generation)
+
+    def clear(self, reason="cleared"):
+        """Drop the painted ground and any render still in flight.
+
+        ``reason`` is traced only when an image was actually on screen: a
+        clear that had nothing to discard must not fill the trace.
+        """
+        had_image = not self._item.image().isNull()
+        self._token = None
+        self._clips = ()
+        self._canvas = None
+        self._item.clear()
+        if had_image:
+            enc_trace.event("fallback_clear", reason=reason)
+
+    def stop(self):
+        """End the worker; a paint in flight finishes into nothing."""
+        self._stopped = True
+        self._token = None
+        with self._lock:
+            self._job = None
+            self._wake.notify_all()
+        self.clear("stopped")
+
+    def _adopt_dpr(self, dpr):
+        """Take the viewport's current ratio; true when it actually moved."""
+        if dpr is None:
+            return False
+        try:
+            value = max(1.0, float(dpr))
+        except (TypeError, ValueError):
+            return False
+        if value == self._dpr:
+            return False
+        self._dpr = value
+        return True
+
+    def _start(self, clips, projection, camera, generation=None):
+        """Queue the newest demand: one job in flight, the newest wins."""
+        if not clips or projection is None:
+            self.clear("no_clips")
+            return
+        width = int(round(max(0.0, float(getattr(camera, "width", 0.0))) * self._dpr))
+        height = int(round(max(0.0, float(getattr(camera, "height", 0.0))) * self._dpr))
+        if width <= 0 or height <= 0:
+            self.clear("no_camera")
+            return
+        self._serial += 1
+        token = (self._serial, camera)
+        job = (
+            token,
+            clips,
+            device_projection(projection, self._dpr),
+            width,
+            height,
+            generation,
+        )
+        self._clips = clips
+        self._canvas = (projection, camera, generation)
+
+        with self._lock:
+            self._token = token
+            self._job = job
+            self._wake.notify()
+            thread = self._thread
+            if thread is None or not thread.is_alive():
+                self._stopped = False
+                self._thread = threading.Thread(
+                    target=self._run, name="enc-fallback", daemon=True
+                )
+                self._thread.start()
+
+    def _run(self):
+        """The worker: paint the newest job; the GUI thread presents it."""
+        while True:
+            with self._lock:
+                while self._job is None and not self._stopped:
+                    self._wake.wait()
+                if self._stopped:
+                    return
+                job = self._job
+                self._job = None
+            token, clips, projection, width, height, generation = job
+            started = time.perf_counter()
+            try:
+                image = render_clips_overlay(clips, projection, width, height)
+            except Exception:
+                # A fallback that cannot paint leaves the ground to the scene
+                # above it; it must not take the worker down.
+                image = QImage()
+            fields = fallback_compose_fields(
+                generation,
+                token[0],
+                clips,
+                width,
+                height,
+                enc_trace.elapsed_ms(started),
+                image is None or image.isNull(),
+            )
+            self.rendered.emit((token, image, fields))
+
+    @Slot(object)
+    def _painted(self, payload):
+        """Present a worker result on the GUI thread, if it is current."""
+        if self._stopped:
+            return
+        token, image = payload[0], payload[1]
+        fields = payload[2] if len(payload) > 2 else {}
+        accepted = fallback_accepts(payload, self._token)
+        # One line per completed render, current or dropped: a headless run
+        # can prove the overlay ran even when its frame was superseded.
+        enc_trace.event("fallback_compose", **fields, current=accepted)
+        if not accepted:
+            return
+        self._item.set_image(image)
