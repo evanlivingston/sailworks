@@ -6,10 +6,12 @@ import numpy as np
 import pytest
 import shapely
 from PySide6.QtGui import QImage
+from PySide6.QtQuick import QQuickItem
 
 from sailworks.core.mapviewport import MercatorProjection
-from sailworks.qt import gribviewport
+from sailworks.qt import enc_trace, gribviewport
 from sailworks.qt.encfallback import (
+    ENCFallbackOverlay,
     device_projection,
     fallback_accepts,
     fallback_clips,
@@ -445,3 +447,171 @@ def test_request_enc_scene_hands_the_mesh_ratio_to_the_fallback():
     assert widget._request_enc_scene() == 9
 
     assert fallback.camera_calls == [(camera, 2.0)]
+
+
+# --- The retained-ground policy -------------------------------------------
+
+
+class _Camera:
+    """A camera stub: the overlay reads its size and its identity only."""
+
+    def __init__(self, width=WIDTH, height=HEIGHT):
+        self.width = width
+        self.height = height
+
+
+def _projection_passthrough(points):
+    return points
+
+
+def _refused(name="US5CA1AB"):
+    return {
+        "path": "/cells/%s.gpkg" % (name,),
+        "name": name,
+        "reason": "oversized",
+        "clip_wkb": b"clip",
+    }
+
+
+def _publication(camera, clips=(), partial=False):
+    return {
+        "unavailable_clips": tuple(clips),
+        "projection": _projection_passthrough,
+        "camera": camera,
+        "partial": partial,
+    }
+
+
+def _overlay():
+    container = QQuickItem()
+    container.setWidth(WIDTH)
+    container.setHeight(HEIGHT)
+    return ENCFallbackOverlay(container, dpr=1.0)
+
+
+def _painted_image(colour):
+    image = QImage(8, 8, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(colour)
+    return image
+
+
+def test_partial_publication_keeps_the_retained_ground():
+    overlay = _overlay()
+    camera = _Camera()
+    overlay.publish(_publication(camera, [_refused()]), generation=1, dpr=1.0)
+
+    token = overlay._token
+    canvas = overlay._canvas
+    clips = overlay._clips
+
+    # A partial that has not resolved any refusal yet proves nothing: it must
+    # not drop the retained state nor invalidate the live request.
+    overlay.publish(_publication(camera, (), partial=True), generation=2, dpr=1.0)
+
+    assert overlay._token == token
+    assert overlay._canvas == canvas
+    assert overlay._clips == clips
+
+    # The completion for the same camera still renders.
+    overlay.publish(_publication(camera, [_refused()]), generation=3, dpr=1.0)
+    assert overlay._token != token
+    assert overlay._canvas[1] is camera
+    overlay.stop()
+
+
+def test_complete_publication_without_clips_clears():
+    overlay = _overlay()
+    camera = _Camera()
+    overlay.publish(_publication(camera, [_refused()]), generation=1, dpr=1.0)
+    assert overlay._canvas is not None
+
+    overlay.publish(_publication(camera, ()), generation=2, dpr=1.0)
+
+    assert overlay._token is None
+    assert overlay._clips == ()
+    assert overlay._canvas is None
+
+
+def test_camera_change_retains_the_image_and_rejects_the_old_serial():
+    overlay = _overlay()
+    first = _Camera()
+    second = _Camera(width=420, height=260)
+    overlay.publish(_publication(first, [_refused()]), generation=1, dpr=1.0)
+
+    painted = _painted_image(0xFF0000FF)
+    overlay.item.set_image(painted)
+    stale_token = overlay._token
+    stale_serial = overlay._serial
+
+    overlay.camera_changed(second, dpr=1.0)
+
+    # The mesh keeps its previous frame; so does the overlay.
+    assert overlay.item.image() is painted
+    assert overlay._serial > stale_serial
+    assert overlay._token != stale_token
+    assert overlay._clips
+    # A render from the old serial can never be presented...
+    assert not fallback_accepts((stale_token, painted), overlay._token)
+    overlay._painted((stale_token, _painted_image(0xFFFF00FF), {}))
+    assert overlay.item.image() is painted
+
+    # ...and the new camera's publication replaces the image.
+    overlay.publish(_publication(second, [_refused()]), generation=2, dpr=1.0)
+    fresh = _painted_image(0xFF00FF00)
+    overlay._painted((overlay._token, fresh, {}))
+    assert overlay.item.image() is fresh
+    overlay.stop()
+
+
+def test_camera_change_before_any_paint_traces_nothing(monkeypatch):
+    events = []
+
+    def record(kind, **fields):
+        events.append((kind, fields))
+
+    monkeypatch.setattr(enc_trace, "event", record)
+    overlay = _overlay()
+
+    overlay.camera_changed(_Camera(), dpr=1.0)
+
+    assert events == []
+    assert overlay.item.image().isNull()
+    assert overlay._token is None
+
+
+def test_a_held_publication_still_notifies_the_overlay():
+    class _Mesh:
+        def set_projection(self, projection):
+            self.projection = projection
+
+        def set_compose_margin(self, margin):
+            self.margin = margin
+
+    class _Fallback:
+        def __init__(self):
+            self.calls = []
+
+        def publish(self, metadata, generation=None, dpr=None):
+            self.calls.append((metadata, generation, dpr))
+
+    camera = _Camera()
+    metadata = _publication(camera, [_refused("refused")])
+    fallback = _Fallback()
+    widget = SimpleNamespace(
+        _disposed=False,
+        _enc_scene_item=_Mesh(),
+        _enc_fallback=fallback,
+        _camera=camera,
+        _camera_dpr=2.0,
+        # The first-raster hold returns True: this scene is never adopted.
+        _hold_scene_for_first_raster=lambda generation, payload: True,
+    )
+    widget._enc_scene_published = MethodType(
+        _viewport_widget_class()._enc_scene_published, widget
+    )
+
+    widget._enc_scene_published((6, "scene", metadata))
+
+    # The overlay's content does not depend on adoption: the held complete
+    # scene still paints the cells it refused.
+    assert fallback.calls == [(metadata, 6, 2.0)]

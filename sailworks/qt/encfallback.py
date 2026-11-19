@@ -448,10 +448,19 @@ class ENCFallbackOverlay(QObject):
         self._item.setY(float(y))
 
     def publish(self, metadata, generation=None, dpr=None):
-        """A scene publication: paint what it refused, or clear."""
+        """A scene publication: paint what it refused, or clear when final.
+
+        A partial publication -- and a publication that names no refused cell
+        while the scene is still composing -- proves nothing about the cells
+        it has not resolved yet.  It therefore never discards retained state
+        and never invalidates a live render.  Only a complete, non-partial
+        publication without refused clips clears.
+        """
         moved_dpr = self._adopt_dpr(dpr)
         request = fallback_request(metadata)
         if request is None:
+            if metadata is None or metadata.get("partial"):
+                return
             self.clear("no_clips")
             return
         if moved_dpr:
@@ -462,24 +471,30 @@ class ENCFallbackOverlay(QObject):
         self._start(clips, projection, camera, generation)
 
     def camera_changed(self, camera, dpr=None):
-        """The view moved: only the projection of its own camera may paint.
+        """The view moved: keep the painted ground, discard stale renders.
 
-        ``dpr`` is the viewport's current device pixel ratio -- the same value
-        it places the mesh with -- so a move to another display re-renders at
-        the new ratio instead of stretching an image painted for the old one.
+        The mesh keeps its previous frame and shifts it with ``place()``, so
+        the overlay does the same: the image painted for the old camera stays
+        up.  It is never re-rendered with a projection that belongs to another
+        camera; the serial is bumped instead, so a render still in flight for
+        the old camera is rejected as stale, and the new camera's publication
+        paints the new view.  ``dpr`` is the viewport's current device pixel
+        ratio -- the same value it places the mesh with -- so a move to another
+        display re-renders at the new ratio instead of stretching an image
+        painted for the old one.
         """
-        rerendered_dpr = self._adopt_dpr(dpr)
+        moved_dpr = self._adopt_dpr(dpr)
         if self._canvas is None:
+            # Nothing was ever painted: drop any in-flight token.
             self.clear("no_clips")
             return
         projection, published, generation = self._canvas
         if camera is not None and published is not None and camera != published:
-            # The published projection describes the old view; the new
-            # camera's own scene will carry its own.  Anything in flight is
-            # dropped with the token, so the old ground never lands.
-            self.clear("camera_changed")
+            self._serial += 1
+            # A token no job will ever carry: whatever is in flight is stale.
+            self._token = (self._serial, camera)
             return
-        if rerendered_dpr:
+        if moved_dpr:
             clips = self._clips
             self.clear("dpr_changed")
             self._start(clips, projection, published, generation)

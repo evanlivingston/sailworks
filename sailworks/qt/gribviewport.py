@@ -3785,6 +3785,18 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         getattr(self, "_enc_trace_demand_at", None)
                     ),
                 )
+            # The refused cells' ground depends only on this publication's
+            # clips, projection and camera -- not on whether the mesh adopts
+            # the frame.  Notify the overlay before the hold and partial-keep
+            # gates below, so a held or kept complete scene still paints the
+            # cells it refused.
+            fallback = getattr(self, "_enc_fallback", None)
+            if fallback is not None:
+                fallback.publish(
+                    metadata,
+                    generation=generation,
+                    dpr=getattr(self, "_camera_dpr", None),
+                )
             partial = metadata is not None and bool(metadata.get("partial"))
             hold = getattr(self, "_hold_scene_for_first_raster", None)
             if not partial and hold is not None and hold(generation, payload):
@@ -3836,16 +3848,6 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             # includes the camera that composed it.
             self._place_enc_scene()
             item.setVisible(True)
-            # The refused cells' ground is this scene's own: its clip, its
-            # camera, its projection.  Empty clips clear the layer rather
-            # than leaving the previous scene's ground up.
-            fallback = getattr(self, "_enc_fallback", None)
-            if fallback is not None:
-                fallback.publish(
-                    metadata,
-                    generation=generation,
-                    dpr=getattr(self, "_camera_dpr", None),
-                )
             # The adopted frame is now what the user sees.  If it does not
             # draw this viewport, the raster must cover the gap: release the
             # composition the metadata-only "skip" cancelled a moment ago.
