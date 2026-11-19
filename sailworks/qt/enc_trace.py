@@ -116,6 +116,87 @@ def dominant_phase(phases):
     return best
 
 
+CELL_DETAIL_LIMIT = 12
+
+
+def phase_ms(stages, already_ms=(), exclude=()):
+    """Convert a diagnostic stage mapping into rounded milliseconds.
+
+    The ``_stage`` helpers in the renderer accumulate ``perf_counter``
+    differences, i.e. seconds, while every duration the trace records is in
+    milliseconds.  Non-numeric entries are dropped, names in ``exclude`` are
+    skipped, and names in ``already_ms`` pass through unchanged because their
+    producer already reports milliseconds.
+    """
+    phases = {}
+    passthrough = frozenset(already_ms)
+    for name, value in (stages or {}).items():
+        if name in exclude or isinstance(value, bool):
+            continue
+        if not isinstance(value, (int, float)):
+            continue
+        milliseconds = float(value) if name in passthrough else float(value) * 1000.0
+        phases[name] = round(milliseconds, 3)
+    return phases
+
+
+def build_phases(stages):
+    """The non-overlapping top-level phases, in milliseconds.
+
+    ``stages`` is the diagnostic mapping in seconds.  ``mesh`` is the meshing
+    loop with the per-cell acquire it contains removed, so no work is counted
+    twice and the phases sum to no more than the assembly they belong to.
+    """
+
+    def seconds(name):
+        value = (stages or {}).get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value) * 1000.0
+
+    phases = {}
+    plan = seconds("plan")
+    if plan is not None:
+        phases["plan"] = round(plan, 3)
+    acquire = seconds("cell_open")
+    if acquire is not None:
+        phases["acquire"] = round(acquire, 3)
+    mesh = seconds("mesh")
+    if mesh is not None:
+        phases["mesh"] = round(max(mesh - (acquire or 0.0), 0.0), 3)
+    assemble = seconds("assemble")
+    if assemble is not None:
+        phases["assemble"] = round(assemble, 3)
+    return phases
+
+
+def cell_detail(cells, limit=CELL_DETAIL_LIMIT):
+    """The bounded per-cell breakdown, heaviest first.
+
+    ``cells`` maps a cell name to its already-millisecond ``open`` and ``mesh``
+    durations.  Only the ``limit`` heaviest cells stay, so one composition
+    reports a readable list however many cells the plan holds.
+    """
+    rows = []
+    for name, stages in (cells or {}).items():
+        if not isinstance(stages, dict):
+            continue
+        acquire = stages.get("open")
+        mesh = stages.get("mesh")
+        acquire = float(acquire) if isinstance(acquire, (int, float)) else 0.0
+        mesh = float(mesh) if isinstance(mesh, (int, float)) else 0.0
+        rows.append(
+            {
+                "cell": name,
+                "ms": round(acquire + mesh, 3),
+                "acquire_ms": round(acquire, 3),
+                "mesh_ms": round(mesh, 3),
+            }
+        )
+    rows.sort(key=lambda row: row["ms"], reverse=True)
+    return rows[:limit]
+
+
 def camera_fields(camera):
     """The camera identity every demand-scoped record carries."""
     if camera is None:

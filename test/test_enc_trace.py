@@ -119,6 +119,80 @@ def test_dominant_phase():
     assert enc_trace.dominant_phase({"worker": 0.0}) is None
 
 
+def test_phase_ms_converts_stage_seconds():
+    phases = enc_trace.phase_ms(
+        {"cell_open": 0.25, "assembly_ms": 1183.0, "cells": {"a": {}}, "bad": None},
+        already_ms=("assembly_ms",),
+        exclude=("cells",),
+    )
+
+    assert phases == {"cell_open": 250.0, "assembly_ms": 1183.0}
+    # Without the exclusion the nested detail is dropped, never mis-converted.
+    assert enc_trace.phase_ms({"cells": {"a": {}}, "clip": 0.002}) == {"clip": 2.0}
+
+
+def test_build_phases_never_counts_acquire_twice():
+    phases = enc_trace.build_phases(
+        {"plan": 0.004, "cell_open": 0.9, "mesh": 0.95, "assemble": 0.12}
+    )
+
+    assert phases == {"plan": 4.0, "acquire": 900.0, "mesh": 50.0, "assemble": 120.0}
+    # 0.9 + 0.05 + 0.12 + 0.004 < the 1183 ms the assembly measured.
+    assert sum(phases.values()) <= 1183.0
+
+
+def test_scene_publish_carries_phases_in_milliseconds(monkeypatch, tmp_path):
+    target = tmp_path / "trace.jsonl"
+    monkeypatch.setenv(enc_trace.ENV_PATH, str(target))
+    enc_trace.reset()
+    timings = {
+        "plan": 0.004,
+        "cell_open": 0.9,
+        "mesh": 0.95,
+        "assemble": 0.12,
+        "assembly_ms": 1183.0,
+        "cells": {"US5CA01M": {"open": 900.0, "mesh": 50.0}},
+    }
+    enc_trace.event(
+        "scene_publish",
+        assembly_ms=timings["assembly_ms"],
+        phases=enc_trace.build_phases(timings),
+        stage_ms=enc_trace.phase_ms(
+            timings, already_ms=("assembly_ms",), exclude=("cells",)
+        ),
+        phase_cells=enc_trace.cell_detail(timings["cells"]),
+    )
+
+    record = json.loads(target.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["event"] == "scene_publish"
+    assert record["phases"]["acquire"] == 900.0
+    assert all(isinstance(value, float) for value in record["phases"].values())
+    assert sum(record["phases"].values()) <= record["assembly_ms"]
+    assert record["stage_ms"]["mesh"] == 950.0
+    assert record["phase_cells"][0]["cell"] == "US5CA01M"
+
+
+def test_cell_detail_is_bounded_and_heaviest_first():
+    cells = {f"cell{index}": {"open": float(index)} for index in range(20)}
+
+    rows = enc_trace.cell_detail(cells)
+
+    assert len(rows) == enc_trace.CELL_DETAIL_LIMIT
+    assert [row["ms"] for row in rows] == sorted(
+        (row["ms"] for row in rows), reverse=True
+    )
+    assert rows[0]["cell"] == "cell19"
+
+
+def test_tracing_off_records_no_phases(monkeypatch, tmp_path):
+    monkeypatch.delenv(enc_trace.ENV_PATH, raising=False)
+    enc_trace.reset()
+
+    phases = enc_trace.build_phases({"plan": 0.001})
+    assert enc_trace.event("scene_publish", phases=phases) is None
+    assert not (tmp_path / "trace.jsonl").exists()
+
+
 def test_camera_fields_rounds_identity():
     class Camera:
         center_lat = 48.150001234
