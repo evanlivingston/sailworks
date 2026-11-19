@@ -93,6 +93,7 @@ def _harness(item):
     for name in (
         "_withdraw_enc_scene",
         "_enc_scene_published",
+        "_cancel_enc_scene_partial_hold",
         "_enc_scene_state_changed",
         "_place_enc_scene",
     ):

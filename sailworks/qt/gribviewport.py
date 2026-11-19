@@ -484,6 +484,17 @@ ENC_SCENE_RETRY_ATTEMPTS = 10
 #: loop.  A changed demand key (camera, size, cell content) starts it over.
 ENC_SCENE_COVER_RETRY_MAX = 2
 
+#: How long an uncovered *partial* scene may be withheld behind a picture that
+#: is already on screen.  The hold exists so a swap cannot draw whole
+#: rectangles of empty ground while the rest assembles; it must not outlive a
+#: layer that stalls in ``loading``, because the retry that would finish the
+#: scene only ever comes from ``idle``.  Measured assemblies on this data run
+#: 0.25-2 s, so four seconds is twice the slowest measured assembly: long
+#: enough that only a genuine stall reaches it, and shorter than the five
+#: second chart-source poll, so a stalled layer still shows its progress
+#: within one poll.
+ENC_SCENE_HOLD_MAX_MS = 4000
+
 
 def scene_chart_deferral_pending(generation, published):
     """Whether a scene request names a job whose publication has not landed.
@@ -2638,6 +2649,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             #: complete frame reached the demanded view.  It keeps receiving
             #: progress publications and is never reported as current.
             self._enc_scene_partial_generation = None
+            #: The newest uncovered partial withheld behind the complete scene
+            #: on screen, and when the first of this hold's partials was
+            #: withheld.  The timestamp bounds the hold; the payload is what an
+            #: expired hold releases (see ``_hold_enc_scene_partial``).
+            self._enc_scene_held_partial = None
+            self._enc_scene_held_partial_at = None
             #: The newest generation this view has asked for.  A withdrawal for
             #: any other generation is a superseded job's cancellation and may
             #: not touch the presented scene.
@@ -3043,6 +3060,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     self._enc_scene_retry_timer.timeout.connect(self._retry_enc_scene)
                     self._enc_scene_retry_attempt = 0
                     self._enc_scene_retry_camera = None
+                    # A withheld partial is released by this single-shot timer
+                    # when the complete scene never lands: one timer, so a new
+                    # partial re-arms it instead of stacking another.
+                    self._enc_scene_hold_timer = QTimer(self)
+                    self._enc_scene_hold_timer.setSingleShot(True)
+                    self._enc_scene_hold_timer.timeout.connect(
+                        self._release_held_enc_scene_partial
+                    )
                     # The neighbour prefetch: armed by a covered settle, fired
                     # once the camera has been quiet for the delay, and always
                     # behind a real request.
@@ -3901,7 +3926,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             if fallback is not None:
                 fallback.camera_changed(camera, dpr=getattr(self, "_camera_dpr", None))
             # The newest request owns the next publication; anything older is
-            # stale the moment it asks.
+            # stale the moment it asks.  A newer generation also ends any hold
+            # on the previous picture's progress: the frame it described is no
+            # longer the demand.
+            self._cancel_enc_scene_partial_hold()
             self._enc_scene_pending_generation = generation
             # The guard's own record: this key now has one outstanding
             # generation, and only its terminal outcome releases the demand.
@@ -4004,6 +4032,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
 
         def _withdraw_enc_scene(self):
             """Hide the presented ENC scene: it is not current content."""
+            self._cancel_enc_scene_partial_hold()
             self._enc_scene_provisional = False
             self._enc_scene_ready_generation = None
             self._enc_scene_partial_generation = None
@@ -4058,7 +4087,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 return
             self._withdraw_enc_scene()
 
-        def _enc_scene_published(self, payload):
+        def _enc_scene_published(self, payload, release_expired=False):
             """A scene publication or withdrawal from the layer (queued here).
 
             Every message names the generation it speaks for; a withdrawal is
@@ -4186,25 +4215,51 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             hold = getattr(self, "_hold_scene_for_first_raster", None)
             if not partial and hold is not None and hold(generation, payload):
                 return
+            # A partial is progress, never the current view.  Once a complete
+            # scene is presented, the frame on screen is kept until the new
+            # scene is complete: swapping it for the cells resolved so far is
+            # what draws whole rectangles of empty ground while the rest
+            # assembles.  The one exception is a partial that already accounts
+            # for every planned cell (see
+            # ``_enc_scene_partial_accounts_for_view``): it creates no hole, so
+            # it may replace the frame.  With no complete scene presented yet
+            # the partial is the only chart content, so first load still
+            # publishes progressively.  A withheld partial is held only for
+            # ``ENC_SCENE_HOLD_MAX_MS`` (see ``_hold_enc_scene_partial``), and
+            # an expired hold comes back through this method with
+            # ``release_expired`` set.  Either way a partial never claims the
+            # view.
             if (
                 partial
-                and self._enc_scene_frame_reaches_view(generation)
-                and not self._enc_scene_partial_supersedes(metadata, generation)
+                and not release_expired
+                and not self._enc_scene_partial_accounts_for_view(published_states)
             ):
-                # A partial is progress, never the current view.  Swapping
-                # the finished frame for the cells resolved so far is what
-                # makes whole rectangles of chart disappear and redraw;
-                # keep the ready frame up until the complete scene lands.
-                # A camera change alone is not a reason to prefer the
-                # partial: the frame on screen is retained while any of its
-                # drawn cells still lands in this viewport, and only a frame
-                # that can no longer reach the view is replaced (see
-                # ``_enc_scene_partial_supersedes``).  Either way what the
-                # user sees is labelled updating, and a partial never claims
-                # the view.
-                self._enc_scene_provisional = True
-                self._update_enc_status()
-                return
+                if self._enc_scene_has_presented():
+                    self._hold_enc_scene_partial(payload)
+                    self._enc_scene_provisional = True
+                    self._update_enc_status()
+                    if enc_trace.enabled():
+                        enc_trace.event(
+                            "scene_hold",
+                            generation=generation,
+                            cause="partial",
+                            cells=len(published_cells),
+                            drawn=sum(
+                                1
+                                for state in published_states
+                                if isinstance(state, dict)
+                                and state.get("state") == "ready"
+                            ),
+                            covers_view=False,
+                            elapsed_ms=enc_trace.elapsed_ms(
+                                getattr(self, "_enc_trace_demand_at", None)
+                            ),
+                        )
+                    return
+            # Any publication that reaches the screen - complete, a hole-free
+            # partial or an expired hold's release - ends the hold: the frame
+            # it was waiting behind is no longer the picture.
+            self._cancel_enc_scene_partial_hold()
             self._enc_scene_cells_order = published_cells
             self._enc_scene_cell_states = published_states
             apply_scene_publication(self, generation, metadata)
@@ -4278,6 +4333,97 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 )
             self._update_enc_status()
 
+        def _enc_scene_has_presented(self):
+            """Whether a *complete* scene has been shown.
+
+            Only the complete generation counts.  A first load has nothing but
+            partials until its first complete arrives, and it publishes them
+            progressively: if a drawn partial counted as presented, the
+            partial after it would be withheld too and a cold start would
+            freeze on whatever fraction landed first.  Once a complete frame
+            is up, the frame is the picture and an uncovered partial must not
+            replace it.  A withdraw clears both generations, which makes the
+            next publication a fresh first load.
+            """
+            return getattr(self, "_enc_scene_ready_generation", None) is not None
+
+        def _enc_scene_partial_accounts_for_view(self, cell_states):
+            """Whether a partial leaves no planned cell still assembling.
+
+            Every planned cell is either drawn (``ready``) or explicitly
+            refused with a reason (``unavailable``/``oversized``/``error``),
+            and the fallback paints the refused ground from this publication's
+            own clips.  Such a snapshot has no hole to show, so it may replace
+            the frame.  A ``loading`` cell - and metadata that reports no cell
+            states at all - means the picture is still filling in: hold it.
+            """
+            if not cell_states:
+                return False
+            return not any(
+                isinstance(state, dict) and state.get("state") == "loading"
+                for state in cell_states
+            )
+
+        def _hold_enc_scene_partial(self, payload):
+            """Keep an uncovered partial off screen, but only for a budget.
+
+            The partial is the newest progress for a picture that is already
+            on screen, so it waits for the complete scene that supersedes it.
+            The wait is bounded: the clock starts at the *first* withheld
+            partial, so repeated progress cannot extend it, and one single-shot
+            timer per widget means re-arming restarts it instead of stacking.
+            When the timer fires, ``_release_held_enc_scene_partial`` applies
+            the newest withheld payload.
+            """
+            now = time.perf_counter()
+            if getattr(self, "_enc_scene_held_partial_at", None) is None:
+                self._enc_scene_held_partial_at = now
+            self._enc_scene_held_partial = payload
+            timer = getattr(self, "_enc_scene_hold_timer", None)
+            if timer is None:
+                return
+            held_ms = (now - self._enc_scene_held_partial_at) * 1000.0
+            timer.start(max(0, int(round(ENC_SCENE_HOLD_MAX_MS - held_ms))))
+
+        def _cancel_enc_scene_partial_hold(self):
+            """Drop a withheld partial and its timer without publishing it."""
+            timer = getattr(self, "_enc_scene_hold_timer", None)
+            if timer is not None:
+                timer.stop()
+            self._enc_scene_held_partial = None
+            self._enc_scene_held_partial_at = None
+
+        def _release_held_enc_scene_partial(self):
+            """Apply the partial a stalled complete scene kept off screen.
+
+            Reached only from the hold timer.  The payload goes back through
+            ``_enc_scene_published`` marked as expired, so the release takes
+            the ordinary partial path: it claims nothing beyond
+            ``_enc_scene_partial_generation``, leaves the demand open for the
+            generation that owns it and settles the way any partial does.
+            """
+            payload = getattr(self, "_enc_scene_held_partial", None)
+            started = getattr(self, "_enc_scene_held_partial_at", None)
+            generation = None if payload is None else payload[0]
+            held_ms = (
+                0.0 if started is None else (time.perf_counter() - started) * 1000.0
+            )
+            self._cancel_enc_scene_partial_hold()
+            if payload is None or self._disposed:
+                return
+            if enc_trace.enabled():
+                enc_trace.event(
+                    "scene_hold_expired",
+                    generation=generation,
+                    cause="partial",
+                    held_ms=round(held_ms, 1),
+                    budget_ms=ENC_SCENE_HOLD_MAX_MS,
+                    elapsed_ms=enc_trace.elapsed_ms(
+                        getattr(self, "_enc_trace_demand_at", None)
+                    ),
+                )
+            self._enc_scene_published(payload, release_expired=True)
+
         def _hold_scene_for_first_raster(self, generation, payload):
             """Hold a *complete* scene's adoption until the first raster paints.
 
@@ -4332,60 +4478,6 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._enc_scene_held_publication = None
             self._enc_scene_hold_since = None
             self._enc_scene_published(held)
-
-        def _enc_scene_frame_reaches_view(self, generation=None):
-            """Whether the frame on screen still draws part of the demanded view.
-
-            "Part" is the point: a frame whose cells still project into the
-            viewport is this view's chart content even when those cells do not
-            cover it, and replacing it with a partial resets the drawn set to
-            whatever has resolved so far.  Only a frame that no longer lands in
-            the viewport at all is worth nothing here, and only then is a
-            partial drawn.  A generation already drawing as loading keeps
-            updating, so its resolved cells accumulate instead of freezing the
-            first partial.
-            """
-            ready = getattr(self, "_enc_scene_ready_generation", None)
-            presented = getattr(self, "_enc_scene_partial_generation", None)
-            if ready is None and presented is None:
-                return False
-            if generation is not None and presented == generation:
-                return False
-            item = getattr(self, "_enc_scene_item", None)
-            # The reach probe is weaker than the raster's coverage gate: it
-            # answers whether any drawn cell still lands in this viewport.
-            # A stub without it falls back to coverage, and a GUI-only stub
-            # with neither carries no geometry, so the frame is up.
-            reaches = getattr(item, "scene_reaches_view", None)
-            if reaches is None:
-                reaches = getattr(item, "scene_covers_view", None)
-            if reaches is None:
-                return True
-            return bool(reaches())
-
-        def _enc_scene_partial_supersedes(self, metadata, generation=None):
-            """Whether a partial may take the screen from the retained frame.
-
-            Only when that frame can no longer reach the demanded viewport: a
-            pan past the composed ring, or a zoom that maps its cells outside
-            the item.  While it still draws any of the view it is the only
-            chart content the view has, and a partial composed for a newer
-            camera would replace a full frame with the cells resolved by now -
-            the pan-time collapse a user sees as whole squares disappearing.
-            A camera change alone is therefore not enough: the partial's own
-            vertex count says nothing about what it omits.  A partial for the
-            camera already on screen is only progress.  When this returns true
-            the caller adopts the partial provisionally; it never claims the
-            view.
-            """
-            if metadata is None or not metadata.get("vertices"):
-                return False
-            camera = metadata.get("camera")
-            if camera is None or camera != self._camera:
-                return False
-            if camera == self._enc_scene_camera:
-                return False
-            return not self._enc_scene_frame_reaches_view(generation)
 
         def _enc_scene_state_changed(self, state):
             """The scene layer's own state; it never changes the chart's."""
@@ -7856,6 +7948,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             retry_timer = getattr(self, "_enc_scene_retry_timer", None)
             if retry_timer is not None and shiboken6.isValid(retry_timer):
                 retry_timer.stop()
+            hold_timer = getattr(self, "_enc_scene_hold_timer", None)
+            if hold_timer is not None and shiboken6.isValid(hold_timer):
+                hold_timer.stop()
             if self._chart_model is not None:
                 self._chart_model.close()
             if getattr(self, "_enc_scene_model", None) is not None:

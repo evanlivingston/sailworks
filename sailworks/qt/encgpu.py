@@ -116,6 +116,7 @@ from PySide6.QtQuick import (
 from sailworks.rendering.vectordrawer import encsounding
 from sailworks.rendering.vectordrawer.encmesh import EMPTY_MESH, SceneMesh
 from sailworks.rendering.vectordrawer.encpalette import NEUTRAL, vertex_colours
+from sailworks.qt import enc_trace
 from sailworks.qt.glyphatlas import GlyphAtlas
 
 try:  # PySide6 ships shiboken6; the guard keeps a stale C++ wrapper detectable.
@@ -337,6 +338,16 @@ CLIP_PAD = 32.0
 #: below :data:`sailworks.rendering.overlayrenderer.MARGIN`; the item adopts the
 #: exact figure from the published scene through :meth:`EncMeshItem.set_compose_margin`.
 SCENE_MARGIN = 256.0
+
+#: Most per-cell rows one ``enc_cull`` trace record carries.  A record is
+#: written once per cull pass, not once per cell, so the trace stays small.
+TRACE_CULL_LIMIT = 8
+
+#: A culled bbox separated from the clip rect by no more than this many logical
+#: pixels is recorded as merely touching it: that is how an undersized
+#: ``_compose_margin`` shows up, a cell of the real viewport culled by a clip
+#: that ends just short of it.
+TRACE_TOUCH_PX = 1.0
 
 
 def _visible_triangle_mask(positions: np.ndarray, clip) -> np.ndarray:
@@ -840,6 +851,10 @@ class EncMeshItem(QQuickItem):
         #: view before the replacement arrives.
         self._compose_margin = SCENE_MARGIN
         self._matrix_count = 0
+        #: Cull passes this item has run, counted only while tracing is on.
+        #: Every ``enc_cull``/``enc_zero_count`` record carries it so a cull can
+        #: be matched to the compose margin that was in force.
+        self._trace_frame = 0
         #: Times this item re-projected instead of transforming its reference
         #: frame with a matrix (see :meth:`_frame_coeffs`).  Reported by the
         #: app-level capture harness so a matrix-path frame is not confused
@@ -1225,6 +1240,13 @@ class EncMeshItem(QQuickItem):
         margin = SCENE_MARGIN if margin is None else float(margin)
         if margin == self._compose_margin:
             return False
+        if enc_trace.enabled():
+            enc_trace.event(
+                "enc_compose_margin",
+                frame=self._trace_frame,
+                old=self._compose_margin,
+                new=margin,
+            )
         self._compose_margin = margin
         # Force the mask to be recomputed and re-applied on the next paint;
         # no buffer is touched.
@@ -1488,8 +1510,14 @@ class EncMeshItem(QQuickItem):
         if frame is None or content is None:
             return
         clip = self._visible_clip()
+        traced = enc_trace.enabled()
+        if traced:
+            self._trace_frame += 1
+            frame_index = self._trace_frame
+            culled_detail = []
+            culled_total = 0
         mask = []
-        for cell in frame.cells:
+        for index, cell in enumerate(frame.cells):
             if cell.bounds is None:
                 mask.append(False)
                 continue
@@ -1499,6 +1527,34 @@ class EncMeshItem(QQuickItem):
             x0, y0, x1, y1 = _affine_bounds(coeffs, cell.bounds)
             outside = x1 < clip[0] or x0 > clip[2] or y1 < clip[1] or y0 > clip[3]
             mask.append(not outside)
+            if traced and outside:
+                culled_total += 1
+                if len(culled_detail) < TRACE_CULL_LIMIT:
+                    # Distance from the bbox to the clip on the separating axis.
+                    gap = max(
+                        clip[0] - x1, x0 - clip[2], clip[1] - y1, y0 - clip[3], 0.0
+                    )
+                    culled_detail.append(
+                        {
+                            "cell": index,
+                            "bounds": [round(float(value), 3) for value in cell.bounds],
+                            "bbox": [round(value, 3) for value in (x0, y0, x1, y1)],
+                            "gap": round(gap, 3),
+                            "touches": gap <= TRACE_TOUCH_PX,
+                        }
+                    )
+        if traced and culled_total:
+            enc_trace.event(
+                "enc_cull",
+                frame=frame_index,
+                clip=None if clip is None else [round(value, 3) for value in clip],
+                viewport=[float(self.width()), float(self.height())],
+                margin=self._compose_margin,
+                culled=culled_total,
+                cells=len(mask),
+                capped=culled_total > TRACE_CULL_LIMIT,
+                detail=culled_detail,
+            )
         mask = tuple(mask)
         # The mask is recorded for diagnostics only: it is never trusted as
         # proof that the geometries still draw what it says.  A previous
@@ -1512,12 +1568,15 @@ class EncMeshItem(QQuickItem):
         # in native code.  A culled cell is instead drawn with zero vertices,
         # which needs no buffer write, so the resident vertex data is
         # untouched and the tree the renderer recorded stays valid.
-        for node, count, visible in zip(
-            self._cell_nodes, self._cell_vertex_counts, mask
+        for index, (node, count, visible) in enumerate(
+            zip(self._cell_nodes, self._cell_vertex_counts, mask)
         ):
             applied = count if visible else 0
             geometry = node.geometry()
-            if geometry is None or geometry.vertexCount() == applied:
+            if geometry is None:
+                continue
+            previous = geometry.vertexCount()
+            if previous == applied:
                 # Nothing to tell the renderer, so leave the node clean.  This
                 # is the steady-state path: a pan that keeps the same mask
                 # never marks anything dirty.
@@ -1530,6 +1589,16 @@ class EncMeshItem(QQuickItem):
             # report.  Marked only on an actual change so the steady state
             # stays dirty-free.
             node.markDirty(QSGNode.DirtyStateBit.DirtyGeometry)
+            if traced:
+                enc_trace.event(
+                    "enc_zero_count",
+                    frame=frame_index,
+                    cell=index,
+                    previous=int(previous),
+                    current=int(applied),
+                    mask=bool(visible),
+                    count=int(count),
+                )
 
     def _ensure_content(self) -> bool:
         """Attach the cell transform node once there is a cell to draw."""

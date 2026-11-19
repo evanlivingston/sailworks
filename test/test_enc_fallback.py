@@ -446,6 +446,9 @@ def test_request_enc_scene_hands_the_mesh_ratio_to_the_fallback():
         # ``set_camera`` records the ratio the mesh is placed with here.
         _camera_dpr=2.0,
         _enc_fallback=fallback,
+        # No withheld partial in this double, so the pre-publication cancel of
+        # an in-flight hold is a no-op.
+        _cancel_enc_scene_partial_hold=lambda: None,
     )
     widget._request_enc_scene = MethodType(
         _viewport_widget_class()._request_enc_scene, widget
@@ -612,6 +615,7 @@ def test_a_held_publication_still_notifies_the_overlay():
         _camera_dpr=2.0,
         # The first-raster hold returns True: this scene is never adopted.
         _hold_scene_for_first_raster=lambda generation, payload: True,
+        _cancel_enc_scene_partial_hold=lambda: None,
     )
     widget._enc_scene_published = MethodType(
         _viewport_widget_class()._enc_scene_published, widget

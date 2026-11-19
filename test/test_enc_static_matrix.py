@@ -10,6 +10,7 @@ not re-upload a single vertex.
 
 from __future__ import annotations
 
+import json
 import math
 from types import MethodType, SimpleNamespace
 
@@ -18,6 +19,7 @@ import pytest
 
 from PySide6.QtWidgets import QApplication
 
+from sailworks.qt import enc_trace
 from sailworks.qt import encgpu
 from sailworks.qt import viewporttransform as _vt
 from sailworks.qt.gribviewport import (
@@ -421,6 +423,150 @@ def test_culling_is_write_free_when_counts_already_match(app):
     for spy in spies:
         assert spy.geometry().changes == []
         assert spy.dirty == []
+
+
+# ---------------------------------------------------------------- cull tracing
+def _trace_records(path):
+    """Every record a trace file holds; an absent file holds none."""
+    if not path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+@pytest.fixture
+def trace_path(tmp_path, monkeypatch):
+    """Point the opt-in trace at a file and forget the cached environment."""
+    path = tmp_path / "trace.jsonl"
+    monkeypatch.setenv(enc_trace.ENV_PATH, str(path))
+    enc_trace.reset()
+    try:
+        yield path
+    finally:
+        enc_trace.reset()
+
+
+def test_tracing_off_changes_no_draw_count_and_writes_nothing(
+    app, tmp_path, monkeypatch
+):
+    """With ``SAILWORKS_ENC_TRACE`` unset the cull and margin paths stay silent."""
+    camera = _Camera()
+    positions = _visible_degrees(camera)
+    scene = _Scene(positions, _split_cells(positions))
+    far = _Camera(lon=camera.center_lon + 5.0)
+
+    path = tmp_path / "trace.jsonl"
+    monkeypatch.setenv(enc_trace.ENV_PATH, str(path))
+    enc_trace.reset()
+    try:
+        traced, traced_node = _presented(app, camera, scene, _projection(camera))
+        traced.set_compose_margin(17.0)
+        traced.set_projection(_projection(far))
+        traced.updatePaintNode(traced_node, None)
+        on_counts = [node.geometry().vertexCount() for node in traced._cell_nodes]
+        records = _trace_records(path)
+        assert records
+        margins = [row for row in records if row["event"] == "enc_compose_margin"]
+        assert len(margins) == 1
+        assert margins[0]["old"] == encgpu.SCENE_MARGIN
+        assert margins[0]["new"] == 17.0
+    finally:
+        enc_trace.reset()
+    written = path.read_text(encoding="utf-8")
+
+    monkeypatch.delenv(enc_trace.ENV_PATH, raising=False)
+    enc_trace.reset()
+    try:
+        assert enc_trace.enabled() is False
+        plain, plain_node = _presented(app, camera, scene, _projection(camera))
+        plain.set_compose_margin(17.0)
+        plain.set_projection(_projection(far))
+        plain.updatePaintNode(plain_node, None)
+        off_counts = [node.geometry().vertexCount() for node in plain._cell_nodes]
+    finally:
+        enc_trace.reset()
+    assert off_counts == on_counts
+    assert path.read_text(encoding="utf-8") == written
+
+
+def test_a_cull_emits_one_capped_record_with_the_clip_and_margin(app, trace_path):
+    """One record per cull pass, bounded per cell, carrying the clip in force."""
+    camera = _Camera()
+    positions = _visible_degrees(camera)
+    scene = _Scene(positions, _split_cells(positions, cells=12))
+    margin = 17.0
+    item, node = _presented(app, camera, scene, _projection(camera), margin=margin)
+    before = len(
+        [row for row in _trace_records(trace_path) if row["event"] == "enc_cull"]
+    )
+
+    far = _Camera(lon=camera.center_lon + 5.0)
+    item.set_projection(_projection(far))
+    item.updatePaintNode(node, None)
+    assert item.visible_cells and not any(item.visible_cells)
+
+    records = [row for row in _trace_records(trace_path) if row["event"] == "enc_cull"]
+    assert len(records) == before + 1
+    record = records[-1]
+    pad = encgpu.CLIP_PAD
+    assert record["clip"] == pytest.approx(
+        [
+            -(margin + pad),
+            -(margin + pad),
+            camera.width + margin + pad,
+            camera.height + margin + pad,
+        ]
+    )
+    assert record["viewport"] == pytest.approx(
+        [float(camera.width), float(camera.height)]
+    )
+    assert record["margin"] == margin
+    assert record["culled"] == len(scene.cells)
+    assert record["cells"] == len(scene.cells)
+    assert record["capped"] is True
+    assert len(record["detail"]) == encgpu.TRACE_CULL_LIMIT
+    assert isinstance(record["frame"], int)
+    for row in record["detail"]:
+        assert 0 <= row["cell"] < len(scene.cells)
+        assert len(row["bounds"]) == 4
+        assert len(row["bbox"]) == 4
+        assert row["gap"] >= 0.0
+        assert isinstance(row["touches"], bool)
+
+
+def test_a_restored_zero_count_emits_its_record(app, trace_path):
+    """A geometry zeroed under an unchanged mask reports the restore it made."""
+    camera = _Camera()
+    positions = _visible_degrees(camera)
+    scene = _Scene(positions, _split_cells(positions))
+    item, _ = _presented(app, camera, scene, _projection(camera))
+    counts = list(item._cell_vertex_counts)
+    visible = tuple(item._cell_visible)
+    assert counts and any(visible)
+
+    spies = [_SpyNode(0) for _ in counts]
+    item._cell_nodes = spies
+    coeffs = item._frame_coeffs()
+    assert coeffs is not None
+    item._cull_cells(coeffs)
+
+    records = [
+        row
+        for row in _trace_records(trace_path)
+        if row["event"] == "enc_zero_count" and row["frame"] == item._trace_frame
+    ]
+    restored = [index for index, is_visible in enumerate(visible) if is_visible]
+    assert len(records) == len(restored)
+    for record, index in zip(records, restored):
+        assert record["cell"] == index
+        assert record["previous"] == 0
+        assert record["current"] == counts[index]
+        assert record["count"] == counts[index]
+        assert record["mask"] is True
+        assert spies[index].geometry().vertexCount() == counts[index]
 
 
 def test_forgetting_the_scene_graph_drops_the_cell_bookkeeping(app):
@@ -1247,8 +1393,11 @@ def test_a_partial_publication_never_replaces_the_ready_scene(app):
     widget_class = _viewport_widget_class()
     for name in (
         "_enc_scene_published",
-        "_enc_scene_frame_reaches_view",
-        "_enc_scene_partial_supersedes",
+        "_enc_scene_has_presented",
+        "_enc_scene_partial_accounts_for_view",
+        "_hold_enc_scene_partial",
+        "_cancel_enc_scene_partial_hold",
+        "_release_held_enc_scene_partial",
     ):
         setattr(shown, name, MethodType(getattr(widget_class, name), shown))
     metadata = {

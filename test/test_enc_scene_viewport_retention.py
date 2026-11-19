@@ -95,8 +95,11 @@ def _widget(layer_state="ready", error="", covers_view=True, reaches_view=None):
         "_withdraw_enc_scene_if_current",
         "_mark_enc_scene_updating",
         "_enc_scene_published",
-        "_enc_scene_frame_reaches_view",
-        "_enc_scene_partial_supersedes",
+        "_enc_scene_has_presented",
+        "_enc_scene_partial_accounts_for_view",
+        "_hold_enc_scene_partial",
+        "_cancel_enc_scene_partial_hold",
+        "_release_held_enc_scene_partial",
         "_enc_scene_state_changed",
         "_schedule_enc_scene_retry",
         "_update_enc_status",
@@ -332,10 +335,12 @@ def test_a_partial_for_the_demanded_camera_does_not_replace_a_reaching_frame():
     assert enc_scene_covers_view(widget._enc_scene_item) is True
 
 
-def test_a_partial_takes_the_screen_only_when_the_retained_frame_cannot_reach():
-    # A pan past the composed ring maps the retained frame outside the item;
-    # keeping it is then a blank chart, so the partial is drawn - explicitly
-    # as a partial, never as coverage.
+def test_a_partial_does_not_take_the_screen_even_when_the_retained_frame_cannot_reach():
+    # A pan past the composed ring maps the retained frame outside the item.
+    # The raster covers that ground (the scene does not reach, so the chart
+    # never defers to it); the assembling cells must not replace the presented
+    # scene with the subset resolved so far, because the rectangles still
+    # building would show the basemap.
     widget = _widget(covers_view=False, reaches_view=False)
     older = ViewportCamera(
         center_lat=48.00842, center_lon=-124.74315, zoom=13.0, width=960, height=693
@@ -348,13 +353,15 @@ def test_a_partial_takes_the_screen_only_when_the_retained_frame_cannot_reach():
     widget._camera = current
     _present(widget, 8, partial=True, camera=current, vertices=129105, cells=("c9",))
 
-    assert widget._enc_scene_item.scene == "scene-8"
-    # A partial never claims the view: the complete generation is still 7.
+    assert widget._enc_scene_item.scene == "scene-7"
+    # A partial never claims the view and never replaces the frame: the
+    # complete generation is still 7, and the withheld cells stay building.
     assert widget._enc_scene_ready_generation == 7
-    assert widget._enc_scene_partial_generation == 8
+    assert widget._enc_scene_partial_generation is None
     assert widget._enc_scene_provisional is True
     assert widget._weather.props["encStatus"] == "ENC scene updating…"
-    # It is drawn as incomplete, so the raster still covers the viewport.
+    # It is not drawn as an incomplete frame, so the raster still covers the
+    # viewport until the complete scene lands.
     assert enc_scene_covers_view(widget._enc_scene_item) is False
 
 
@@ -453,34 +460,35 @@ def test_a_partial_without_geometry_never_replaces_a_reaching_frame():
     assert widget._enc_scene_partial_generation is None
 
 
-def test_a_partial_is_drawn_when_no_frame_reaches_the_demanded_view():
+def test_a_partial_is_withheld_when_no_frame_reaches_the_demanded_view():
     # A zoom-out left the composed frame's ring: the retained complete scene
-    # maps entirely outside the viewport, so keeping it is a blank chart.  The
-    # resolved cells are drawn instead, explicitly as loading content.
+    # maps entirely outside the viewport.  The raster covers that ground; the
+    # assembling cells do not replace the presented scene with a subset.
     widget = _widget(covers_view=False)
     _present(widget, 7)
 
     _present(widget, 8, partial=True)
 
     assert widget._enc_scene_item.visible is True
-    assert widget._enc_scene_item.scene == "scene-8"
+    assert widget._enc_scene_item.scene == "scene-7"
     # The complete generation on screen is still 7: a partial never claims the
-    # view, it only fills it while the demanded scene builds.
+    # view, and it no longer fills it while the demanded scene builds.
     assert widget._enc_scene_ready_generation == 7
-    assert widget._enc_scene_partial_generation == 8
+    assert widget._enc_scene_partial_generation is None
     assert widget._enc_scene_provisional is True
     assert widget._weather.props["encStatus"] == "ENC scene updating…"
 
 
-def test_successive_partials_of_the_presented_generation_keep_updating():
+def test_successive_partials_never_replace_a_presented_scene():
     widget = _widget(covers_view=False)
     _present(widget, 7)
 
     _present(widget, 8, partial=True)
     _present(widget, 8, partial=True)
 
-    assert widget._enc_scene_item.scene == "scene-8"
-    assert widget._enc_scene_partial_generation == 8
+    assert widget._enc_scene_item.scene == "scene-7"
+    assert widget._enc_scene_partial_generation is None
+    assert widget._enc_scene_ready_generation == 7
 
 
 def test_the_complete_scene_clears_the_partial_and_becomes_current():
