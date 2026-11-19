@@ -133,7 +133,7 @@ class TestDayStrip(unittest.TestCase):
         self.strip.stop_clock()
         self.assertFalse(self.strip._now_timer.isActive())
 
-    def test_transport_button_is_larger_and_clickable(self):
+    def test_transport_button_is_compact_and_clickable(self):
         from PySide6.QtCore import QPoint, QSize, Qt
         from PySide6.QtTest import QTest
         from PySide6.QtWidgets import QHBoxLayout, QWidget
@@ -148,7 +148,123 @@ class TestDayStrip(unittest.TestCase):
         )
         container.show()
         self.app.processEvents()
-        self.assertEqual(button.size(), QSize(32, 32))
-        self.assertEqual(button.iconSize(), QSize(20, 20))
-        QTest.mouseClick(button, Qt.MouseButton.LeftButton, pos=QPoint(26, 16))
+        self.assertEqual(button.size(), QSize(24, 24))
+        self.assertEqual(button.iconSize(), QSize(14, 14))
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton, pos=QPoint(18, 12))
         callback.assert_called_once()
+
+    def test_strip_takes_keyboard_focus(self):
+        from PySide6.QtCore import Qt
+
+        self.assertEqual(self.strip.focusPolicy(), Qt.FocusPolicy.StrongFocus)
+
+    def test_arrow_keys_step_by_the_configured_interval(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        self.strip.set_bounds(0.0, 100000.0)
+        self.strip.set_position(50000.0)
+        QTest.keyClick(self.strip, Qt.Key.Key_Right)
+        QTest.keyClick(self.strip, Qt.Key.Key_Left)
+        self.assertEqual(self.stamps, [50900.0, 49100.0])
+        QTest.keyClick(self.strip, Qt.Key.Key_Right, Qt.KeyboardModifier.ShiftModifier)
+        self.assertEqual(self.stamps[-1], 53600.0)
+
+    def test_home_end_and_bounds_clamping(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        self.strip.set_bounds(0.0, 100000.0)
+        self.strip.set_position(50000.0)
+        QTest.keyClick(self.strip, Qt.Key.Key_End)
+        QTest.keyClick(self.strip, Qt.Key.Key_Home)
+        self.assertEqual(self.stamps, [100000.0, 0.0])
+        self.strip.set_step_seconds(40000)
+        QTest.keyClick(self.strip, Qt.Key.Key_Right)
+        QTest.keyClick(self.strip, Qt.Key.Key_Left)
+        self.assertEqual(self.stamps[2:], [90000.0, 10000.0])
+        self.strip.set_step_seconds(90000)
+        QTest.keyClick(self.strip, Qt.Key.Key_Right)
+        self.assertEqual(self.stamps[-1], 100000.0)
+
+    def test_keyboard_is_inert_without_bounds_or_position(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        self.strip.set_position(1500.0)
+        self.strip.set_bounds(None, None)
+        QTest.keyClick(self.strip, Qt.Key.Key_Right)
+        QTest.keyClick(self.strip, Qt.Key.Key_Home)
+        self.assertEqual(self.stamps, [])
+        self.strip.set_bounds(1000.0, 2000.0)
+        self.strip.set_position(None)
+        QTest.keyClick(self.strip, Qt.Key.Key_Right)
+        QTest.keyClick(self.strip, Qt.Key.Key_End)
+        self.assertEqual(self.stamps, [])
+
+    def test_step_seconds_rejects_bad_values(self):
+        self.strip.set_step_seconds(300)
+        self.assertEqual(self.strip.step_seconds, 300)
+        for bad in (None, 0, -60, "not-a-number"):
+            with self.subTest(bad=bad):
+                self.strip.set_step_seconds(bad)
+                self.assertEqual(self.strip.step_seconds, 900)
+
+    def test_hover_changes_cursor_without_emitting(self):
+        from PySide6.QtCore import QEvent, Qt
+
+        self.strip.show()
+        self.app.processEvents()
+        self.strip.repaint()
+        before = self.strip.cursor().shape()
+        self.assertNotEqual(before, Qt.CursorShape.SizeHorCursor)
+        self.mouse("MouseMove", 100)
+        self.assertEqual(self.strip.cursor().shape(), Qt.CursorShape.SizeHorCursor)
+        self.assertEqual(self.strip._hover_index, 0)
+        self.assertEqual(self.stamps, [])
+        self.app.sendEvent(self.strip, QEvent(QEvent.Type.Leave))
+        self.assertIsNone(self.strip._hover_index)
+        self.assertEqual(self.strip.cursor().shape(), before)
+        self.assertEqual(self.stamps, [])
+
+    def test_paint_survives_empty_and_single_timestamp_ranges(self):
+        self.strip.show()
+        self.app.processEvents()
+        with patch("sailworks.qt.forecasttimeline.logger") as log:
+            self.strip.set_bounds(None, None)
+            self.strip.repaint()
+            self.strip.set_bounds(1000.0, 1000.0)
+            self.strip.set_position(1000.0)
+            self.strip.set_valid_times([1000.0])
+            self.strip.repaint()
+            log.warning.assert_not_called()
+
+    def test_day_label_falls_back_to_the_day_number_then_to_nothing(self):
+        from datetime import datetime, timezone
+
+        from PySide6.QtGui import QFontMetrics
+
+        from sailworks.qt.forecasttimeline import _day_label
+
+        day = datetime(2026, 11, 16, tzinfo=timezone.utc)
+        metrics = QFontMetrics(self.strip._label_font)
+        weekday_width = metrics.horizontalAdvance("Mon 16")
+        day_width = metrics.horizontalAdvance("16")
+        # A cell wide enough for "Mon 16" keeps it, boundary included.
+        self.assertEqual(_day_label(day, weekday_width, metrics), "Mon 16")
+        self.assertEqual(_day_label(day, weekday_width - 1, metrics), "16")
+        self.assertEqual(_day_label(day, day_width, metrics), "16")
+        # Too narrow even for the number: draw nothing rather than overprint.
+        self.assertIsNone(_day_label(day, day_width - 1, metrics))
+
+    def test_accessibility_description_names_the_range_and_selection(self):
+        self.strip.set_bounds(None, None)
+        self.assertIn("no forecast range loaded", self.strip.accessibleDescription())
+        self.strip.set_bounds(1000.0, 2000.0)
+        described = self.strip.accessibleDescription()
+        self.assertNotIn("no forecast range loaded", described)
+        self.assertIn(" to ", described)
+        self.assertIn("arrows step", described)
+        self.assertNotIn("selected", described)
+        self.strip.set_position(1500.0)
+        self.assertIn("selected", self.strip.accessibleDescription())

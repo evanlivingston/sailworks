@@ -1267,6 +1267,9 @@ def _track_payload(track, host):
         # handles without re-deriving geometry.
         "roundings": roundings,
         "active": bool(manager.is_active(track)),
+        "selected": (
+            getattr(track, "uid", None) in getattr(host.navigation, "hl_tracks", ())
+        ),
         "highlight": (
             int(host.navigation.hl_track_item)
             if manager.is_active(track) and host.navigation.hl_track_item is not None
@@ -1307,6 +1310,7 @@ def _overlay_tracks(host):
         ),
         host.navigation.hl_track_item,
         hover,
+        tuple(sorted(getattr(host.navigation, "hl_tracks", ()))),
     ), visible
 
 
@@ -1324,6 +1328,7 @@ def _overlay_routes(host, timestamp):
             if route.visible
         ),
         host.navigation.hl_routing,
+        tuple(sorted(getattr(host.navigation, "hl_routes", ()))),
         timestamp,
     )
 

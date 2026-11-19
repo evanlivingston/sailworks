@@ -279,7 +279,9 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.tabs)
         connections = QWidget()
         content = QVBoxLayout(connections)
-        hint = QLabel("Add or edit instruments, then apply to save and reconnect.")
+        hint = QLabel(
+            "Add or edit instruments. Changes save and reconnect immediately."
+        )
         hint.setWordWrap(True)
         content.addWidget(hint)
         self.connections = QListWidget()
@@ -289,23 +291,20 @@ class SettingsDialog(QDialog):
         self.add_button = QPushButton("Add")
         self.edit_button = QPushButton("Edit")
         self.remove_button = QPushButton("Remove")
-        self.apply_button = QPushButton("Apply connections")
         self.add_button.clicked.connect(lambda: self.edit_connection(False))
         self.edit_button.clicked.connect(lambda: self.edit_connection(True))
         self.remove_button.clicked.connect(self.remove_connection)
-        self.apply_button.clicked.connect(self.apply_connections)
         for button in (
             self.add_button,
             self.edit_button,
             self.remove_button,
-            self.apply_button,
         ):
             row.addWidget(button)
         content.addLayout(row)
         self.connection_status = QLabel()
         self.connection_status.setWordWrap(True)
         content.addWidget(self.connection_status)
-        self.tabs.addTab(connections, "Connections")
+        self.tabs.addTab(connections, "Instruments")
         display = QWidget()
         form = QFormLayout(display)
         for label, key in (
@@ -315,15 +314,20 @@ class SettingsDialog(QDialog):
             checkbox = QCheckBox(qt_text(label))
             checkbox.setChecked(bool(controller.settings[key]))
             checkbox.toggled.connect(
-                lambda value, key=key: self.set_preference(key, value)
+                lambda value, key=key, box=checkbox: self.set_preference(
+                    key, value, box
+                )
             )
             form.addRow(checkbox)
         self.developer_mode = QCheckBox("Developer mode")
+        self.developer_mode.setToolTip("Show experimental tools and diagnostics.")
         self.developer_mode.setChecked(
             bool(controller.settings.get("developerMode", False))
         )
         self.developer_mode.toggled.connect(
-            lambda value: self.set_preference("developerMode", value)
+            lambda value, box=self.developer_mode: self.set_preference(
+                "developerMode", value, box
+            )
         )
         form.addRow(self.developer_mode)
         self.gpu_rendering = QCheckBox("GPU rendering (experimental)")
@@ -333,7 +337,7 @@ class SettingsDialog(QDialog):
         self.gpu_rendering.setToolTip("Restart required.")
         self.gpu_rendering.toggled.connect(self.set_gpu_rendering)
         form.addRow(self.gpu_rendering)
-        self.keep_ebl_originals = QCheckBox("Keep original EBL files")
+        self.keep_ebl_originals = QCheckBox("Keep original bearing-line (EBL) files")
         self.keep_ebl_originals.setChecked(
             bool(controller.settings.get("keepEblOriginals", True))
         )
@@ -341,7 +345,9 @@ class SettingsDialog(QDialog):
             "Retain imported EBL segments in the log library. Applies to future imports."
         )
         self.keep_ebl_originals.toggled.connect(
-            lambda value: self.set_preference("keepEblOriginals", value)
+            lambda value, box=self.keep_ebl_originals: self.set_preference(
+                "keepEblOriginals", value, box
+            )
         )
         form.addRow(self.keep_ebl_originals)
         self.renderer_status = QLabel()
@@ -349,7 +355,7 @@ class SettingsDialog(QDialog):
         form.addRow(self.renderer_status)
         controller.renderer_changed.connect(self.refresh_renderer_status)
         self.refresh_renderer_status()
-        self.tabs.addTab(display, "Display")
+        self.tabs.addTab(display, "Appearance")
         weathernext = QWidget()
         weathernext_form = QFormLayout(weathernext)
         self.weathernext_credentials = controller.weathernext_credentials
@@ -361,7 +367,7 @@ class SettingsDialog(QDialog):
         weathernext_form.addRow("Credentials file", self.weathernext_path)
         weathernext_buttons = QHBoxLayout()
         self.weathernext_choose = QPushButton("Choose credentials JSON")
-        self.weathernext_adc = QPushButton("Use ADC")
+        self.weathernext_adc = QPushButton("Use automatic credentials")
         self.weathernext_test = QPushButton("Test access")
         self.weathernext_choose.clicked.connect(self.choose_weathernext_credentials)
         self.weathernext_adc.clicked.connect(self.use_weathernext_adc)
@@ -374,9 +380,9 @@ class SettingsDialog(QDialog):
         terms.setWordWrap(True)
         weathernext_form.addRow(terms)
         self._refresh_weathernext()
-        self.tabs.addTab(weathernext, "WN3")
+        self.tabs.addTab(weathernext, "Weather sources")
         self.currents = CurrentsAccount(controller.core.marine_manager.coverage_planner)
-        self.tabs.addTab(self.currents, "Currents")
+        self.tabs.addTab(self.currents, "Accounts")
         self.status = QLabel()
         self.status.setWordWrap(True)
         content.addWidget(self.status)
@@ -422,9 +428,6 @@ class SettingsDialog(QDialog):
         self.add_button.setEnabled(not busy)
         self.edit_button.setEnabled(not busy and selected)
         self.remove_button.setEnabled(not busy and selected)
-        self.apply_button.setEnabled(
-            not busy and self.draft != self.controller.connections.connections
-        )
         statuses = [] if busy else self.controller.connections.get_status()
         connected = sum(s["connected"] for s in statuses)
         packets = sum(s["packets"] for s in statuses)
@@ -458,6 +461,7 @@ class SettingsDialog(QDialog):
             else:
                 self.draft.append(dialog.result_config)
             self.reload()
+            self.apply_connections()
 
     def remove_connection(self):
         index = self.connections.currentRow()
@@ -470,7 +474,7 @@ class SettingsDialog(QDialog):
                 "Remove connection?",
                 f"Remove '{name}' from the connection list?\n\n"
                 "Routes and live data that used it may need another provider. "
-                "Nothing changes until you save.",
+                "The connection will be removed and instruments will reconnect.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -479,6 +483,7 @@ class SettingsDialog(QDialog):
             return
         self.draft.pop(index)
         self.reload()
+        self.apply_connections()
 
     def apply_connections(self):
         configs = [dict(c) for c in self.draft]
@@ -488,20 +493,35 @@ class SettingsDialog(QDialog):
         )
 
     def applied(self, result, error):
-        if error is None and self.applying:
-            self.task.message = "Connections saved"
+        if self.applying:
+            if error is None:
+                self.task.message = "Connections saved"
+            else:
+                self.task.message = "Could not save connections"
             self.draft = [dict(c) for c in self.controller.connections.connections]
             self.reload()
         self.applying = False
 
-    def set_preference(self, key, value):
+    def set_preference(self, key, value, widget=None):
         previous = self.controller.settings[key]
         try:
             self.controller.settings[key] = value
         except OSError as exc:
             self.controller.settings.__dict__[key] = previous
             dict.__setitem__(self.controller.settings, key, previous)
-            QMessageBox.warning(self, "Unable to save setting", str(exc))
+            control = widget if widget is not None else self.sender()
+            if isinstance(control, QCheckBox):
+                control.blockSignals(True)
+                try:
+                    control.setChecked(bool(previous))
+                finally:
+                    control.blockSignals(False)
+            QMessageBox.warning(
+                self,
+                "Unable to save setting",
+                f"Could not save this setting. The previous value was restored.\n{exc}",
+            )
+            return
         if key != "mapRenderer":
             self.controller.data.redraw()
         if key == "keepEblOriginals":
@@ -515,7 +535,7 @@ class SettingsDialog(QDialog):
     def _refresh_weathernext(self):
         path = self.weathernext_credentials.path
         if not path:
-            self.weathernext_source.setText("Application Default Credentials")
+            self.weathernext_source.setText("Automatic credentials")
             self.weathernext_path.setText("No file selected")
             return
         self.weathernext_source.setText("Service-account file")
@@ -527,7 +547,7 @@ class SettingsDialog(QDialog):
         settings = self.controller.settings
         path, _filter = QFileDialog.getOpenFileName(
             self,
-            "WN3 service-account credentials",
+            "Weather forecast service-account credentials",
             remembered_dir(settings, "credentials"),
             "JSON credentials (*.json)",
         )
@@ -566,7 +586,9 @@ class SettingsDialog(QDialog):
             self.weathernext_test.setEnabled(True)
 
     def set_gpu_rendering(self, enabled):
-        self.set_preference("mapRenderer", "gpu" if enabled else "cpu")
+        self.set_preference(
+            "mapRenderer", "gpu" if enabled else "cpu", self.gpu_rendering
+        )
         self.gpu_rendering.blockSignals(True)
         self.gpu_rendering.setChecked(
             self.controller.settings.get("mapRenderer", "cpu") == "gpu"

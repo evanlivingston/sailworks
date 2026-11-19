@@ -160,3 +160,68 @@ def test_route_overlay_data_reuses_geometry_until_revision_changes():
     route.revision = 1
     rebuilt = nav.route_overlay_data(quarter_hour)
     assert rebuilt[0]["points"] is not first[0]["points"]
+
+
+def test_route_overlay_data_highlights_scene_selection():
+    from datetime import datetime
+
+    selected = _Route()
+    selected.uid = "route-selected"
+    other = _Route()
+    other.uid = "route-other"
+    other.name = "Route B"
+    core = SimpleNamespace(
+        trackManager=_TrackManager([]),
+        poiManager=[],
+        routingManager=[selected, other],
+    )
+    nav = NavigationRenderer(core)
+    moment = datetime(2026, 1, 1, 0, 30).timestamp()
+
+    nav.set_scene_selection({"route-other"})
+    flags = {data["name"]: data["highlight"] for data in nav.route_overlay_data(moment)}
+    assert flags == {"Route A": False, "Route B": True}
+    # Only the emphasised route carries a legend.
+    legends = {
+        data["name"]: "legend" in data for data in nav.route_overlay_data(moment)
+    }
+    assert legends == {"Route A": False, "Route B": True}
+
+    # The routing panel's active route keeps its own emphasis.
+    nav.hl_routing = "Route A"
+    flags = {data["name"]: data["highlight"] for data in nav.route_overlay_data(moment)}
+    assert flags == {"Route A": True, "Route B": True}
+
+    # Clearing the scene selection leaves the panel selection in place.
+    nav.set_scene_selection()
+    flags = {data["name"]: data["highlight"] for data in nav.route_overlay_data(moment)}
+    assert flags == {"Route A": True, "Route B": False}
+
+
+def test_empty_scene_selection_clears_scene_emphasis():
+    from datetime import datetime
+
+    route = _Route()
+    route.uid = "route-selected"
+    core = SimpleNamespace(
+        trackManager=_TrackManager([]),
+        poiManager=[],
+        routingManager=[route],
+    )
+    nav = NavigationRenderer(core)
+    moment = datetime(2026, 1, 1, 0, 30).timestamp()
+
+    nav.set_scene_selection({"route-selected"}, {"track-selected"})
+    assert nav.hl_routes == {"route-selected"}
+    assert nav.hl_tracks == {"track-selected"}
+    assert nav.route_highlighted(route)
+    flags = {data["name"]: data["highlight"] for data in nav.route_overlay_data(moment)}
+    assert flags == {"Route A": True}
+
+    # An empty tree selection removes the emphasis again.
+    nav.set_scene_selection(set(), set())
+    assert nav.hl_routes == frozenset()
+    assert nav.hl_tracks == frozenset()
+    assert not nav.route_highlighted(route)
+    flags = {data["name"]: data["highlight"] for data in nav.route_overlay_data(moment)}
+    assert flags == {"Route A": False}

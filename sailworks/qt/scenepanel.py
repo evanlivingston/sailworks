@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PySide6.QtCore import (
     QEvent,
+    QItemSelectionModel,
     QPoint,
     QPointF,
     QRect,
@@ -899,11 +900,18 @@ class ScenePanel(QWidget):
 
     changed = Signal()
     selected = Signal(str, str)
+    # The full tree selection: selected item keys and collection ids. The chart
+    # emphasises every route and track they name, including a collection's
+    # members at any depth.
+    selection_changed = Signal(object)
     group_selected = Signal(str)
     open_requested = Signal(str, str)
     fit_requested = Signal(object)
     fit_time_requested = Signal(object)
     delete_requested = Signal(object)
+    # Identifiers of the collections to remove, routed through the window's
+    # undo stack so a collection delete can be undone.
+    groups_delete_requested = Signal(list)
     move_point_requested = Signal(object, int)
     edit_track_requested = Signal(str)
     edit_track_properties_requested = Signal(str)
@@ -2157,6 +2165,14 @@ class ScenePanel(QWidget):
         if self.syncing:
             return
         nodes = self._selected_nodes()
+        self.selection_changed.emit(
+            {
+                "items": [
+                    (node[1], node[2]) for node in nodes if node[0] in ("item", "point")
+                ],
+                "groups": [node[1] for node in nodes if node[0] == "group"],
+            }
+        )
         if len(nodes) != 1:
             return
         if nodes[0][0] == "item":
@@ -2308,6 +2324,10 @@ class ScenePanel(QWidget):
         if row is not None and row not in self.tree.selectedItems():
             self.tree.clearSelection()
             row.setSelected(True)
+        if row is not None:
+            # Make the clicked row current without disturbing a multi-selection,
+            # so commands that read the current row (New Collection) act on it.
+            self.tree.setCurrentItem(row, 0, QItemSelectionModel.NoUpdate)
         node = row.data(0, NODE_ROLE) if row is not None else None
         menu = ThemedMenu(self)
         builder = MenuBuilder(menu)
@@ -2330,6 +2350,11 @@ class ScenePanel(QWidget):
             (len(groups) == 1 and node is not None and node[0] == "group")
             or point_element is not None
             or shape_element is not None
+            or (
+                track_element is not None
+                and node is not None
+                and not node[2].startswith("race:")
+            )
         )
         deletable = [
             identifier
@@ -2420,15 +2445,34 @@ class ScenePanel(QWidget):
                 if not self._fit_time_available(fit_time_nodes):
                     action.setEnabled(False)
                     action.setToolTip("No time data in the selection")
+            scene_row = node is not None and not (
+                node[0] == "item" and node[1] == KIND_LOG
+            )
+            if scene_row:
+                isolated = self._isolated_to(node)
+                # The target state is captured at build time: the callback is
+                # invoked without the action's new checked value.
+                isolate = builder.add(
+                    "Isolate",
+                    lambda isolate=not isolated: self._isolate_node(node, isolate),
+                    key="S",
+                )
+                isolate.setCheckable(True)
+                isolate.setChecked(isolated)
+                builder.add(
+                    "Hide",
+                    lambda: self._hide_node(node),
+                    key="H",
+                )
             if track_element is not None:
                 builder.add(
-                    "Add Point",
+                    "Add Point…",
                     lambda: self._add_point(node),
                     key="P",
                 )
             if edit_track:
                 builder.add(
-                    "Edit Track",
+                    "Edit on Map",
                     lambda: self.edit_track_requested.emit(node[2]),
                     key="E",
                 )
@@ -2436,11 +2480,11 @@ class ScenePanel(QWidget):
                 builder.add(
                     "Track Properties…",
                     lambda: self.edit_track_properties_requested.emit(node[2]),
-                    key="E",
+                    key="I",
                 )
             if point_element is not None:
                 builder.add(
-                    "Edit",
+                    "Edit Point…",
                     lambda: self._edit_point(node),
                     key="E",
                 )
@@ -2459,7 +2503,7 @@ class ScenePanel(QWidget):
                 )
             if open_log:
                 builder.add(
-                    "Open log",
+                    "Open Log",
                     lambda kind=node[1], key=node[2]: self.open_requested.emit(
                         kind, key
                     ),
@@ -2468,17 +2512,17 @@ class ScenePanel(QWidget):
         if shape_element is not None:
             builder.section()
             builder.add(
-                "Edit Note",
+                "Edit Note…",
                 lambda: self._edit_shape_note(shape_element),
                 key="O",
             )
             if self._shape_edit_available(shape_element):
                 # Enter vertex edit mode on the map rather than opening a
-                # dialog: the vertices are dragged in place.
+                # dialog: the vertices are dragged in place, so no ellipsis.
                 builder.add(
-                    "Edit vertices",
+                    "Edit Shape",
                     lambda uid=shape_element.uid: self.shape_edit_requested.emit(uid),
-                    key="V",
+                    key="E",
                 )
             avoidance = builder.add(
                 "Use for Avoidance",
@@ -2489,27 +2533,31 @@ class ScenePanel(QWidget):
             avoidance.setChecked(bool(getattr(shape_element, "enabled", True)))
         destructive = []
         if point_delete:
-            destructive.append(("Delete Point", lambda: self._delete_point(node), "D"))
+            # "P" is taken by Add Point on the same row (a point row still
+            # carries its track's actions), so Delete Point uses "L".
+            destructive.append(("Delete Point", lambda: self._delete_point(node), "L"))
         if delete_nodes:
+            label = (
+                "Delete"
+                if len(delete_nodes) == 1
+                else f"Delete {len(delete_nodes)} Items"
+            )
             destructive.append(
-                (
-                    "Delete",
-                    lambda: self.delete_requested.emit(delete_nodes),
-                    "D",
-                )
+                (label, lambda: self.delete_requested.emit(delete_nodes), "D")
             )
         if deletable:
+            label = (
+                "Delete Collection"
+                if len(deletable) == 1
+                else f"Delete {len(deletable)} Collections"
+            )
             destructive.append(
-                (
-                    "Delete Collection",
-                    lambda ids=tuple(deletable): self._delete_groups(ids),
-                    "C",
-                )
+                (label, lambda ids=tuple(deletable): self._delete_groups(ids), "C")
             )
         if destructive:
             builder.section()
             for text, callback, key in destructive:
-                builder.add(text, callback, key=key)
+                builder.add(text, callback, key=key, enter_to_confirm=True)
         if menu.actions():
             menu.exec(self.tree.viewport().mapToGlobal(position))
 
@@ -2544,13 +2592,82 @@ class ScenePanel(QWidget):
         element.isochrone_colour_by = mode
         self.changed.emit()
 
-    def _delete_groups(self, identifiers):
+    def _visibility_targets(self, node):
+        """Item identities that stay visible when a node is isolated."""
+        if node is None:
+            return set()
+        if node[0] == "group":
+            return {
+                (child[1], child[2])
+                for child in self._group_item_nodes(node[1])
+                if child[1] != KIND_LOG
+            }
+        if node[0] in ("item", "point"):
+            return {(node[1], node[2])}
+        return set()
+
+    def _ancestor_group_ids(self, node):
+        """The node's containing groups, nearest first, then upward."""
+        if node is None:
+            return []
+        if node[0] == "group":
+            start = node[1]
+        else:
+            entry = self.scene.item(node[1], node[2])
+            start = entry.group if entry is not None else None
+        identifiers = []
+        seen = set()
+        group = self.scene.group(start) if start is not None else None
+        while group is not None and group.id not in seen:
+            seen.add(group.id)
+            identifiers.append(group.id)
+            group = self.scene.group(group.parent) if group.parent is not None else None
+        return identifiers
+
+    def _isolated_to(self, node):
+        targets = self._visibility_targets(node)
+        visible = {
+            identity
+            for identity, item in self.scene.items.items()
+            if item.visible and identity[0] != KIND_LOG
+        }
+        return bool(targets) and visible == targets
+
+    def _isolate_node(self, node, isolate):
         changed = False
-        for identifier in identifiers:
-            changed = self.scene.delete_group(identifier) or changed
+        if isolate:
+            targets = self._visibility_targets(node)
+            if not targets:
+                return
+            for identifier in self._ancestor_group_ids(node):
+                changed = self.scene.set_group_visible(identifier, True) or changed
+            # Logs are never a visibility target, so isolating leaves them
+            # alone rather than hiding them as a side effect.
+            mapping = {
+                identity: identity in targets
+                for identity in self.scene.items
+                if identity[0] != KIND_LOG
+            }
+        else:
+            mapping = {identity: True for identity in self.scene.items}
+        changed = self.scene.set_items_visible(mapping) or changed
         if changed:
-            self.refresh()
-            self.changed.emit()
+            self._after_change()
+
+    def _hide_node(self, node):
+        if node[0] == "group":
+            changed = self.scene.set_group_visible(node[1], False)
+        elif node[0] in ("item", "point"):
+            changed = self.scene.set_item_visible(node[1], node[2], False)
+        else:
+            return
+        if changed:
+            self._after_change()
+
+    def _delete_groups(self, identifiers):
+        identifiers = list(identifiers)
+        if identifiers:
+            self.groups_delete_requested.emit(identifiers)
 
     def _add_move_menu(self, builder, keys, groups, key=None):
         targets = [(None, "Scene Collection")]

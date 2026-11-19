@@ -4,8 +4,16 @@ import math
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 
-from PySide6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import (
+    QEasingCurve,
+    QPoint,
+    QPointF,
+    QPropertyAnimation,
+    QSize,
+    Qt,
+    Signal,
+)
+from PySide6.QtGui import QColor, QPainter, QPen, QPolygon
 from PySide6.QtWidgets import QFrame, QLayout, QScrollArea, QVBoxLayout, QWidget
 
 from sailworks.core.forecastcapabilities import display_model_name
@@ -21,8 +29,6 @@ def source_rows(selection, marine):
         key = getattr(source, "key", id(source))
         label = getattr(source, "label", None) or getattr(source, "name", "Forecast")
         model = getattr(source, "model_name", "")
-        if model:
-            label = f"{display_model_name(model)} · {label}"
         active = any(getattr(item, "key", id(item)) == key for item in selected)
         rows.append(
             (
@@ -101,8 +107,8 @@ class SourceTimePlot(QWidget):
 
     axis_width_changed = Signal(int)
 
-    ROW_HEIGHT = 32
-    AXIS_HEIGHT = 30
+    ROW_HEIGHT = 20
+    AXIS_HEIGHT = 20
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -262,7 +268,7 @@ class SourceTimePlot(QWidget):
         day_ticks, hours = self._time_grid()
         if not day_ticks and not hours:
             return
-        painter.setPen(QPen(QColor("#414141"), 1))
+        painter.setPen(QPen(QColor(65, 65, 65, 150), 1))
         for x in hours:
             painter.drawLine(x, 0, x, bottom)
         painter.setPen(QPen(QColor("#666666"), 2))
@@ -281,36 +287,50 @@ class SourceTimePlot(QWidget):
             if palette.window().color().lightness() < 128
             else palette.mid().color().darker(125)
         )
+        divider = QColor(border)
+        divider.setAlpha(48)
         label_width = self._plot_left() - 8
         if not self.tree_rows:
             painter.setPen(palette.text().color())
             painter.drawText(4, 22, "No forecast or marine sources available")
             return
         self._paint_time_grid(painter)
+        palette_text = palette.text().color()
+        muted = QColor(palette_text)
+        muted.setAlpha(120)
         for index, (kind, label, row) in enumerate(self.tree_rows):
             top = index * self.ROW_HEIGHT
-            painter.setPen(QPen(border, 1))
+            painter.setPen(QPen(divider, 1))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(0, top, max(0, self.width() - 1), self.ROW_HEIGHT - 1)
-            painter.setPen(palette.text().color())
+            painter.drawLine(
+                0,
+                top + self.ROW_HEIGHT - 1,
+                max(0, self.width() - 1),
+                top + self.ROW_HEIGHT - 1,
+            )
             active = row[3] if kind == "leaf" else True
+            painter.setPen(palette_text if active else muted)
             group_key = f"Weather models/{label}" if kind == "subgroup" else label
-            text = (
-                ("▾ " if group_key in self.expanded_groups else "▸ ") + label
-                if kind != "leaf"
-                else label + ("" if active else " (not selected)")
-            )
             indent = 4 if kind == "group" else 20 if kind == "subgroup" else 36
-            painter.drawText(
-                indent,
-                top + 21,
-                painter.fontMetrics().elidedText(
-                    text,
-                    Qt.TextElideMode.ElideRight,
-                    max(0, label_width - indent - 4),
-                ),
-            )
-            point_color = QColor("#777777")
+            available = max(0, label_width - indent - 4)
+            metrics = painter.fontMetrics()
+            if kind == "leaf":
+                status = "" if active else " (not selected)"
+                text = (
+                    metrics.elidedText(
+                        label,
+                        Qt.TextElideMode.ElideMiddle,
+                        max(0, available - metrics.horizontalAdvance(status)),
+                    )
+                    + status
+                )
+            else:
+                chevron = "▾ " if group_key in self.expanded_groups else "▸ "
+                text = metrics.elidedText(
+                    chevron + label, Qt.TextElideMode.ElideRight, available
+                )
+            painter.drawText(indent, top + self.ROW_HEIGHT - 7, text)
+            point_color = QColor("#777777") if active else QColor("#555555")
             painter.setPen(QPen(point_color, 1))
             painter.setBrush(point_color)
             times = row[2] if kind == "leaf" else row
@@ -325,7 +345,7 @@ class SourceTimePlot(QWidget):
                 painter.drawEllipse(point, 1.5, 1.5)
             painter.restore()
             if kind == "leaf" and not times:
-                painter.setPen(palette.text().color())
+                painter.setPen(palette_text if active else muted)
                 painter.drawText(label_width + 12, top + 21, "No valid times")
         if self.bounds:
             painter.setPen(palette.text().color())
@@ -333,7 +353,7 @@ class SourceTimePlot(QWidget):
                 datetime.fromtimestamp(t, timezone.utc).strftime("%b %d %H:%M UTC")
                 for t in self.bounds
             ]
-            y = len(self.tree_rows) * self.ROW_HEIGHT + 21
+            y = len(self.tree_rows) * self.ROW_HEIGHT + self.AXIS_HEIGHT - 7
             painter.drawText(label_width + 8, y, labels[0])
             painter.drawText(
                 max(
@@ -349,15 +369,34 @@ class SourceTimePlot(QWidget):
             start_x = self._plot_left()
             painter.drawLine(start_x, 0, start_x, len(self.tree_rows) * self.ROW_HEIGHT)
             track_bottom = len(self.tree_rows) * self.ROW_HEIGHT
-            for stamp, color, width in (
-                (self.now_cursor, QColor("#e6c229"), 2),
-                (self.time_cursor, QColor("#0066cc"), 2),
+            for stamp, color, width, dashed in (
+                (self.now_cursor, QColor("#e6c229"), 2, True),
+                (self.time_cursor, QColor("#0066cc"), 2, False),
             ):
                 if stamp is None or not self.bounds[0] <= stamp <= self.bounds[1]:
                     continue
-                painter.setPen(QPen(color, width))
+                pen = QPen(color, width)
+                if dashed:
+                    pen.setDashPattern([4.0, 1.0])
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
                 cursor_x = self._time_to_x(stamp)
                 painter.drawLine(cursor_x, 0, cursor_x, track_bottom)
+                painter.setPen(QPen(color, 1))
+                painter.setBrush(color)
+                if dashed:
+                    painter.drawEllipse(QPointF(cursor_x, 4), 3, 3)
+                else:
+                    painter.drawPolygon(
+                        QPolygon(
+                            [
+                                QPoint(cursor_x - 5, 0),
+                                QPoint(cursor_x + 5, 0),
+                                QPoint(cursor_x, 8),
+                            ]
+                        )
+                    )
+            painter.setBrush(Qt.BrushStyle.NoBrush)
 
     def mousePressEvent(self, event):
         index = int(event.position().y() // self.ROW_HEIGHT)

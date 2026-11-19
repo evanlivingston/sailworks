@@ -244,7 +244,7 @@ def test_shape_edit_routes_uid_to_the_visible_chart_map(app, tmp_path):
 
     row = stub.scene_panel.item_row(KIND_SHAPE, shape.uid)
     actions = context_menu_actions(stub.scene_panel, row)
-    action_named(actions, "Edit vertices").trigger()
+    action_named(actions, "Edit Shape").trigger()
 
     assert map_canvas.edit_uids == [shape.uid]
     assert log_canvas.edit_uids == []

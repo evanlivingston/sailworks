@@ -215,6 +215,27 @@ class SceneCollection:
     def items_in(self, group) -> list[SceneItem]:
         return [item for item in self.items.values() if item.group == group]
 
+    def selected_identities(self, item_keys=(), group_ids=()) -> set:
+        """Resolve a scene selection to ``(kind, key)`` identities.
+
+        A selected collection stands for everything beneath it, at any depth,
+        so selecting a folder emphasises all of its routes and tracks. Items
+        selected directly are kept even when their collection is not selected.
+        """
+        selected = {(kind, key) for kind, key in item_keys}
+        pending = list(group_ids)
+        visited = set()
+        while pending:
+            identifier = pending.pop()
+            if identifier in visited:
+                continue
+            visited.add(identifier)
+            for group in self.groups_in(identifier):
+                pending.append(group.id)
+            for item in self.items_in(identifier):
+                selected.add(item.identity)
+        return selected
+
     def group_visible(self, identifier) -> bool:
         group = self.groups.get(identifier)
         while group is not None:
@@ -354,6 +375,18 @@ class SceneCollection:
         item.visible = bool(visible)
         self.save()
         return True
+
+    def set_items_visible(self, mapping):
+        """Set several item visibility flags and save once."""
+        changed = False
+        for identity, visible in mapping.items():
+            item = self.items.get(identity)
+            if item is not None and item.visible != bool(visible):
+                item.visible = bool(visible)
+                changed = True
+        if changed:
+            self.save()
+        return changed
 
     def assign(self, item_keys, group, save=True):
         valid = group if group is None or group in self.groups else None
