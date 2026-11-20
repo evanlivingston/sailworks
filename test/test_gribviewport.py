@@ -3118,10 +3118,16 @@ def test_wiring_a_plain_qquickitem_does_not_raise():
     pytest.importorskip("PySide6.QtCore")
     qtquick = pytest.importorskip("PySide6.QtQuick")
     qtgui = pytest.importorskip("PySide6.QtGui")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
 
     from sailworks.qt.gribviewport import _connect_signal
 
-    qtgui.QGuiApplication.instance() or qtgui.QGuiApplication([])
+    # This module shares one process with widget tests, which need a
+    # QApplication; a QGuiApplication singleton cannot be upgraded afterwards.
+    # Install the widget-capable application and reuse whatever an earlier
+    # module already created.
+    if qtgui.QGuiApplication.instance() is None:
+        qtwidgets.QApplication([])
     try:
         item = qtquick.QQuickItem()
     except Exception:  # pragma: no cover - needs a graphical platform

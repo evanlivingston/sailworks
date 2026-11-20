@@ -2556,20 +2556,23 @@ def enc_scene_demand_failed(widget, generation=None):
 
 
 def _viewport_widget_class():  # noqa: C901 - lazy factory
-    """Build the native render-context class on demand.
+    """Build the render-context class on demand.
 
-    The map is always hosted in a native ``QQuickView``: the retired widget
-    host composited through the widget stack at 60 Hz and could not present at
-    the display rate.  Qt is imported lazily so the model and the tests stay
+    The map is hosted in a ``QQuickWidget``: Qt renders the scene into the
+    widget's own backing store, so there is no separate native window with a
+    drawable handoff to wait on.  A native ``QQuickView`` was used before; its
+    render thread intermittently blocked in the compositor's
+    ``nextDrawable``.  Qt is imported lazily so the model and the tests stay
     usable headless.
     """
     from PySide6.QtCore import QEvent, QObject, QRectF, QTimer, QUrl, Qt, Signal
-    from PySide6.QtGui import QSurfaceFormat, QVector2D
-    from PySide6.QtQuick import QQuickItem, QQuickView
+    from PySide6.QtGui import QColor, QSurfaceFormat, QVector2D
+    from PySide6.QtQuick import QQuickItem
+    from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtWidgets import QLabel
     import shiboken6
 
-    host_base = QQuickView
+    host_base = QQuickWidget
 
     from sailworks.qt.gpuweather import WeatherImageProvider
     from sailworks.qt.gribviewportchart import (
@@ -2872,12 +2875,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             format_ = QSurfaceFormat()
             format_.setSamples(4)
             self.setFormat(format_)
-            # A native window cannot be stacked under QWidget overlays, so it
-            # paints the theme background behind the scene instead of a
-            # transparent surface.  It also requests no alpha buffer: a
-            # transparent native surface is not what the scene needs.
-            self.setColor(Qt.GlobalColor.black)
-            self.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
+            # The scene composites inside this widget's backing store, so it
+            # paints the theme background itself and needs no alpha buffer.
+            self.setClearColor(QColor(Qt.GlobalColor.black))
+            self.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
             self._provider = WeatherImageProvider()
             self.engine().addImageProvider("weather", self._provider)
             from .viewportstreamlines import StreamlineImageProvider
@@ -3399,8 +3400,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                             owner.deleteLater()
 
                 self.destroyed.connect(release_native_owners)
-            # The native window cannot parent a QWidget; the status label stays
-            # parentless and is never shown in this host.
+            # The status label stays parentless: the presenter hides it and
+            # the render host never composites it over the scene.
             status_parent = None
             self._status = QLabel("Wind loading", status_parent)
             self._status.setStyleSheet(
@@ -3505,8 +3506,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 return
             self._state = state
             if self._status.parent() is not None:
-                # The native host has no QWidget parent for the status label,
-                # so every visibility call would be a window-server round trip
+                # The status label has no QWidget parent in this host, so
+                # every visibility call would be a window-server round trip
                 # for a label that can never be shown.
                 self._status.setText(text)
                 self._status.adjustSize()
@@ -5596,8 +5597,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             # One density for the whole session: the renderer is keyed on
             # (width, height, scale) and changes tear the map down. Every frame
             # is a padded view read back to the CPU, so density sets cadence.
-            # QQuickWindow exposes devicePixelRatio(), not the QWidget
-            # devicePixelRatioF(); the native host must use the portable one.
+            # The host reports a float ratio (see ``devicePixelRatio``); the
+            # capture scale must stay fractional.
             scale = min(self.devicePixelRatio(), SATELLITE_CAPTURE_SCALE)
             self._satellite_worker.submit(generation, rendered, scale)
 
@@ -8126,8 +8127,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
         def measurement_canvas(self):
             """The viewport host that owns measurement mode, if any.
 
-            A native QQuickView is not a QWidget; the presenter assigns the
-            owning canvas explicitly.
+            The presenter parents the widget on the canvas and assigns the
+            owning canvas explicitly; before that it is only a render host.
             """
             parent_widget = getattr(self, "parentWidget", None)
             if parent_widget is not None:
@@ -8137,8 +8138,17 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             return getattr(self, "_measurement_canvas", None)
 
         def quickWindow(self):  # noqa: N802 - matches the historical accessor
-            """The scene window."""
-            return self
+            """The scene window the widget renders into."""
+            return super().quickWindow()
+
+        def devicePixelRatio(self):  # noqa: N802 - QWindow float semantics
+            """The scene's ratio as a float, as the window host reported it.
+
+            ``QWidget.devicePixelRatio`` reports an int; every composition,
+            capture and pan reference here is made at the fractional ratio,
+            so a second display at 1.5 must not round to 2.
+            """
+            return self.devicePixelRatioF()
 
         def dispose(self):
             if self._disposed:
@@ -10611,12 +10621,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
 
     # A Python virtual invoked from C++ holds the GIL across the base call.
     # Qt Quick's expose handshake waits for the render thread, which needs
-    # the GIL, so the native host keeps the C++ implementations and uses
-    # an event filter for the few events it must observe.
-    GribViewport.event = QQuickView.event
-    GribViewport.showEvent = QQuickView.showEvent
-    GribViewport.resizeEvent = QQuickView.resizeEvent
-    GribViewport.closeEvent = QQuickView.closeEvent
+    # the GIL, so the host keeps the C++ implementations and uses an event
+    # filter for the few events it must observe.
+    GribViewport.event = QQuickWidget.event
+    GribViewport.showEvent = QQuickWidget.showEvent
+    GribViewport.resizeEvent = QQuickWidget.resizeEvent
+    GribViewport.closeEvent = QQuickWidget.closeEvent
 
     return GribViewport
 
@@ -10857,7 +10867,7 @@ def main(argv=None):
     window = QWidget()
     window.setWindowTitle(f"GRIB viewport — {len(paths)} forecasts")
     layout = QVBoxLayout(window)
-    host = QWidget.createWindowContainer(viewport, window)
+    host = viewport
     controls = QHBoxLayout()
     controls.addWidget(QLabel("Forecast UTC"))
     initial = QDateTime(instant)
