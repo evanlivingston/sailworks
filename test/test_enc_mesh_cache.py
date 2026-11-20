@@ -736,6 +736,44 @@ def test_the_granule_is_a_global_grid_not_the_view(tmp_path):
     np.testing.assert_array_equal(first.positions, second.positions)
 
 
+def test_identity_frame_pan_inside_one_granule_hits_the_cache(tmp_path):
+    # The production frame is the view's own (``mesh_scale=1.0``): the scale
+    # and tolerance in the key stay view-dependent, but the granule grid must
+    # still be global, or a tiny pan re-keys a cell that should be a hit.
+    cell = _cell(tmp_path, "identitypan.000", _area(0, 0, 10, 10))
+    coverage = shapely.box(0, 0, 10, 10)
+    cache = encscene.SceneCache(1_000_000)
+    assert cache.put(cell)
+    mesh_cache = encview.MeshCache(1_000_000)
+
+    def build(rect):
+        return encview.build_view_scene(
+            (_plan(cell.path, cell.version, rect, True, coverage),),
+            cache,
+            projection=lambda points: np.asarray(points, dtype=np.float64),
+            stroke_pixels=1.5,
+            palette="cm93",
+            mesh_cache=mesh_cache,
+            mesh_scale=1.0,
+            bounding=_box(*rect.bounds),
+        )
+
+    view = shapely.box(4.0, 2.0, 4.1, 2.1)
+    first = build(view)
+    assert first is not None and mesh_cache.triangulations == 1
+    granule = _granule_of(mesh_cache, cell.path)
+    for bound in granule:
+        scaled = bound * (1.0 / encview.GRANULE_BASE_DEGREES)
+        assert abs(scaled - round(scaled)) < 1e-6
+
+    pan = shapely.box(4.003, 2.0, 4.103, 2.1)
+    second = build(pan)
+    assert second is not None
+    assert second.mesh_hits == 1 and second.mesh_built == 0
+    assert mesh_cache.triangulations == 1
+    assert _granule_of(mesh_cache, cell.path) == granule
+
+
 def test_panning_inside_one_granule_hits_the_cache(tmp_path):
     cell = _cell(tmp_path, "granulehit.000", _area(0, 0, 10, 10))
     coverage = shapely.box(0, 0, 10, 10)

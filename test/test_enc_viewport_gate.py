@@ -1,6 +1,7 @@
 """Small, headless regression checks for the native acceptance helpers."""
 
 import importlib.util
+import json
 import math
 from pathlib import Path
 from unittest.mock import Mock
@@ -11,6 +12,72 @@ from PySide6.QtCore import QPoint, QPointF, Qt
 from types import SimpleNamespace
 
 from sailworks.qt.gribviewport import _viewport_widget_class
+from sailworks.qt import enc_trace
+
+
+@pytest.mark.parametrize("partial", (False, True))
+def test_scene_publish_trace_reports_mesh_cache_delta_and_snapshot(
+    monkeypatch, tmp_path, partial
+):
+    target = tmp_path / "scene.jsonl"
+    monkeypatch.setenv(enc_trace.ENV_PATH, str(target))
+    monkeypatch.setattr(enc_trace, "_config", (str(target), enc_trace.DEFAULT_SLOW_MS))
+    scene = SimpleNamespace(mesh_hits=1, mesh_misses=0, mesh_built=0)
+    metadata = {
+        "partial": partial,
+        "cells_order": (),
+        "cell_states": (),
+        "timings": {
+            "assembly_ms": 2.0,
+            "cells_cache": {
+                "cells": [{"index": 0, "cell": "US5CA13M", "lookup": "hit"}],
+                "dropped": 0,
+                "cache": {
+                    "evictions": 2,
+                    "refused": 0,
+                    "pinned_evictions_avoided": 1,
+                },
+            },
+        },
+        "cache_counters": {"mesh_hits": 8, "mesh_misses": 3},
+        "granule": (-127, 43, -122, 46),
+    }
+
+    class Captured(Exception):
+        pass
+
+    original = enc_trace.event
+
+    def capture(name, **fields):
+        line = original(name, **fields)
+        if name == "scene_publish":
+            assert line is not None
+            raise Captured
+        return line
+
+    monkeypatch.setattr(enc_trace, "event", capture)
+    widget = SimpleNamespace(
+        _disposed=False,
+        _enc_scene_item=SimpleNamespace(),
+        _enc_scene_adopt_pending=None,
+        _enc_trace_phases={},
+        _enc_trace_demand_at=None,
+    )
+    with pytest.raises(Captured):
+        _viewport_widget_class()._enc_scene_published(widget, (1, scene, metadata))
+    record = json.loads(target.read_text().splitlines()[-1])
+    assert record["event"] == "scene_publish"
+    assert record["state"] == ("partial" if partial else "complete")
+    assert record["mesh_cache_hits"] == 1
+    assert record["mesh_cache_misses"] == 0
+    assert record["mesh_cache_built"] == 0
+    assert record["cache_counters"]["mesh_hits"] == 8
+    assert record["granule"] == [-127, 43, -122, 46]
+    assert record["cells_cache"] == metadata["timings"]["cells_cache"]
+    # Separate from the duration list: this publication traced no cell
+    # durations, so ``phase_cells`` stays empty while the cache rows survive.
+    assert record["phase_cells"] == []
+    assert "cells_cache" not in record["stage_ms"]
 
 
 def tool():
