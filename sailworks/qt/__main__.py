@@ -1,8 +1,32 @@
 """Launch the Qt application; also retained as the sailworks-qt alias."""
 
 import argparse
+import os
 import sys
 from typing import cast
+
+
+def install_optional_capture(app, window, controller):
+    """Install the ENC capture only when SAILWORKS_ENC_CAPTURE names a directory.
+
+    The capture module ships separately from the application, so importing it
+    is deferred until the environment opts in. A missing module must not stop
+    the launch: report it once and continue without capture.
+    """
+    capture_dir = os.environ.get("SAILWORKS_ENC_CAPTURE")
+    if not capture_dir:
+        return None
+    try:
+        from .enc_capture import install_capture
+    except ImportError as error:
+        print(
+            "warning: SAILWORKS_ENC_CAPTURE is set but the ENC capture module "
+            f"is unavailable ({error}); continuing without capture for "
+            f"{capture_dir}",
+            file=sys.stderr,
+        )
+        return None
+    return install_capture(app, window, controller)
 
 
 def main(argv=None):
@@ -79,6 +103,8 @@ def main(argv=None):
     controller.start_connections()
     if args.log:
         controller.load_path(args.log)
+    # Inert unless SAILWORKS_ENC_CAPTURE names a directory.
+    install_optional_capture(app, window, controller)
     return app.exec()
 
 

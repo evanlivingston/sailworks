@@ -173,5 +173,61 @@ class TestViewportTransform(unittest.TestCase):
         self.assertEqual(y, 200.0)
 
 
+class TestEncComposeMarginOverride(unittest.TestCase):
+    """The ENC ring override is an inert measurement affordance."""
+
+    def setUp(self):
+        import os
+
+        from sailworks.qt.viewporttransform import ENC_COMPOSE_MARGIN_ENV
+
+        self.env = ENC_COMPOSE_MARGIN_ENV
+        self._os = os
+        self._saved = os.environ.pop(self.env, None)
+
+    def tearDown(self):
+        self._os.environ.pop(self.env, None)
+        if self._saved is not None:
+            self._os.environ[self.env] = self._saved
+
+    def test_unset_follows_the_shipped_rule(self):
+        from sailworks.qt.viewporttransform import (
+            ENC_COMPOSE_FRACTION,
+            enc_compose_margin,
+        )
+        from sailworks.rendering.overlayrenderer import MARGIN
+
+        camera = Camera(width=900, height=700)
+        self.assertEqual(enc_compose_margin(camera), max(MARGIN, 0.5 * 700))
+        self.assertAlmostEqual(
+            enc_compose_margin(camera), ENC_COMPOSE_FRACTION * min(900, 700)
+        )
+
+    def test_override_replaces_the_rule(self):
+        from sailworks.qt.viewporttransform import enc_compose_margin
+
+        self._os.environ[self.env] = "1200"
+        self.assertEqual(enc_compose_margin(Camera(width=900, height=700)), 1200.0)
+
+    def test_override_is_read_per_call(self):
+        from sailworks.qt.viewporttransform import enc_compose_margin
+
+        camera = Camera(width=900, height=700)
+        first = enc_compose_margin(camera)
+        self._os.environ[self.env] = "600"
+        self.assertEqual(enc_compose_margin(camera), 600.0)
+        self._os.environ.pop(self.env)
+        self.assertEqual(enc_compose_margin(camera), first)
+
+    def test_malformed_override_is_ignored(self):
+        from sailworks.qt.viewporttransform import enc_compose_margin
+
+        camera = Camera(width=900, height=700)
+        expected = enc_compose_margin(camera)
+        for raw in ("", "   ", "wide", "0", "-400", "nan", "inf"):
+            self._os.environ[self.env] = raw
+            self.assertEqual(enc_compose_margin(camera), expected, raw)
+
+
 if __name__ == "__main__":
     unittest.main()

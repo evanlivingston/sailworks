@@ -1640,8 +1640,8 @@ class PreviewWindow(QMainWindow):
 
         Entering edit mode from the Scene Collection tree leaves the tree (or
         the context menu it opened) holding focus, so the viewport never sees
-        the key.  The desktop map hosts its mouse and key surface in a
-        ``QQuickView``, so focus both it and the containing widget.
+        the key.  The desktop map's key surface is a ``QQuickWidget``, so
+        focus both it and the map widget.
         """
         target = getattr(self.map, "map_pointer_target", None)
         surface = target() if callable(target) else None

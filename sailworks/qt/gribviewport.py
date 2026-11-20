@@ -28,6 +28,7 @@ import time
 from typing import Any, cast
 
 from sailworks.core.mapmotion import DragVelocity, PanInertia
+from sailworks.qt import enc_trace, panstats
 from sailworks.qt.gpuweatherfields import (
     FIELD_COLUMNS,
     FieldIdentity,
@@ -62,11 +63,233 @@ from sailworks.qt.viewporttransform import (
     CameraChange,
     PaddedPanWindow,
     continuous_longitude,
+    enc_scene_cover_stale,
+    enc_compose_margin,
+    enc_scene_placement,
+    enc_scene_pan,
+    same_frame,
     zoom_preview_transform,
 )
 from sailworks.qt.worldunderlaycache import load_for, save_for
 
 logger = logging.getLogger("sailworks")
+
+# EXPERIMENT (issue 213 phase 1): let the shared ``mapContent`` translation be
+# the only motion a camera change adds to retained content.  When this is set
+# the chart image and the ENC scene stop cancelling that translation with a
+# placement of their own, so the container's single transform is the whole
+# movement.  Set it back to False to restore the two independent placements.
+CONTAINER_CARRIES_PAN = True
+
+
+def _retained_chart_size(item, width, height):
+    """Whether the item on screen already has the pixel size being placed."""
+    try:
+        current_width = float(item.property("imageWidth"))
+        current_height = float(item.property("imageHeight"))
+    except (TypeError, ValueError):
+        return False
+    return current_width > 0.0 and (current_width, current_height) == (
+        float(width),
+        float(height),
+    )
+
+
+def _trace_placement_skip(kind, reason, cause, camera):
+    """Record one placement the shared container carried instead."""
+    if not enc_trace.enabled():
+        return
+    enc_trace.event(
+        kind,
+        reason=reason,
+        cause=cause,
+        **enc_trace.camera_fields(camera),
+    )
+
+
+def _item_offset(item, first, second):
+    """An item's current placement offset, or ``None`` when it cannot read.
+
+    The offset is ``imageX``/``imageY`` for the retained chart and ``x``/``y``
+    for the ENC scene item: both are ``mapContent``-local positions, so the
+    screen position the user sees is the offset plus the container's own
+    translation.
+    """
+    getter = getattr(item, "property", None)
+    if getter is None:
+        return None
+    try:
+        return (float(getter(first) or 0.0), float(getter(second) or 0.0))
+    except (TypeError, ValueError):
+        return None
+
+
+def _shift_item_offset(item, first, second, dx, dy):
+    """Shift an item's container-local offset by a rebased translation.
+
+    The offset is a position inside ``mapContent``, so when the bounded parent
+    resets its own translation the item must absorb the withdrawn translation
+    or it lands a pan away from the ground it covers.  Returns the written
+    ``(first, second)`` offset, or ``None`` when the item cannot be read.
+    """
+    offset = _item_offset(item, first, second)
+    if offset is None:
+        return None
+    placed = (offset[0] + dx, offset[1] + dy)
+    writer = getattr(item, "setProperty", None)
+    try:
+        if writer is not None:
+            writer(first, placed[0])
+            writer(second, placed[1])
+        else:
+            setattr(item, first, placed[0])
+            setattr(item, second, placed[1])
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return placed
+
+
+def _container_pan(reference, camera, dpr=None):
+    """The translation ``mapContent`` carries for ``camera``."""
+    if reference is None or camera is None:
+        return (0.0, 0.0)
+    try:
+        return reference.translation_to(camera, dpr)
+    except ValueError:
+        return (0.0, 0.0)
+
+
+def _trace_publication_anchor(layer, cause, camera, previous, current, container):
+    """Record a publication's screen position before and after it settles.
+
+    ``previous`` is the item's offset immediately before the publication wrote
+    its placement, ``current`` the offset it wrote, and ``container`` the
+    ``mapContent`` translation both are drawn under.  A publication that keeps
+    the content still reports zero ``deltaX``/``deltaY``; any other value is
+    the jump a user would see as the map snapping to another place.
+    """
+    if not enc_trace.enabled() or previous is None or current is None:
+        return None
+    container_x, container_y = container
+    screen_x = current[0] + container_x
+    screen_y = current[1] + container_y
+    previous_x = previous[0] + container_x
+    previous_y = previous[1] + container_y
+    return enc_trace.event(
+        "chart_publish_anchor",
+        layer=layer,
+        cause=cause,
+        imageX=current[0],
+        imageY=current[1],
+        containerX=container_x,
+        containerY=container_y,
+        screenX=screen_x,
+        screenY=screen_y,
+        previousScreenX=previous_x,
+        previousScreenY=previous_y,
+        deltaX=screen_x - previous_x,
+        deltaY=screen_y - previous_y,
+        **enc_trace.camera_fields(camera),
+    )
+
+
+def _trace_rebase(dx, dy, chart_before, chart_after, enc_before, enc_after, camera):
+    """Record one container rebase and the screen delta it left behind.
+
+    The withdrawn translation ``(dx, dy)`` is exactly what the old
+    ``mapContent`` added, so an offset's screen position before the reset is
+    ``offset + (dx, dy)`` while after it the parent is at zero and the screen
+    position is the offset itself.  A clean rebase reports zero deltas; any
+    other value is the geographic jump a user would see as a snap.
+    """
+    if not enc_trace.enabled():
+        return None
+    fields = {"dx": dx, "dy": dy}
+    for layer, before, after in (
+        ("chart", chart_before, chart_after),
+        ("enc", enc_before, enc_after),
+    ):
+        if before is None or after is None:
+            continue
+        previous = (before[0] + dx, before[1] + dy)
+        fields[f"{layer}PreviousScreenX"] = previous[0]
+        fields[f"{layer}PreviousScreenY"] = previous[1]
+        fields[f"{layer}ScreenX"] = after[0]
+        fields[f"{layer}ScreenY"] = after[1]
+        fields[f"{layer}DeltaX"] = after[0] - previous[0]
+        fields[f"{layer}DeltaY"] = after[1] - previous[1]
+    return enc_trace.event("chart_rebase", **fields, **enc_trace.camera_fields(camera))
+
+
+def place_retained_chart(
+    item,
+    x,
+    y,
+    width,
+    height,
+    *,
+    cause="camera",
+    camera=None,
+    carries=None,
+):
+    """Write the retained chart rectangle onto its scene item.
+
+    With ``CONTAINER_CARRIES_PAN`` a camera change whose placement keeps the
+    retained pixels' size is a pure translation: the shared container already
+    applies it, so writing ``imageX``/``imageY`` would add the pan a second
+    time.  The size is still written, and a size change (a zoom or a new
+    composition) is expressed by the container in no way at all, so it is
+    placed in full.  A publication is placed in full too, but in the
+    container's own reference frame: the caller must hand over the placement
+    for the anchor camera, never one shifted by the pan the container already
+    carries.  Returns the trace reason when the offset was left to the
+    container, otherwise ``None``.
+    """
+    if carries is None:
+        carries = CONTAINER_CARRIES_PAN
+    if carries and cause == "camera" and _retained_chart_size(item, width, height):
+        item.setProperty("imageWidth", width)
+        item.setProperty("imageHeight", height)
+        _trace_placement_skip("chart_place_skip", "container_carries", cause, camera)
+        return "container_carries"
+    item.setProperty("imageX", x)
+    item.setProperty("imageY", y)
+    item.setProperty("imageWidth", width)
+    item.setProperty("imageHeight", height)
+    return None
+
+
+def place_enc_scene_item(
+    item,
+    fallback,
+    x,
+    y,
+    *,
+    cause="camera",
+    rescaled=False,
+    camera=None,
+    carries=None,
+):
+    """Apply the retained ENC scene's offset, or let the container carry it.
+
+    ``rescaled`` says the item's projection was just re-solved for the current
+    camera: the container translates, it does not scale, so that placement is
+    written.  Otherwise a camera change is a pan the container already applies
+    and the offset is left alone.  Returns the trace reason when skipped,
+    otherwise ``None``.
+    """
+    if carries is None:
+        carries = CONTAINER_CARRIES_PAN
+    if carries and cause == "camera" and not rescaled:
+        _trace_placement_skip("enc_place_skip", "container_carries", cause, camera)
+        return "container_carries"
+    item.setX(x)
+    item.setY(y)
+    if fallback is not None:
+        # The image layer shares this item's parent and translation: the same
+        # placement keeps its ground under the same cells.
+        fallback.place(x, y)
+    return None
 
 
 def world_placement(camera):
@@ -448,6 +671,533 @@ def _spatially_covers(field, camera):
 def _covers(field, camera):
     """Whether immutable values and mask policy cover the entire current demand."""
     return field.identity.contains(camera.stamp()) and _spatially_covers(field, camera)
+
+
+#: How long a settled chart request waits for the resident ENC scene's own
+#: publication before composing the raster chart anyway.  The wait is bounded
+#: per camera: a scene that fails, is partial or publishes nothing releases
+#: the raster composition.
+CHART_SCENE_DEFER_MS = 1500
+
+#: How long the scene layer may defer to the raster weather worker in scene
+#: mode.  There the scene draws the chart itself, so the weather's priority is
+#: a head start, not a veto: past this window the scene composes while the
+#: weather prepares.
+ENC_SCENE_YIELD_MS = 200
+
+#: The first retry after the scene layer yields without content, and the cap of
+#: its doubling backoff.  The chart-source poll is five seconds, which was the
+#: whole cold-start delay once a single yield had emptied the demand.
+ENC_SCENE_RETRY_MS = 120
+ENC_SCENE_RETRY_MAX_MS = 960
+#: Retries per camera, so a permanently busy weather worker falls back to the
+#: chart-source poll instead of polling a second faster forever.
+ENC_SCENE_RETRY_ATTEMPTS = 10
+
+#: Cover-stale replacement requests allowed per demand key.  The cover probe is
+#: a slack probe: it asks for a wider frame while the current one still covers,
+#: so its answer is never terminal.  Left unbounded it publishes, re-arms and
+#: asks forever; this budget keeps the pre-emptive widening while stopping the
+#: loop.  A changed demand key (camera, size, cell content) starts it over.
+ENC_SCENE_COVER_RETRY_MAX = 2
+
+#: How long an uncovered *partial* scene may be withheld behind a picture that
+#: is already on screen.  The hold exists so a swap cannot draw whole
+#: rectangles of empty ground while the rest assembles; it must not outlive a
+#: layer that stalls in ``loading``, because the retry that would finish the
+#: scene only ever comes from ``idle``.  Measured assemblies on this data run
+#: 0.25-2 s, so four seconds is twice the slowest measured assembly: long
+#: enough that only a genuine stall reaches it, and shorter than the five
+#: second chart-source poll, so a stalled layer still shows its progress
+#: within one poll.
+ENC_SCENE_HOLD_MAX_MS = 4000
+
+#: How still the camera must be before a scene publication is adopted.
+#: A drag moves the camera every ~12 ms (measured over a pan gesture), and
+#: every published frame is placed for the camera it was composed at: adopting
+#: one mid-gesture re-anchors the picture under the hand.  A frame that lands
+#: inside the gesture is therefore held until the camera has not changed for
+#: this long.  The window is the chart settle timer's own 100 ms idle window
+#: plus one publication interval, so a *pause* satisfies it and a drag does
+#: not: at the 12 ms cadence sixteen changes fall inside 150 ms, so only a
+#: genuine stop reaches it, and 150 ms is still short enough to land between
+#: two strokes of a slow pan.
+ENC_SCENE_ADOPT_SETTLE_MS = 150
+
+#: The longest a publication may wait for that pause.  A drag that never stops
+#: for ``ENC_SCENE_ADOPT_SETTLE_MS`` must not starve the scene of every
+#: replacement, so the hold is bounded at one second - roughly eight times the
+#: settle window - and the newest pending frame is then applied under motion.
+ENC_SCENE_ADOPT_CEILING_MS = 1000
+
+
+def scene_chart_deferral_pending(generation, published):
+    """Whether a scene request names a job whose publication has not landed.
+
+    ``published`` is the layer's ``(generation, scene, metadata)`` tuple, or
+    ``None`` before its first publication.  A request the layer serves from an
+    already-published generation will never publish again, so it is not in
+    flight.
+    """
+    if generation is None:
+        return False
+    published_generation = None if published is None else published[0]
+    return generation != published_generation
+
+
+def scene_chart_deferral_live(deferral, camera, now):
+    """Whether a recorded deferral still speaks for this camera and deadline."""
+    return (
+        deferral is not None
+        and deferral.get("camera") == camera
+        and now < float(deferral.get("deadline", 0.0))
+    )
+
+
+def plan_scene_deferral(*, pending, camera, generation, published, now, timeout_ms):
+    """Decide what a settled chart request does while a scene is in flight.
+
+    Returns ``(action, deferral)``.  ``action`` is ``"compose"`` when the
+    raster chart must run now, or ``"wait"`` when it should let the scene's
+    publication cover this camera first; ``deferral`` is the record to keep in
+    the wait case and ``None`` otherwise.  A record for the same camera keeps
+    its original deadline across re-entries, so repeated ticks cannot extend
+    the wait forever.
+    """
+    if not scene_chart_deferral_pending(generation, published):
+        return "compose", None
+    if pending is None:
+        pending = {
+            "camera": camera,
+            "generation": generation,
+            "started": now,
+            "deadline": now + timeout_ms / 1000.0,
+        }
+    else:
+        # A camera change, a newer demand or a partial publication is still
+        # part of the same continuous loading episode: it updates what is
+        # awaited, but never buys another timeout.  ``started`` keeps the
+        # episode's anchor for diagnostics; an expired episode stays expired
+        # until a publication resolves it, so a later demand cannot re-arm it
+        # and hide the raster for another 1.5 s.
+        pending = dict(pending, camera=camera, generation=generation)
+        if pending.get("expired"):
+            return "compose", pending
+    if not scene_chart_deferral_live(pending, camera, now):
+        pending = dict(pending, expired=True)
+        return "compose", pending
+    return "wait", pending
+
+
+def resolve_scene_deferral(*, pending, camera, generation, metadata):
+    """Classify a scene publication against a pending raster deferral.
+
+    ``"skip"`` cancels the raster: a complete scene now draws this camera.
+    ``"release"`` lets the raster compose as it does without a scene layer.
+    ``"keep"`` leaves the wait running: partial progress, or a publication
+    that speaks for a superseded generation.
+    """
+    if pending is None:
+        return "keep"
+    if pending.get("camera") != camera:
+        return "release"
+    if metadata is not None and scene_draws_chart(metadata, camera):
+        return "skip"
+    if metadata is not None and not metadata.get("partial"):
+        return "release"
+    if metadata is None:
+        if generation is not None and generation != pending.get("generation"):
+            return "keep"
+        return "release"
+    return "keep"
+
+
+def defer_chart_for_scene(widget, generation, now):
+    """Record a bounded wait for the scene publication; True when deferring.
+
+    The raster composition runs immediately when there is no scene layer, no
+    request in flight or the camera's wait has expired.
+    """
+    scene = getattr(widget, "_enc_scene_model", None)
+    if scene is None:
+        widget._chart_scene_deferral = None
+        return False
+    if not enc_scene_covers_view(getattr(widget, "_enc_scene_item", None)):
+        # Nothing the ENC presents reaches this view: the raster is the only
+        # chart on screen, so it may not wait for a scene that may never
+        # cover it.
+        widget._chart_scene_deferral = None
+        return False
+    action, pending = plan_scene_deferral(
+        pending=getattr(widget, "_chart_scene_deferral", None),
+        camera=widget._camera,
+        generation=generation,
+        published=getattr(scene, "_published", None),
+        now=now,
+        timeout_ms=CHART_SCENE_DEFER_MS,
+    )
+    widget._chart_scene_deferral = pending
+    if action != "wait":
+        return False
+    widget._chart_timer.start(max(1, math.ceil((pending["deadline"] - now) * 1000.0)))
+    return True
+
+
+def apply_scene_publication(widget, generation, metadata):
+    """Resolve a deferred raster composition against a scene publication."""
+    pending = getattr(widget, "_chart_scene_deferral", None)
+    action = resolve_scene_deferral(
+        pending=pending,
+        camera=widget._camera,
+        generation=generation,
+        metadata=metadata,
+    )
+    if action == "keep":
+        return "keep"
+    widget._chart_scene_deferral = None
+    timer = getattr(widget, "_chart_timer", None)
+    if timer is not None:
+        timer.stop()
+    if action == "release":
+        widget._restart_chart_settle()
+    return action
+
+
+def scene_draws_chart(metadata, camera):
+    """Whether a complete ENC scene is composed for exactly this camera.
+
+    The scene layer draws the chart cells itself.  When its published frame is
+    complete and was assembled for this very camera, a raster chart
+    composition would only duplicate it — and that composition is the
+    multi-second cost of a settled pan or zoom.  An incomplete scene, or one
+    assembled for another camera, is not a substitute: the raster composes.
+    """
+    if not metadata or metadata.get("partial"):
+        return False
+    if camera is None:
+        return False
+    view = metadata.get("camera")
+    return view is not None and view == camera
+
+
+def enc_scene_covers_view(item):
+    """Whether the ENC frame on screen actually draws into the viewport.
+
+    This is the raster's gate, not a metadata probe: a scene can exist, hold a
+    complete generation and still map entirely outside the current viewport
+    after a zoom or a long pan.  Zero drawn vertices, a hidden item or no
+    viewport overlap all mean the ENC is not showing chart content, so the
+    raster must be.  A GUI-only stub with no geometry reports coverage through
+    ``scene_covers_view`` alone, preserving the pre-existing stub behaviour.
+    """
+    if item is None:
+        return False
+    is_visible = getattr(item, "isVisible", None)
+    if callable(is_visible) and not bool(is_visible()):
+        return False
+    shown = getattr(item, "shown_vertex_count", None)
+    if callable(shown) and int(shown()) <= 0:
+        return False
+    reaches = getattr(item, "scene_covers_view", None)
+    if callable(reaches):
+        return bool(reaches())
+    return True
+
+
+def scene_presents_chart(metadata, camera, item):
+    """Whether the presented ENC frame is this camera's chart content.
+
+    The raster may be held back only when all three hold: the published
+    metadata is a complete scene, it was composed for exactly this camera, and
+    the frame actually on screen draws vertices into the viewport.  Any other
+    state - partial, stale camera, zero vertices, no overlap, no item - means
+    the raster must compose.
+    """
+    return scene_draws_chart(metadata, camera) and enc_scene_covers_view(item)
+
+
+def ensure_chart_content(widget, reason, generation=None):
+    """Compose the raster now unless a presented scene draws this view.
+
+    The viewport always shows chart content.  The raster is suppressed only
+    while ``enc_scene_covers_view`` holds; the moment the scene is withdrawn,
+    hidden, left with zero vertices, never adopted or published outside the
+    viewport, the raster is the only layer that can cover the view and must
+    compose at once - not after the settle window and not after the 500 ms
+    coverage re-check.  The deferral and suppression bookkeeping are cleared
+    so neither can hold the composition back, and the request is flagged
+    (``_chart_force_coverage``) so the weather head start cannot starve the
+    only chart on screen.
+
+    A covering scene is untouched: this never makes the raster duplicate a
+    frame that already draws the view.  Every call records a
+    ``chart_blank_guard`` trace event naming the scene state and the reason,
+    so a future blank is visible as an event rather than a missing picture.
+    """
+    item = getattr(widget, "_enc_scene_item", None)
+    covers = enc_scene_covers_view(item)
+    shown = getattr(item, "shown_vertex_count", None)
+    is_visible = getattr(item, "isVisible", None)
+    scene_verts = None
+    if callable(shown):
+        try:
+            scene_verts = int(shown())
+        except (RuntimeError, TypeError, ValueError):
+            scene_verts = None
+    scene_visible = None
+    if callable(is_visible):
+        try:
+            scene_visible = bool(is_visible())
+        except RuntimeError:
+            scene_visible = None
+    request = (
+        not covers
+        and not getattr(widget, "_disposed", False)
+        and getattr(widget, "_chart_model", None) is not None
+        and getattr(widget, "_camera", None) is not None
+    )
+    if enc_trace.enabled():
+        enc_trace.event(
+            "chart_blank_guard",
+            reason=reason,
+            generation=generation,
+            scene_verts=scene_verts,
+            scene_visible=scene_visible,
+            scene_covers=covers,
+            raster_requested=request,
+            raster_generation=getattr(widget, "_chart_visible_generation", None),
+            **enc_trace.camera_fields(getattr(widget, "_camera", None)),
+        )
+    if not request:
+        return False
+    widget._chart_scene_deferral = None
+    widget._chart_scene_suppressed_at = None
+    widget._chart_scene_suppressed_camera = None
+    widget._chart_force_coverage = True
+    timer = getattr(widget, "_chart_timer", None)
+    if timer is not None:
+        timer.start(1)
+        return True
+    request_now = getattr(widget, "_request_chart", None)
+    if callable(request_now):
+        request_now(cause="scene_gap")
+        return True
+    return False
+
+
+def camera_geometry(camera):
+    """The camera fields that decide whether a frame covers a view.
+
+    The forecast time, density and source are deliberately absent: they do not
+    move the projected chart, and the startup timeline rewrites the time on
+    every demand.  Comparing the whole camera would therefore start a fresh
+    suppression budget each tick while the view had not moved at all.
+    """
+    if camera is None:
+        return None
+    fields = []
+    for name in ("center_lat", "center_lon", "zoom", "width", "height"):
+        value = getattr(camera, name, None)
+        try:
+            value = round(float(value), 6)
+        except (TypeError, ValueError):
+            pass
+        fields.append(value)
+    return tuple(fields)
+
+
+ENV_ENC_SCENE_HOLD = "SAILWORKS_ENC_SCENE_HOLD"
+
+
+def enc_scene_hold_enabled():
+    """Whether a complete scene waits for the session's first raster.
+
+    On by default.  ``SAILWORKS_ENC_SCENE_HOLD=0`` disables the hold so the
+    startup cost can be measured with and without it on one build.
+    """
+    value = os.environ.get(ENV_ENC_SCENE_HOLD, "1")
+    return value.strip().lower() not in ("0", "false", "no", "off")
+
+
+def scene_suppression_expired(widget, camera, now, budget_ms):
+    """Whether a complete scene has withheld the raster for its whole budget.
+
+    A scene may hold the raster back so the two do not duplicate the same
+    chart.  The hold is per camera and bounded: a presented ENC frame reports
+    coverage of its own bounding geometry, which a partially presented frame
+    satisfies while drawing only a fraction of its cells.  Past ``budget_ms``
+    the raster composes regardless, because a duplicated composition is cheap
+    next to a chart that never appears.
+
+    Records the episode's start on ``widget`` the first time it is asked for
+    this camera; a view change starts a new episode.  Only the geometry keys
+    the episode, so a time or density tick in the same view is not a change.
+    """
+    geometry = camera_geometry(camera)
+    started = getattr(widget, "_chart_scene_suppressed_at", None)
+    suppressed_camera = getattr(widget, "_chart_scene_suppressed_camera", None)
+    if started is None or suppressed_camera != geometry:
+        widget._chart_scene_suppressed_at = now
+        widget._chart_scene_suppressed_camera = geometry
+        return False
+    return (now - started) * 1000.0 >= budget_ms
+
+
+def raster_layer_presence(widget):
+    """The chart raster layer's real on-screen state.
+
+    The adopted generation alone is not presence: it is only ever assigned on
+    adoption, so a layer that was cleared, hidden by its scene or whose front
+    image failed would still look present.  Presence therefore combines the
+    generation with the layer item's own effective visibility, opacity, ready
+    front image and front slot source.  A slot source of ``image://chart/<n>``
+    names the generation actually painted, which is what a reviewer needs to
+    see blinks.
+    """
+    item = getattr(widget, "_chart", None)
+    layer_visible = None
+    opacity = None
+    ready = None
+    front_source = None
+    if item is not None:
+
+        def read(name):
+            reader = getattr(item, "property", None)
+            if not callable(reader):
+                return None
+            try:
+                return reader(name)
+            except RuntimeError:
+                return None
+
+        probe = getattr(item, "isVisible", None)
+        if callable(probe):
+            try:
+                layer_visible = bool(probe())
+            except RuntimeError:
+                layer_visible = None
+        if layer_visible is None:
+            raw = read("visible")
+            layer_visible = None if raw is None else bool(raw)
+        raw = read("ready")
+        ready = None if raw is None else bool(raw)
+        slot = read("frontSlot")
+        if isinstance(slot, int) and slot in (0, 1):
+            front_source = read("slot%dSource" % slot)
+        probe = getattr(item, "opacity", None)
+        if callable(probe):
+            try:
+                opacity = float(probe())
+            except (RuntimeError, TypeError, ValueError):
+                opacity = None
+    painted = getattr(widget, "_chart_visible_generation", None)
+    if front_source is not None:
+        # The front slot is the image the layer actually draws.  A cleared
+        # slot paints nothing even if a generation was adopted earlier; a
+        # non-empty slot that does not name a generation is still the adopted
+        # generation's pixels (the provider's own URL scheme is not the
+        # contract here).
+        to_text = getattr(front_source, "toString", None)
+        text = (to_text() if callable(to_text) else str(front_source)).rstrip("/")
+        tail = text.rsplit("/", 1)[-1] if text else ""
+        if not text:
+            painted = None
+        elif tail.isdigit():
+            painted = int(tail)
+    visible = painted is not None
+    if visible and layer_visible is False:
+        visible = False
+    if visible and opacity is not None and opacity <= 0.0:
+        visible = False
+    if visible and ready is False:
+        visible = False
+    return {
+        "visible": visible,
+        "painted_generation": painted,
+        "layer_visible": layer_visible,
+        "opacity": opacity,
+        "ready": ready,
+    }
+
+
+def trace_raster_visibility(widget, reason):
+    """Record a raster/ENC presence transition for the opt-in trace.
+
+    ``visible`` is the chart layer's real presence (see
+    :func:`raster_layer_presence`), not just a generation that was adopted at
+    some point in the past, so a genuine hide is provable.  The event names
+    the painted generation and whether those pixels were a full composition,
+    a region composition or a reuse; ``replaced`` marks an image swap that
+    stayed visible, separating "blink by replacement" from "blink by hide".
+    ``hidden_total_ms`` accumulates the wall time the layer spent hidden over
+    the session so a reviewer sees the sum, not just the transitions.
+
+    A no-op unless ``SAILWORKS_ENC_TRACE`` is set, and deduplicated so only a
+    real transition writes a line.  The reason names what caused it; this is
+    an event, never a per-frame count.
+    """
+    if not enc_trace.enabled():
+        return None
+    presence = raster_layer_presence(widget)
+    painted = presence["painted_generation"]
+    previous = getattr(widget, "_enc_trace_raster_state", None)
+    now = time.perf_counter()
+    hidden_ms = float(getattr(widget, "_enc_trace_raster_hidden_ms", 0.0) or 0.0)
+    hidden_since = getattr(widget, "_enc_trace_raster_hidden_since", None)
+    item = getattr(widget, "_enc_scene_item", None)
+    shown = getattr(item, "shown_vertex_count", None)
+    reaches = getattr(item, "scene_covers_view", None)
+    enc_generation = getattr(widget, "_enc_scene_ready_generation", None)
+    if enc_generation is None:
+        enc_generation = getattr(widget, "_enc_scene_partial_generation", None)
+    covers_view = None if not callable(reaches) else bool(reaches())
+    painted_state = getattr(widget, "_enc_trace_painted", None)
+    if (
+        not isinstance(painted_state, dict)
+        or painted_state.get("generation") != painted
+    ):
+        painted_state = {}
+    state = (
+        presence["visible"],
+        painted,
+        painted_state.get("mode"),
+        enc_generation,
+        bool(getattr(widget, "_enc_scene_provisional", False)),
+        covers_view,
+    )
+    if state == previous:
+        return None
+    replaced = bool(previous is not None and previous[0] and presence["visible"])
+    if previous is not None:
+        was_visible = previous[0]
+        if was_visible and not presence["visible"]:
+            widget._enc_trace_raster_hidden_since = now
+        elif not was_visible and presence["visible"]:
+            since = hidden_since if hidden_since is not None else now
+            hidden_ms += max(0.0, (now - since) * 1000.0)
+            widget._enc_trace_raster_hidden_since = None
+    elif not presence["visible"]:
+        widget._enc_trace_raster_hidden_since = now
+    widget._enc_trace_raster_hidden_ms = hidden_ms
+    widget._enc_trace_raster_state = state
+    return enc_trace.event(
+        "raster_visibility",
+        visible=presence["visible"],
+        generation=presence["painted_generation"],
+        painted_generation=presence["painted_generation"],
+        painted_mode=painted_state.get("mode"),
+        painted_composed_pixels=painted_state.get("composed_pixels"),
+        painted_reused_pixels=painted_state.get("reused_pixels"),
+        replaced=replaced,
+        layer_visible=presence["layer_visible"],
+        layer_opacity=presence["opacity"],
+        enc_generation=enc_generation,
+        enc_vertices=int(shown()) if callable(shown) else None,
+        enc_covers_view=covers_view,
+        hidden_total_ms=round(hidden_ms, 3),
+        reason=reason,
+        elapsed_ms=enc_trace.elapsed_ms(getattr(widget, "_enc_trace_demand_at", None)),
+    )
 
 
 def _contains(outer, inner):
@@ -1829,29 +2579,195 @@ def _prepare_wave_layer(viewport):
         setattr(viewport, name, default)
 
 
-def _viewport_widget_class():  # noqa: C901 - lazy factory
-    """Build the native render-context class on demand.
+def enc_scene_cells_key(layer):
+    """The cell set a scene request would read, as far as it is knowable.
 
-    The map is always hosted in a native ``QQuickView``: the retired widget
-    host composited through the widget stack at 60 Hz and could not present at
-    the display rate.  Qt is imported lazily so the model and the tests stay
-    usable headless.
+    ``layer.request`` is handed only a camera, so the requested cells are
+    whatever that camera's forecast instant and portrayal select.  A layer may
+    expose a cheaper explicit identity; it is preferred when present, and the
+    camera's own cell-selecting fields complete the key.
+    """
+    try:
+        probe = getattr(layer, "cells_key", None)
+        if callable(probe):
+            probe = probe()
+    except Exception:
+        # A layer whose identity property raises cannot name its cells; the
+        # rest of the key still identifies the demand.
+        return None
+    if probe is not None and not isinstance(probe, (str, int, float, tuple, frozenset)):
+        return repr(probe)
+    return probe
+
+
+def enc_scene_demand_key(widget, camera, layer=None):
+    """What a scene request actually depends on; equal means one demand.
+
+    The figures are exact: a camera the layer's own reuse considers different
+    must be a different demand, so pan and zoom never wait for a coalescer.
+    """
+    if camera is None:
+        return None
+    if layer is None:
+        layer = getattr(widget, "_enc_scene_model", None)
+    instant = getattr(camera, "time", None)
+    return (
+        getattr(camera, "center_lat", None),
+        getattr(camera, "center_lon", None),
+        getattr(camera, "zoom", None),
+        getattr(camera, "width", None),
+        getattr(camera, "height", None),
+        getattr(camera, "density", None),
+        bool(getattr(camera, "over_land", True)),
+        bool(getattr(camera, "geographic", True)),
+        getattr(camera, "source", None),
+        None if instant is None else instant.isoformat(),
+        max(1, int(round(float(getattr(widget, "_camera_dpr", 1.0) or 1.0)))),
+        None if layer is None else enc_scene_cells_key(layer),
+    )
+
+
+def enc_scene_demand_token(demand):
+    """A short process-stable token for trace records (FNV-1a)."""
+    value = 0x811C9DC5
+    for byte in repr(demand).encode("utf-8"):
+        value = ((value ^ byte) * 0x01000193) & 0xFFFFFFFF
+    return f"{value:08x}"
+
+
+#: How long a settled, covered ENC view must stay quiet before its neighbouring
+#: granules are warmed.  Long enough that a gesture in progress never starts a
+#: prefetch, short enough to finish before the camera reaches that ground.
+ENC_PREFETCH_DELAY_MS = 400
+
+
+def enc_scene_prefetch_eligible(widget):
+    """Whether a settled demand has drawn enough to warm its neighbours.
+
+    A ``covered`` demand already means the whole view is drawn.  Everything
+    else must show a finished composition (layer ``ready`` with no queued
+    request) that drew at least one cell and left no cell still resolving.
+
+    ``covers_view`` is deliberately not required.  Adjacent-scale bands leave
+    genuine gaps between their cells, so a complete, ``ready`` composition can
+    draw four cells and still not cover every pixel of the viewport.  Requiring
+    coverage meant the neighbour prefetch never armed outside the rare case
+    where the picked cells happened to tile the view exactly.  A cell that was
+    refused or is still loading is a different matter: the composition is then
+    incomplete, and this returns ``False``.
+    """
+    layer = getattr(widget, "_enc_scene_model", None)
+    state = getattr(widget, "_enc_scene_demand_state", None)
+    if layer is None or state == "failed":
+        return False
+    if state == "covered":
+        return True
+    if getattr(layer, "state", None) != "ready":
+        return False
+    if getattr(layer, "_pending", None) is not None:
+        # A real request is queued or composing: the prefetch would compete.
+        return False
+    cell_states = tuple(getattr(widget, "_enc_scene_cell_states", ()) or ())
+    if not any(
+        isinstance(cell, dict) and cell.get("state") == "ready" for cell in cell_states
+    ):
+        return False
+    return not any(
+        isinstance(cell, dict) and cell.get("state") == "loading"
+        for cell in cell_states
+    )
+
+
+def enc_scene_prefetch_settled(widget, delay_ms=None):
+    """Arm the neighbour prefetch now that the demand has settled and is quiet.
+
+    A still-loading scene, a demand that drew nothing, or a cell that is still
+    resolving leaves :func:`enc_scene_prefetch_eligible` false: nothing here
+    may compete with the request that is about to fill the view.  One arm per
+    demand, so a settle tick on the same camera neither restarts the delay nor
+    repeats it.
+    """
+    if getattr(widget, "_disposed", False):
+        return False
+    timer = getattr(widget, "_enc_prefetch_timer", None)
+    layer = getattr(widget, "_enc_scene_model", None)
+    if timer is None or layer is None:
+        return False
+    if not enc_scene_prefetch_eligible(widget):
+        return False
+    demand = getattr(widget, "_enc_scene_demand_key", None)
+    if demand is None or demand == getattr(widget, "_enc_prefetch_armed_demand", None):
+        return False
+    widget._enc_prefetch_armed_demand = demand
+    timer.start(ENC_PREFETCH_DELAY_MS if delay_ms is None else delay_ms)
+    return True
+
+
+def enc_scene_demand_settled(widget, state, generation=None):
+    """Record a terminal outcome, only for the generation that owns it."""
+    if generation is None:
+        return
+    if generation != getattr(widget, "_enc_scene_demand_generation", None):
+        return
+    if getattr(widget, "_enc_scene_demand_state", None) != "in_flight":
+        return
+    widget._enc_scene_demand_state = state
+    if state == "covered":
+        # Remember what was covered, so a settle tick on the same camera does
+        # not ask the layer for content it already holds.
+        widget._enc_scene_covered_demand = (
+            getattr(widget, "_enc_scene_demand_key", None),
+            generation,
+        )
+        # The view is drawn and the camera is quiet: this is the only moment
+        # the neighbouring granules are worth warming.
+        enc_scene_prefetch_settled(widget)
+
+
+def enc_scene_demand_failed(widget, generation=None):
+    """The demand's generation will not publish: a retry may ask again.
+
+    A ``covered`` record is cleared too: a layer withdrawal or a layer-level
+    ``unavailable`` means the content the record described is gone, so the
+    guard must not outlive it.
+    """
+    if generation is not None and generation != getattr(
+        widget, "_enc_scene_demand_generation", None
+    ):
+        return
+    if getattr(widget, "_enc_scene_demand_state", None) in ("in_flight", "covered"):
+        widget._enc_scene_demand_state = "failed"
+    widget._enc_scene_covered_demand = None
+
+
+def _viewport_widget_class():  # noqa: C901 - lazy factory
+    """Build the render-context class on demand.
+
+    The map is hosted in a ``QQuickWidget``: Qt renders the scene into the
+    widget's own backing store, so there is no separate native window with a
+    drawable handoff to wait on.  Qt is imported lazily so the model and the
+    tests stay usable headless.
     """
     from PySide6.QtCore import QEvent, QObject, QRectF, QTimer, QUrl, Qt, Signal
-    from PySide6.QtGui import QSurfaceFormat, QVector2D
-    from PySide6.QtQuick import QQuickView
+    from PySide6.QtGui import QColor, QSurfaceFormat, QVector2D
+    from PySide6.QtQuick import QQuickItem
+    from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtWidgets import QLabel
     import shiboken6
 
-    host_base = QQuickView
+    host_base = QQuickWidget
 
     from sailworks.qt.gpuweather import WeatherImageProvider
     from sailworks.qt.gribviewportchart import (
         CHART_PALETTE,
         CHART_IDLE_MS,
         CHART_INTERACTIVE_MS,
+        CHART_RETAINED_HEAD_START_MS,
+        CHART_SCENE_SKIP_MS,
+        CHART_SCENE_SUPPRESS_MAX_MS,
+        CHART_STARTUP_HEAD_START_MS,
+        CHART_STARTUP_SCENE_HOLD_MS,
         CHART_WEATHER_BUSY_WAIT_MS,
-        CHART_WEATHER_READY_WAIT_MS,
         ViewportChartLayer,
         chart_image_provider,
         chart_placement,
@@ -1882,6 +2798,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
         stateChanged = Signal(str)  # noqa: N815 - Qt signal name
         chartPublished = Signal(object)  # noqa: N815 - Qt signal name
         chartStateChanged = Signal(str)  # noqa: N815 - Qt signal name
+        encScenePublished = Signal(object)  # noqa: N815 - Qt signal name
+        encSceneStateChanged = Signal(str)  # noqa: N815 - Qt signal name
         nativeError = Signal(str)  # noqa: N815 - Qt signal name
         streamlinesPrepared = Signal()  # noqa: N815
         wavePrepared = Signal()  # noqa: N815
@@ -1900,6 +2818,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             native_weather_fields=None,
             native_weather_budget=None,
             enc_chart_layer=False,
+            enc_scene_layer=False,
             chart_without_weather=False,
             chart_palette=CHART_PALETTE,
             enc_only=False,
@@ -1993,7 +2912,94 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._native_error = ""
             # The ENC cells are an experimental addition to the chart layer.
             # They are off by default, and they never turn on by themselves.
-            self._enc_chart_layer = bool(enc_chart_layer) and self._chart_layer
+            # The GPU scene layer supersedes the raster ENC source (a cell is
+            # drawn once, never twice) and implies the chart layer, so the
+            # resolution is shared with the CLI wiring.
+            from .encscenelayer import resolve_enc_modes
+
+            (
+                self._chart_layer,
+                self._enc_chart_layer,
+                self._enc_scene_layer,
+            ) = resolve_enc_modes(self._chart_layer, enc_chart_layer, enc_scene_layer)
+            # The scene layer's item, layer and last state stay absent unless
+            # the flag resolved on: the default path constructs none of them.
+            self._enc_scene_container = None
+            self._enc_scene_item: Any = None
+            self._enc_scene_model = None
+            self._enc_scene_state = "idle"
+            #: The image layer beneath the mesh that paints the ground of the
+            #: cells the scene refused.  Absent unless the scene layer is on,
+            #: so the default path constructs neither it nor its worker.
+            self._enc_fallback_container = None
+            self._enc_fallback = None
+            #: The camera the presented ENC scene was composed for; its
+            #: projection is already in that camera's pixels.
+            self._enc_scene_camera = None
+            #: True while the presented scene belongs to a previous camera and
+            #: its replacement is still being composed: the status says so and
+            #: a failed/cancelled update withdraws it.
+            self._enc_scene_provisional = False
+            #: The published scene's ordered cell identity records and their
+            #: explicit per-cell states (``ready``, ``unavailable``,
+            #: ``oversized``, ``error``, ``loading``).  Empty when nothing is
+            #: presented; a skipped cell is named here instead of vanishing.
+            self._enc_scene_cells_order = ()
+            self._enc_scene_cell_states = ()
+            #: Generation of the complete scene on screen, or ``None`` when
+            #: nothing complete is presented.  A partial publication for a
+            #: newer generation must not replace it.
+            self._enc_scene_ready_generation = None
+            #: Generation whose *partial* scene is currently drawn because no
+            #: complete frame reached the demanded view.  It keeps receiving
+            #: progress publications and is never reported as current.
+            self._enc_scene_partial_generation = None
+            #: The newest uncovered partial withheld behind the complete scene
+            #: on screen, and when the first of this hold's partials was
+            #: withheld.  The timestamp bounds the hold; the payload is what an
+            #: expired hold releases (see ``_hold_enc_scene_partial``).
+            self._enc_scene_held_partial = None
+            self._enc_scene_held_partial_at = None
+            #: The newest generation this view has asked for.  A withdrawal for
+            #: any other generation is a superseded job's cancellation and may
+            #: not touch the presented scene.
+            self._enc_scene_pending_generation = None
+            #: The newest publication held because the camera was still
+            #: moving, and when the first of this hold's publications was
+            #: held.  One slot only: a later publication replaces it, so a
+            #: long drag cannot grow a queue.  The timestamp bounds the hold
+            #: at ``ENC_SCENE_ADOPT_CEILING_MS``.
+            self._enc_scene_adopt_pending = None
+            self._enc_scene_adopt_pending_at = None
+            self._enc_scene_generation = None
+            #: The demand guard: what the newest scene request actually depends
+            #: on, the outcome of its last generation and its short trace token.
+            #: An unchanged demand cannot mint a second generation while that
+            #: outcome is in flight or already covered; a changed key, a
+            #: failure, or a budgeted cover replacement may.
+            self._enc_scene_demand_key = None
+            self._enc_scene_demand_state = None
+            self._enc_scene_demand_generation = None
+            #: ``(demand, generation)`` the layer already *covered*.  A settle
+            #: tick that finds the camera and cell content unchanged skips the
+            #: ask outright: the content is still whatever that generation
+            #: published, so a second request can only describe the same frame.
+            #: A changed demand (camera or cell version) or a newer generation
+            #: makes the record stale and the ask proceeds.
+            self._enc_scene_covered_demand = None
+            #: The generation whose covered-skip was last traced.  A settle
+            #: tick that skips the same covered demand is silent after the
+            #: first record, so one unchanged camera does not fill the trace.
+            self._enc_scene_covered_skip_generation = None
+            #: Why the next request is being made (``settle``, ``retry`` or
+            #: ``cover``); set by the producer that asks, read and cleared by
+            #: ``_request_enc_scene`` for its trace record.
+            self._enc_scene_request_cause = None
+            #: Cover-stale replacement budget: the demand key it was opened
+            #: for and how many replacement asks it has spent.  A changed
+            #: demand key resets both.
+            self._enc_scene_cover_key = None
+            self._enc_scene_cover_requests = 0
             self._chart_palette = chart_palette
             self._environment_provider = None
             self._environment = None
@@ -2052,12 +3058,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             format_ = QSurfaceFormat()
             format_.setSamples(4)
             self.setFormat(format_)
-            # A native window cannot be stacked under QWidget overlays, so it
-            # paints the theme background behind the scene instead of a
-            # transparent surface.  It also requests no alpha buffer: a
-            # transparent native surface is not what the scene needs.
-            self.setColor(Qt.GlobalColor.black)
-            self.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
+            # The scene composites inside this widget's backing store, so it
+            # paints the theme background itself and needs no alpha buffer.
+            self.setClearColor(QColor(Qt.GlobalColor.black))
+            self.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
             self._provider = WeatherImageProvider()
             self.engine().addImageProvider("weather", self._provider)
             from .viewportstreamlines import StreamlineImageProvider
@@ -2103,6 +3107,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._chart_composition_camera = None
             self._chart_composition_dpr = None
             self._chart_camera_changed = time.perf_counter()
+            # The weather head start is measured from this reference, never
+            # from the last camera change: a move every settle interval must
+            # not re-arm it forever.  It starts at the viewport's own start
+            # (weather keeps its cold-start priority) and is refreshed by every
+            # successful composition.
+            self._chart_head_start_basis = self._chart_camera_changed
             self._chart_interactive_at = None
             self._chart_ready_at = None
             self._chart_request_state = None
@@ -2112,6 +3122,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._chart_redelivery_generation = None
             self._chart_budget_refusal = None
             self._chart_visible_generation = None
+            # Set when the ENC scene stops drawing the view: the raster is then
+            # the only chart on screen and neither the settle window nor the
+            # weather head start may withhold it (see ``ensure_chart_content``).
+            self._chart_force_coverage = False
             # A layer toggle withdraws the previous composition, so the next
             # ready frame is not a ready-to-ready swap.  Arm one fade for it.
             self._chart_swap_fade_armed = False
@@ -2293,6 +3307,90 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     enc_only=enc_only,
                     session=getattr(model, "session", None),
                 )
+                if self._enc_scene_layer:
+                    # The GPU ENC source.  The raster composition above was
+                    # constructed with its ENC source disabled (the mode
+                    # resolution guarantees it), so no cell is drawn twice.
+                    from .encscenelayer import EncSceneLayer
+
+                    container = self._weather.findChild(QQuickItem, "encSceneLayer")
+                    if container is None:
+                        raise RuntimeError(
+                            "The GRIB viewport could not load its ENC scene"
+                        )
+                    self._enc_scene_container = container
+                    # The item is the GUI thread's only handle on the scene:
+                    # the layer's worker never touches it.
+                    self._enc_scene_item = enc_scene_item(container)
+                    # The refused cells' ground sits between the raster and
+                    # the mesh: a cell the scene could not draw is still
+                    # chart content, in the camera's own projection.
+                    fallback_container = self._weather.findChild(
+                        QQuickItem, "encFallbackLayer"
+                    )
+                    if fallback_container is None:
+                        raise RuntimeError(
+                            "The GRIB viewport could not load its ENC fallback"
+                        )
+                    from .encfallback import ENCFallbackOverlay
+
+                    self._enc_fallback_container = fallback_container
+                    self._enc_fallback = ENCFallbackOverlay(
+                        fallback_container, dpr=self.devicePixelRatio()
+                    )
+                    self._enc_scene_model = EncSceneLayer(
+                        data_dir=chart_data_dir,
+                        palette=self._chart_palette,
+                        # The catalog the scene layer refreshes and reads is
+                        # the viewport's own ``EncCatalog``; the raster path's
+                        # ``ViewportEncSource`` has no ``refresh()``.
+                        catalog_factory=enc_scene_catalog,
+                        worker_idle=lambda: not model.busy(),
+                        # Bounded courtesy: the scene is the chart in this
+                        # mode, so waiting for the raster worker is the
+                        # five-second stall, not a preview delay.
+                        yield_budget_ms=ENC_SCENE_YIELD_MS,
+                        current_camera=lambda: self._camera,
+                        on_publish=self.encScenePublished.emit,
+                        on_state=self.encSceneStateChanged.emit,
+                        dpr=self.devicePixelRatio(),
+                    )
+                    # The worker publishes off the GUI thread: both callbacks
+                    # are queued so only this thread touches the item.
+                    self.encScenePublished.connect(
+                        self._enc_scene_published,
+                        Qt.ConnectionType.QueuedConnection,
+                    )
+                    self.encSceneStateChanged.connect(
+                        self._enc_scene_state_changed,
+                        Qt.ConnectionType.QueuedConnection,
+                    )
+                    # A yield must not wait for the chart-source poll: this
+                    # single-shot re-asks for the outstanding demand with a
+                    # doubling backoff, and stops once the layer is loading,
+                    # ready or unavailable.
+                    self._enc_scene_retry_timer = QTimer(self)
+                    self._enc_scene_retry_timer.setSingleShot(True)
+                    self._enc_scene_retry_timer.timeout.connect(self._retry_enc_scene)
+                    self._enc_scene_retry_attempt = 0
+                    self._enc_scene_retry_camera = None
+                    # A withheld partial is released by this single-shot timer
+                    # when the complete scene never lands: one timer, so a new
+                    # partial re-arms it instead of stacking another.
+                    self._enc_scene_hold_timer = QTimer(self)
+                    self._enc_scene_hold_timer.setSingleShot(True)
+                    self._enc_scene_hold_timer.timeout.connect(
+                        self._release_held_enc_scene_partial
+                    )
+                    # The neighbour prefetch: armed by a covered settle, fired
+                    # once the camera has been quiet for the delay, and always
+                    # behind a real request.
+                    self._enc_prefetch_timer = QTimer(self)
+                    self._enc_prefetch_timer.setSingleShot(True)
+                    self._enc_prefetch_timer.timeout.connect(
+                        self._enc_prefetch_neighbours
+                    )
+                    self._enc_prefetch_armed_demand = None
                 self._route_overlay = self._weather.findChild(QObject, "routeOverlay")
                 self._navigation_overlay = self._weather.findChild(
                     QObject, "navigationOverlay"
@@ -2489,8 +3587,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                             owner.deleteLater()
 
                 self.destroyed.connect(release_native_owners)
-            # The native window cannot parent a QWidget; the status label stays
-            # parentless and is never shown in this host.
+            # The status label stays parentless: the presenter hides it and
+            # the render host never composites it over the scene.
             status_parent = None
             self._status = QLabel("Wind loading", status_parent)
             self._status.setStyleSheet(
@@ -2595,8 +3693,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 return
             self._state = state
             if self._status.parent() is not None:
-                # The native host has no QWidget parent for the status label,
-                # so every visibility call would be a window-server round trip
+                # The status label has no QWidget parent in this host, so
+                # every visibility call would be a window-server round trip
                 # for a label that can never be shown.
                 self._status.setText(text)
                 self._status.adjustSize()
@@ -2637,6 +3735,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             if self._disposed:
                 return
             requested_at = None
+            record = None
             request_times = getattr(self, "_chart_request_times", None)
             if request_times is not None:
                 requested_at = request_times.pop(generation, None)
@@ -2651,6 +3750,35 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     del latencies[:-64]
                     while len(stage_times) > 64:
                         stage_times.pop(next(iter(stage_times)))
+            if enc_trace.enabled():
+                metadata_map = metadata if isinstance(metadata, dict) else {}
+                timings = metadata_map.get("timings")
+                compose = (
+                    timings.get("compose_ms") if isinstance(timings, dict) else None
+                )
+                if compose is None:
+                    compose = metadata_map.get("compose_ms")
+                enc_trace.event(
+                    "chart_publish",
+                    generation=generation,
+                    compose_ms=compose,
+                    request_to_publish_ms=(record or {}).get("request_to_publish_ms"),
+                    # What the published pixels actually were: a full
+                    # composition, a region composition of the exposed strips,
+                    # or a translated/covered reuse.  This is the field that
+                    # was missing when "tiles blink" could not be attributed.
+                    static_mode=(metadata_map.get("static") or {}).get("mode"),
+                    static_reason=(metadata_map.get("static") or {}).get("reason"),
+                    composed_pixels=(metadata_map.get("static") or {}).get(
+                        "composed_pixels"
+                    ),
+                    reused_pixels=(metadata_map.get("static") or {}).get(
+                        "reused_pixels"
+                    ),
+                    elapsed_ms=enc_trace.elapsed_ms(
+                        getattr(self, "_enc_trace_demand_at", None)
+                    ),
+                )
             if not self._chart_payload_valid(generation, metadata):
                 self._chart_redelivery_generation = generation
                 return
@@ -2808,6 +3936,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._chart.setProperty("fadeMs", 0)
             self._publication_manager.withdraw_visible(LayerRole.CHART)
             self._chart_visible_generation = None
+            trace_raster_visibility(self, "chart_withdrawn")
             self._chart_viewport = None
             self._chart_composition_camera = None
             self._chart_composition_dpr = None
@@ -2869,24 +3998,60 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             # toggle requested fade; any other promotion is immediate, so a
             # loading state is never disguised as chart data.
             self._chart.setProperty("fadeMs", fade_ms)
-            self._place_chart()
+            self._place_chart(cause="publication")
             self._chart_front_slot = slot
             self._chart.setProperty("frontSlot", slot)
             self._chart.setProperty(f"slot{old_slot}Token", "")
             self._chart.setProperty(f"slot{old_slot}Source", QUrl(""))
             self._chart_visible_generation = generation
+            if enc_trace.enabled():
+                static = (
+                    metadata.get("static") if isinstance(metadata, dict) else None
+                ) or {}
+                self._enc_trace_painted = {
+                    "generation": generation,
+                    "mode": static.get("mode"),
+                    "composed_pixels": static.get("composed_pixels"),
+                    "reused_pixels": static.get("reused_pixels"),
+                }
+            trace_raster_visibility(self, "chart_adopted")
+            # The first raster is on screen: the complete scene held back for
+            # it may now build its buffers.
+            release_held = getattr(self, "_release_held_enc_scene", None)
+            if release_held is not None:
+                release_held()
+            # A composition is the reference the next weather head start is
+            # measured from, so motion after it cannot re-arm that window by
+            # moving the camera.
+            self._chart_head_start_basis = time.perf_counter()
             self._chart_provider.retain(generation)
             self._chart.setProperty("chartLoading", False)
             self._chart.setProperty("chartUnavailable", False)
             self.counters["chart_publications"] += 1
+            panstats.published("chart")
+            if panstats.enabled():
+                # Presentation of this frame is the next afterRendering.
+                self._panstats_render_basis = time.perf_counter()
             stage_times = getattr(self, "_chart_stage_times", None)
             staged_at = stage_times.pop(generation, None) if stage_times else None
+            publish_to_adopt = None
             if staged_at is not None:
-                elapsed = (time.perf_counter() - staged_at) * 1000.0
+                adopt_ms = (time.perf_counter() - staged_at) * 1000.0
+                publish_to_adopt = round(adopt_ms, 3)
                 for record in reversed(getattr(self, "chart_latencies", ())):
                     if record.get("generation") == generation:
-                        record["publish_to_adopt_ms"] = round(elapsed, 3)
+                        record["publish_to_adopt_ms"] = publish_to_adopt
                         break
+            if enc_trace.enabled():
+                self._enc_trace_chart_adopt_at = time.perf_counter()
+                enc_trace.event(
+                    "chart_adopt",
+                    generation=generation,
+                    publish_to_adopt_ms=publish_to_adopt,
+                    elapsed_ms=enc_trace.elapsed_ms(
+                        getattr(self, "_enc_trace_demand_at", None)
+                    ),
+                )
             self._chart_publish_state = self._chart_state_now()
             self._update_enc_status()
             if self._chart_ready_at is None:
@@ -2901,14 +4066,980 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             The ENC state never changes the weather's state and never
             changes the chart's own: it is reported beside them.
             """
-            model = getattr(self, "_chart_model", None)
             scene = getattr(self, "_weather", None)
-            if model is None or scene is None:
+            if scene is None:
+                return
+            if getattr(self, "_enc_scene_layer", False):
+                layer = getattr(self, "_enc_scene_model", None)
+                if layer is None:
+                    return
+                state = layer.state
+                missing = [
+                    cell
+                    for cell in getattr(layer, "cell_states", ())
+                    if cell.get("state") in ("unavailable", "oversized", "error")
+                ]
+                if state == "loading" or getattr(self, "_enc_scene_provisional", False):
+                    status = "ENC scene updating…"
+                elif state == "unavailable":
+                    status = layer.error or "ENC scene unavailable"
+                elif missing:
+                    # A planned cell could not be read: say so, with the cell
+                    # names, instead of presenting the rest of the chart as the
+                    # whole picture.  The raster already covers its ground.
+                    names = ", ".join(cell.get("name", "") for cell in missing[:3])
+                    if len(missing) > 3:
+                        names += f" (+{len(missing) - 3} more)"
+                    status = f"ENC chart unavailable in part: {names}"
+                else:
+                    status = ""
+                scene.setProperty("encStatus", status)
+                return
+            model = getattr(self, "_chart_model", None)
+            if model is None:
                 return
             if not getattr(self, "_enc_chart_layer", False):
                 return
             status = model.enc_status()
             scene.setProperty("encStatus", status)
+
+        def _request_enc_scene(self, replace=False):
+            """Ask the scene layer for this view's own scene (GUI thread).
+
+            The scene carries positions in the viewport's logical pixels, so
+            the item is sized to the camera the request was made for.
+
+            One unchanged demand owns at most one generation.  A demand is the
+            camera, viewport, pixel ratio and cell content a request depends
+            on; while that key is unchanged, a generation that is in flight
+            and one that covered the view each refuse a second ask.  Only a
+            changed key, a genuine failure, or a budgeted cover replacement
+            mints another generation.
+            """
+            cause = getattr(self, "_enc_scene_request_cause", None) or "settle"
+            self._enc_scene_request_cause = None
+            layer = getattr(self, "_enc_scene_model", None)
+            camera = self._camera
+            if layer is None or camera is None:
+                return None
+            demand = enc_scene_demand_key(self, camera, layer)
+            token = enc_scene_demand_token(demand)
+            # A demand this view already had covered is not asked again: the
+            # camera and the cell content in its key are unchanged, so the
+            # layer can only hand back the generation it already holds.  This
+            # returns before any ``layer.state``/``resume`` probe, so a settle
+            # tick on an unchanged camera does no layer work at all.  The
+            # record is dropped whenever a newer generation is minted or the
+            # demand fails, so a genuine camera or cell-version change still
+            # re-requests.  The skip is traced once per covered generation:
+            # repeating the record every tick would say nothing new.
+            covered = getattr(self, "_enc_scene_covered_demand", None)
+            if (
+                not replace
+                and cause != "cover"
+                and covered is not None
+                and covered[0] == demand
+                and covered[1] == getattr(self, "_enc_scene_demand_generation", None)
+            ):
+                if enc_trace.enabled() and covered[1] != getattr(
+                    self, "_enc_scene_covered_skip_generation", None
+                ):
+                    self._enc_scene_covered_skip_generation = covered[1]
+                    enc_trace.event(
+                        "scene_request_skipped",
+                        cause=cause,
+                        demand=token,
+                        reason="covered",
+                        generation=covered[1],
+                        elapsed_ms=enc_trace.elapsed_ms(
+                            getattr(self, "_enc_trace_demand_at", None)
+                        ),
+                        **enc_trace.camera_fields(camera),
+                    )
+                # A covered settle is the only moment neighbours are worth
+                # warming: the view is drawn and the camera is unchanged.
+                enc_scene_prefetch_settled(self)
+                return covered[1]
+            # A ``cover`` ask is a deliberate, budgeted replacement and the
+            # cover path has already spent one unit of its per-demand budget;
+            # every other producer is subject to the demand guard.
+            if (
+                not replace
+                and cause != "cover"
+                and getattr(self, "_enc_scene_demand_key", None) == demand
+            ):
+                state = getattr(self, "_enc_scene_demand_state", None)
+                reason = None
+                if state == "in_flight":
+                    # A yield drops the worker's copy of the request but
+                    # leaves the demand open: resume that same generation
+                    # instead of minting a newer one that supersedes the work
+                    # the retry was meant to continue.
+                    layer_state = getattr(layer, "state", None)
+                    resume = getattr(layer, "resume", None)
+                    resumed = resume() if callable(resume) else None
+                    if resumed is not None:
+                        reason = "in_flight"
+                    elif layer_state in ("idle", "unavailable"):
+                        # Nothing is composing and nothing is left to resume:
+                        # the generation failed rather than staying open.
+                        self._enc_scene_demand_state = state = "failed"
+                        self._enc_scene_covered_demand = None
+                    elif layer_state == "ready":
+                        # The layer holds this demand's own scene.  Whether or
+                        # not its placement reached this item, asking again can
+                        # only return that same generation.
+                        self._enc_scene_demand_state = state = "covered"
+                        self._enc_scene_covered_demand = (
+                            demand,
+                            getattr(self, "_enc_scene_demand_generation", None),
+                        )
+                        reason = "covered"
+                    else:
+                        reason = "in_flight"
+                elif state == "covered":
+                    # The layer already holds this demand's content.
+                    self._enc_scene_covered_demand = (
+                        demand,
+                        getattr(self, "_enc_scene_demand_generation", None),
+                    )
+                    reason = state
+                if reason is not None:
+                    if enc_trace.enabled():
+                        enc_trace.event(
+                            "scene_request_skipped",
+                            cause=cause,
+                            demand=token,
+                            reason=reason,
+                            generation=getattr(
+                                self, "_enc_scene_demand_generation", None
+                            ),
+                            elapsed_ms=enc_trace.elapsed_ms(
+                                getattr(self, "_enc_trace_demand_at", None)
+                            ),
+                            **enc_trace.camera_fields(camera),
+                        )
+                    return getattr(self, "_enc_scene_demand_generation", None)
+            item = getattr(self, "_enc_scene_item", None)
+            if item is not None:
+                item.setWidth(camera.width)
+                item.setHeight(camera.height)
+            # A real demand always wins: an armed or running prefetch is
+            # dropped before the ask, so it can never delay this generation.
+            self._enc_prefetch_armed_demand = None
+            cancel_prefetch = getattr(layer, "cancel_prefetch", None)
+            if callable(cancel_prefetch):
+                cancel_prefetch()
+            generation = layer.request(camera, replace=replace)
+            if generation is None:
+                # A closed layer minted nothing: recording a key with no
+                # terminal state would re-ask on every settle tick forever.
+                return None
+            # A moved camera makes the painted ground describe the old view.
+            # It is dropped now and re-requested once the new scene publishes
+            # the projection that belongs to this camera.  The ratio is the
+            # one ``set_camera`` recorded for this camera, which is also the
+            # one ``enc_scene_placement`` places the mesh with.
+            fallback = getattr(self, "_enc_fallback", None)
+            if fallback is not None:
+                fallback.camera_changed(camera, dpr=getattr(self, "_camera_dpr", None))
+            # The newest request owns the next publication; anything older is
+            # stale the moment it asks.  A newer generation also ends any hold
+            # on the previous picture's progress: the frame it described is no
+            # longer the demand.
+            self._cancel_enc_scene_partial_hold()
+            self._enc_scene_pending_generation = generation
+            # The guard's own record: this key now has one outstanding
+            # generation, and only its terminal outcome releases the demand.
+            # The cover budget is keyed alongside it; the cover path resets it
+            # when it observes a changed demand.
+            self._enc_scene_demand_key = demand
+            self._enc_scene_demand_generation = generation
+            self._enc_scene_demand_state = "in_flight"
+            # A new generation is not yet covered: only its own terminal
+            # outcome may let a later settle tick skip the ask.
+            self._enc_scene_covered_demand = None
+            # A different camera is a fresh demand: its retry schedule starts
+            # over.  Retries for the same camera keep their backoff step, so a
+            # retry loop cannot reset itself.
+            if getattr(self, "_enc_scene_retry_camera", None) != camera:
+                self._enc_scene_retry_attempt = 0
+                self._enc_scene_retry_camera = camera
+            if enc_trace.enabled():
+                self._enc_trace_demand_generation = generation
+                enc_trace.event(
+                    "scene_request",
+                    cause=cause,
+                    demand=token,
+                    generation=generation,
+                    elapsed_ms=enc_trace.elapsed_ms(
+                        getattr(self, "_enc_trace_demand_at", None)
+                    ),
+                    **enc_trace.camera_fields(camera),
+                )
+            return generation
+
+        def _schedule_enc_scene_retry(self):
+            """Re-ask for a yielded scene without waiting for the source poll.
+
+            A yield leaves the demand outstanding but the layer idle; the only
+            other asker is the five-second chart-source poll, which is the
+            whole cold-start stall.  The retry is single-shot and bounded: it
+            doubles from ``ENC_SCENE_RETRY_MS`` to ``ENC_SCENE_RETRY_MAX_MS``
+            and stops after ``ENC_SCENE_RETRY_ATTEMPTS`` per camera.
+            """
+            timer = getattr(self, "_enc_scene_retry_timer", None)
+            if timer is None or self._disposed:
+                return
+            attempt = getattr(self, "_enc_scene_retry_attempt", 0)
+            if attempt >= ENC_SCENE_RETRY_ATTEMPTS:
+                return
+            self._enc_scene_retry_attempt = attempt + 1
+            delay = min(ENC_SCENE_RETRY_MS * (2**attempt), ENC_SCENE_RETRY_MAX_MS)
+            timer.start(int(delay))
+
+        def _retry_enc_scene(self):
+            """Ask again for a demand the layer yielded, if it is still open."""
+            if self._disposed:
+                return
+            layer = getattr(self, "_enc_scene_model", None)
+            camera = self._camera
+            if layer is None or camera is None:
+                return
+            if getattr(self, "_enc_scene_retry_camera", None) != camera:
+                # A newer demand owns the schedule; this one is superseded.
+                self._enc_scene_retry_attempt = 0
+                return
+            if layer.state != "idle":
+                # Loading, ready or unavailable: there is nothing to re-ask.
+                return
+            if getattr(self, "_enc_scene_pending_generation", None) is None:
+                return
+            self._enc_scene_request_cause = "retry"
+            self._request_enc_scene()
+
+        def _enc_prefetch_neighbours(self):
+            """Warm the granule ahead of the settled view (GUI thread).
+
+            Reached only from the armed timer, and re-checked here: a camera
+            change, a lost covered record or a newer demand all make this a
+            no-op, so the delay can never outlive the quiet window that armed
+            it.  The layer decides whether to warm it, and in which direction;
+            a real request drops the job.
+            """
+            if self._disposed:
+                return
+            layer = getattr(self, "_enc_scene_model", None)
+            camera = self._camera
+            if layer is None or camera is None:
+                return
+            if not enc_scene_prefetch_eligible(self):
+                return
+            # The quiescent window that armed this timer may have ended: a
+            # newer demand clears the arm, and a camera move changes the key.
+            # The covered record is kept as an independent witness for a
+            # settled, wholly drawn view (the pre-existing covered path).
+            key = enc_scene_demand_key(self, camera, layer)
+            armed = getattr(self, "_enc_prefetch_armed_demand", None)
+            covered = getattr(self, "_enc_scene_covered_demand", None)
+            if armed != key and (covered is None or covered[0] != key):
+                return
+            prefetch = getattr(layer, "prefetch", None)
+            if callable(prefetch):
+                prefetch(camera)
+
+        def _withdraw_enc_scene(self):
+            """Hide the presented ENC scene: it is not current content."""
+            self._cancel_enc_scene_partial_hold()
+            withdrawn = getattr(self, "_enc_scene_ready_generation", None)
+            self._enc_scene_provisional = False
+            self._enc_scene_ready_generation = None
+            self._enc_scene_partial_generation = None
+            self._enc_scene_cells_order = ()
+            self._enc_scene_cell_states = ()
+            item = getattr(self, "_enc_scene_item", None)
+            if item is not None:
+                item.setVisible(False)
+            # The refused cells' ground described the withdrawn scene, so it
+            # leaves with it.
+            fallback = getattr(self, "_enc_fallback", None)
+            if fallback is not None:
+                fallback.clear("withdrawn")
+            trace_raster_visibility(self, "scene_withdrawn")
+            # Nothing draws chart content any more: the raster must, now.
+            ensure_chart_content(self, "scene_withdrawn", generation=withdrawn)
+
+        def _mark_enc_scene_updating(self):
+            """Keep the previous ENC scene up and label it provisional.
+
+            A camera change makes the presented scene describe the old view.
+            Its replacement is already on its way (the settle timer asks for
+            it), and a blank chart for a whole tessellation is worse than a
+            picture the status explicitly calls *updating*.  Nothing here makes
+            the old frame current: a ready publication replaces it and clears
+            the flag, and a failed, cancelled or idle update still withdraws it
+            (see ``_enc_scene_published``/``_enc_scene_state_changed``).
+            """
+            if getattr(self, "_enc_scene_item", None) is None:
+                return
+            self._enc_scene_provisional = True
+            self._update_enc_status()
+
+        def _withdraw_enc_scene_if_current(self, generation):
+            """Apply a withdrawal only to the scene it actually names.
+
+            ``generation`` is the generation the withdrawing job spoke for, or
+            ``None`` for a message that names nothing.  A withdrawal may hide
+            the presented scene only when it *is* that scene's generation and no
+            newer generation is already composing: a superseded job's
+            cancellation must never blank a current picture, which is the
+            disappear-then-reappear flicker.  An unnamed withdrawal can only
+            clear a picture that is itself unattributed.
+            """
+            presented = getattr(self, "_enc_scene_ready_generation", None)
+            if generation is None:
+                if presented is None:
+                    self._withdraw_enc_scene()
+                return
+            if presented is None or generation != presented:
+                return
+            pending = getattr(self, "_enc_scene_pending_generation", None)
+            if pending is not None and pending != generation:
+                return
+            self._withdraw_enc_scene()
+
+        def _enc_scene_published(
+            self, payload, release_expired=False, adopt_forced=False
+        ):
+            """A scene publication or withdrawal from the layer (queued here).
+
+            Every message names the generation it speaks for; a withdrawal is
+            ``(generation, None, ...)``.  A withdrawal takes the presented
+            picture down only when it is that picture's own generation, so a
+            cancelled or superseded job cannot blank the current scene.
+            """
+            if self._disposed:
+                return
+            item = getattr(self, "_enc_scene_item", None)
+            if item is None:
+                return
+            if payload is None:
+                # A layer-wide withdrawal is not supersession by a newer
+                # demand: the outstanding generation will publish nothing, and
+                # anything still waiting for a pause is dead with it.
+                self._cancel_enc_scene_adopt_hold()
+                enc_scene_demand_failed(self)
+                if enc_trace.enabled():
+                    enc_trace.event(
+                        "scene_publish",
+                        generation=None,
+                        state="withdrawn",
+                        elapsed_ms=enc_trace.elapsed_ms(
+                            getattr(self, "_enc_trace_demand_at", None)
+                        ),
+                    )
+                apply_scene_publication(self, None, None)
+                self._withdraw_enc_scene_if_current(None)
+                return
+            generation, scene, metadata = payload
+            if scene is None:
+                # A withdrawal naming this demand's own generation is a
+                # cancellation or an invalidation, never a newer demand: the
+                # guard records it as a failure so a retry may ask again.
+                enc_scene_demand_failed(self, generation)
+                if enc_trace.enabled():
+                    enc_trace.event(
+                        "scene_publish",
+                        generation=generation,
+                        state="withdrawn",
+                        elapsed_ms=enc_trace.elapsed_ms(
+                            getattr(self, "_enc_trace_demand_at", None)
+                        ),
+                    )
+                apply_scene_publication(self, generation, None)
+                self._withdraw_enc_scene_if_current(generation)
+                return
+            # A withdrawal of the very frame waiting for a pause cancels that
+            # wait: nothing may adopt a scene its own job has cancelled.
+            held = getattr(self, "_enc_scene_adopt_pending", None)
+            if held is not None and held[0] == generation:
+                self._cancel_enc_scene_adopt_hold()
+            # The ordered plan and the explicit per-cell state travel with the
+            # scene: a planned cell that drew nothing is named here rather
+            # than silently absent.  They are published *with* the scene, not
+            # before the hold decision: a partial that is held back must not
+            # rewrite the presented scene's cell identity.
+            published_cells = (
+                () if metadata is None else tuple(metadata.get("cells_order", ()))
+            )
+            published_states = (
+                () if metadata is None else tuple(metadata.get("cell_states", ()))
+            )
+            if enc_trace.enabled():
+                timings = {} if metadata is None else (metadata.get("timings") or {})
+                assembly = timings.get("assembly_ms")
+                phases = getattr(self, "_enc_trace_phases", None)
+                if phases is None:
+                    phases = self._enc_trace_phases = {}
+                if assembly is not None:
+                    phases["worker"] = float(assembly)
+                # Non-overlapping top-level phases plus the flat stage
+                # breakdown behind them; both in milliseconds.
+                published_phases = enc_trace.build_phases(timings)
+                stage_ms = enc_trace.phase_ms(
+                    timings, already_ms=("assembly_ms",), exclude=("cells",)
+                )
+                cells_ms = enc_trace.cell_detail(timings.get("cells"))
+                shown = getattr(item, "shown_vertex_count", None)
+                reaches = getattr(item, "scene_covers_view", None)
+                enc_trace.event(
+                    "scene_publish",
+                    generation=generation,
+                    state=(
+                        "partial"
+                        if metadata is not None and metadata.get("partial")
+                        else "complete"
+                    ),
+                    cells=len(published_cells),
+                    cells_order=published_cells,
+                    cell_states=published_states,
+                    drawn=[
+                        state.get("path")
+                        for state in published_states
+                        if state.get("state") == "ready"
+                    ],
+                    unavailable=[
+                        (state.get("path"), state.get("reason"))
+                        for state in published_states
+                        if state.get("state") in ("unavailable", "oversized", "error")
+                    ],
+                    assembly_ms=assembly,
+                    # Top-level phases sum to no more than ``assembly_ms``;
+                    # ``stage_ms`` is the nested breakdown behind them and
+                    # ``phase_cells`` names the heaviest cells (bounded).
+                    phases=published_phases,
+                    stage_ms=stage_ms,
+                    phase_cells=cells_ms,
+                    # What the *previous* frame draws while this one lands:
+                    # a retained frame with no vertex or no viewport overlap
+                    # is the "nothing on screen" state, not a slow update.
+                    shown_vertices=(int(shown()) if callable(shown) else None),
+                    covers_view=(bool(reaches()) if callable(reaches) else None),
+                    elapsed_ms=enc_trace.elapsed_ms(
+                        getattr(self, "_enc_trace_demand_at", None)
+                    ),
+                )
+            # The refused cells' ground depends only on this publication's
+            # clips, projection and camera -- not on whether the mesh adopts
+            # the frame.  Notify the overlay before the hold and partial-keep
+            # gates below, so a held or kept complete scene still paints the
+            # cells it refused.
+            fallback = getattr(self, "_enc_fallback", None)
+            if fallback is not None:
+                fallback.publish(
+                    metadata,
+                    generation=generation,
+                    dpr=getattr(self, "_camera_dpr", None),
+                )
+            partial = metadata is not None and bool(metadata.get("partial"))
+            # A frame is placed for the camera it was composed at, so adopting
+            # one while the camera is still moving re-anchors the picture under
+            # the hand.  The newest publication waits for a pause of
+            # ``ENC_SCENE_ADOPT_SETTLE_MS`` instead; the ceiling forces the
+            # oldest hold through, and a forced frame runs the ordinary path
+            # below untouched.  The gate sits *outside* the first-raster and
+            # partial holds, so a held partial re-enters both when it lands.
+            now = time.perf_counter()
+            moving = getattr(self, "_enc_scene_camera_moving", None)
+            if not adopt_forced and moving is not None and moving(now):
+                self._hold_enc_scene_adoption(payload, now)
+                return
+            hold = getattr(self, "_hold_scene_for_first_raster", None)
+            if not partial and hold is not None and hold(generation, payload):
+                return
+            # A partial is progress, never the current view.  Once a complete
+            # scene is presented, the frame on screen is kept until the new
+            # scene is complete: swapping it for the cells resolved so far is
+            # what draws whole rectangles of empty ground while the rest
+            # assembles.  The one exception is a partial that already accounts
+            # for every planned cell (see
+            # ``_enc_scene_partial_accounts_for_view``): it creates no hole, so
+            # it may replace the frame.  With no complete scene presented yet
+            # the partial is the only chart content, so first load still
+            # publishes progressively.  A withheld partial is held only for
+            # ``ENC_SCENE_HOLD_MAX_MS`` (see ``_hold_enc_scene_partial``), and
+            # an expired hold comes back through this method with
+            # ``release_expired`` set.  Either way a partial never claims the
+            # view.
+            if (
+                partial
+                and not release_expired
+                and not self._enc_scene_partial_accounts_for_view(published_states)
+            ):
+                if self._enc_scene_has_presented():
+                    self._hold_enc_scene_partial(payload)
+                    self._enc_scene_provisional = True
+                    self._update_enc_status()
+                    if enc_trace.enabled():
+                        enc_trace.event(
+                            "scene_hold",
+                            generation=generation,
+                            cause="partial",
+                            cells=len(published_cells),
+                            drawn=sum(
+                                1
+                                for state in published_states
+                                if isinstance(state, dict)
+                                and state.get("state") == "ready"
+                            ),
+                            covers_view=False,
+                            elapsed_ms=enc_trace.elapsed_ms(
+                                getattr(self, "_enc_trace_demand_at", None)
+                            ),
+                        )
+                    return
+            # Any publication that reaches the screen - complete, a hole-free
+            # partial or an expired hold's release - ends the hold: the frame
+            # it was waiting behind is no longer the picture.
+            self._cancel_enc_scene_partial_hold()
+            self._enc_scene_cells_order = published_cells
+            self._enc_scene_cell_states = published_states
+            apply_scene_publication(self, generation, metadata)
+            panstats.published("enc_scene")
+            self._enc_scene_generation = generation
+            # The scene carries lon/lat: project it with the view that made it,
+            # otherwise the item draws degrees and nothing lands on screen.
+            projection = None if metadata is None else metadata.get("projection")
+            if projection is not None:
+                item.set_projection(projection)
+            # Adopt the ring the layer composed over before the buffers are
+            # built, so culling keeps exactly the cells a pan can reach.
+            item.set_compose_margin(
+                None if metadata is None else metadata.get("compose_margin")
+            )
+            self._enc_scene_camera = (
+                None if metadata is None else metadata.get("camera")
+            )
+            # The projection just set is this frame's camera: the matrix is
+            # solved against it until a scale change re-composes it.
+            self._enc_scene_frame_camera = self._enc_scene_camera
+            # The item is hidden until here, and only a ready scene is shown.
+            adopt_started = time.perf_counter()
+            item.set_view_scene(scene)
+            adopt_ms = (time.perf_counter() - adopt_started) * 1000.0
+            # Cancel the container pan: this scene's projection already
+            # includes the camera that composed it.
+            self._place_enc_scene(cause="publication")
+            item.setVisible(True)
+            # The adopted frame is now what the user sees.  If it does not
+            # draw this viewport, the raster must cover the gap at once: a
+            # held or deferred composition would leave the viewport blank
+            # until the 500 ms re-check found the returned coverage.
+            if not scene_presents_chart(metadata, self._camera, item):
+                ensure_chart_content(
+                    self, "scene_not_presenting", generation=generation
+                )
+            trace_raster_visibility(self, "scene_published")
+            if partial:
+                # Nothing on screen reached the demanded view, so these cells
+                # are the only chart content it has.  They stay explicitly
+                # provisional: the complete scene replaces them, and the
+                # status says so while they are drawn.
+                self._enc_scene_partial_generation = generation
+                self._enc_scene_provisional = True
+            else:
+                self._enc_scene_partial_generation = None
+                self._enc_scene_provisional = False
+                self._enc_scene_ready_generation = generation
+            if enc_trace.enabled():
+                self._enc_trace_scene_adopt_at = time.perf_counter()
+                self._enc_trace_pending_present = generation
+                # Sample the adopted scene's own geometry state, which is what
+                # the next frame will draw.  This is a state probe, not a
+                # framebuffer readback and never a presentation-rate sample.
+                trace_item = getattr(self, "_enc_scene_item", None)
+                trace_shown = getattr(trace_item, "shown_vertex_count", None)
+                trace_reaches = getattr(trace_item, "scene_covers_view", None)
+                enc_trace.event(
+                    "scene_adopt",
+                    generation=generation,
+                    cells=len(self._enc_scene_cells_order),
+                    adopt_ms=round(adopt_ms, 3),
+                    shown_vertices=(
+                        int(trace_shown()) if callable(trace_shown) else None
+                    ),
+                    covers_view=(
+                        bool(trace_reaches()) if callable(trace_reaches) else None
+                    ),
+                    elapsed_ms=enc_trace.elapsed_ms(
+                        getattr(self, "_enc_trace_demand_at", None)
+                    ),
+                )
+            self._update_enc_status()
+
+        def _enc_scene_has_presented(self):
+            """Whether a *complete* scene has been shown.
+
+            Only the complete generation counts.  A first load has nothing but
+            partials until its first complete arrives, and it publishes them
+            progressively: if a drawn partial counted as presented, the
+            partial after it would be withheld too and a cold start would
+            freeze on whatever fraction landed first.  Once a complete frame
+            is up, the frame is the picture and an uncovered partial must not
+            replace it.  A withdraw clears both generations, which makes the
+            next publication a fresh first load.
+            """
+            return getattr(self, "_enc_scene_ready_generation", None) is not None
+
+        def _enc_scene_partial_accounts_for_view(self, cell_states):
+            """Whether a partial leaves no planned cell still assembling.
+
+            Every planned cell is either drawn (``ready``) or explicitly
+            refused with a reason (``unavailable``/``oversized``/``error``),
+            and the fallback paints the refused ground from this publication's
+            own clips.  Such a snapshot has no hole to show, so it may replace
+            the frame.  A ``loading`` cell - and metadata that reports no cell
+            states at all - means the picture is still filling in: hold it.
+            """
+            if not cell_states:
+                return False
+            return not any(
+                isinstance(state, dict) and state.get("state") == "loading"
+                for state in cell_states
+            )
+
+        def _enc_scene_camera_moving(self, now=None):
+            """Whether the camera changed inside the adopt settle window.
+
+            The last camera change is the chart settle clock's own basis: it
+            is stamped by the camera-change branch that also restarts the
+            settle timer, so the two agree about what "moving" means.  With no
+            stamp - a widget that never saw a camera change - the view counts
+            as still, so first load adopts immediately, as it always did.
+            """
+            last = getattr(self, "_chart_camera_changed", None)
+            if last is None:
+                return False
+            if now is None:
+                now = time.perf_counter()
+            return (now - last) * 1000.0 < ENC_SCENE_ADOPT_SETTLE_MS
+
+        def _arm_enc_scene_adopt_flush(self, now):
+            """Let the settle timer wake the held publication.
+
+            The chart settle timer is the one single-shot path that already
+            fires on a quiet camera; no second timer is added.  It is armed for
+            whichever comes first: the end of the settle window, or the
+            ceiling that bounds a drag which never pauses.
+            """
+            timer = getattr(self, "_chart_timer", None)
+            if timer is None:
+                return
+            last = getattr(self, "_chart_camera_changed", None)
+            seen_ms = 0.0 if last is None else (now - last) * 1000.0
+            due_ms = ENC_SCENE_ADOPT_SETTLE_MS - seen_ms
+            started = getattr(self, "_enc_scene_adopt_pending_at", None)
+            if started is not None:
+                left_ms = ENC_SCENE_ADOPT_CEILING_MS - (now - started) * 1000.0
+                due_ms = min(due_ms, left_ms)
+            timer.start(max(1, int(math.ceil(due_ms))))
+
+        def _hold_enc_scene_adoption(self, payload, now):
+            """Keep the newest publication until the camera pauses.
+
+            One slot: the arrival replaces whatever was pending, so a drag
+            cannot accumulate a queue and only the newest frame - the one
+            composed for the camera the pointer is closest to - can adopt.
+            The clock starts at the *first* held publication, which is what
+            the ceiling measures.
+            """
+            first = getattr(self, "_enc_scene_adopt_pending_at", None)
+            if first is None:
+                self._enc_scene_adopt_pending_at = now
+                first = now
+            previous = getattr(self, "_enc_scene_adopt_pending", None)
+            self._enc_scene_adopt_pending = payload
+            panstats.held("enc_scene")
+            self._arm_enc_scene_adopt_flush(now)
+            if enc_trace.enabled():
+                previous_generation = None if previous is None else previous[0]
+                enc_trace.event(
+                    "scene_adopt_held",
+                    generation=payload[0],
+                    superseded=previous_generation,
+                    held_ms=round((now - first) * 1000.0, 1),
+                    settle_ms=ENC_SCENE_ADOPT_SETTLE_MS,
+                    ceiling_ms=ENC_SCENE_ADOPT_CEILING_MS,
+                    elapsed_ms=enc_trace.elapsed_ms(
+                        getattr(self, "_enc_trace_demand_at", None)
+                    ),
+                )
+
+        def _cancel_enc_scene_adopt_hold(self):
+            """Drop a publication held for a pause without applying it."""
+            self._enc_scene_adopt_pending = None
+            self._enc_scene_adopt_pending_at = None
+
+        def _flush_held_enc_scene_adoption(self, now=None):
+            """Apply the held publication once the camera has paused.
+
+            Reached from the settle timer and from the top of the chart
+            request, so a pause mid-drag adopts without waiting for release.
+            The frame goes back through ``_enc_scene_published``, which keeps
+            the partial rules intact: a held partial that is itself incomplete
+            is withheld again, by the same gate as any other partial.
+            """
+            payload = getattr(self, "_enc_scene_adopt_pending", None)
+            if payload is None:
+                return False
+            if now is None:
+                now = time.perf_counter()
+            started = getattr(self, "_enc_scene_adopt_pending_at", None)
+            held_ms = 0.0 if started is None else (now - started) * 1000.0
+            forced = held_ms >= ENC_SCENE_ADOPT_CEILING_MS
+            if not forced and self._enc_scene_camera_moving(now):
+                self._arm_enc_scene_adopt_flush(now)
+                return False
+            self._cancel_enc_scene_adopt_hold()
+            if getattr(self, "_disposed", False):
+                return False
+            panstats.resumed("enc_scene")
+            if enc_trace.enabled():
+                enc_trace.event(
+                    "scene_adopt_resumed",
+                    generation=payload[0],
+                    held_ms=round(held_ms, 1),
+                    forced=forced,
+                    elapsed_ms=enc_trace.elapsed_ms(
+                        getattr(self, "_enc_trace_demand_at", None)
+                    ),
+                )
+            self._enc_scene_published(payload, adopt_forced=forced)
+            return True
+
+        def _hold_enc_scene_partial(self, payload):
+            """Keep an uncovered partial off screen, but only for a budget.
+
+            The partial is the newest progress for a picture that is already
+            on screen, so it waits for the complete scene that supersedes it.
+            The wait is bounded: the clock starts at the *first* withheld
+            partial, so repeated progress cannot extend it, and one single-shot
+            timer per widget means re-arming restarts it instead of stacking.
+            When the timer fires, ``_release_held_enc_scene_partial`` applies
+            the newest withheld payload.
+            """
+            now = time.perf_counter()
+            if getattr(self, "_enc_scene_held_partial_at", None) is None:
+                self._enc_scene_held_partial_at = now
+            self._enc_scene_held_partial = payload
+            timer = getattr(self, "_enc_scene_hold_timer", None)
+            if timer is None:
+                return
+            held_ms = (now - self._enc_scene_held_partial_at) * 1000.0
+            timer.start(max(0, int(round(ENC_SCENE_HOLD_MAX_MS - held_ms))))
+
+        def _cancel_enc_scene_partial_hold(self):
+            """Drop a withheld partial and its timer without publishing it."""
+            timer = getattr(self, "_enc_scene_hold_timer", None)
+            if timer is not None:
+                timer.stop()
+            self._enc_scene_held_partial = None
+            self._enc_scene_held_partial_at = None
+
+        def _release_held_enc_scene_partial(self):
+            """Apply the partial a stalled complete scene kept off screen.
+
+            Reached only from the hold timer.  The payload goes back through
+            ``_enc_scene_published`` marked as expired, so the release takes
+            the ordinary partial path: it claims nothing beyond
+            ``_enc_scene_partial_generation``, leaves the demand open for the
+            generation that owns it and settles the way any partial does.
+            """
+            payload = getattr(self, "_enc_scene_held_partial", None)
+            started = getattr(self, "_enc_scene_held_partial_at", None)
+            generation = None if payload is None else payload[0]
+            held_ms = (
+                0.0 if started is None else (time.perf_counter() - started) * 1000.0
+            )
+            self._cancel_enc_scene_partial_hold()
+            if payload is None or self._disposed:
+                return
+            if enc_trace.enabled():
+                enc_trace.event(
+                    "scene_hold_expired",
+                    generation=generation,
+                    cause="partial",
+                    held_ms=round(held_ms, 1),
+                    budget_ms=ENC_SCENE_HOLD_MAX_MS,
+                    elapsed_ms=enc_trace.elapsed_ms(
+                        getattr(self, "_enc_trace_demand_at", None)
+                    ),
+                )
+            self._enc_scene_published(payload, release_expired=True)
+
+        def _hold_scene_for_first_raster(self, generation, payload):
+            """Hold a *complete* scene's adoption until the first raster paints.
+
+            The complete frame's vertex buffers are built on the GUI thread.
+            Before the session's first raster is on screen that build is the
+            only thing standing between the user and a chart: the startup
+            trace of a cold session showed no event of any kind - not even the
+            two-second counter tick - for the 13.5 s such a build held the
+            thread, so the raster's own paint waited behind it.  A partial
+            scene is still adopted at once, because it is the ENC's own first
+            drawable picture and the ENC's first-drawable latency must not
+            move.  The hold is bounded, so a raster that never arrives cannot
+            withhold the scene, and it never applies once a raster has been
+            shown.
+            """
+            if not enc_scene_hold_enabled():
+                self._enc_scene_held_publication = None
+                self._enc_scene_hold_since = None
+                return False
+            if getattr(self, "_chart_visible_generation", None) is not None:
+                self._enc_scene_held_publication = None
+                self._enc_scene_hold_since = None
+                return False
+            now = time.perf_counter()
+            started = getattr(self, "_enc_scene_hold_since", None)
+            if started is None:
+                started = now
+                self._enc_scene_hold_since = now
+            held_ms = (now - started) * 1000.0
+            if held_ms >= CHART_STARTUP_SCENE_HOLD_MS:
+                self._enc_scene_held_publication = None
+                return False
+            self._enc_scene_held_publication = payload
+            if enc_trace.enabled():
+                enc_trace.event(
+                    "scene_deferred",
+                    generation=generation,
+                    cause="first_raster",
+                    held_ms=round(held_ms, 1),
+                    budget_ms=CHART_STARTUP_SCENE_HOLD_MS,
+                    elapsed_ms=enc_trace.elapsed_ms(
+                        getattr(self, "_enc_trace_demand_at", None)
+                    ),
+                )
+            return True
+
+        def _release_held_enc_scene(self):
+            """Apply the complete scene held back until the first raster."""
+            held = getattr(self, "_enc_scene_held_publication", None)
+            if held is None:
+                return
+            self._enc_scene_held_publication = None
+            self._enc_scene_hold_since = None
+            self._enc_scene_published(held)
+
+        def _enc_scene_state_changed(self, state):
+            """The scene layer's own state; it never changes the chart's."""
+            self._enc_scene_state = state
+            if enc_trace.enabled():
+                enc_trace.event(
+                    "state",
+                    state=state,
+                    generation=getattr(self, "_enc_scene_ready_generation", None)
+                    or getattr(self, "_enc_scene_pending_generation", None),
+                    elapsed_ms=enc_trace.elapsed_ms(
+                        getattr(self, "_enc_trace_demand_at", None)
+                    ),
+                )
+            presented = getattr(self, "_enc_scene_ready_generation", None)
+            partial = getattr(self, "_enc_scene_partial_generation", None)
+            layer = getattr(self, "_enc_scene_model", None)
+            retained = None if layer is None else getattr(layer, "published", None)
+            if state == "unavailable":
+                # A failed scene takes the picture down only when nothing is
+                # presented and the layer retains no complete scene.  A
+                # retained frame is a better report than a blank chart.
+                # The demand itself failed, so a retry may ask again.
+                enc_scene_demand_failed(self)
+                if presented is None and partial is None and retained is None:
+                    self._withdraw_enc_scene()
+            elif state == "idle":
+                # ``idle`` is a deferral while the weather worker is busy -- not
+                # an empty scene.  With a frame presented (complete or the
+                # loading cells drawn because nothing reached this view) it
+                # stays up and the status calls it updating.
+                if presented is None and partial is None:
+                    self._withdraw_enc_scene()
+                else:
+                    self._mark_enc_scene_updating()
+                # Nothing is composing now, but the demand is still open:
+                # ask again promptly rather than at the next source poll.
+                self._schedule_enc_scene_retry()
+            self._update_enc_status()
+
+        @property
+        def enc_scene_cells_order(self):
+            """The presented ENC scene's ordered cell identity records."""
+            return tuple(self._enc_scene_cells_order)
+
+        @property
+        def enc_scene_cell_states(self):
+            """The presented ENC scene's per-cell state, in plan order.
+
+            A cell the scene could not draw is reported here as
+            ``unavailable``/``oversized``/``error``/``loading`` with its
+            reason, so the UI can name it.  The Cairo raster ENC source stays
+            disabled while a scene is active, so the scene's own explicit
+            state is the fallback report for this phase.
+            """
+            return tuple(self._enc_scene_cell_states)
+
+        def enc_scene_state_report(self):
+            """State-probe surface: what the ENC item would draw right now.
+
+            ``visible`` is the item's own flag, ``vertices`` the number of
+            vertices the last cull actually draws and ``covers_view`` whether
+            the cells it draws cover the whole item.  A build is never allowed
+            to make this report ``visible False`` or ``vertices 0`` while a
+            frame is retained.
+            """
+            item = getattr(self, "_enc_scene_item", None)
+            shown = getattr(item, "shown_vertex_count", None)
+            reaches = getattr(item, "scene_covers_view", None)
+            return {
+                "visible": None if item is None else bool(item.isVisible()),
+                "cells": len(getattr(self, "_enc_scene_cells_order", ()) or ()),
+                "cell_nodes": len(getattr(item, "_cell_nodes", ()) or ()),
+                "vertices": None if shown is None else int(shown()),
+                "covers_view": None if reaches is None else bool(reaches()),
+                "state": getattr(self, "_enc_scene_state", None),
+                "provisional": bool(getattr(self, "_enc_scene_provisional", False)),
+                "ready_generation": getattr(self, "_enc_scene_ready_generation", None),
+                "partial_generation": getattr(
+                    self, "_enc_scene_partial_generation", None
+                ),
+                "pending_generation": getattr(
+                    self, "_enc_scene_pending_generation", None
+                ),
+                "frame_camera": getattr(self, "_enc_scene_frame_camera", None),
+                "camera": getattr(self, "_camera", None),
+            }
+
+        def set_chart_palette(self, palette):
+            """Adopt a new chart palette in place; ``False`` means rebuild.
+
+            A raster chart composition binds its palette when it is
+            constructed, so a viewport that has one reports that it needs a
+            fresh viewport - the presenter's existing response to a palette
+            change.  A scene-only view can adopt the palette here: the layer
+            withdraws the published scene and the settle timer composes it
+            again with palette-keyed meshes.
+            """
+            if palette == self._chart_palette:
+                return True
+            if getattr(self, "_chart_model", None) is not None:
+                return False
+            self._chart_palette = palette
+            layer = getattr(self, "_enc_scene_model", None)
+            if layer is not None and layer.set_palette(palette):
+                self._withdraw_enc_scene()
+                self._update_enc_status()
+                self._restart_chart_settle()
+            return True
 
         def _adopt_device_pixel_ratio(self):
             """The GUI's device pixel ratio, given to the chart worker.
@@ -2919,7 +5050,19 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             model = getattr(self, "_chart_model", None)
             if model is None:
                 return
+            scene_layer = getattr(self, "_enc_scene_model", None)
+            scene_changed = (
+                scene_layer is not None
+                and scene_layer.set_device_pixel_ratio(self.devicePixelRatio())
+            )
+            if scene_changed:
+                # A scene made at the old ratio is not current and may not be
+                # resampled; the settle timer composes it again.
+                self._withdraw_enc_scene()
             if not model.set_device_pixel_ratio(self.devicePixelRatio()):
+                if scene_changed:
+                    self._update_enc_status()
+                    self._restart_chart_settle()
                 return
             chart = getattr(self, "_chart", None)
             if chart is not None:
@@ -2928,7 +5071,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._chart_force_replace = True
             self._restart_chart_settle()
 
-        def _place_chart(self):
+        def _place_chart(self, cause="camera"):
             """Place the retained chart image from its own composition camera."""
             if self._chart is None or self._chart_viewport is None:
                 return
@@ -2940,27 +5083,19 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 getattr(self, "_map_content", None) is not None
                 and self._map_pan_reference is not None
             ):
-                anchor = self._map_pan_reference
                 anchor_camera = self._map_anchor_camera or self._camera
-                if (
-                    reference is None
-                    or PanReference.from_camera(
-                        reference, self._chart_composition_dpr or dpr
-                    ).classify(anchor, anchor.dpr)
-                    != CameraChange.PAN
-                ):
-                    x, y, width, height = chart_placement(
-                        self._chart_viewport, anchor_camera
-                    )
-                else:
-                    x, y, width, height = chart_placement(
-                        self._chart_viewport, reference
-                    )
-                    dx, dy = PanReference.from_camera(
-                        reference, self._chart_composition_dpr or dpr
-                    ).translation_to(anchor, anchor.dpr)
-                    x += dx
-                    y += dy
+                # The placement is expressed in the anchor camera's screen
+                # frame: ``mapContent`` adds ``anchor.translation_to(camera)``
+                # on top of it.  ``chart_placement`` for a composition camera
+                # *and* the chart-composition-to-anchor translation would add
+                # that same pan a second time, so a publication landing
+                # during a pan would move the chart by it instead of leaving
+                # the chart where the container already carries it.  A zoom
+                # (a size change) cannot be carried by the container at all,
+                # so it is placed in full by ``place_retained_chart``.
+                x, y, width, height = chart_placement(
+                    self._chart_viewport, anchor_camera
+                )
             elif reference is None:
                 x, y, width, height = chart_placement(
                     self._chart_viewport, self._camera
@@ -2982,10 +5117,29 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     x, y, width, height = chart_placement(
                         self._chart_viewport, self._camera
                     )
-            self._chart.setProperty("imageX", x)
-            self._chart.setProperty("imageY", y)
-            self._chart.setProperty("imageWidth", width)
-            self._chart.setProperty("imageHeight", height)
+            previous = (
+                _item_offset(self._chart, "imageX", "imageY")
+                if cause == "publication"
+                else None
+            )
+            place_retained_chart(
+                self._chart,
+                x,
+                y,
+                width,
+                height,
+                cause=cause,
+                camera=self._camera,
+            )
+            if cause == "publication":
+                _trace_publication_anchor(
+                    "chart",
+                    cause,
+                    self._camera,
+                    previous,
+                    (x, y),
+                    _container_pan(self._map_pan_reference, self._camera, dpr),
+                )
 
         def set_base(self, image, target, source_camera=None):
             """Compose the app's basemap inside Quick, below ENC and weather.
@@ -3640,8 +5794,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             # One density for the whole session: the renderer is keyed on
             # (width, height, scale) and changes tear the map down. Every frame
             # is a padded view read back to the CPU, so density sets cadence.
-            # QQuickWindow exposes devicePixelRatio(), not the QWidget
-            # devicePixelRatioF(); the native host must use the portable one.
+            # The host reports a float ratio (see ``devicePixelRatio``); the
+            # capture scale must stay fractional.
             scale = min(self.devicePixelRatio(), SATELLITE_CAPTURE_SCALE)
             self._satellite_worker.submit(generation, rendered, scale)
 
@@ -3851,7 +6005,30 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     ("imageX", "imageY", "imageWidth", "imageHeight"), placement
                 ):
                     item.setProperty(name, value)
+                # A moved retained layer is a repaint request for the map.
+                panstats.repaint_requested()
                 setattr(self, attribute, placement)
+                _request_frame = getattr(self, "_request_frame", None)
+                if _request_frame is not None:
+                    _request_frame()
+
+        def _request_frame(self):
+            """Ask Qt to present a paint after map-content placement.
+
+            QQuickWidget does not always pick up a dirty QML item promptly,
+            so an explicit ``update()`` schedules the render.  Nudge the
+            underlying quick window too in case the widget defers its own
+            update.  Guarded so test doubles without either method are not
+            broken.
+            """
+            update = getattr(self, "update", None)
+            if update is not None:
+                update()
+            window = getattr(self, "quickWindow", None)
+            if window is not None:
+                window = window()
+                if window is not None and getattr(window, "update", None) is not None:
+                    window.update()
 
         def _rebase_retained_imagery(self, dx, dy):
             """Preserve the on-screen anchors when the bounded parent resets."""
@@ -3908,6 +6085,35 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         item.setProperty(
                             name, float(item.property(name) or 0.0) + delta
                         )
+            # The retained chart and the ENC scene are positioned in the
+            # container frame too, and neither was shifted when the bounded
+            # parent reset: ``mapContent`` carried their pan, so dropping that
+            # translation left both a pan away from the ground they cover.
+            # They absorb the withdrawn translation exactly like the retained
+            # images above.  A layer the camera pass re-places from its own
+            # camera afterwards (``_place_chart`` for ``map_anchor_changed``,
+            # ``_place_enc_scene`` at the end of ``_update_shared_map_pan``)
+            # writes an absolute offset, which supersedes this shift instead
+            # of stacking on it: nothing is ever compensated twice.
+            chart = getattr(self, "_chart", None)
+            chart_before = _item_offset(chart, "imageX", "imageY")
+            chart_after = _shift_item_offset(chart, "imageX", "imageY", dx, dy)
+            scene = getattr(self, "_enc_scene_item", None)
+            enc_before = _item_offset(scene, "x", "y")
+            enc_after = _shift_item_offset(scene, "x", "y", dx, dy)
+            # The fallback paints the scene's refused cells into the item
+            # beneath it, which shares this item's parent and translation.
+            fallback = getattr(self, "_enc_fallback", None)
+            _shift_item_offset(getattr(fallback, "item", None), "x", "y", dx, dy)
+            _trace_rebase(
+                dx,
+                dy,
+                chart_before,
+                chart_after,
+                enc_before,
+                enc_after,
+                getattr(self, "_camera", None),
+            )
 
         def _place_fill_rect(self, item, rect):
             placement = (rect.x(), rect.y(), rect.width(), rect.height())
@@ -4073,6 +6279,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     dx = dy = 0.0
                 item.setProperty("panX", dx)
                 item.setProperty("panY", dy)
+                panstats.repaint_requested()
+                _request_frame = getattr(self, "_request_frame", None)
+                if _request_frame is not None:
+                    _request_frame()
                 return
 
             if not rebase and not anchor_changed and not content_changed:
@@ -4090,8 +6300,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             dx, dy = window.reference.translation_to(
                 self._map_pan_reference, self._map_pan_reference.dpr
             )
+            panstats.repaint_requested()
             item.setProperty("panX", dx)
             item.setProperty("panY", dy)
+            _request_frame = getattr(self, "_request_frame", None)
+            if _request_frame is not None:
+                _request_frame()
 
         def set_marine(self, sources, instant, visible):
             if self._camera is not None:
@@ -4180,6 +6394,27 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             """
             if self._chart_model is None or self._camera is None:
                 return
+            if enc_scene_covers_view(getattr(self, "_enc_scene_item", None)):
+                panstats.skipped("raster_skip")
+                # The presented scene already draws this view; a coarse
+                # raster preview would only duplicate it and re-anchor the
+                # picture mid-drag.  Same predicate as the settle path, so
+                # the two cannot disagree about what the scene covers.
+                if enc_trace.enabled():
+                    enc_trace.event(
+                        "chart_raster_skipped",
+                        reason="scene_covers",
+                        generation=None,
+                        preview=True,
+                        cause="preview",
+                        elapsed_ms=enc_trace.elapsed_ms(
+                            getattr(self, "_enc_trace_demand_at", None)
+                        ),
+                        **enc_trace.camera_fields(
+                            getattr(self, "_enc_trace_demand_camera", None)
+                        ),
+                    )
+                return
             if (
                 getattr(self, "_background_pending", None) is not None
                 and self._chart_visible_generation is not None
@@ -4190,11 +6425,17 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 # its sharp frame exists.  With nothing retained the preview
                 # is the first valid chart and is requested normally.
                 return
+            retained = getattr(self, "_chart_visible_generation", None) is not None
             if (
                 self._weather_ready_at is None
                 and not getattr(self, "_chart_without_weather", False)
+                and not retained
                 and not (self._enc_chart_layer and self._model.state == "unavailable")
             ):
+                # Nothing retained and no weather to wait for would be a blank
+                # preview.  With a chart already on screen the preview only
+                # sharpens the picture the user is looking at, so the weather
+                # never withholds it.
                 return
             if self._model.busy():
                 return
@@ -4202,7 +6443,22 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             last = self._chart_interactive_at
             if last is not None and (now - last) * 1000 < CHART_INTERACTIVE_MS:
                 return
-            generation = self._chart_model.request(self._camera, preview=True)
+            generation = self._chart_model.request(
+                self._camera, preview=True, cause="preview"
+            )
+            if enc_trace.enabled():
+                enc_trace.event(
+                    "chart_request",
+                    generation=generation,
+                    preview=True,
+                    cause="preview",
+                    elapsed_ms=enc_trace.elapsed_ms(
+                        getattr(self, "_enc_trace_demand_at", None)
+                    ),
+                    **enc_trace.camera_fields(
+                        getattr(self, "_enc_trace_demand_camera", None)
+                    ),
+                )
             if generation is not None:
                 self._chart_interactive_at = now
                 self.counters["chart_requests"] += 1
@@ -4229,10 +6485,26 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             """Recheck sources without defeating retained-composition reuse."""
             if self._disposed:
                 return
-            self._request_chart()
+            self._request_chart(cause="timer")
             self._chart_source_timer.start()
 
-        def _request_chart(self):
+        def _scene_draws_chart(self):
+            """Whether the resident ENC scene already draws this view's chart.
+
+            The scene layer is asked first for every settled view; when its
+            complete frame is already assembled for this camera, the raster
+            chart composition would duplicate it at a cost of seconds.
+            """
+            scene = getattr(self, "_enc_scene_model", None)
+            if scene is None:
+                return False
+            published = getattr(scene, "_published", None)
+            metadata = published[2] if published is not None else None
+            return scene_presents_chart(
+                metadata, self._camera, getattr(self, "_enc_scene_item", None)
+            )
+
+        def _request_chart(self, cause="settle"):
             """Ask the chart layer for its own generation.
 
             The chart is composed for a settled view: the view must not have
@@ -4245,13 +6517,74 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             flight and coalesces the latest demand, so this remains bounded
             and cannot delay the weather.
             """
+            # The settle timer is the only timer a held publication waits on:
+            # a pause of ``ENC_SCENE_ADOPT_SETTLE_MS`` is enough to adopt, so
+            # a frame lands mid-drag instead of waiting for release.
+            self._flush_held_enc_scene_adoption()
+            # The scene is asked before any raster scheduling: in scene mode it
+            # *is* the chart, so a weather head start, a chart deferral or a
+            # missing raster layer must not starve it.  Withholding it until
+            # the raster proceeds leaves the resident scene withdrawn for as
+            # long as the weather head start runs.
+            # One scene job per camera: while a scene request for this very
+            # camera is already in flight (and its bounded wait is running),
+            # asking again would supersede it and restart the wait.
+            pending = getattr(self, "_chart_scene_deferral", None)
+            if pending is not None and pending.get("camera") != self._camera:
+                pending = None
+            scene_generation = None
+            request_scene = getattr(self, "_request_enc_scene", None)
+            if request_scene is not None:
+                if pending is None:
+                    scene_generation = request_scene()
+                else:
+                    scene_generation = pending.get("generation")
             if self._chart_model is None or self._camera is None:
                 self._restart_chart_settle()
                 return
-            elapsed = (time.perf_counter() - self._chart_camera_changed) * 1000.0
+            now = time.perf_counter()
+            elapsed = (now - self._chart_camera_changed) * 1000.0
             if elapsed < CHART_IDLE_MS:
                 # The view is still moving: the chart waits for it to settle.
                 self._chart_timer.start(max(1, math.ceil(CHART_IDLE_MS - elapsed)))
+                return
+            # A map engine draws in map coordinates: while the ENC frame
+            # actually on screen reaches this viewport it *is* the chart, so
+            # the raster neither composes nor waits.  Deferring it only
+            # postponed the snap, and every publication re-anchored the view
+            # mid-drag.  A scene that exists but does not cover (zero
+            # vertices, no viewport overlap, a zoomed-out stale frame) or one
+            # that is hidden draws nothing here: the raster composes exactly
+            # as it does without a scene layer.  A reported gap (see
+            # ``ensure_chart_content``) means the raster is the only chart on
+            # screen: nothing below may defer it to a re-check or starve it
+            # behind the weather window.
+            force_coverage = bool(getattr(self, "_chart_force_coverage", False))
+            self._chart_scene_deferral = None
+            self._chart_scene_suppressed_at = None
+            self._chart_scene_suppressed_camera = None
+            if enc_scene_covers_view(getattr(self, "_enc_scene_item", None)):
+                # The presented scene is the chart after all: the gap is gone.
+                self._chart_force_coverage = False
+                panstats.skipped("raster_skip")
+                if enc_trace.enabled():
+                    enc_trace.event(
+                        "chart_raster_skipped",
+                        reason="scene_covers",
+                        generation=scene_generation,
+                        preview=False,
+                        cause=cause,
+                        elapsed_ms=enc_trace.elapsed_ms(
+                            getattr(self, "_enc_trace_demand_at", None)
+                        ),
+                        **enc_trace.camera_fields(self._camera),
+                    )
+                # Re-check shortly: coverage can end when the scene is hidden
+                # or zoomed out of the viewport without a camera settle, and
+                # the raster must return without waiting for an unrelated
+                # demand.
+                if self._chart_timer is not None:
+                    self._chart_timer.start(CHART_SCENE_SKIP_MS)
                 return
             head_start = None
             if (
@@ -4259,28 +6592,86 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 and not getattr(self, "_chart_without_weather", False)
                 and not (self._enc_chart_layer and self._model.state == "unavailable")
             ):
-                head_start = CHART_WEATHER_READY_WAIT_MS
+                # A chart already on screen keeps covering the view while the
+                # weather presents, so the cold-start window would only starve
+                # it; it gets the short retained bound instead.  Before the
+                # session's first raster nothing else covers the view at all,
+                # so the long cold-start window applies to nothing: the first
+                # raster takes the short startup bound and composes while the
+                # weather is still preparing.
+                retained = getattr(self, "_chart_visible_generation", None) is not None
+                head_start = (
+                    CHART_RETAINED_HEAD_START_MS
+                    if retained
+                    else CHART_STARTUP_HEAD_START_MS
+                )
             elif self._model.busy():
                 head_start = CHART_WEATHER_BUSY_WAIT_MS
-            if head_start is not None and elapsed < head_start:
-                # Weather keeps its bounded priority window; the timer asks
-                # again after it expires, and the chart proceeds regardless.
-                self._chart_timer.start(max(1, math.ceil(head_start - elapsed)))
-                return
+            if head_start is not None and not force_coverage:
+                # The window is bounded from the last successful composition
+                # (or the viewport's start), never from the last camera change:
+                # a move every settle interval would otherwise re-arm it
+                # forever and the chart would never compose while moving.
+                basis = getattr(self, "_chart_head_start_basis", None)
+                if basis is None:
+                    basis = self._chart_camera_changed
+                waited = (now - basis) * 1000.0
+                if waited < head_start:
+                    # Weather keeps its bounded priority window; the timer asks
+                    # again after it expires, and the chart proceeds regardless.
+                    self._chart_timer.start(max(1, math.ceil(head_start - waited)))
+                    return
+            self._chart_force_coverage = False
             self.counters["chart_requests"] += 1
             self._chart_requested_after_weather = self._weather_ready_at is not None
             self._chart_request_state = self._chart_state_now()
             if getattr(self, "_chart_force_replace", False):
                 self._chart_force_replace = False
-                generation = self._chart_model.request(self._camera, replace=True)
+                generation = self._chart_model.request(
+                    self._camera, replace=True, cause=cause
+                )
             else:
-                generation = self._chart_model.request(self._camera)
+                generation = self._chart_model.request(self._camera, cause=cause)
+            if enc_trace.enabled():
+                enc_trace.event(
+                    "chart_request",
+                    generation=generation,
+                    preview=False,
+                    cause=cause,
+                    elapsed_ms=enc_trace.elapsed_ms(
+                        getattr(self, "_enc_trace_demand_at", None)
+                    ),
+                    **enc_trace.camera_fields(
+                        getattr(self, "_enc_trace_demand_camera", None)
+                    ),
+                )
+            # The scene request was issued before the weather priority above,
+            # so the resident scene is already composing for this view.
             if generation is not None:
                 times = getattr(self, "_chart_request_times", None)
                 if times is not None:
                     times[generation] = time.perf_counter()
                     while len(times) > 64:
                         times.pop(next(iter(times)))
+            # A generation the model serves from its retained composition is
+            # already published, so no composition callback will follow it.
+            # If that generation is not the visible chart yet (the demand
+            # moved to a camera the retained composition still covers), it
+            # must be staged here or the view stays on an older frame until
+            # an unrelated demand forces a new composition.
+            if (
+                generation is not None
+                and generation != self._chart_visible_generation
+                and (
+                    self._chart_pending is None or self._chart_pending[0] != generation
+                )
+            ):
+                with self._chart_model._condition:
+                    payload = self._chart_model._published
+                    if payload is None or payload[0] != generation:
+                        payload = None
+                if payload is not None:
+                    self._publish_chart(payload)
             refusal = getattr(self, "_chart_budget_refusal", None)
             retry_refusal = False
             if refusal is not None and refusal[0] == generation:
@@ -6000,8 +8391,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
         def measurement_canvas(self):
             """The viewport host that owns measurement mode, if any.
 
-            A native QQuickView is not a QWidget; the presenter assigns the
-            owning canvas explicitly.
+            The presenter parents the widget on the canvas and assigns the
+            owning canvas explicitly; before that it is only a render host.
             """
             parent_widget = getattr(self, "parentWidget", None)
             if parent_widget is not None:
@@ -6011,13 +8402,32 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             return getattr(self, "_measurement_canvas", None)
 
         def quickWindow(self):  # noqa: N802 - matches the historical accessor
-            """The scene window."""
-            return self
+            """The scene window the widget renders into."""
+            return super().quickWindow()
+
+        def devicePixelRatio(self):  # noqa: N802 - QWindow float semantics
+            """The scene's ratio as a float, as the window host reported it.
+
+            ``QWidget.devicePixelRatio`` reports an int; every composition,
+            capture and pan reference here is made at the fractional ratio,
+            so a second display at 1.5 must not round to 2.
+            """
+            return self.devicePixelRatioF()
 
         def dispose(self):
             if self._disposed:
                 return
             self._disposed = True
+            self._enc_trace_disconnect()
+            fallback = getattr(self, "_enc_fallback", None)
+            if fallback is not None:
+                # The worker is a daemon: stopping it only drops the demand,
+                # a paint already running finishes into nothing.
+                fallback.stop()
+            for name in ("_enc_trace_timeout_timer", "_enc_trace_counter_timer"):
+                timer = getattr(self, name, None)
+                if timer is not None:
+                    timer.stop()
             if not self._native_weather_fields:
                 self._cancel_image_fill(withdraw=True)
             self._marine_layer.close()
@@ -6052,8 +8462,16 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self._chart_timer.stop()
             if shiboken6.isValid(self._chart_source_timer):
                 self._chart_source_timer.stop()
+            retry_timer = getattr(self, "_enc_scene_retry_timer", None)
+            if retry_timer is not None and shiboken6.isValid(retry_timer):
+                retry_timer.stop()
+            hold_timer = getattr(self, "_enc_scene_hold_timer", None)
+            if hold_timer is not None and shiboken6.isValid(hold_timer):
+                hold_timer.stop()
             if self._chart_model is not None:
                 self._chart_model.close()
+            if getattr(self, "_enc_scene_model", None) is not None:
+                self._enc_scene_model.close()
             self._provider.clear()
             self._streamline_provider.clear()
             self._marine_provider.clear()
@@ -6088,6 +8506,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 provider.clear()
             if shiboken6.isValid(self._weather):
                 self._weather.setVisible(False)
+            chart = getattr(self, "_chart", None)
+            if chart is not None and shiboken6.isValid(chart):
+                # Teardown hides the layer for real; record that before the
+                # scene goes away so a session's last state is "hidden".
+                chart.setVisible(False)
+            trace_raster_visibility(self, "viewport_disposed")
 
         def _clear_weather_sources(self):
             _prepare_wave_layer(self)
@@ -6226,10 +8650,223 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 "key"
             ) == getattr(self, "_image_fill_requested_key", None)
 
+        # -- optional pan metrics (SAILWORKS_PAN_STATS) --------------------
+        def paintEvent(self, event):
+            """Time the widget paint around Qt's own compositing.
+
+            ``QQuickWidget`` renders the scene to a texture and composites it
+            here, so this interval is the frame's second half; the render it
+            wraps is timed separately by ``beforeRendering``/``afterRendering``.
+            No clock is read while the collector is off.
+            """
+            if not panstats.enabled():
+                return super().paintEvent(event)
+            started = time.perf_counter()
+            try:
+                return super().paintEvent(event)
+            finally:
+                panstats.painted((time.perf_counter() - started) * 1000.0)
+
+        def _panstats_after_rendering(self):
+            """Record one presented frame, with its render time when known.
+
+            The basis is stamped where a frame is handed to the scene, so the
+            interval measured here is the before->after render time rather
+            than an extra counter of the viewport's own.
+            """
+            now = time.perf_counter()
+            basis = getattr(self, "_panstats_render_basis", None)
+            render_ms = None
+            if basis is not None:
+                self._panstats_render_basis = None
+                render_ms = (now - basis) * 1000.0
+            panstats.frame_presented(render_ms)
+            # A presented frame also proves the GUI thread is alive, so the
+            # stall watchdog sees the freshest signal; off unless enabled.
+            panstats.heartbeat()
+
+        # -- optional diagnostic trace (SAILWORKS_ENC_TRACE) ---------------
+        def _enc_trace_begin_demand(self, camera):
+            """Start a demand-scoped trace cycle; a no-op unless enabled."""
+            if not enc_trace.enabled():
+                return
+            self._enc_trace_demand_at = time.perf_counter()
+            self._enc_trace_demand_camera = camera
+            self._enc_trace_demand_generation = None
+            self._enc_trace_presented_generation = None
+            self._enc_trace_pending_present = None
+            self._enc_trace_scene_adopt_at = None
+            self._enc_trace_chart_adopt_at = None
+            self._enc_trace_phases = {}
+            enc_trace.event(
+                "demand",
+                t_demand=round(time.monotonic(), 3),
+                **enc_trace.camera_fields(camera),
+            )
+            self._enc_trace_connect()
+            self._enc_trace_arm_timers()
+
+        def _enc_trace_connect(self):
+            """Hook ``afterRendering`` once; the trace's only frame signal."""
+            if getattr(self, "_enc_trace_window", None) is not None:
+                return
+            quick_window = getattr(self, "quickWindow", None)
+            quick = quick_window() if callable(quick_window) else None
+            if quick is None:
+                return
+            try:
+                quick.afterRendering.connect(
+                    self._enc_trace_after_rendering,
+                    Qt.ConnectionType.DirectConnection,
+                )
+            except (RuntimeError, TypeError):
+                return
+            self._enc_trace_window = quick
+
+        def _enc_trace_disconnect(self):
+            quick = getattr(self, "_enc_trace_window", None)
+            self._enc_trace_window = None
+            if quick is None:
+                return
+            try:
+                quick.afterRendering.disconnect(self._enc_trace_after_rendering)
+            except (RuntimeError, TypeError):
+                pass
+
+        def _enc_trace_arm_timers(self):
+            timer = getattr(self, "_enc_trace_timeout_timer", None)
+            if timer is None:
+                timer = QTimer(self)
+                timer.setSingleShot(True)
+                timer.timeout.connect(self._enc_trace_timeout)
+                self._enc_trace_timeout_timer = timer
+            timer.start(int(enc_trace.PRESENT_TIMEOUT_MS))
+            counter = getattr(self, "_enc_trace_counter_timer", None)
+            if counter is None:
+                counter = QTimer(self)
+                counter.setInterval(2000)
+                counter.timeout.connect(self._enc_trace_counters)
+                self._enc_trace_counter_timer = counter
+                counter.start()
+
+        def _enc_trace_timeout(self):
+            """Report a demand that no frame presented within the timeout."""
+            demand_at = getattr(self, "_enc_trace_demand_at", None)
+            if demand_at is None:
+                return
+            if getattr(self, "_enc_trace_presented_generation", None) is not None:
+                return
+            elapsed = enc_trace.elapsed_ms(demand_at)
+            if not enc_trace.present_timeout(elapsed, False):
+                return
+            layer = getattr(self, "_enc_scene_model", None)
+            enc_trace.slow(
+                reason="never_presented",
+                elapsed_ms=elapsed,
+                generation=getattr(self, "_enc_trace_demand_generation", None),
+                scene_state=getattr(self, "_enc_scene_state", None),
+                pending_generation=getattr(self, "_enc_scene_pending_generation", None),
+                cells=len(getattr(self, "_enc_scene_cells_order", ()) or ()),
+                scene_counters=dict(getattr(layer, "counters", {}) or {}),
+                **enc_trace.camera_fields(
+                    getattr(self, "_enc_trace_demand_camera", None)
+                ),
+            )
+            self._enc_trace_demand_at = None
+
+        def _enc_trace_counters(self):
+            if not enc_trace.enabled():
+                return
+            layer = getattr(self, "_enc_scene_model", None)
+            chart_model = getattr(self, "_chart_model", None)
+            enc_trace.event(
+                "counters",
+                generation=getattr(self, "_enc_trace_demand_generation", None),
+                scene=dict(getattr(layer, "counters", {}) or {}),
+                raster=dict(getattr(chart_model, "counters", {}) or {}),
+                chart_requests=(getattr(self, "counters", {}) or {}).get(
+                    "chart_requests"
+                ),
+                chart_publications=(getattr(self, "counters", {}) or {}).get(
+                    "chart_publications"
+                ),
+            )
+
+        def _enc_trace_maybe_slow(self, elapsed, generation):
+            if not enc_trace.is_slow(elapsed):
+                return
+            phases = dict(getattr(self, "_enc_trace_phases", {}) or {})
+            layer = getattr(self, "_enc_scene_model", None)
+            enc_trace.slow(
+                reason="present_slow",
+                elapsed_ms=elapsed,
+                dominant=enc_trace.dominant_phase(phases),
+                phases=phases,
+                generation=generation,
+                cells=len(getattr(self, "_enc_scene_cells_order", ()) or ()),
+                scene_counters=dict(getattr(layer, "counters", {}) or {}),
+                chart_counters=dict(getattr(self, "counters", {}) or {}),
+                **enc_trace.camera_fields(
+                    getattr(self, "_enc_trace_demand_camera", None)
+                ),
+            )
+
+        def _enc_trace_after_rendering(self):
+            """First rendered frame after the adopted scene: presented."""
+            pending = getattr(self, "_enc_trace_pending_present", None)
+            if pending is None:
+                return
+            self._enc_trace_pending_present = None
+            demand_at = getattr(self, "_enc_trace_demand_at", None)
+            if demand_at is None:
+                return
+            elapsed = enc_trace.elapsed_ms(demand_at)
+            presented_at = time.perf_counter()
+            self._enc_trace_presented_generation = pending
+            adopted = [
+                at
+                for at in (
+                    getattr(self, "_enc_trace_scene_adopt_at", None),
+                    getattr(self, "_enc_trace_chart_adopt_at", None),
+                )
+                if at is not None
+            ]
+            phases = getattr(self, "_enc_trace_phases", None)
+            if phases is None:
+                phases = self._enc_trace_phases = {}
+            if adopted:
+                phases["present"] = round((presented_at - max(adopted)) * 1000.0, 3)
+            # Sample after the frame has rendered: the item's matrix is the one
+            # that just drew, so this is the honest state of the pixels the
+            # user saw.  Still a state probe, never a readback or a rate.
+            trace_item = getattr(self, "_enc_scene_item", None)
+            trace_shown = getattr(trace_item, "shown_vertex_count", None)
+            trace_reaches = getattr(trace_item, "scene_covers_view", None)
+            enc_trace.event(
+                "scene_presented",
+                generation=pending,
+                elapsed_ms=elapsed,
+                shown_vertices=(int(trace_shown()) if callable(trace_shown) else None),
+                covers_view=(
+                    bool(trace_reaches()) if callable(trace_reaches) else None
+                ),
+                **enc_trace.camera_fields(
+                    getattr(self, "_enc_trace_demand_camera", None)
+                ),
+            )
+            self._enc_trace_maybe_slow(elapsed, pending)
+
         def set_camera(self, camera):
             """Adopt a camera and publish the portrayal it may show."""
             if self._disposed:
                 return "unavailable"
+            self._enc_trace_begin_demand(camera)
+            # Module-level so a test double needs no metrics attribute; it is
+            # a no-op while the collector is off and idempotent per window.
+            panstats.ensure_connected(self)
+            # One environment check, then no clock at all while the collector
+            # is off: the handler's cost is measured only to be reported.
+            camera_started = time.perf_counter() if panstats.enabled() else None
             began = time.perf_counter()
             state = "loading"
             try:
@@ -6267,6 +8904,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         self._chart_camera = camera
                         self._chart_camera_changed = time.perf_counter()
                         self._restart_chart_settle()
+                        if getattr(self, "_enc_scene_model", None) is not None:
+                            # The presented scene belongs to the previous
+                            # camera, but its replacement is already on its
+                            # way (the settle timer asks for it).  Keep the
+                            # picture up and labelled as updating instead of
+                            # blanking the chart for a whole tessellation.
+                            # A failed, cancelled or idle update withdraws it.
+                            self._mark_enc_scene_updating()
                         self._request_interactive_chart()
                         # A switch at the old camera cannot hold its retained
                         # frame across the move; withdraw it and present the
@@ -6430,6 +9075,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self.cameraChanged.emit(camera)
                 return state
             finally:
+                if camera_started is not None:
+                    panstats.camera_changed(
+                        camera,
+                        (time.perf_counter() - camera_started) * 1000.0,
+                    )
                 self._presentation_spans.append((began, time.perf_counter(), state))
                 if len(self._presentation_spans) > 4096:
                     del self._presentation_spans[: len(self._presentation_spans) - 4096]
@@ -6483,9 +9133,155 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         reference, 0.5 * max(float(camera.width), float(camera.height))
                     )
             dx, dy = reference.translation_to(camera, dpr)
+            # One counted repaint request per camera pass: these two writes are
+            # what the scene re-renders for.  A no-op while the stats are off.
+            panstats.repaint_requested()
             parent.setProperty("x", dx)
             parent.setProperty("y", dy)
+            self._place_enc_scene()
+            _request_frame = getattr(self, "_request_frame", None)
+            if _request_frame is not None:
+                _request_frame()
             return anchor_changed
+
+        def _place_enc_scene(self, cause="camera"):
+            """Cancel the retained map's pan on the camera-absolute ENC scene.
+
+            ``mapContent`` is translated so reference-local layers keep their
+            geographic anchor.  The ENC scene is not reference-local: its
+            projection already maps degrees through a camera, so the container
+            translation was added on top of the same pan and every settled
+            chart sat one pan away from its cells.
+
+            The item cancels the translation between the current reference and
+            the camera its matrix is composed for.  A pan keeps that camera -
+            the matrix is only re-solved for a new projection - so exactly the
+            pan since composition remains, and a settled chart is pinned.
+
+            A zoom cannot be expressed as a translation at all: the world-pixel
+            scale changed.  The retained buffers live in a reference screen
+            frame, so the frame is re-composed against the current camera
+            instead: ``_frame_coeffs`` re-projects its four probes and the
+            matrix supplies the scale.  Nothing is rebuilt, no vertex is
+            re-projected per frame, and the upload is untouched.
+            """
+            item = getattr(self, "_enc_scene_item", None)
+            if item is None:
+                return
+            reference = getattr(self, "_map_pan_reference", None)
+            camera = getattr(self, "_camera", None)
+            frame = getattr(self, "_enc_scene_frame_camera", None)
+            if frame is None:
+                frame = getattr(self, "_enc_scene_camera", None)
+            rescaled = False
+            if (
+                camera is not None
+                and frame is not None
+                and not same_frame(frame, camera)
+            ):
+                from sailworks.qt.encscenelayer import (
+                    projection_for,
+                    screen_viewport_for,
+                )
+
+                item.set_projection(projection_for(screen_viewport_for(camera)))
+                self._enc_scene_frame_camera = camera
+                frame = camera
+                rescaled = True
+            # The offset the container convention needs is the one that leaves
+            # only ``mapContent``'s own translation to draw the pan: the item's
+            # projection is composed for ``frame``, so its own coordinates are
+            # screen coordinates *for that camera* and it must cancel exactly
+            # ``reference.translation_to(frame)`` - ``enc_scene_placement``.
+            # That is the same expression for a publication as for a camera
+            # change: with the container carrying the pan, nothing about the
+            # adopt may add the reference-to-camera translation a second time.
+            previous = _item_offset(item, "x", "y") if cause == "publication" else None
+            x, y = enc_scene_placement(reference, frame, self._camera_dpr)
+            place_enc_scene_item(
+                item,
+                getattr(self, "_enc_fallback", None),
+                x,
+                y,
+                cause=cause,
+                rescaled=rescaled,
+                camera=self._camera,
+            )
+            if cause == "publication":
+                _trace_publication_anchor(
+                    "enc",
+                    cause,
+                    self._camera,
+                    previous,
+                    (x, y),
+                    _container_pan(reference, camera, self._camera_dpr),
+                )
+            if camera is None or frame is None:
+                return
+            if rescaled:
+                stale = True
+            else:
+                # The frame was composed over this ring; ask for a replacement
+                # once half of it is consumed, leaving the rest as slack for
+                # the asynchronous composer.
+                stale = enc_scene_cover_stale(
+                    reference,
+                    frame,
+                    camera,
+                    enc_compose_margin(frame),
+                    self._camera_dpr,
+                )
+            generation = getattr(self, "_enc_scene_generation", None)
+            if not stale:
+                # The presented generation covers this view: the demand's
+                # terminal outcome is ``covered`` and it is not asked again.
+                # ``stale`` itself is only the slack probe below, never a
+                # terminal answer.
+                enc_scene_demand_settled(self, "covered", generation)
+                return
+            # One replacement request per presented generation, however far the
+            # gesture runs: the layer cancels superseded work and the settle
+            # timer asks again anyway.  Until it arrives the uncovered strip is
+            # bounded by the padding the composition reached past the view.
+            request = getattr(self, "_request_enc_scene", None)
+            if (
+                request is None
+                or getattr(self, "_enc_scene_cover_generation", None) == generation
+            ):
+                return
+            self._enc_scene_cover_generation = generation
+            # The slack probe asks before the ring is actually gone, so its
+            # answer is not "uncoverable": a small per-demand budget bounds
+            # the pre-emptive widening instead of terminalising the demand.
+            demand = enc_scene_demand_key(
+                self,
+                getattr(self, "_camera", None),
+                getattr(self, "_enc_scene_model", None),
+            )
+            if getattr(self, "_enc_scene_cover_key", None) != demand:
+                self._enc_scene_cover_key = demand
+                self._enc_scene_cover_requests = 0
+            used = getattr(self, "_enc_scene_cover_requests", 0)
+            if used >= ENC_SCENE_COVER_RETRY_MAX:
+                if enc_trace.enabled():
+                    enc_trace.event(
+                        "scene_request_skipped",
+                        cause="cover",
+                        demand=enc_scene_demand_token(demand),
+                        reason="cover_budget",
+                        generation=getattr(self, "_enc_scene_demand_generation", None),
+                        elapsed_ms=enc_trace.elapsed_ms(
+                            getattr(self, "_enc_trace_demand_at", None)
+                        ),
+                        **enc_trace.camera_fields(getattr(self, "_camera", None)),
+                    )
+                return
+            self._enc_scene_cover_requests = used + 1
+            updating = getattr(self, "_mark_enc_scene_updating", None)
+            if updating is not None:
+                updating()
+            self._enc_scene_request_cause = "cover"
+            request()
 
         @staticmethod
         def _same_weather_view(first, second):
@@ -6524,6 +9320,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     None
                     if self._chart_model is None
                     else self._chart_model.observations()
+                ),
+                "enc_scene_layer": (
+                    None
+                    if getattr(self, "_enc_scene_model", None) is None
+                    else self._enc_scene_model.observations()
                 ),
             }
 
@@ -8124,71 +10925,69 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
 
     # A Python virtual invoked from C++ holds the GIL across the base call.
     # Qt Quick's expose handshake waits for the render thread, which needs
-    # the GIL, so the native host keeps the C++ implementations and uses
-    # an event filter for the few events it must observe.
-    GribViewport.event = QQuickView.event
-    GribViewport.showEvent = QQuickView.showEvent
-    GribViewport.resizeEvent = QQuickView.resizeEvent
-    GribViewport.closeEvent = QQuickView.closeEvent
+    # the GIL, so the host keeps the C++ implementations and uses an event
+    # filter for the few events it must observe.
+    GribViewport.event = QQuickWidget.event
+    GribViewport.showEvent = QQuickWidget.showEvent
+    GribViewport.resizeEvent = QQuickWidget.resizeEvent
+    GribViewport.closeEvent = QQuickWidget.closeEvent
 
     return GribViewport
 
 
-def saved_selection(data_dir):
-    """Read the saved ordered selection without creating or modifying app data."""
-    directory = Path(data_dir).expanduser()
-    manager = json.loads((directory / "grib-manager.json").read_text())
-    names = manager.get("opened", [])
-    if not isinstance(names, list) or not names:
-        raise ValueError("No saved forecasts selected; open forecasts in the app first")
-    paths = []
-    for name in names:
-        if not isinstance(name, str) or Path(name).name != name:
-            raise ValueError("Saved forecast selection contains an invalid filename")
-        path = directory / "grib" / name
-        if not path.is_file():
-            raise ValueError(f"Selected forecast is missing: {path}")
-        paths.append(str(path))
-    settings_path = directory / "settings.json"
-    settings = json.loads(settings_path.read_text()) if settings_path.is_file() else {}
-    return tuple(paths), settings
+def enc_scene_catalog(data_dir, palette=None):
+    """The catalog the ENC scene layer refreshes and reads.
 
-
-def saved_chart_palette(data_dir, settings=None):
-    """The user's own chart palette, read without creating or modifying data.
-
-    The palette is the application's own: an unknown name falls back to the
-    application's default rather than failing the composition.
+    The layer needs ``refresh()``, ``manifest.class_enabled`` and
+    ``sources``; that is ``viewportenc.EncCatalog``.  The raster path's
+    ``ViewportEncSource`` owns one but does not expose it, so it cannot be
+    injected here.  ``palette`` is accepted for the factory's signature; the
+    catalog reads no colours.
     """
-    from sailworks.qt.gribviewportchart import CHART_PALETTE
-    from sailworks.rendering.style import Style
+    from .viewportenc import EncCatalog
 
-    if not settings:
-        path = Path(data_dir).expanduser() / "settings.json"
-        try:
-            settings = json.loads(path.read_text())
-        except (OSError, ValueError):
-            settings = {}
-    palette = settings.get("chartPalette") if isinstance(settings, dict) else None
-    if palette in Style.chart_palettes:
-        return palette
-    return CHART_PALETTE
+    return EncCatalog(data_dir)
 
 
-def main(argv=None):
-    """Launch a read-only standalone viewport; no paths means saved selection."""
-    import argparse
+def enc_scene_item(container):
+    """Parent the GPU ENC item on its QML container and size it to it.
 
-    from PySide6.QtCore import QDateTime, Qt
-    from PySide6.QtWidgets import (
-        QApplication,
-        QDateTimeEdit,
-        QHBoxLayout,
-        QLabel,
-        QPushButton,
-        QVBoxLayout,
-        QWidget,
+    The scene's coordinates are viewport logical pixels, so the item covers
+    the container rather than a zero-sized rect.  The two connections keep it
+    covering the container across a resize.  The item starts hidden: it is
+    shown only when a ready scene is published, never as an empty overlay.
+    """
+    from .encgpu import EncMeshItem
+
+    item = EncMeshItem(container)
+    item.setWidth(container.width())
+    item.setHeight(container.height())
+    # ``widthChanged``/``heightChanged`` carry no argument, so the slot has to
+    # read the container's current size: connecting ``item.setWidth`` directly
+    # would call it with zero arguments and raise.
+    container.widthChanged.connect(lambda: item.setWidth(container.width()))
+    container.heightChanged.connect(lambda: item.setHeight(container.height()))
+    item.setVisible(False)
+    return item
+
+
+def viewport_layer_flags(args):
+    """The chart/ENC layer flags the viewport is constructed with.
+
+    Kept apart from :func:`main` so the wiring is testable without a GUI: the
+    scene layer implies the chart layer and supersedes the raster ENC source,
+    so a cell is never drawn twice.
+    """
+    from .encscenelayer import resolve_enc_modes
+
+    return resolve_enc_modes(
+        args.chart_layer, args.enc_chart_layer, args.enc_scene_layer
     )
+
+
+def viewport_argument_parser():
+    """The launcher's own arguments; every experimental layer defaults off."""
+    import argparse
 
     parser = argparse.ArgumentParser(description="Independent GRIB viewport")
     parser.add_argument(
@@ -8251,6 +11050,75 @@ def main(argv=None):
             "implies the chart layer)"
         ),
     )
+    parser.add_argument(
+        "--enc-scene-layer",
+        action="store_true",
+        help=(
+            "draw the installed ENC cells as a GPU scene layer instead of the "
+            "raster ENC overlay, which then rasterizes no ENC at all "
+            "(default: off; implies the chart layer)"
+        ),
+    )
+    return parser
+
+
+def saved_selection(data_dir):
+    """Read the saved ordered selection without creating or modifying app data."""
+    directory = Path(data_dir).expanduser()
+    manager = json.loads((directory / "grib-manager.json").read_text())
+    names = manager.get("opened", [])
+    if not isinstance(names, list) or not names:
+        raise ValueError("No saved forecasts selected; open forecasts in the app first")
+    paths = []
+    for name in names:
+        if not isinstance(name, str) or Path(name).name != name:
+            raise ValueError("Saved forecast selection contains an invalid filename")
+        path = directory / "grib" / name
+        if not path.is_file():
+            raise ValueError(f"Selected forecast is missing: {path}")
+        paths.append(str(path))
+    settings_path = directory / "settings.json"
+    settings = json.loads(settings_path.read_text()) if settings_path.is_file() else {}
+    return tuple(paths), settings
+
+
+def saved_chart_palette(data_dir, settings=None):
+    """The user's own chart palette, read without creating or modifying data.
+
+    The palette is the application's own: an unknown name falls back to the
+    application's default rather than failing the composition.
+    """
+    from sailworks.qt.gribviewportchart import CHART_PALETTE
+    from sailworks.rendering.style import Style
+
+    if not settings:
+        path = Path(data_dir).expanduser() / "settings.json"
+        try:
+            settings = json.loads(path.read_text())
+        except (OSError, ValueError):
+            settings = {}
+    palette = settings.get("chartPalette") if isinstance(settings, dict) else None
+    if palette in Style.chart_palettes:
+        return palette
+    return CHART_PALETTE
+
+
+def main(argv=None):
+    """Launch a read-only standalone viewport; no paths means saved selection."""
+    import argparse
+
+    from PySide6.QtCore import QDateTime, Qt
+    from PySide6.QtWidgets import (
+        QApplication,
+        QDateTimeEdit,
+        QHBoxLayout,
+        QLabel,
+        QPushButton,
+        QVBoxLayout,
+        QWidget,
+    )
+
+    parser = viewport_argument_parser()
     args = parser.parse_args(argv)
     settings = {}
     try:
@@ -8289,19 +11157,21 @@ def main(argv=None):
         chart_data_dir = Path(DATA_DIR)
     # The chart composition uses the user's own palette where it is exposed.
     chart_palette = saved_chart_palette(chart_data_dir, settings)
+    chart_layer, enc_chart_layer, enc_scene_layer = viewport_layer_flags(args)
     viewport = _viewport_widget_class()(
         model,
         gpu_weather_fill=args.gpu_weather_fill,
-        chart_layer=args.chart_layer or args.enc_chart_layer,
+        chart_layer=chart_layer,
         chart_data_dir=chart_data_dir,
         native_weather_fields=args.native_weather_fields,
-        enc_chart_layer=args.enc_chart_layer,
+        enc_chart_layer=enc_chart_layer,
+        enc_scene_layer=enc_scene_layer,
         chart_palette=chart_palette,
     )
     window = QWidget()
     window.setWindowTitle(f"GRIB viewport — {len(paths)} forecasts")
     layout = QVBoxLayout(window)
-    host = QWidget.createWindowContainer(viewport, window)
+    host = viewport
     controls = QHBoxLayout()
     controls.addWidget(QLabel("Forecast UTC"))
     initial = QDateTime(instant)

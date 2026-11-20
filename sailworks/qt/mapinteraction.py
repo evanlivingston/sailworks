@@ -28,10 +28,10 @@ class MapInteractionMixin:
     def map_pointer_target(self):
         """The surface that owns the pointer cursor.
 
-        The desktop viewport is a ``QQuickView`` (a ``QWindow``) laid out
-        inside this widget, so the mouse events and the pointer cursor belong
-        to that window; setting the cursor on the container changes nothing.
-        Fall back to this widget when no QuickView is hosted.
+        The desktop viewport is a ``QQuickWidget`` laid out inside this
+        widget, so the pointer cursor belongs to it rather than to the
+        layout; setting the cursor on the container changes nothing.
+        Fall back to this widget when no render host is present.
         """
         presenter = getattr(self, "_weather_presenter", None)
         widget = getattr(presenter, "widget", None) if presenter is not None else None

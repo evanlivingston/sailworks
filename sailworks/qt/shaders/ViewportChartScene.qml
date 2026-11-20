@@ -159,6 +159,26 @@ Item {
                 objectName: "chartLayer"
                 anchors.fill: parent
             }
+            // The refused cells' own ground: the viewport parents one
+            // painting item here, above the raster chart and beneath the GPU
+            // scene, so a cell the scene could not draw is still chart
+            // content.  It follows the ENC layer toggle and shares the scene
+            // layer's visibility rule; the default path constructs neither.
+            Item {
+                objectName: "encFallbackLayer"
+                anchors.fill: parent
+                visible: root.encVisible && children.length > 0
+            }
+            // The opt-in GPU ENC scene: the viewport parents one EncMeshItem
+            // here and shows it only while a ready scene is published.  The
+            // container follows the ENC layer toggle and is hidden until it
+            // actually hosts the item, so the default path has nothing to
+            // draw and nothing to report.
+            Item {
+                objectName: "encSceneLayer"
+                anchors.fill: parent
+                visible: root.encVisible && children.length > 0
+            }
             // Images and numerical fill are reference-local.
             Item {
                 objectName: "environmentFillBand"

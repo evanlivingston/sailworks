@@ -2,12 +2,25 @@
 
 from pathlib import Path
 from datetime import datetime, timezone
+import pytest
 from types import MethodType, SimpleNamespace
 
 from sailworks.qt.gribviewport import ViewportCamera, _viewport_widget_class
 from sailworks.core.mapviewport import MapViewport
 from sailworks.qt.gribviewportchart import ChartCamera, MARGIN, chart_placement
 from sailworks.qt.viewporttransform import PanReference
+
+
+@pytest.fixture(autouse=True)
+def _the_layer_owns_its_pan(monkeypatch):
+    """Measure the layer's own pan placement, not the container experiment.
+
+    ``CONTAINER_CARRIES_PAN`` is covered in ``test/test_gribviewport.py``;
+    these checks model the two placements it replaces.
+    """
+    from sailworks.qt import gribviewport as _gv
+
+    monkeypatch.setattr(_gv, "CONTAINER_CARRIES_PAN", False)
 
 
 def _camera(center_lon=-123.1, zoom=9.0, width=900, height=700):
@@ -130,6 +143,10 @@ def test_set_camera_moves_route_canvas_in_camera_pass_without_content_callback()
         widget_class._update_shared_map_pan, widget
     )
     widget._map_content = None
+    widget._place_enc_scene = MethodType(widget_class._place_enc_scene, widget)
+    widget._enc_trace_begin_demand = MethodType(
+        widget_class._enc_trace_begin_demand, widget
+    )
     widget._place_route_overlay = MethodType(widget_class._place_route_overlay, widget)
     widget._place_chart()
     widget_class.set_route_overlay(widget, _overlay())
@@ -620,6 +637,10 @@ def test_shared_scene_pan_translates_parent_and_reanchors_retained_children():
     )
     widget._place_chart = MethodType(widget_class._place_chart, widget)
     widget._place_route_overlay = MethodType(widget_class._place_route_overlay, widget)
+    widget._place_enc_scene = MethodType(widget_class._place_enc_scene, widget)
+    widget._enc_trace_begin_demand = MethodType(
+        widget_class._enc_trace_begin_demand, widget
+    )
     widget._rebase_retained_imagery = MethodType(
         widget_class._rebase_retained_imagery, widget
     )

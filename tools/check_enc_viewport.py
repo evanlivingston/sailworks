@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
 import socket
 import sys
@@ -41,16 +42,38 @@ EXPECTED_SNAPSHOT_SHA = (
 CURRENT_SNAPSHOT_SHA = (
     "410b88ada69dd5a22fc18765a0f26b016e9d15df22bcfeaa954b8b4b62da2346"
 )
-ACCEPTED_SNAPSHOT_SHA = (EXPECTED_SNAPSHOT_SHA, CURRENT_SNAPSHOT_SHA)
+#: The retry capture ``snapshot-retry-20261114``, recorded when the acceptance
+#: needed a fixture again.  The repository's own ``verify_snapshot``
+#: independently re-verified it at 5821 files with exactly this content hash
+#: (issue #213).  Accepted fixtures are matched by whole content hash only: no
+#: prefix or partial matching.
+RETRY_SNAPSHOT_SHA = "52fe24319af0c97c03bdfc44aa951a49190d614ea69529bdaf465978feac96e4"
+ACCEPTED_SNAPSHOT_SHA = (
+    EXPECTED_SNAPSHOT_SHA,
+    CURRENT_SNAPSHOT_SHA,
+    RETRY_SNAPSHOT_SHA,
+)
 DEFAULT_SCENARIOS = ("san-francisco", "puget", "multi-cell")
 WIDGET_WIDTH = 710
 WIDGET_HEIGHT = 743
 BUDGET_S = 95.0
+#: Per-capture bound for an asynchronous ``grabToImage`` on the native view.
+GRAB_TIMEOUT_MS = 5000
+#: Opt-in A/B capture path: read a native ``QQuickView`` through ``grabWindow``
+#: instead of grabbing its content item.  Set to ``1`` to enable.
+GRAB_WINDOW_ENV = "SW_ENC_GRAB_WINDOW"
 MAE_LIMIT = 1.0
 P99_LIMIT = 8.0
 RATIO_LOW = 0.95
 RATIO_HIGH = 1.05
 INK_EPSILON = 0.5
+#: Metadata states the composed() gate accepts, kept beside the gate itself.
+ALLOWED_METADATA_STATES = ("ready", "coverage_miss", "unavailable", "disabled")
+#: Readback stability feeds diagnostics, never the pass/fail result.
+UNSTABLE_READBACK_NOTE = (
+    "stable_readback=false is diagnostic: fidelity thresholds and gate result "
+    "are unchanged"
+)
 CHECK_NAMES = (
     "fixture_verified",
     "detailed_enc_present",
@@ -87,6 +110,10 @@ def _load_tool(name, path):
     return module
 
 
+def _sha_of_entries(entries):
+    return hashlib.sha256(json.dumps(entries, sort_keys=True).encode()).hexdigest()
+
+
 def _pump(milliseconds):
     from PySide6.QtCore import QEventLoop, QTimer
 
@@ -104,23 +131,150 @@ def _wait(predicate, timeout_s, step_ms=50):
     return bool(predicate())
 
 
-def _grab(widget):
-    """The scene graph's framebuffer as premultiplied BGRA bytes (native)."""
+def _await_grab(result, timeout_ms):
+    """Wait for a Quick item grab, bounded by ``timeout_ms``."""
+    from PySide6.QtCore import QEventLoop, QTimer
+
+    loop = QEventLoop()
+    timer = QTimer()
+    timer.setSingleShot(True)
+    timer.timeout.connect(loop.quit)
+    result.ready.connect(loop.quit)
+    timer.start(timeout_ms)
+    loop.exec()
+    timer.stop()
+
+
+def _release_grab(result):
+    """Release a grab result's buffer now instead of when it is collected.
+
+    ``QQuickItemGrabResult`` owns the whole physical-pixel image and its signal
+    wiring.  At DPR 2 one grab is ~34 MB; holding results until the cyclic
+    collector happens to run starves the render thread after a few dozen grabs,
+    after which frames stop arriving and every later grab times out.  The
+    returned ``QImage`` is refcounted, so it survives dropping the result.
+    """
+    import gc
+    import warnings
+
+    ready = getattr(result, "ready", None)
+    disconnect = getattr(ready, "disconnect", None)
+    if callable(disconnect):
+        try:
+            with warnings.catch_warnings():
+                # The bounded wait already quit; an empty connection set is fine.
+                warnings.simplefilter("ignore", RuntimeWarning)
+                disconnect()
+        except (RuntimeError, TypeError):
+            pass
+    delete_later = getattr(result, "deleteLater", None)
+    if callable(delete_later):
+        try:
+            delete_later()
+        except RuntimeError:
+            pass
+    # Deferred deletes and the grab result's buffer are freed on the next event
+    # loop pass; collecting here keeps the Python side from piling up frames.
+    gc.collect()
+
+
+def _quick_view_image(widget, timeout_ms=GRAB_TIMEOUT_MS):
+    """Read a native ``QQuickView`` without ``grabFramebuffer``.
+
+    The native viewport renders through the scene graph's render thread, where
+    ``grabWindow`` can block on macOS.  Grabbing the content item is
+    asynchronous, so the wait is bounded and a missing or null image fails
+    loudly instead of reporting a blank frame.
+
+    No target size is passed.  ``QQuickItem.grabToImage`` takes a target in
+    logical, device-independent pixels and Qt multiplies it by the window's
+    device pixel ratio itself, so the returned image is already in physical
+    pixels -- the shape ``grabFramebuffer`` produced on the widget host.
+    Passing the logical size scaled by the ratio again would square the ratio.
+    """
+    content = widget.contentItem()
+    if content is None:
+        raise RuntimeError("native viewport has no content item")
+    result = content.grabToImage()
+    if result is None:
+        raise RuntimeError("content item produced no grab result")
+    try:
+        _await_grab(result, timeout_ms)
+        image = result.image()
+        if image.isNull():
+            raise RuntimeError(
+                f"content item grab timed out after {timeout_ms} ms or returned no image"
+            )
+        return image
+    finally:
+        _release_grab(result)
+
+
+def _grab_window_image(widget, timeout_ms=GRAB_TIMEOUT_MS):
+    """Read a native ``QQuickView`` through ``grabWindow``.
+
+    This is an opt-in A/B path against the scene-graph grab.  ``grabWindow``
+    renders a fresh offscreen frame through the window's own machinery rather
+    than reusing the content item's render pass, which is where the scene-graph
+    grab has been observed to fault while the ENC layer mutates its node tree.
+    The call is synchronous and can block on macOS; the wall time is measured
+    and reported rather than left silent.
+    """
+    start = time.monotonic()
+    image = widget.grabWindow()
+    elapsed_ms = (time.monotonic() - start) * 1000.0
+    if elapsed_ms > timeout_ms:
+        print(
+            f"grabWindow blocked for {elapsed_ms:.0f} ms (limit {timeout_ms} ms)",
+            file=sys.stderr,
+        )
+    if image is None or image.isNull():
+        raise RuntimeError("grabWindow returned no image")
+    return image
+
+
+def _grab_window_requested():
+    """Whether the opt-in ``grabWindow`` capture path is switched on."""
+    return os.environ.get(GRAB_WINDOW_ENV, "") == "1"
+
+
+def _grab_image(widget):
+    """The widget's frame as a ``QImage`` through the best available path."""
+    grab_framebuffer = getattr(widget, "grabFramebuffer", None)
+    if callable(grab_framebuffer):
+        # An embedded QQuickWidget exposes its framebuffer directly.
+        return grab_framebuffer()
+    if _grab_window_requested() and callable(getattr(widget, "grabWindow", None)):
+        return _grab_window_image(widget)
+    # A native QQuickView does not expose a framebuffer; grab its content item.
+    return _quick_view_image(widget)
+
+
+def _image_frame(image, format_premultiplied_argb32):
+    """A ``QImage`` as premultiplied BGRA bytes, the framebuffer layout."""
     import numpy as np
 
-    from PySide6.QtGui import QImage
-
-    image = widget.grabFramebuffer().convertToFormat(
-        QImage.Format.Format_ARGB32_Premultiplied
-    )
+    image = image.convertToFormat(format_premultiplied_argb32)
     if image.isNull():
         raise RuntimeError("framebuffer readback failed")
-    return (
+    frame = (
         np.frombuffer(image.constBits(), np.uint8)
         .reshape(image.height(), image.bytesPerLine())[:, : image.width() * 4]
         .reshape(image.height(), image.width(), 4)
         .copy()
     )
+    # ``copy`` detached the pixels; drop the QImage (and, for the async path,
+    # the grab result) before returning so only the numpy frame is retained.
+    del image
+    return frame
+
+
+def _grab(widget):
+    """The scene graph's framebuffer as premultiplied BGRA bytes (native)."""
+    from PySide6.QtGui import QImage
+
+    image = _grab_image(widget)
+    return _image_frame(image, QImage.Format.Format_ARGB32_Premultiplied)
 
 
 def _surface_array(surface):
@@ -203,6 +357,170 @@ def _rounded(value):
     if isinstance(value, float):
         return round(value, 6)
     return value
+
+
+def _readiness_conjuncts(layer, widget, before):
+    """The composed() readiness gate, one named conjunct per condition.
+
+    ``composed()`` waits on exactly ``all(...)`` of these, so a failed
+    composition can name the conjunction that never held instead of reporting
+    only ``ready: false``.
+    """
+    metadata = layer.enc_metadata or {}
+    return {
+        "layer_state_ready": layer.state == "ready",
+        "chart_publications_advanced": (widget.counters["chart_publications"] > before),
+        "chart_property_ready": bool(widget._chart.property("ready")),
+        "enc_metadata_state_allowed": (
+            metadata.get("state") in ALLOWED_METADATA_STATES
+        ),
+        "enc_metadata_selected": metadata.get("selected") is not None,
+    }
+
+
+def _readiness_diagnostics(layer, widget, before):
+    """Which readiness conjuncts failed, with the counters and metadata behind them."""
+    metadata = layer.enc_metadata or {}
+    conjuncts = _readiness_conjuncts(layer, widget, before)
+    counters = getattr(widget, "counters", {}) or {}
+    return {
+        "unsatisfied": [name for name, held in conjuncts.items() if not held],
+        "conjuncts": conjuncts,
+        "layer_state": layer.state,
+        "layer_enc_state": getattr(layer, "enc_state", None),
+        "layer_generation": getattr(layer, "generation", None),
+        "chart_publications": counters.get("chart_publications"),
+        "publications": {
+            key: counters[key]
+            for key in sorted(counters)
+            if key.endswith("_publications")
+        },
+        "enc_metadata_state": metadata.get("state"),
+        "enc_metadata_selected": list(metadata.get("selected") or ()),
+        "enc_metadata_coverage": list(metadata.get("coverage") or ()),
+        "enc_metadata_keys": sorted(metadata),
+    }
+
+
+def _records_digest(records):
+    """One short digest for a whole draw-call record sequence."""
+    payload = repr(list(records)).encode("utf-8", "replace")
+    return hashlib.blake2b(payload, digest_size=8).hexdigest()
+
+
+def _record_summary(record):
+    """A single draw-call record without its full geometry payload."""
+    values = tuple(record) + (None, None, None)
+    return {"kind": values[0], "name": values[1], "digest": values[2]}
+
+
+def _records_diff(candidate, reference, sample=3):
+    """Counts, digests and the first disagreeing record of two sequences.
+
+    Records can run to megabytes, so only a short window around the first
+    mismatch is serialized, one summarized record per side.
+    """
+    candidate = list(candidate or ())
+    reference = list(reference or ())
+    mismatch = None
+    for index in range(max(len(candidate), len(reference))):
+        if (
+            index >= len(candidate)
+            or index >= len(reference)
+            or candidate[index] != reference[index]
+        ):
+            mismatch = index
+            break
+    diff = {
+        "candidate_count": len(candidate),
+        "reference_count": len(reference),
+        "candidate_digest": _records_digest(candidate),
+        "reference_digest": _records_digest(reference),
+        "first_mismatch": mismatch,
+        "identical": mismatch is None,
+    }
+    if mismatch is not None:
+        end = min(mismatch + max(1, int(sample)), max(len(candidate), len(reference)))
+        window = range(mismatch, end)
+        diff["window_start"] = mismatch
+        diff["candidate_window"] = [
+            _record_summary(candidate[index]) if index < len(candidate) else None
+            for index in window
+        ]
+        diff["reference_window"] = [
+            _record_summary(reference[index]) if index < len(reference) else None
+            for index in window
+        ]
+    return diff
+
+
+def _readback_signals(layer, widget):
+    """Generation and readiness signals available at a disagreeing grab."""
+    counters = getattr(widget, "counters", {}) or {}
+    metadata = {}
+    if layer is not None:
+        metadata = getattr(layer, "enc_metadata", None) or {}
+    return {
+        "layer_state": getattr(layer, "state", None),
+        "layer_enc_state": getattr(layer, "enc_state", None),
+        "layer_generation": getattr(layer, "generation", None),
+        "enc_metadata_state": metadata.get("state"),
+        "chart_publications": counters.get("chart_publications"),
+    }
+
+
+def _digest(frame):
+    """A short digest of one grab: the only readback state worth keeping."""
+    import numpy as np
+
+    return hashlib.blake2b(np.asarray(frame).tobytes(), digest_size=8).hexdigest()
+
+
+def _grab_sequence(widget, frames):
+    """Grab ``frames`` readbacks; return the last frame, digests and stability.
+
+    Only two frames are retained at a time.  Equality is transitive, so
+    comparing each grab to its predecessor is the same stability verdict as
+    comparing every grab to the last one -- without holding ``frames`` full
+    images (~34 MB each at DPR 2) until the end of the step.
+    """
+    import numpy as np
+
+    native = _grab(widget)
+    digests = [_digest(native)]
+    stable = True
+    for _ in range(max(1, frames) - 1):
+        frame = _grab(widget)
+        digests.append(_digest(frame))
+        if not np.array_equal(native, frame):
+            stable = False
+        native = frame
+    return native, digests, stable
+
+
+def _readback_diagnostics(frames=None, layer=None, widget=None, digests=None):
+    """Per-grab digests for a readback stability disagreement.
+
+    Diagnostic only: the caller keeps the existing ``stable_readback`` result.
+    Callers that hashed each grab as it arrived pass ``digests`` so no full
+    frame is retained just to be hashed later.
+    """
+    if digests is None:
+        digests = [_digest(frame) for frame in (frames or ())]
+    digests = list(digests)
+    first_distinct = next(
+        (index for index, digest in enumerate(digests) if digest != digests[0]),
+        None,
+    )
+    return {
+        "grabs": len(digests),
+        "digests": digests,
+        "distinct": len(set(digests)),
+        "first_distinct_index": first_distinct,
+        "stable": first_distinct is None,
+        "signals": _readback_signals(layer, widget),
+        "diagnostic_only": True,
+    }
 
 
 class _AnnotationProbe:
@@ -327,6 +645,26 @@ def _reference_descriptors(data_dir, settings):
     return tuple(descriptors)
 
 
+def _reference_selection(descriptors, camera_scale, viewport_envelope):
+    """The application's selection rules, applied in the harness's own loop."""
+    from sailworks.core.enccharts import chart_scale_rank, chart_scale_visible
+
+    min_lon, max_lon, min_lat, max_lat = viewport_envelope
+    selected = []
+    for path, native_scale, envelopes in sorted(
+        descriptors, key=lambda c: (chart_scale_rank(c[1], camera_scale), c[0])
+    ):
+        if not chart_scale_visible(native_scale, camera_scale):
+            continue
+        if envelopes and not any(
+            a <= max_lon and b >= min_lon and c <= max_lat and d >= min_lat
+            for a, b, c, d in envelopes
+        ):
+            continue
+        selected.append(Path(path).stem.upper())
+    return tuple(selected)
+
+
 def _base_job(camera, dpr, palette, sources, cancel):
     from sailworks.core.mapviewport import MapViewport
     from sailworks.qt.gribviewportchart import ChartCamera
@@ -412,6 +750,34 @@ def _reference_composition(layer, camera, dpr, palette, data_dir, descriptors, p
         crop(_surface_array(annotations)),
         records,
     )
+
+
+def _cell_masks(descriptors, camera, dpr, palette, data_dir):
+    """One cell alone, drawn by the oracle: the per-cell ink used for multi-cell checks."""
+    from sailworks.rendering.encrenderer import ENCOverlayRenderer
+    from sailworks.core.scheduling import schedule_idle
+    from sailworks.qt.gribviewportchart import base_sources
+    from sailworks.rendering.overlayrenderer import MARGIN
+
+    sources = base_sources(data_dir)
+    job = _base_job(camera, dpr, palette, sources, Event())
+    oracle = ENCOverlayRenderer(schedule_idle)
+    masks = {}
+    try:
+        for descriptor in descriptors:
+            surface = oracle._render(replace(job, charts=(descriptor,)))
+            if surface is None:
+                continue
+            array = _surface_array(surface)
+            offset = MARGIN * dpr
+            array = array[
+                offset : offset + camera.height * dpr,
+                offset : offset + camera.width * dpr,
+            ]
+            masks[Path(descriptor[0]).stem.upper()] = _ink(array)
+    finally:
+        oracle._charts.clear()
+    return masks
 
 
 def _scenario_camera(base_camera, spec):
@@ -592,6 +958,7 @@ def _run_session(  # noqa: C901 - one session keeps the widget and worker togeth
     from sailworks.qt.gribviewport import ViewportCamera  # noqa: F401
 
     dpr = int(round(widget.devicePixelRatio()))
+    report.setdefault("diagnostics", {})
     report["identity"]["platform"] = _platform(widget)
     report["checks"]["native_metal_dpr2"] = bool(
         "metal" in report["identity"]["platform"]["scene_graph_backend"].lower()
@@ -620,14 +987,14 @@ def _run_session(  # noqa: C901 - one session keeps the widget and worker togeth
         widget.set_camera(camera)
         layer.request(camera, replace=True)
         ok = _wait(
-            lambda: layer.state == "ready"
-            and widget.counters["chart_publications"] > before
-            and bool(widget._chart.property("ready"))
-            and layer.enc_metadata.get("state")
-            in ("ready", "coverage_miss", "unavailable", "disabled")
-            and layer.enc_metadata.get("selected") is not None,
+            lambda: all(_readiness_conjuncts(layer, widget, before).values()),
             20,
         )
+        if not ok:
+            # The wait is unchanged; a miss now records which conjunct never
+            # held, with the counters and selected metadata behind it.
+            composed_failure.clear()
+            composed_failure.update(_readiness_diagnostics(layer, widget, before))
         candidate_records = probe.end()
         candidate_records_by_camera.append(candidate_records)
         ok = ok and _wait(widget._weather.isVisible, 15)
@@ -638,6 +1005,7 @@ def _run_session(  # noqa: C901 - one session keeps the widget and worker togeth
         return ok
 
     candidate_records_by_camera = []
+    composed_failure = {}
     spread = []
     orders = [
         list(scenarios) if index % 2 == 0 else list(reversed(scenarios))
@@ -655,8 +1023,17 @@ def _run_session(  # noqa: C901 - one session keeps the widget and worker togeth
         ok = composed(camera)
         meta = layer.enc_metadata
         if not ok:
-            report["scenarios"][name] = {"ready": False, "state": meta.get("state")}
+            report["scenarios"][name] = {
+                "ready": False,
+                "state": meta.get("state"),
+                "diagnostics": dict(composed_failure),
+            }
+            report["diagnostics"].setdefault("composed_failures", {})[name] = dict(
+                composed_failure
+            )
+            composed_failure.clear()
             continue
+        composed_failure.clear()
         expected_selection, reference_coverage = _coverage_selection(
             descriptors, camera, dpr, palette
         )
@@ -676,19 +1053,23 @@ def _run_session(  # noqa: C901 - one session keeps the widget and worker togeth
                 and report["identity"][name]["coverage_matches"]
             )
         probe.begin("reference")
-        native_frames = []
-        for _ in range(max(1, frames)):
-            native_frames.append(_grab(widget))
+        # Retain two frames, not ``frames``: see ``_grab_sequence``.
+        native, digests, stable = _grab_sequence(widget, frames)
         probe.end()
-        native = native_frames[-1]
-        stable = all(np.array_equal(native, frame) for frame in native_frames)
+        readback = _readback_diagnostics(layer=layer, widget=widget, digests=digests)
         probe.begin("reference")
         ref_on, ref_off, annotations, reference_records = _reference_composition(
             layer, camera, dpr, palette, data_dir, descriptors, probe
         )
+        candidate_records = (
+            candidate_records_by_camera[-1] if candidate_records_by_camera else []
+        )
+        report["identity"][name]["annotations"] = _records_diff(
+            candidate_records, reference_records
+        )
         report["identity"][name]["annotations_match"] = bool(
-            candidate_records_by_camera
-            and candidate_records_by_camera[-1] == reference_records
+            candidate_records
+            and candidate_records == reference_records
             and reference_records
         )
         metrics = _fidelity(native, ref_on, ref_off)
@@ -703,7 +1084,16 @@ def _run_session(  # noqa: C901 - one session keeps the widget and worker togeth
             ),
             "meaning": "fraction of reference annotation pixels matching within 8/255",
         }
-        metrics.update(scenario=name, stable_readback=bool(stable))
+        metrics.update(scenario=name, stable_readback=bool(stable), readback=readback)
+        if not stable:
+            metrics["readback_diagnostic"] = UNSTABLE_READBACK_NOTE
+            report["diagnostics"].setdefault("unstable_readback", []).append(
+                {
+                    "scenario": name,
+                    "distinct": readback["distinct"],
+                    "digests": readback["digests"],
+                }
+            )
         report["fidelity"].append(metrics)
         report["scenarios"][name] = {
             "state": meta.get("state"),
@@ -1155,6 +1545,26 @@ def _platform(widget):
         "requested_backend": os.environ.get("QSG_RHI_BACKEND", "default"),
         "device_pixel_ratio": float(quick.devicePixelRatio()),
     }
+
+
+def _viewport_envelope(camera):
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.qt.gribviewportchart import ChartCamera
+    from sailworks.rendering.overlayrenderer import MARGIN
+
+    viewport = MapViewport(ChartCamera(camera, 1), MARGIN, lambda: None)
+    p1, p2 = viewport.get_bbox()
+    lat1, lon1 = p1.get_degrees()
+    lat2, lon2 = p2.get_degrees()
+    return (min(lon1, lon2), max(lon1, lon2), min(lat1, lat2), max(lat1, lat2))
+
+
+def _camera_scale(camera):
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.qt.gribviewportchart import ChartCamera
+    from sailworks.rendering.overlayrenderer import MARGIN
+
+    return MapViewport(ChartCamera(camera, 1), MARGIN, lambda: None).get_scale()
 
 
 def main(argv=None):

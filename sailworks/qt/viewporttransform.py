@@ -101,6 +101,156 @@ class PanReference:
         return CameraChange.REFERENCE_INVALIDATION
 
 
+def enc_scene_offset(
+    published: tuple[float, float],
+) -> tuple[float, float]:
+    """Item x/y that keeps a camera-absolute ENC scene geographically pinned.
+
+    ``mapContent`` carries the retained map's pan translation, so
+    reference-local layers (world imagery, the raster chart) stay anchored.
+    An ENC scene is not reference-local: its projection already maps degrees
+    through a camera.  Compensating by that same translation leaves the scene
+    at the camera's screen position instead of a pan away from it.
+    """
+    return (-float(published[0]), -float(published[1]))
+
+
+def same_frame(first, second) -> bool:
+    """Whether two cameras share the scale a frame's matrix can absorb.
+
+    A pure pan is affine in the retained reference frame, so the matrix carries
+    it exactly.  A different zoom is a different world-pixel scale and needs a
+    matrix solved against a projection made at that scale, not a translation.
+    """
+    if first is None or second is None:
+        return False
+    return (
+        float(first.zoom) == float(second.zoom)
+        and float(first.width) == float(second.width)
+        and float(first.height) == float(second.height)
+    )
+
+
+def enc_scene_placement(
+    reference, frame_camera, dpr: float | None = None
+) -> tuple[float, float]:
+    """Item x/y that cancels ``mapContent``'s pan for a composed ENC frame.
+
+    ``reference`` is the ``PanReference`` the retained map is currently
+    translated against; ``frame_camera`` is the camera the item's matrix was
+    solved for.  ``mapContent`` adds exactly the translation between the two on
+    top of the item's own projection, so cancelling it is what makes the drawn
+    position agree with the camera.  A frame composed at another scale has no
+    placing translation (the caller re-composes it first), and no reference at
+    all means there is nothing to cancel.
+    """
+    if reference is None or frame_camera is None:
+        return (0.0, 0.0)
+    try:
+        offset = reference.translation_to(frame_camera, dpr)
+    except ValueError:
+        return (0.0, 0.0)
+    return enc_scene_offset(offset)
+
+
+def enc_scene_pan(
+    reference, frame_camera, camera, dpr: float | None = None
+) -> tuple[float, float] | None:
+    """How far the presented frame has been carried since it was composed.
+
+    The item's own projection is composed for ``frame_camera`` and never
+    re-projected for a pan, so the whole translation between that camera and
+    ``camera`` is what ``mapContent`` has moved it by.  ``None`` when the two
+    are not related by a translation at all (a scale or size change).
+    """
+    if reference is None or frame_camera is None or camera is None:
+        return None
+    try:
+        now = reference.translation_to(camera, dpr)
+        composed = reference.translation_to(frame_camera, dpr)
+    except ValueError:
+        return None
+    return (float(now[0] - composed[0]), float(now[1] - composed[1]))
+
+
+#: Fraction of a viewport's shorter axis composed past each edge.  Half the
+#: shorter axis makes the built region two viewports across on both axes, so an
+#: ordinary drag stays inside the chart the frame already holds.
+ENC_COMPOSE_FRACTION = 0.5
+
+#: Fraction of the composed margin a pan may consume before a replacement is
+#: requested.  Asking at half the margin leaves the other half as slack for the
+#: asynchronous composer: the replacement normally lands before the leading
+#: edge reaches the boundary of the frame on screen.
+ENC_COMPOSE_TRIGGER = 0.5
+
+#: Environment variable that replaces the composed ring with a fixed logical
+#: pixel margin.  Unset in every shipped configuration, so behaviour is
+#: unchanged; a malformed or non-positive value is ignored rather than allowed
+#: to break the viewport.  It exists so ``tools/bench_enc_explorer.py`` can
+#: measure the coverage/cost curve of larger rings.
+ENC_COMPOSE_MARGIN_ENV = "SAILWORKS_ENC_COMPOSE_MARGIN"
+
+
+def enc_compose_margin_override() -> float | None:
+    """The fixed ring from :data:`ENC_COMPOSE_MARGIN_ENV`, or ``None``."""
+    import math
+    import os
+
+    raw = os.environ.get(ENC_COMPOSE_MARGIN_ENV)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    if not math.isfinite(value) or not value > 0.0:
+        return None
+    return value
+
+
+def enc_compose_margin(camera) -> float:
+    """Logical pixels the ENC composition reaches past each viewport edge.
+
+    The scene layer plans and meshes over a viewport grown by this much, and
+    the item culls against the same ring.  The floor is the raster composition's
+    ``MARGIN``: it is never worth composing less than that, and a viewport too
+    small to scale one cell still needs the padding the planner expects.
+
+    :data:`ENC_COMPOSE_MARGIN_ENV` overrides the rule when set; unset means this
+    function's result is exactly what it was before the override existed.
+    """
+    from sailworks.rendering.overlayrenderer import MARGIN
+
+    override = enc_compose_margin_override()
+    if override is not None:
+        return override
+
+    width = float(getattr(camera, "width", 0.0) or 0.0)
+    height = float(getattr(camera, "height", 0.0) or 0.0)
+    span = min(width, height)
+    if not span > 0.0:
+        return float(MARGIN)
+    return max(float(MARGIN), ENC_COMPOSE_FRACTION * span)
+
+
+def enc_scene_cover_stale(
+    reference, frame_camera, camera, margin: float, dpr: float | None = None
+) -> bool:
+    """Whether the composed frame is close to exhausting its padding.
+
+    A composition reaches ``margin`` logical pixels past the viewport it was
+    planned for, so a pan within that padding is still fully drawn.  Asking for
+    a replacement once :data:`ENC_COMPOSE_TRIGGER` of the margin is consumed
+    gives the composer the remaining margin as slack; waiting until the margin
+    is exhausted guarantees a visible gap for the whole recompose.
+    """
+    pan = enc_scene_pan(reference, frame_camera, camera, dpr)
+    if pan is None:
+        return True
+    return max(abs(pan[0]), abs(pan[1])) > ENC_COMPOSE_TRIGGER * float(margin)
+
+
 @dataclass(frozen=True)
 class LayerPlacement:
     """A layer anchor in bounded logical pixels local to a ``PanReference``."""

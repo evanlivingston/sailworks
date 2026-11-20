@@ -2206,6 +2206,458 @@ def test_a_warm_reversal_reuses_the_frame_it_came_from(tmp_path):
         layer.close()
 
 
+def test_a_covered_pan_reuses_the_retained_raster(tmp_path):
+    """A same-zoom pan inside a retained frame is a blit, not a compose.
+
+    A frame composed for a larger view still covers a smaller view panned a
+    few pixels, so the composition hands its pixels back with no chart
+    composer call at all.  A full recompose for a covered pan is exactly the
+    multi-second stall the retained raster exists to avoid.
+    """
+    layer, composer, _enc, _sources, Event = _static_layer(tmp_path)
+    wide = _camera(width=560, height=440)
+    target = replace(_panned(wide, 20), width=320, height=240)
+    try:
+        _image, first = layer._compose(wide, Event())
+        assert first["static"]["mode"] == "full"
+        calls = len(composer.calls)
+        image, second = layer._compose(target, Event())
+        report = second["static"]
+        assert report["mode"] == "reused"
+        assert report["reason"] == "covered"
+        assert report["composed_pixels"] == 0
+        assert report["reused_pixels"] == int(
+            second["viewport"].width * second["viewport"].height
+        )
+        # No composition ran for the covered pan: the retained surface is cut
+        # to the requested extent and handed back.
+        assert len(composer.calls) == calls
+        counters = layer.observations()["counters"]
+        assert counters["static_reuses"] == 1
+        assert counters["static_full_compositions"] == 1
+        # Every pixel is the retained composition's: nothing was composed.
+        assert image.pixelColor(2, 2).getRgb()[:3] == (255, 0, 0)
+        assert image.pixelColor(image.width() - 2, 2).getRgb()[:3] == (255, 0, 0)
+    finally:
+        layer.close()
+
+
+def test_an_exposed_pan_composes_only_the_strip_it_exposes(tmp_path):
+    """A pan beyond the retained frame composes the strip, not the frame."""
+    layer, composer, _enc, _sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    try:
+        _image, first = layer._compose(camera, Event())
+        assert first["static"]["mode"] == "full"
+        full_pixels = int(first["viewport"].width * first["viewport"].height)
+        panned = _panned(camera, 300)
+        image, second = layer._compose(panned, Event())
+        report = second["static"]
+        assert report["mode"] == "regions"
+        assert report["regions"] >= 1
+        # Only the uncovered strip is composed: its area is the pan distance
+        # tall by the view, never a frame.
+        assert report["composed_pixels"] <= 300 * int(second["viewport"].height)
+        assert report["composed_pixels"] < full_pixels // 2
+        assert report["reused_pixels"] > full_pixels // 2
+        counters = layer.observations()["counters"]
+        assert counters["static_region_compositions"] == 1
+        assert counters["static_full_compositions"] == 1
+        assert (
+            counters["static_pixels_composed"]
+            == full_pixels + report["composed_pixels"]
+        )
+        # The covered side is the retained red composition; the exposed side
+        # was composed now (green).
+        assert image.pixelColor(5, 50).getRgb()[:3] == (255, 0, 0)
+        assert image.pixelColor(image.width() - 5, 50).getRgb()[:3] == (0, 255, 0)
+    finally:
+        layer.close()
+
+
+def test_zoom_palette_or_dpr_change_invalidates_the_retained_raster(tmp_path):
+    """Reuse is a same-scale, same-content decision; anything else recomposes."""
+    layer, _composer, _enc, _sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    try:
+        _image, first = layer._compose(camera, Event())
+        assert first["static"]["mode"] == "full"
+        # A zoom change rescales every pixel: the frame never serves it.
+        _image, zoomed = layer._compose(replace(camera, zoom=9.25), Event())
+        assert zoomed["static"]["mode"] == "full"
+        # A palette change redraws every pixel in other colours.
+        layer._palette = "other"
+        _image, painted = layer._compose(replace(camera, zoom=9.25), Event())
+        assert painted["static"]["mode"] == "full"
+        # A device-pixel-ratio change is another factor: no reuse across it.
+        layer._dpr = 2
+        _image, scaled = layer._compose(replace(camera, zoom=9.25), Event())
+        assert scaled["static"]["mode"] == "full"
+        assert scaled["factor"] == 2
+        counters = layer.observations()["counters"]
+        assert counters["static_full_compositions"] == 4
+        assert counters["static_reuses"] == 0
+    finally:
+        layer.close()
+
+
+def test_a_sub_pixel_pan_reuses_the_retained_raster(tmp_path):
+    """A mouse pan lands on a fraction of a device pixel: snap, never recompose.
+
+    Mouse-driven pans produce fractional device offsets.  Rejecting them cost
+    every painted frame of a real session a full composition, so the blit is
+    translated to the nearest whole device pixel instead: a pure translation
+    of retained pixels, bounded by half a device pixel, never a resample.
+    """
+    from sailworks.qt.gribviewportchart import STATIC_SNAP_PX
+
+    layer, composer, _enc, _sources, Event = _static_layer(tmp_path)
+    wide = _camera(width=560, height=440)
+    target = replace(_panned(wide, 20.5), width=320, height=240)
+    try:
+        _image, first = layer._compose(wide, Event())
+        assert first["static"]["mode"] == "full"
+        calls = len(composer.calls)
+        _image, second = layer._compose(target, Event())
+        report = second["static"]
+        assert report["mode"] == "reused"
+        assert report["shift"] == (-140, -100)
+        assert 0.0 < report["snapped_px"] <= STATIC_SNAP_PX
+        assert report["composed_pixels"] == 0
+        # The retained pixels are translated, so the composer never runs again.
+        assert len(composer.calls) == calls
+        counters = layer.observations()["counters"]
+        assert counters["static_snapped_reuses"] == 1
+        assert counters["static_reuses"] == 1
+        assert counters["static_fractional_rejections"] == 0
+        assert counters["static_full_compositions"] == 1
+    finally:
+        layer.close()
+
+
+def test_a_sub_pixel_pan_exposes_a_strip_and_composes_only_that(tmp_path):
+    """Rounding a sub-pixel pan must still leave region composition engaged."""
+    from sailworks.qt.gribviewportchart import STATIC_SNAP_PX
+
+    layer, composer, _enc, _sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    try:
+        _image, first = layer._compose(camera, Event())
+        assert first["static"]["mode"] == "full"
+        full = int(first["viewport"].width * first["viewport"].height)
+        image, second = layer._compose(_panned(camera, 180.5), Event())
+        report = second["static"]
+        assert report["mode"] == "regions"
+        assert report["regions"] >= 1
+        assert 0 < report["composed_pixels"] < full // 2
+        assert report["reused_pixels"] > 0
+        assert report["snapped_px"] <= STATIC_SNAP_PX
+        # The seam is interior to a region that rendered the content: the
+        # covered side is the retained composition, the exposed side the new
+        # one, with no unpainted column between them.
+        assert image.pixelColor(5, 50).getRgb()[:3] == (255, 0, 0)
+        assert image.pixelColor(image.width() - 5, 50).getRgb()[:3] == (0, 255, 0)
+        counters = layer.observations()["counters"]
+        assert counters["static_region_compositions"] == 1
+        assert counters["static_snapped_reuses"] == 1
+    finally:
+        layer.close()
+
+
+def test_a_covered_pan_blit_is_pixel_identical_to_a_full_composition(tmp_path):
+    """Integer-offset translated reuse is byte-for-byte the same pixels."""
+    import numpy as np
+
+    from threading import Event
+
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.qt.gribviewportchart import MARGIN, ChartCamera
+
+    wide = _camera(width=560, height=440)
+    target = replace(_panned(wide, 20), width=320, height=240)
+    viewport = MapViewport(ChartCamera(target, 1), MARGIN, lambda: None)
+    anchors = []
+    for offset in range(-160, 220, 40):
+        lon = viewport._x_to_lon(viewport._lon_to_x(viewport._center_lon) + offset)
+        anchors.append((target.center_lat, lon, "A"))
+    # One layer reuses the wider frame for the target; the other composes the
+    # target alone.  Both place the same ink by the same projection.
+    reused_layer = _chart_layer(tmp_path)
+    full_layer = _chart_layer(tmp_path)
+    for layer in (reused_layer, full_layer):
+        composer = _GeometryComposer(anchors)
+        layer._dpr = 1
+        layer._composer = lambda composer=composer: composer
+        layer._enc_composer = lambda: None
+        layer._base_sources = lambda: ()
+        layer._isobar_columns = lambda job, camera, cancel: None
+    try:
+        reused_layer._compose(wide, Event())
+        reused, meta = reused_layer._compose(target, Event())
+        assert meta["static"]["mode"] == "reused"
+        assert meta["static"]["composed_pixels"] == 0
+        full, _meta = full_layer._compose(target, Event())
+        assert _meta["static"]["mode"] == "full"
+        reused_array = _image_array(reused)
+        full_array = _image_array(full)
+        assert reused_array.shape == full_array.shape
+        delta = np.abs(reused_array.astype(np.int16) - full_array.astype(np.int16))
+        # The blit is the retained pixels translated by a whole device pixel:
+        # exact identity, not merely close.
+        assert int(delta.max()) == 0
+        assert np.array_equal(reused_array, full_array)
+    finally:
+        reused_layer.close()
+        full_layer.close()
+
+
+def test_repeated_sub_pixel_pans_do_not_accumulate_the_snap(tmp_path):
+    """A drag of half-pixel steps stays bounded; the snap is not re-applied.
+
+    Each blit rounds a fractional device offset, leaving at most
+    ``STATIC_SNAP_PX`` on the retained pixels.  Those pixels are the input to
+    the next pan, so unless the residual is carried on the frame every step
+    adds up to another half pixel and the retained block slides away from a
+    full composition of the same camera.  The residual is carried, so it
+    cancels instead of accumulating: after a whole drag the frame is the
+    pixels a full composition would have drawn.
+    """
+    from threading import Event
+
+    import numpy as np
+
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.qt.gribviewportchart import (
+        MARGIN,
+        STATIC_SNAP_PX,
+        ChartCamera,
+    )
+
+    camera = _camera(width=320, height=240)
+    viewport = MapViewport(ChartCamera(camera, 1), MARGIN, lambda: None)
+    anchors = []
+    for offset in range(-160, 220, 40):
+        lon = viewport._x_to_lon(viewport._lon_to_x(viewport._center_lon) + offset)
+        anchors.append((camera.center_lat, lon, "A"))
+    layer = _chart_layer(tmp_path)
+    composer = _GeometryComposer(anchors)
+    layer._dpr = 1
+    layer._composer = lambda: composer
+    layer._enc_composer = lambda: None
+    layer._base_sources = lambda: ()
+    layer._isobar_columns = lambda job, camera, cancel: None
+    reports = []
+    try:
+        for _step in range(9):
+            image, meta = layer._compose(camera, Event())
+            reports.append(meta["static"])
+            last = camera
+            camera = _panned(camera, 7.5)
+            # Whatever residual the blit left is on the frame and is bounded.
+            frame = next(iter(layer._static_frames.values()))
+            assert abs(frame.snap[0]) <= STATIC_SNAP_PX
+            assert abs(frame.snap[1]) <= STATIC_SNAP_PX
+        reference_layer = _chart_layer(tmp_path)
+        reference_layer._dpr = 1
+        reference_layer._composer = lambda: _GeometryComposer(anchors)
+        reference_layer._enc_composer = lambda: None
+        reference_layer._base_sources = lambda: ()
+        reference_layer._isobar_columns = lambda job, camera, cancel: None
+        try:
+            reference, _meta = reference_layer._compose(last, Event())
+        finally:
+            reference_layer.close()
+    finally:
+        layer.close()
+
+    assert reports[0]["mode"] == "full"
+    assert all(report["mode"] == "regions" for report in reports[1:])
+    assert all(report["snapped_px"] <= STATIC_SNAP_PX for report in reports)
+    for report in reports[1:]:
+        assert report["delta_px"] == (-7.5, 0.0)
+        assert report["factor"] == 1
+        assert report["region_rects"]
+    # Eight half-pixel steps: no drift, the same pixels as a full composition.
+    assert np.array_equal(_image_array(image), _image_array(reference))
+
+
+def test_chart_compose_trace_records_the_reuse_geometry(monkeypatch, tmp_path):
+    """The opt-in trace names the offset, its residual and the strips composed."""
+    import json
+
+    from sailworks.qt import enc_trace
+    from sailworks.qt.gribviewportchart import _trace_composition
+
+    target = tmp_path / "trace.jsonl"
+    monkeypatch.setenv(enc_trace.ENV_PATH, str(target))
+    enc_trace.reset()
+    try:
+        _trace_composition(
+            12,
+            "pan",
+            {
+                "static": {
+                    "mode": "regions",
+                    "reason": "exposed",
+                    "regions": 1,
+                    "region_rects": [(825, 0, 832, 752)],
+                    "shift": (-7, 0),
+                    "snapped_px": 0.0,
+                    "delta_px": (-7.5, 0.0),
+                    "factor": 1,
+                    "composed_pixels": 5264,
+                    "reused_pixels": 620400,
+                },
+                "camera": _camera(),
+            },
+        )
+        written = target.read_text(encoding="utf-8").splitlines()
+    finally:
+        enc_trace.reset()
+
+    record = json.loads(written[0])
+    assert record["event"] == "chart_compose"
+    assert record["generation"] == 12
+    assert record["cause"] == "pan"
+    assert record["shift"] == [-7, 0]
+    assert record["snapped_px"] == 0.0
+    assert record["delta_px"] == [-7.5, 0.0]
+    assert record["factor"] == 1
+    assert record["region_rects"] == [[825, 0, 832, 752]]
+
+
+def test_a_drag_burst_ends_with_the_final_camera_published(tmp_path):
+    """A burst of demands during a composition still ends in a publication.
+
+    Every intermediate generation is superseded and may not publish, but the
+    newest demand always occupies the pending slot and always gets a worker,
+    so the burst cannot end with a camera that never publishes.
+    """
+    import time as clock
+    from threading import Event
+
+    published = []
+    layer = _chart_layer(tmp_path, on_publish=published.append)
+    entered = Event()
+    release = Event()
+    calls = []
+
+    def compose(camera, cancel):
+        calls.append(camera)
+        if len(calls) == 1:
+            entered.set()
+            release.wait(5)
+        metadata = dict(_chart_metadata(camera), camera=camera)
+        return ("image", metadata)
+
+    layer._compose = compose
+    camera = _camera()
+    try:
+        layer.request(camera)
+        assert entered.wait(5)
+        demands = [
+            _panned(camera, 10),
+            _panned(camera, 20),
+            replace(camera, zoom=9.25),
+            _panned(replace(camera, zoom=9.25), 30),
+        ]
+        generations = [layer.request(demand) for demand in demands]
+        final = demands[-1]
+        release.set()
+        deadline = clock.monotonic() + 5
+        while clock.monotonic() < deadline:
+            if final in layer.observations()["published_generations"]:
+                break
+            clock.sleep(0.01)
+        observations = layer.observations()
+        # The newest demand is the one that publishes, and it publishes its
+        # own camera -- not an intermediate or superseded demand.
+        assert generations[-1] in observations["published_generations"]
+        assert observations["published_generations"] == (generations[-1],)
+        assert published and published[-1][0] == generations[-1]
+        assert published[-1][2]["camera"] == final
+        assert calls[-1] == final
+        assert observations["counters"]["cancelled_active"] >= 1
+    finally:
+        release.set()
+        layer.close()
+
+
+def test_a_resized_view_is_reanchored_not_returned_verbatim(tmp_path):
+    """A retained frame of another extent is cropped to the requested view.
+
+    Returning it verbatim would hand back pixels whose size and origin belong
+    to the old view while the metadata describes the new one; the GUI places
+    it by that metadata and shows only an overlapping corner.
+    """
+    layer, composer, _enc, _sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    try:
+        _image, first = layer._compose(camera, Event())
+        assert first["static"]["mode"] == "full"
+        calls = len(composer.calls)
+        # A smaller view at the same centre is entirely covered by the first
+        # composition, so it takes the full-overlap reuse path.
+        smaller = _camera(width=200, height=160)
+        image, second = layer._compose(smaller, Event())
+        report = second["static"]
+        assert report["mode"] == "reused"
+        assert len(composer.calls) == calls
+        viewport = second["viewport"]
+        expected = (
+            int(round(viewport.width * second["factor"])),
+            int(round(viewport.height * second["factor"])),
+        )
+        # The returned pixels are the requested view's extent, never the
+        # retained frame's larger one, and the metadata says so.
+        assert (image.width(), image.height()) == expected
+        assert second["image_extent"] == expected
+        assert expected != (
+            int(round(first["viewport"].width * first["factor"])),
+            int(round(first["viewport"].height * first["factor"])),
+        )
+        # The covered pixels were re-anchored, not composed again: the old
+        # frame's red ink fills the smaller view.
+        assert image.pixelColor(5, 5).getRgb()[:3] == (255, 0, 0)
+        # The corrected frame is retained, so the same view is served verbatim
+        # on the next demand without another blit.
+        retained = list(layer._static_frames.values())[-1]
+        assert retained.viewport.width == viewport.width
+        assert retained.viewport.height == viewport.height
+    finally:
+        layer.close()
+
+
+def test_reuse_rejects_a_published_surface_of_another_extent(tmp_path):
+    """A composition whose pixels are another size is not served as current."""
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.qt.gribviewportchart import ChartCamera
+    from sailworks.rendering.overlayrenderer import MARGIN
+
+    layer = _chart_layer(tmp_path)
+    camera = _camera()
+    try:
+        viewport = MapViewport(ChartCamera(camera, layer._dpr), MARGIN, lambda: None)
+        expected = (
+            int(round(viewport.width * layer._dpr)),
+            int(round(viewport.height * layer._dpr)),
+        )
+        metadata = {
+            "viewport": viewport,
+            "time": camera.stamp(),
+            "factor": layer._dpr,
+            # The pixels belong to a larger surface than this demand needs.
+            "image_extent": (expected[0] + 256, expected[1] + 192),
+        }
+        layer._published = (7, object(), metadata)
+        assert layer._reusable(camera) is False
+        # The same demand, once the pixels are its own extent, is reusable.
+        metadata["image_extent"] = expected
+        assert layer._reusable(camera) is True
+    finally:
+        layer.close()
+
+
 def test_a_quality_or_source_change_composes_the_whole_view_again(tmp_path):
     """A DPR or source change never reuses content composed for another key."""
     layer, composer, _enc, sources, Event = _static_layer(tmp_path)
@@ -2226,6 +2678,256 @@ def test_a_quality_or_source_change_composes_the_whole_view_again(tmp_path):
         assert layer.observations()["static"]["frames"] <= STATIC_FRAME_LIMIT
     finally:
         layer.close()
+
+
+def test_static_frame_reuse_is_a_pan_only_decision():
+    """A retained frame serves a pan, never a zoom, palette or source change."""
+    from types import SimpleNamespace
+
+    from sailworks.qt.gribviewportchart import _static_frame_serves
+
+    key = ("palette", 1, ())
+    frame = SimpleNamespace(
+        palette="palette", factor=1, sources=(), viewport=SimpleNamespace(_zoom=9.0)
+    )
+    same_zoom = SimpleNamespace(_zoom=9.0)
+    assert _static_frame_serves(frame, key, same_zoom) is True
+    # A zoom change rescales every pixel: the frame does not describe it.
+    assert _static_frame_serves(frame, key, SimpleNamespace(_zoom=9.25)) is False
+    # The content identity is part of the reuse decision.
+    assert _static_frame_serves(frame, ("other", 1, ()), same_zoom) is False
+    assert _static_frame_serves(frame, ("palette", 2, ()), same_zoom) is False
+    assert _static_frame_serves(frame, ("palette", 1, ("src",)), same_zoom) is False
+
+
+def test_a_preview_frame_never_evicts_the_full_quality_frame(tmp_path):
+    """Interactive previews may not push out the frame the next settle reuses.
+
+    The previews are half resolution and every settled composition supersedes
+    them.  If they evicted by age alone, the full-quality frame a pan would
+    have reused is gone and the settle composes the whole chart again.
+    """
+    layer, _composer, _enc, _sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    try:
+        _image, first = layer._compose(camera, Event())
+        assert first["static"]["mode"] == "full"
+        assert first["factor"] == 1
+        for step in range(3):
+            layer._compose(_panned(camera, 20 + step), Event(), preview=True)
+        assert any(
+            frame.factor == layer._dpr for frame in layer._static_frames.values()
+        )
+        _image, second = layer._compose(_panned(camera, 300), Event())
+        assert second["static"]["mode"] == "regions"
+        assert second["static"]["reused_pixels"] > 0
+    finally:
+        layer.close()
+
+
+def test_a_preview_on_a_retina_display_is_composed_at_display_density(tmp_path):
+    """A preview never renders below display density on a Retina display.
+
+    Halving the preview here composes a quarter of the display's pixels and
+    the unsmoothed blit aliases one-pixel cell linework away until the settle.
+    """
+    layer, _composer, _enc, _sources, Event = _static_layer(tmp_path)
+    layer._dpr = 2
+    camera = _camera(width=320, height=240)
+    try:
+        image, metadata = layer._compose(camera, Event(), preview=True)
+        assert metadata["preview"] is True
+        assert metadata["factor"] == 2
+        viewport = metadata["viewport"]
+        expected = (
+            int(round(viewport.width * 2)),
+            int(round(viewport.height * 2)),
+        )
+        assert (image.width(), image.height()) == expected
+        assert metadata["canvas_extent"] == expected
+        assert metadata["required_extent"] == expected
+        assert metadata["shortfall_device_pixels"] == 0
+        # The rule this replaced composed ``dpr * 0.5`` on every display.
+        old_rule = (
+            int(round(viewport.width * layer._dpr * 0.5)),
+            int(round(viewport.height * layer._dpr * 0.5)),
+        )
+        assert (image.width(), image.height()) != old_rule
+    finally:
+        layer.close()
+
+
+def test_a_preview_at_ratio_one_is_still_half_density(tmp_path):
+    """Halving a preview is the whole saving only where there is no Retina."""
+    layer, _composer, _enc, _sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    try:
+        image, metadata = layer._compose(camera, Event(), preview=True)
+        assert layer._dpr == 1
+        assert metadata["preview"] is True
+        assert metadata["factor"] == 0.5
+        viewport = metadata["viewport"]
+        assert (image.width(), image.height()) == (
+            int(round(viewport.width * 0.5)),
+            int(round(viewport.height * 0.5)),
+        )
+        assert metadata["required_extent"] == (
+            int(round(viewport.width * layer._dpr)),
+            int(round(viewport.height * layer._dpr)),
+        )
+    finally:
+        layer.close()
+
+
+def test_settle_composes_at_the_display_ratio_at_both_densities(tmp_path):
+    """The preview rule leaves the settle path's factor and extent unchanged."""
+    layer, _composer, _enc, _sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    try:
+        for dpr in (1, 2):
+            layer._dpr = dpr
+            image, metadata = layer._compose(camera, Event())
+            assert metadata["preview"] is False
+            assert metadata["factor"] == dpr
+            viewport = metadata["viewport"]
+            expected = (
+                int(round(viewport.width * dpr)),
+                int(round(viewport.height * dpr)),
+            )
+            assert (image.width(), image.height()) == expected
+            assert metadata["required_extent"] == expected
+            assert metadata["shortfall_device_pixels"] == 0
+    finally:
+        layer.close()
+
+
+def test_compose_pixel_counters_are_device_pixels(tmp_path):
+    """Composed and reused areas are the backing store's, never logical ones."""
+    layer, _composer, _enc, _sources, Event = _static_layer(tmp_path)
+    layer._dpr = 2
+    camera = _camera(width=320, height=240)
+    try:
+        _image, first = layer._compose(camera, Event())
+        viewport = first["viewport"]
+        full = int(round(viewport.width * viewport.height * 4))
+        report = first["static"]
+        assert report["mode"] == "full"
+        assert report["composed_pixels"] == full
+        assert report["composed_pixels"] != int(viewport.width * viewport.height)
+        assert report["reused_pixels"] == 0
+        assert first["shortfall_device_pixels"] == 0
+        counters = layer.observations()["counters"]
+        assert counters["static_pixels_composed"] == full
+
+        _image, second = layer._compose(_panned(camera, 300), Event())
+        panned_viewport = second["viewport"]
+        assert second["static"]["composed_pixels"] % 4 == 0
+        assert second["static"]["reused_pixels"] % 4 == 0
+        assert second["static"]["reused_pixels"] > 0
+        assert second["shortfall_device_pixels"] == 0
+        # Every device pixel is either retained or composed now.
+        assert second["static"]["composed_pixels"] + second["static"][
+            "reused_pixels"
+        ] == int(round(panned_viewport.width * panned_viewport.height * 4))
+
+        _image, preview = layer._compose(_panned(camera, 60), Event(), preview=True)
+        assert preview["shortfall_device_pixels"] == 0
+        assert preview["canvas_extent"] == preview["required_extent"]
+    finally:
+        layer.close()
+
+
+def test_chart_compose_trace_records_extents_and_the_reused_frame(
+    monkeypatch, tmp_path
+):
+    """The trace names the required extent, the shortfall and the reused frame."""
+    import json
+
+    from sailworks.qt import enc_trace
+    from sailworks.qt.gribviewportchart import _trace_composition
+
+    target = tmp_path / "trace.jsonl"
+    monkeypatch.setenv(enc_trace.ENV_PATH, str(target))
+    enc_trace.reset()
+    try:
+        _trace_composition(
+            21,
+            "preview",
+            {
+                "camera": _camera(),
+                "preview": True,
+                "factor": 2,
+                "requested_extent": (832, 752),
+                "canvas_extent": (1664, 1504),
+                "required_extent": (1664, 1504),
+                "shortfall_device_pixels": 0,
+                "static": {
+                    "mode": "reused",
+                    "reason": "covered",
+                    "factor": 2,
+                    "composed_pixels": 0,
+                    "reused_pixels": 2502656,
+                    "reuse_serial": 7,
+                    "reuse_rect": (0, 0, 832, 752),
+                },
+            },
+        )
+        written = target.read_text(encoding="utf-8").splitlines()
+    finally:
+        enc_trace.reset()
+
+    record = json.loads(written[0])
+    assert record["event"] == "chart_compose"
+    assert record["preview"] is True
+    assert record["factor"] == 2
+    assert record["requested_extent"] == [832, 752]
+    assert record["canvas_extent"] == [1664, 1504]
+    assert record["required_extent"] == [1664, 1504]
+    assert record["shortfall_device_pixels"] == 0
+    assert record["reuse_source_serial"] == 7
+    assert record["reuse_destination_rect"] == [0, 0, 832, 752]
+
+
+def test_scene_draws_chart_only_for_a_complete_frame_of_this_camera():
+    """The raster yields only to a complete scene assembled for this camera.
+
+    A partial publication is progress, not coverage; a complete frame for
+    another camera is exactly what a pan or zoom invalidated.  In both cases
+    the scene does not draw the chart the user is looking at, so the raster
+    must compose.
+    """
+    camera = _camera()
+    complete = {"camera": camera}
+
+    assert gribviewport.scene_draws_chart(complete, camera) is True
+    # The published camera is compared by value, so an equal camera object
+    # serves the current view.
+    assert gribviewport.scene_draws_chart({"camera": replace(camera)}, camera) is True
+
+    # A partial publication never substitutes for a complete scene.
+    assert (
+        gribviewport.scene_draws_chart({**complete, "partial": True}, camera) is False
+    )
+    assert (
+        gribviewport.scene_draws_chart({**complete, "partial": False}, camera) is True
+    )
+
+    # A frame assembled for another view does not draw this one.
+    assert (
+        gribviewport.scene_draws_chart({"camera": _camera(zoom=9.5)}, camera) is False
+    )
+    assert (
+        gribviewport.scene_draws_chart({"camera": _camera(center_lon=0.75)}, camera)
+        is False
+    )
+    assert (
+        gribviewport.scene_draws_chart({"camera": _camera(width=800)}, camera) is False
+    )
+
+    # Without metadata, or without a camera of its own, nothing is drawn.
+    assert gribviewport.scene_draws_chart(None, camera) is False
+    assert gribviewport.scene_draws_chart({}, camera) is False
+    assert gribviewport.scene_draws_chart(complete, None) is False
 
 
 def test_releasing_the_layer_drops_the_retained_content(tmp_path):
@@ -2314,7 +3016,7 @@ def test_interactive_chart_is_event_throttled_and_yields_to_weather(monkeypatch)
     weather.busy.return_value = False
     request(widget)
     assert chart.request.call_count == 2
-    chart.request.assert_called_with(widget._camera, preview=True)
+    chart.request.assert_called_with(widget._camera, preview=True, cause="preview")
 
 
 def test_preview_is_blocked_in_flight_and_settle_publishes_full_quality(tmp_path):
@@ -2416,10 +3118,16 @@ def test_wiring_a_plain_qquickitem_does_not_raise():
     pytest.importorskip("PySide6.QtCore")
     qtquick = pytest.importorskip("PySide6.QtQuick")
     qtgui = pytest.importorskip("PySide6.QtGui")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
 
     from sailworks.qt.gribviewport import _connect_signal
 
-    qtgui.QGuiApplication.instance() or qtgui.QGuiApplication([])
+    # This module shares one process with widget tests, which need a
+    # QApplication; a QGuiApplication singleton cannot be upgraded afterwards.
+    # Install the widget-capable application and reuse whatever an earlier
+    # module already created.
+    if qtgui.QGuiApplication.instance() is None:
+        qtwidgets.QApplication([])
     try:
         item = qtquick.QQuickItem()
     except Exception:  # pragma: no cover - needs a graphical platform
@@ -2439,3 +3147,350 @@ def test_satellite_status_text_is_bounded_and_informative():
     assert text.startswith("Satellite unavailable — ")
     assert "\n" not in text
     assert len(text) <= len("Satellite unavailable — ") + 72
+
+
+# ------------------------------------------------- container-carried placement
+class _ChartItem:
+    """Records the properties a retained chart placement writes."""
+
+    def __init__(self, width=None, height=None):
+        self.props = {}
+        if width is not None:
+            self.props["imageWidth"] = width
+            self.props["imageHeight"] = height
+
+    def property(self, name):
+        return self.props.get(name)
+
+    def setProperty(self, name, value):
+        self.props[name] = value
+
+
+class _SceneItem:
+    """Records the offset a retained ENC scene placement writes."""
+
+    def __init__(self):
+        self.x = None
+        self.y = None
+
+    @property
+    def offset(self):
+        return None if self.x is None and self.y is None else (self.x, self.y)
+
+    def setX(self, x):
+        self.x = x
+
+    def setY(self, y):
+        self.y = y
+
+
+class _SceneFallback:
+    def __init__(self):
+        self.placed = None
+
+    def place(self, x, y):
+        self.placed = (x, y)
+
+
+def test_the_container_carries_a_camera_change_by_default():
+    # Flip this expectation with CONTAINER_CARRIES_PAN.
+    assert gribviewport.CONTAINER_CARRIES_PAN is True
+
+
+def test_a_camera_change_leaves_the_retained_chart_offset_to_the_container():
+    item = _ChartItem(640.0, 480.0)
+    reason = gribviewport.place_retained_chart(
+        item, 12.0, 34.0, 640.0, 480.0, cause="camera", carries=True
+    )
+    assert reason == "container_carries"
+    assert "imageX" not in item.props
+    assert "imageY" not in item.props
+    assert (item.props["imageWidth"], item.props["imageHeight"]) == (640.0, 480.0)
+
+
+def test_a_camera_change_that_resizes_still_places_the_retained_chart():
+    # The container translates; it cannot scale, so a zoom or a new frame is
+    # placed in full.
+    item = _ChartItem(640.0, 480.0)
+    reason = gribviewport.place_retained_chart(
+        item, 8.0, 9.0, 1280.0, 960.0, cause="camera", carries=True
+    )
+    assert reason is None
+    assert (item.props["imageX"], item.props["imageY"]) == (8.0, 9.0)
+    assert (item.props["imageWidth"], item.props["imageHeight"]) == (1280.0, 960.0)
+
+
+def test_a_publication_reanchors_the_retained_chart():
+    item = _ChartItem(640.0, 480.0)
+    reason = gribviewport.place_retained_chart(
+        item, 3.0, 4.0, 640.0, 480.0, cause="publication", carries=True
+    )
+    assert reason is None
+    assert (item.props["imageX"], item.props["imageY"]) == (3.0, 4.0)
+
+
+def test_flipping_the_constant_restores_the_retained_chart_placement():
+    item = _ChartItem(640.0, 480.0)
+    reason = gribviewport.place_retained_chart(
+        item, 5.0, 6.0, 640.0, 480.0, cause="camera", carries=False
+    )
+    assert reason is None
+    assert (item.props["imageX"], item.props["imageY"]) == (5.0, 6.0)
+
+
+def test_a_camera_change_leaves_the_enc_offset_to_the_container():
+    item = _SceneItem()
+    fallback = _SceneFallback()
+    reason = gribviewport.place_enc_scene_item(
+        item, fallback, 7.0, 11.0, cause="camera", rescaled=False, carries=True
+    )
+    assert reason == "container_carries"
+    assert item.offset is None
+    assert fallback.placed is None
+
+
+def test_a_rescaled_enc_scene_is_still_placed():
+    item = _SceneItem()
+    fallback = _SceneFallback()
+    reason = gribviewport.place_enc_scene_item(
+        item, fallback, 7.0, 11.0, cause="camera", rescaled=True, carries=True
+    )
+    assert reason is None
+    assert item.offset == (7.0, 11.0)
+    assert fallback.placed == (7.0, 11.0)
+
+
+def test_a_publication_reanchors_the_enc_scene():
+    item = _SceneItem()
+    fallback = _SceneFallback()
+    reason = gribviewport.place_enc_scene_item(
+        item, fallback, 7.0, 11.0, cause="publication", rescaled=False, carries=True
+    )
+    assert reason is None
+    assert item.offset == (7.0, 11.0)
+    assert fallback.placed == (7.0, 11.0)
+
+
+@pytest.mark.parametrize(
+    "placer, reason_kind",
+    [
+        ("chart", "chart_place_skip"),
+        ("enc", "enc_place_skip"),
+    ],
+)
+def test_a_carried_placement_is_traced(monkeypatch, placer, reason_kind):
+    events = []
+    monkeypatch.setattr(gribviewport.enc_trace, "enabled", lambda: True)
+    monkeypatch.setattr(
+        gribviewport.enc_trace,
+        "event",
+        lambda kind, **fields: events.append((kind, fields)),
+    )
+    camera = _camera()
+    if placer == "chart":
+        gribviewport.place_retained_chart(
+            _ChartItem(640.0, 480.0),
+            1.0,
+            2.0,
+            640.0,
+            480.0,
+            cause="camera",
+            camera=camera,
+            carries=True,
+        )
+    else:
+        gribviewport.place_enc_scene_item(
+            _SceneItem(),
+            None,
+            1.0,
+            2.0,
+            cause="camera",
+            camera=camera,
+            carries=True,
+        )
+    assert events, "the skipped placement must be counted"
+    kind, fields = events[-1]
+    assert kind == reason_kind
+    assert fields["reason"] == "container_carries"
+    assert fields["cause"] == "camera"
+
+
+def test_the_camera_paths_use_the_container_experiment():
+    source = inspect.getsource(gribviewport)
+    assert "place_retained_chart(" in source
+    assert "place_enc_scene_item(" in source
+    # One switch controls both paths: neither call site overrides it.
+    assert 'cause="publication"' in source
+
+
+class _CoveringScene:
+    """A scene item whose drawn geometry can start or stop covering the view."""
+
+    def __init__(self, covering=True):
+        self.covering = covering
+
+    def isVisible(self):
+        return True
+
+    def shown_vertex_count(self):
+        return 120 if self.covering else 0
+
+    def setVisible(self, visible):
+        self.covering = bool(visible)
+
+    def scene_covers_view(self):
+        return self.covering
+
+
+class _RecordingTimer:
+    def __init__(self):
+        self.started = []
+
+    def start(self, milliseconds):
+        self.started.append(milliseconds)
+
+    def stop(self):
+        pass
+
+
+class _SettleChartModel:
+    def __init__(self):
+        self.requests = []
+
+    def request(self, camera, cause=None, replace=False, preview=False):
+        self.requests.append(cause)
+        return None
+
+
+def _settle_state(scene_item):
+    import time
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        _camera=_camera(),
+        _chart_model=_SettleChartModel(),
+        _chart_timer=_RecordingTimer(),
+        _chart_camera_changed=time.perf_counter() - 10.0,
+        _chart_scene_deferral=None,
+        _chart_visible_generation=None,
+        _chart_pending=None,
+        _chart_request_times=None,
+        _chart_force_replace=False,
+        _chart_without_weather=False,
+        _weather_ready_at=123.0,
+        _enc_chart_layer=False,
+        _model=SimpleNamespace(busy=lambda: False, state="ready"),
+        _enc_scene_model=SimpleNamespace(_published=(1, None, None)),
+        _enc_scene_item=scene_item,
+        _request_enc_scene=lambda: 7,
+        _flush_held_enc_scene_adoption=lambda: None,
+        _chart_state_now=lambda: {},
+        counters={"chart_requests": 0},
+    )
+
+
+def _preview_state(scene_item):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        _camera=_camera(),
+        _chart_model=_SettleChartModel(),
+        _chart_interactive_at=None,
+        _chart_visible_generation=None,
+        _background_pending=None,
+        _chart_without_weather=False,
+        _weather_ready_at=123.0,
+        _enc_chart_layer=False,
+        _model=SimpleNamespace(busy=lambda: False, state="ready"),
+        _enc_scene_item=scene_item,
+        _chart_state_now=lambda: {},
+        counters={"chart_requests": 0},
+    )
+
+
+def _record_trace(monkeypatch):
+    events = []
+    monkeypatch.setattr(gribviewport.enc_trace, "enabled", lambda: True)
+    monkeypatch.setattr(
+        gribviewport.enc_trace,
+        "event",
+        lambda kind, **fields: events.append((kind, fields)),
+    )
+    return events
+
+
+def test_a_settle_does_not_compose_while_the_scene_covers(monkeypatch):
+    """A presented scene draws this view: the raster must not compose at all."""
+    events = _record_trace(monkeypatch)
+    state = _settle_state(_CoveringScene(covering=True))
+    request = gribviewport._viewport_widget_class()._request_chart
+
+    request(state)
+
+    assert state._chart_model.requests == []
+    assert state.counters["chart_requests"] == 0
+    kind, fields = events[-1]
+    assert kind == "chart_raster_skipped"
+    assert fields["reason"] == "scene_covers"
+    assert fields["preview"] is False
+    assert fields["cause"] == "settle"
+
+
+def test_a_settle_composes_when_the_scene_does_not_cover(monkeypatch):
+    """A scene with no drawn vertices is no substitute for the raster."""
+    events = _record_trace(monkeypatch)
+    state = _settle_state(_CoveringScene(covering=False))
+    request = gribviewport._viewport_widget_class()._request_chart
+
+    request(state)
+
+    assert state._chart_model.requests == ["settle"]
+    assert [kind for kind, _fields in events if kind == "chart_raster_skipped"] == []
+
+
+def test_a_settle_composes_with_no_scene(monkeypatch):
+    """Raster mode is unchanged: no scene layer composes on the settle."""
+    _record_trace(monkeypatch)
+    state = _settle_state(None)
+    request = gribviewport._viewport_widget_class()._request_chart
+
+    request(state)
+
+    assert state._chart_model.requests == ["settle"]
+
+
+def test_the_raster_returns_when_the_scene_stops_covering(monkeypatch):
+    """Coverage ending resumes the next settle, with no stuck blank."""
+    _record_trace(monkeypatch)
+    scene = _CoveringScene(covering=True)
+    state = _settle_state(scene)
+    request = gribviewport._viewport_widget_class()._request_chart
+
+    request(state)
+    assert state._chart_model.requests == []
+    # The re-check is armed so coverage ending without a camera settle is
+    # noticed promptly.
+    assert state._chart_timer.started
+
+    scene.setVisible(False)
+    request(state)
+
+    assert state._chart_model.requests == ["settle"]
+
+
+def test_preview_is_unchanged_by_the_settle_gate(monkeypatch):
+    """The preview uses the same predicate and still fires when uncovered."""
+    events = _record_trace(monkeypatch)
+    request = gribviewport._viewport_widget_class()._request_interactive_chart
+
+    covered = _preview_state(_CoveringScene(covering=True))
+    request(covered)
+    assert covered._chart_model.requests == []
+    kind, fields = events[-1]
+    assert kind == "chart_raster_skipped"
+    assert fields["preview"] is True
+    assert fields["reason"] == "scene_covers"
+
+    exposed = _preview_state(_CoveringScene(covering=False))
+    request(exposed)
+    assert exposed._chart_model.requests == ["preview"]

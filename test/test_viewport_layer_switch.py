@@ -11,6 +11,7 @@ import time
 import unittest
 from importlib.util import find_spec
 from pathlib import Path
+import pytest
 from types import MethodType, SimpleNamespace
 from unittest.mock import patch
 
@@ -32,6 +33,18 @@ if find_spec("PySide6") is not None:
     from PySide6.QtGui import QColor, QImage
     from PySide6.QtQuick import QQuickImageProvider, QQuickView
     from PySide6.QtTest import QTest
+
+
+@pytest.fixture(autouse=True)
+def _the_layer_owns_its_pan(monkeypatch):
+    """Measure the layer's own pan placement, not the container experiment.
+
+    ``CONTAINER_CARRIES_PAN`` is covered in ``test/test_gribviewport.py``;
+    these checks model the two placements it replaces.
+    """
+    from sailworks.qt import gribviewport as _gv
+
+    monkeypatch.setattr(_gv, "CONTAINER_CARRIES_PAN", False)
 
 
 def _application():
@@ -203,6 +216,15 @@ class TestViewportBackgroundSafety(unittest.TestCase):
     def test_the_chart_model_is_retained_and_the_toggle_reaches_it(self):
         source = VIEWPORT.read_text()
         self.assertIn("self._chart_model = ViewportChartLayer(", source)
+        # The raster layer is constructed either way; its own ENC source is
+        # gated by the resolved raster mode, so the GPU scene supersedes it
+        # rather than drawing the same cells twice.
+        self.assertIn(
+            "enc_enabled=self._layer_enc_visible and self._enc_chart_layer", source
+        )
+        # The scene layer is a second, opt-in model beside the raster one.
+        self.assertIn("if self._enc_scene_layer:", source)
+        self.assertIn("self._enc_scene_model = EncSceneLayer(", source)
         block = viewport_block("def _set_enc_visible", "def _layer_toggled")
         self.assertIn("model.set_enc_enabled(visible)", block)
         self.assertIn("self._clear_chart()", block)
@@ -570,7 +592,7 @@ class TestReadyTransitionFade(unittest.TestCase):
         )
         self.assertLess(
             block.index('self._chart.setProperty("fadeMs", fade_ms)'),
-            block.index("self._place_chart()"),
+            block.index('self._place_chart(cause="publication")'),
         )
 
 
@@ -922,6 +944,24 @@ class TestChartLayersPanel(unittest.TestCase):
         self.assertIn("chartENCVisible", panel.checkboxes)
         self.assertNotIn("chartWorldVisible", panel.checkboxes)
         self.assertNotIn("chartENCVisible", panel.radios)
+
+    def test_the_gpu_scene_is_an_experimental_toggle_that_follows_enc(self):
+        panel = self.panel({"chartENCVisible": True})
+        checkbox = panel.enc_scene_checkbox
+        self.assertIn("experimental", checkbox.text())
+        # It is not a chart class row: it selects how the ENC overlay is drawn.
+        self.assertNotIn("chartENCScene", panel.checkboxes)
+        self.assertFalse(checkbox.isChecked())
+        self.assertTrue(checkbox.isEnabled())
+
+        checkbox.setChecked(True)
+        self.assertTrue(self.settings["chartENCScene"])
+
+        self.settings["chartENCVisible"] = False
+        self.assertFalse(checkbox.isEnabled())
+        # The stored opt-in is kept; only the offer is withdrawn with ENC.
+        self.assertTrue(checkbox.isChecked())
+        self.assertTrue(self.settings["chartENCScene"])
 
 
 class _NotifyingSettings(dict):

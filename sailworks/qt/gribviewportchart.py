@@ -30,7 +30,12 @@ event:
   composes only the newly exposed rectangles; a forecast-time change composes
   no chart pixel at all and redraws only the contours;
 * the composition is composed at the GUI's own device pixel ratio, and a
-  zoom or a ratio change is composed again rather than resampled.
+  zoom or a ratio change is composed again rather than resampled;
+* a preview composition is never composed below display density on a
+  high-density display.  Only a ratio of 1 halves a preview; at ratio 2 or
+  more the preview is composed at the display's own ratio, because a
+  half-density preview drawn unsmoothed aliases its one-pixel cell linework
+  away until the full-density settle lands.
 
 The ENC cells are the application's own cells: the installed and enabled
 entries of the user's manifest, read and opened by this layer's own worker
@@ -69,6 +74,45 @@ CHART_INTERACTIVE_MS = 150
 CHART_WEATHER_READY_WAIT_MS = 2000
 CHART_WEATHER_BUSY_WAIT_MS = 150
 
+#: The bounded weather priority when a chart frame is already on screen.  The
+#: retained frame keeps covering the view while the weather presents, so the
+#: chart does not need the cold-start window and must not be starved by it: a
+#: camera move every settle interval would otherwise re-arm that window for as
+#: long as the user keeps moving.
+CHART_RETAINED_HEAD_START_MS = 150
+
+#: How long a complete ENC scene suppresses the raster before the suppression
+#: is re-examined.  The scene's coverage is only true for the camera it was
+#: assembled for; a bounded re-check keeps a scene that has stopped covering
+#: the view from leaving the last camera's raster unpublished until the next
+#: five-second source poll.
+CHART_SCENE_SKIP_MS = 500
+
+#: The longest a complete ENC scene may withhold the raster for one camera
+#: demand.  The scene is re-examined every ``CHART_SCENE_SKIP_MS``, but a
+#: scene that keeps *claiming* the view must not keep the raster unpublished
+#: forever: a partially presented ENC frame reports coverage of its own
+#: bounding geometry while drawing a fraction of the cells.  Past this window
+#: the raster composes regardless; a duplicated composition is cheap next to a
+#: blank chart.
+CHART_SCENE_SUPPRESS_MAX_MS = 1000
+
+#: The weather head start before the *first* raster of a session.  A retained
+#: raster keeps covering the view while the weather presents, so it takes the
+#: short retained bound; nothing covers the view before the first one, so the
+#: long cold-start window would only postpone the only chart content there is.
+#: Weather still composes in parallel; this is a small, bounded head start,
+#: not a veto.
+CHART_STARTUP_HEAD_START_MS = 150
+
+#: The longest a complete ENC scene's expensive adoption is held back while
+#: the session's first raster is still being painted.  A partial scene is
+#: adopted at once (it is the ENC's own first drawable picture); the complete
+#: frame's vertex buffers are the GUI-thread cost that can otherwise delay the
+#: raster's first paint by many seconds.  The hold is bounded, released by the
+#: first chart publication, and never applies once a raster has been shown.
+CHART_STARTUP_SCENE_HOLD_MS = 1500
+
 #: The coastline qualities' initial draw times, as the application's own
 #: ``GSHHSVectorChart`` records them.
 _INITIAL_TIMES = (("c", 0), ("f", 0), ("h", 0), ("i", 0), ("l", 0))
@@ -77,6 +121,11 @@ _INITIAL_TIMES = (("c", 0), ("f", 0), ("h", 0), ("i", 0), ("l", 0))
 #: The history is evidence, never a store: it is bounded so a long session
 #: cannot grow it without limit.
 HISTORY_LIMIT = 64
+
+#: The largest sub-pixel error a snapped reuse may introduce, in device
+#: pixels.  Rounding to the nearest whole device pixel moves retained pixels by
+#: at most half a pixel in each axis; that is a translation, not a resample.
+STATIC_SNAP_PX = 0.5
 
 #: Padding around an exposed region, in logical pixels.  A region is composed
 #: with this padding and cropped to the exposed rectangle, so a label, symbol
@@ -125,6 +174,14 @@ class _StaticFrame:
     sources: tuple
     enc_metadata: dict
     bytes: int
+    # This frame's identity in the retained pool, reported by the trace so a
+    # publication names the frame whose pixels it reused.
+    serial: int = 0
+    # The device-pixel offset these pixels actually carry relative to the
+    # position ``viewport`` implies.  A snapped blit leaves up to
+    # ``STATIC_SNAP_PX`` there; it is carried so the next pan cancels it
+    # instead of rounding from already-snapped metadata a second time.
+    snap: tuple = (0.0, 0.0)
 
 
 def _viewport_bounds(viewport):
@@ -139,16 +196,64 @@ def _viewport_bounds(viewport):
     )
 
 
-def _intersection_rect(viewport, frame_viewport):
+def _same_static_geometry(frame_viewport, viewport):
+    """Whether a retained frame's pixels are aligned with this view exactly.
+
+    Two viewports are interchangeable only when they have the same extent and
+    the same world-pixel rectangle: the frame is then at the target's own
+    origin and zoom, so its pixels may be handed back verbatim.  A frame that
+    merely covers the view (a pan within the margin, or a differently sized
+    view) sits at another offset or scale and must be re-anchored first.
+    """
+    if int(frame_viewport.width) != int(viewport.width):
+        return False
+    if int(frame_viewport.height) != int(viewport.height):
+        return False
+    f_left, f_top, f_right, f_bottom = _viewport_bounds(frame_viewport)
+    left, top, right, bottom = _viewport_bounds(viewport)
+    tolerance = 1e-6
+    return (
+        abs(f_left - left) <= tolerance
+        and abs(f_top - top) <= tolerance
+        and abs(f_right - right) <= tolerance
+        and abs(f_bottom - bottom) <= tolerance
+    )
+
+
+def _static_frame_serves(frame, key, viewport):
+    """Whether a retained frame describes this request's content and zoom.
+
+    A frame serves a request only when it was composed for the same palette,
+    device factor and base sources, at the same zoom.  The camera may differ:
+    a pan within the frame's extent is served from its pixels, and only the
+    newly exposed strip is composed.
+    """
+    if (frame.palette, frame.factor, frame.sources) != key:
+        return False
+    return frame.viewport._zoom == viewport._zoom
+
+
+def _intersection_rect(viewport, frame_viewport, shift=None, factor=1.0):
     """The covered part of a composition, in integer surface coordinates.
 
     Both viewports are at one zoom, so the intersection is an axis-aligned
     rectangle.  The result is the frame's coverage clipped to the viewport,
     rounded inward to whole surface pixels so a region never claims a pixel
-    the frame does not contain.
+    the frame does not contain.  When ``shift`` (the snapped device offset the
+    frame is painted at) is given, the coverage is measured from the pixels
+    that actually land, not from the fractional rect they were rounded from:
+    the composed strips then abut the painted edge exactly, with no unpainted
+    column at the seam.
     """
     left, top, right, bottom = _viewport_bounds(viewport)
     f_left, f_top, f_right, f_bottom = _viewport_bounds(frame_viewport)
+    if shift is not None:
+        width = f_right - f_left
+        height = f_bottom - f_top
+        f_left = left + shift[0] / factor
+        f_top = top + shift[1] / factor
+        f_right = f_left + width
+        f_bottom = f_top + height
     x0 = max(0, min(int(viewport.width), int(math.ceil(max(left, f_left) - left))))
     y0 = max(0, min(int(viewport.height), int(math.ceil(max(top, f_top) - top))))
     x1 = max(0, min(int(viewport.width), int(math.floor(min(right, f_right) - left))))
@@ -192,14 +297,81 @@ def _empty_surface(viewport, factor):
     return surface
 
 
-def _paint_static(surface, frame, viewport, factor):
-    """Paint a retained frame into a target surface at its own offset."""
-    import cairo
+def _static_shift(frame, viewport, factor):
+    """The frame's translation onto this view in whole device pixels.
 
+    A retained frame is already-rendered pixels, and a blit at a fractional
+    device offset would *resample* them.  The offset is therefore snapped to
+    the nearest whole device pixel, which is a pure translation of the
+    retained pixels: the largest error it can introduce is
+    ``STATIC_SNAP_PX`` (half a device pixel, the worst case of rounding) in
+    each axis, and it is the same value this module reports as
+    ``snapped_px``.  An integer offset is unchanged, so those blits stay
+    byte-for-byte identical to a full composition.
+
+    The frame's own ``snap`` is subtracted first.  A previous reuse may have
+    left the pixels a fraction of a device pixel off the position its
+    viewport describes; without this term each pan would snap from that
+    already-snapped position again and the error would grow by up to half a
+    pixel per published frame.  Cancelling it keeps the residual inside half
+    a device pixel for any number of pans.
+
+    Returns ``None`` only for an offset that rounding cannot express within
+    the bound, which cannot happen for finite coordinates; the check is the
+    explicit statement of the bound rather than a reachable branch.
+    """
     left, top, _right, _bottom = _viewport_bounds(viewport)
     f_left, f_top, _f_right, _f_bottom = _viewport_bounds(frame.viewport)
+    dx = (f_left - left) * factor - frame.snap[0]
+    dy = (f_top - top) * factor - frame.snap[1]
+    rx = int(round(dx))
+    ry = int(round(dy))
+    if abs(dx - rx) > STATIC_SNAP_PX + 1e-9 or abs(dy - ry) > STATIC_SNAP_PX + 1e-9:
+        return None
+    return rx, ry
+
+
+def _static_shift_error(frame, viewport, factor):
+    """The snap's own error, in device pixels, for the report and the trace."""
+    left, top, _right, _bottom = _viewport_bounds(viewport)
+    f_left, f_top, _f_right, _f_bottom = _viewport_bounds(frame.viewport)
+    dx = (f_left - left) * factor - frame.snap[0]
+    dy = (f_top - top) * factor - frame.snap[1]
+    return max(abs(dx - round(dx)), abs(dy - round(dy)))
+
+
+def _static_residual(frame, shift, viewport, factor):
+    """The offset the retained pixels carry after landing at ``shift``.
+
+    A feature the frame holds at pixel ``p`` sits at ``p + snap`` in its own
+    view; painting it at ``shift`` puts it at ``p + snap + shift``, while a
+    full composition of this view would put it at ``p + delta``.  The
+    difference is what the next reuse must cancel, and it stays within
+    ``STATIC_SNAP_PX`` because ``shift`` is the rounded ``delta - snap``.
+    """
+    left, top, _right, _bottom = _viewport_bounds(viewport)
+    f_left, f_top, _f_right, _f_bottom = _viewport_bounds(frame.viewport)
+    return (
+        frame.snap[0] + shift[0] - (f_left - left) * factor,
+        frame.snap[1] + shift[1] - (f_top - top) * factor,
+    )
+
+
+def _paint_static(surface, frame, viewport, factor):
+    """Paint a retained frame into a target surface at its snapped offset.
+
+    The caller has already established, through :func:`_static_shift`, that
+    the frame lands within ``STATIC_SNAP_PX`` of a whole device pixel, so the
+    blit translates exactly ``shift / factor`` user-space units: the source is
+    copied pixel for pixel and is never resampled.
+    """
+    import cairo
+
+    shift = _static_shift(frame, viewport, factor)
+    if shift is None:  # pragma: no cover - unreachable within the bound
+        raise ValueError("a retained frame may not be resampled")
     cr = cairo.Context(surface)
-    cr.set_source_surface(frame.surface, f_left - left, f_top - top)
+    cr.set_source_surface(frame.surface, shift[0] / factor, shift[1] / factor)
     cr.paint()
     surface.flush()
 
@@ -233,6 +405,84 @@ def disabled_enc_metadata():
     from sailworks.qt.viewportenc import disabled_metadata
 
     return disabled_metadata()
+
+
+def _trace_camera(camera):
+    """The camera identity for a trace record, guarded for stand-ins."""
+    if camera is None:
+        return {}
+    fields = {}
+    for name in ("center_lat", "center_lon", "zoom"):
+        value = getattr(camera, name, None)
+        if value is not None:
+            fields["lat" if name == "center_lat" else name] = round(float(value), 5)
+    for name in ("width", "height"):
+        value = getattr(camera, name, None)
+        if value is not None:
+            fields[name] = int(value)
+    return fields
+
+
+def _trace_rejection(generation, cause, camera, cancelled, closed, outcome, composed):
+    """Record why a composition may not publish (opt-in, zero cost when off).
+
+    ``cause`` is the asker the generation was requested for, so a rejection
+    can be attributed to a camera move, a timer, a deferral retry or a region
+    composition instead of being an anonymous counter.
+    """
+    from sailworks.qt import enc_trace
+
+    if not enc_trace.enabled():
+        return None
+    if closed:
+        reason = "closed"
+    elif cancelled:
+        reason = "cancelled"
+    elif outcome == "stale":
+        reason = "stale"
+    else:
+        reason = "superseded"
+    return enc_trace.event(
+        "chart_reject",
+        generation=generation,
+        cause=cause,
+        reason=reason,
+        composed=bool(composed),
+        **_trace_camera(camera),
+    )
+
+
+def _trace_composition(generation, cause, metadata):
+    """Record what a published composition reused (opt-in, no cost when off)."""
+    from sailworks.qt import enc_trace
+
+    if not enc_trace.enabled():
+        return None
+    static = (metadata or {}).get("static") or {}
+    return enc_trace.event(
+        "chart_compose",
+        generation=generation,
+        cause=cause,
+        static_mode=static.get("mode"),
+        static_reason=static.get("reason"),
+        regions=static.get("regions"),
+        region_rects=static.get("region_rects"),
+        shift=static.get("shift"),
+        snapped_px=static.get("snapped_px"),
+        delta_px=static.get("delta_px"),
+        factor=static.get("factor", (metadata or {}).get("factor")),
+        preview=(metadata or {}).get("preview"),
+        requested_extent=(metadata or {}).get("requested_extent"),
+        canvas_extent=(metadata or {}).get("canvas_extent"),
+        required_extent=(metadata or {}).get("required_extent"),
+        shortfall_device_pixels=(metadata or {}).get("shortfall_device_pixels"),
+        reuse_source_serial=static.get("reuse_serial"),
+        reuse_destination_rect=static.get("reuse_rect"),
+        composed_pixels=static.get("composed_pixels"),
+        reused_pixels=static.get("reused_pixels"),
+        timings=(metadata or {}).get("timings"),
+        **_trace_camera((metadata or {}).get("camera")),
+    )
 
 
 class ChartSettings:
@@ -284,6 +534,30 @@ class ChartCamera(MercatorProjection):
 
     def queue_draw(self):
         """The chart layer publishes its own image; no canvas repaint is due."""
+
+
+def _composition_factor(dpr, preview):
+    """The factor a composition is rendered at.
+
+    A settled composition is always at the display's own ratio.  A preview is
+    at the same ratio whenever the display is a high-density one; only at a
+    ratio of 1 is it halved, where halving is the whole saving.  Halving a
+    preview on a Retina display would clock it at half the display's density
+    and its one-pixel cell linework would alias out until the settle.
+    """
+    if preview and dpr < 2:
+        return 0.5 * dpr
+    return dpr
+
+
+def _device_area(viewport, factor):
+    """The device-pixel area of a whole logical viewport at *factor*."""
+    return int(round(viewport.width * viewport.height * factor * factor))
+
+
+def _device_rect_area(rect, factor):
+    """The device-pixel area of a logical surface rectangle at *factor*."""
+    return int(round((rect[2] - rect[0]) * (rect[3] - rect[1]) * factor * factor))
 
 
 def _countries():
@@ -539,11 +813,17 @@ class ViewportChartLayer:
             static_full_compositions=0,
             static_region_compositions=0,
             static_reuses=0,
+            static_fractional_rejections=0,
+            static_snapped_reuses=0,
             static_regions=0,
             static_pixels_composed=0,
             static_pixels_reused=0,
             isobar_only=0,
+            cancelled_active=0,
         )
+        # The cause each generation was requested for, so a rejection can name
+        # who asked.  Bounded so a long session cannot grow it.
+        self._request_causes = {}
         # Basemap tracking for independent usability
         self._has_gshhs = False
         self._has_fallback = False
@@ -647,15 +927,19 @@ class ViewportChartLayer:
             }
 
     # ----------------------------------------------------------- requests
-    def request(self, camera, replace=False, preview=False):
+    def request(self, camera, replace=False, preview=False, cause=None):
         """Ask for the chart layer at this camera (GUI thread).
 
         A retained composition that still covers the camera is reused: no new
         generation is created and nothing is recomposed.  Otherwise a new
         generation supersedes the previous one, which can never publish.
         Active work is allowed to finish; only the pending slot is replaced.
+        The exception is work whose pixels cannot serve the new demand at all
+        -- another zoom or the other preview mode -- which is cancelled so the
+        latest demand starts now instead of queueing behind it.
         ``replace`` asks for a new generation even when the same view is
-        already composing or already published.
+        already composing or already published.  ``cause`` names the asker for
+        the trace only.
         """
         with self._condition:
             if self._closed:
@@ -681,6 +965,7 @@ class ViewportChartLayer:
             reused = self._reuse(camera, replace, preview)
             if reused is not None:
                 return reused
+            self._cancel_unusable_active(camera, preview)
             self._generation += 1
             generation = self._generation
             if self._pending is not None:
@@ -690,6 +975,10 @@ class ViewportChartLayer:
             self._requested_at[generation] = time.perf_counter()
             while len(self._requested_at) > 64:
                 self._requested_at.pop(next(iter(self._requested_at)))
+            if cause is not None:
+                self._request_causes[generation] = cause
+            while len(self._request_causes) > 64:
+                self._request_causes.pop(next(iter(self._request_causes)))
             self._state = "loading"
             self._error = ""
             self.counters["requests"] += 1
@@ -707,6 +996,25 @@ class ViewportChartLayer:
         with self._condition:
             self._condition.notify_all()
         return generation
+
+    def _cancel_unusable_active(self, camera, preview):
+        """Cancel a running composition whose pixels cannot serve the demand.
+
+        A composition is superseded the moment a newer demand exists, but its
+        pixels are still useful to a *pan*: they become the retained frame the
+        next view reuses.  A composition at another zoom or in the other
+        preview mode is different: a stale-scale image is never reused, so
+        letting it run only makes the latest demand wait behind it.  It is
+        cancelled instead, and the worker starts the pending demand as soon as
+        the composer notices -- that wait is the seconds-long visible stall.
+        """
+        active = self._active
+        if active is None or active[2].is_set():
+            return
+        if active[1].zoom == camera.zoom and active[3] == preview:
+            return
+        active[2].set()
+        self.counters["cancelled_active"] += 1
 
     def _reuse(self, camera, replace, preview=False):
         """The generation that already serves this camera, if there is one.
@@ -747,12 +1055,26 @@ class ViewportChartLayer:
         if metadata["time"] != camera.stamp():
             # The isobars belong to the forecast instant.
             return False
-        expected_factor = self._dpr * 0.5 if preview else self._dpr
+        expected_factor = _composition_factor(self._dpr, preview)
         if metadata.get("factor", 1) != expected_factor:
             # The composition was made at another device pixel ratio: it is
             # not current, and it may not be resampled into this one.
             return False
-        return fits(metadata["viewport"], ChartCamera(camera, self._dpr))
+        canvas = ChartCamera(camera, self._dpr)
+        recorded_extent = metadata.get("image_extent")
+        if recorded_extent is not None:
+            width = canvas.get_allocated_width() + 2 * MARGIN
+            height = canvas.get_allocated_height() + 2 * MARGIN
+            expected_extent = (
+                max(1, int(round(width * expected_factor))),
+                max(1, int(round(height * expected_factor))),
+            )
+            if tuple(recorded_extent) != expected_extent:
+                # The retained pixels are not the extent this view needs: the
+                # composition describes another surface.  Serving it would
+                # present mismatched pixels under this demand's own metadata.
+                return False
+        return fits(metadata["viewport"], canvas)
 
     def set_device_pixel_ratio(self, dpr):
         """Adopt the GUI's device pixel ratio (GUI thread).
@@ -968,9 +1290,16 @@ class ViewportChartLayer:
                     self._spans.append((began, ended))
                     if len(self._spans) > 256:
                         del self._spans[: len(self._spans) - 256]
+                    superseded = (
+                        cancel.is_set()
+                        or generation != self._generation
+                        or self._outcome == "stale"
+                        or self._closed
+                    )
                     if (
                         self._outcome == "yielded"
                         and not cancel.is_set()
+                        and not superseded
                         and (generation == self._generation)
                     ):
                         # The weather pipeline claimed the worker: the chart
@@ -978,16 +1307,20 @@ class ViewportChartLayer:
                         # pipeline is idle.
                         self._state = "idle"
                         notify_state = "idle"
-                    elif (
-                        cancel.is_set()
-                        or generation != self._generation
-                        or self._outcome == "stale"
-                        or self._closed
-                    ):
+                    elif superseded:
                         # Superseded: this generation may never publish.
                         self.counters["superseded_rejected"] += 1
                         self._rejected_generations.add(generation)
                         self._outcomes[generation] = "superseded"
+                        _trace_rejection(
+                            generation,
+                            self._request_causes.get(generation),
+                            camera,
+                            cancel.is_set(),
+                            self._closed,
+                            self._outcome,
+                            image is not None,
+                        )
                     elif image is not None:
                         self.counters["compositions"] += 1
                         self.counters["publications"] += 1
@@ -998,6 +1331,11 @@ class ViewportChartLayer:
                         publish = self._published
                         self._payload_bytes = _image_bytes(image)
                         self._adopt_enc_metadata(metadata)
+                        _trace_composition(
+                            generation,
+                            self._request_causes.get(generation),
+                            metadata,
+                        )
                     else:
                         self.counters["failures"] += 1
                         self._state = "unavailable"
@@ -1113,7 +1451,7 @@ class ViewportChartLayer:
 
         import cairo
 
-        factor = self._dpr * 0.5 if preview else self._dpr
+        factor = _composition_factor(self._dpr, preview)
         canvas = ChartCamera(camera, factor)
         viewport = MapViewport(canvas, MARGIN, lambda: None)
         viewport.render_cancelled = cancel.is_set
@@ -1172,6 +1510,20 @@ class ViewportChartLayer:
             return None, None
         image = _surface_image(surface, factor)
         reuse["isobar_only"] = isobar_only
+        requested_extent = (int(viewport.width), int(viewport.height))
+        canvas_extent = (int(image.width()), int(image.height()))
+        required_extent = (
+            int(round(viewport.width * self._dpr)),
+            int(round(viewport.height * self._dpr)),
+        )
+        # A canvas smaller than the display's own extent leaves pixels the
+        # display has no data for.  The shortfall is device pixels on the
+        # worse axis, so it can never be hidden by a logical/device mix-up.
+        shortfall_device_pixels = max(
+            0,
+            required_extent[0] - canvas_extent[0],
+            required_extent[1] - canvas_extent[1],
+        )
         timings = {
             "static_ms": round(static_ms, 3),
             "columns_ms": round(columns_ms, 3),
@@ -1185,6 +1537,19 @@ class ViewportChartLayer:
             "time": camera.stamp(),
             "factor": factor,
             "preview": preview,
+            # The published image's own device-pixel extent.  It is read from
+            # the image, not from the requested viewport, so a surface that
+            # does not match this demand can never be re-served under
+            # metadata that claims it does.
+            "image_extent": (int(image.width()), int(image.height())),
+            # The extents this composition was asked for, composed, and
+            # required to cover.  ``requested_extent`` is the camera's logical
+            # canvas, ``canvas_extent`` the backing store in device pixels and
+            # ``required_extent`` the camera at the display's ratio.
+            "requested_extent": requested_extent,
+            "canvas_extent": canvas_extent,
+            "required_extent": required_extent,
+            "shortfall_device_pixels": shortfall_device_pixels,
             # The background identity these pixels were painted for.  The
             # viewport presents a deferred switch only on a composition that
             # matches it.
@@ -1209,28 +1574,99 @@ class ViewportChartLayer:
 
         report = {
             "mode": "full",
+            "reason": "none",
+            "shift": None,
+            "snapped_px": 0.0,
+            "delta_px": None,
+            "factor": factor,
             "regions": 0,
-            "composed_pixels": int(viewport.width) * int(viewport.height),
+            "region_rects": [],
+            # Areas are reported in device pixels: the pixels the backing
+            # store actually holds.  A logical area would under-report a
+            # high-density composition by ``factor ** 2``.
+            "composed_pixels": _device_area(viewport, factor),
             "reused_pixels": 0,
+            # The retained frame this composition reused, and where its
+            # pixels landed in the destination surface.
+            "reuse_serial": None,
+            "reuse_rect": None,
             "retained_bytes": 0,
         }
-        frame, overlap = self._best_static_frame(key, viewport)
+        frame, overlap, shift = self._best_static_frame(key, viewport)
         if frame is not None and overlap is not None:
+            # A frame at a fractional device offset is translated to the
+            # nearest whole device pixel rather than rejected: a mouse pan
+            # produces exactly those offsets, and rounding is a translation of
+            # retained pixels, never a resample.  The bound is reported, and
+            # the residual it leaves is carried on the retained frame so it is
+            # cancelled by the next pan instead of accumulating.
+            report["shift"] = shift
+            left, top, _right, _bottom = _viewport_bounds(viewport)
+            f_left, f_top, _f_right, _f_bottom = _viewport_bounds(frame.viewport)
+            report["delta_px"] = (
+                round((f_left - left) * factor, 4),
+                round((f_top - top) * factor, 4),
+            )
+            snapped = _static_shift_error(frame, viewport, factor)
+            report["snapped_px"] = round(snapped, 4)
+            if snapped > 1e-6:
+                with self._condition:
+                    self.counters["static_snapped_reuses"] += 1
+        if frame is not None and overlap is not None:
+            report["reuse_serial"] = frame.serial
+            report["reuse_rect"] = (
+                int(overlap[0]),
+                int(overlap[1]),
+                int(overlap[2]),
+                int(overlap[3]),
+            )
             if overlap == (0, 0, int(viewport.width), int(viewport.height)):
-                # Every pixel was already composed for this view.
+                # Every pixel is covered by the retained frame, but its
+                # surface may be sized and anchored for another view.  It is
+                # handed back only when its geometry is this view's; otherwise
+                # the covered pixels are re-anchored into a surface of the
+                # requested extent, and that corrected frame is retained.  The
+                # caller's metadata must describe the pixels it actually got:
+                # a mismatched extent would place other pixels' content under
+                # this view's camera and show only an overlapping corner.
                 report["mode"] = "reused"
+                report["reason"] = "covered"
                 report["composed_pixels"] = 0
-                report["reused_pixels"] = int(viewport.width) * int(viewport.height)
+                report["reused_pixels"] = _device_area(viewport, factor)
+                if (
+                    _same_static_geometry(frame.viewport, viewport)
+                    and shift == (0, 0)
+                    and frame.snap == (0.0, 0.0)
+                ):
+                    self._count_static(report)
+                    self._touch_static(frame)
+                    report["retained_bytes"] = self._retained_static_bytes()
+                    return frame.surface, frame.enc_metadata, report
+                surface = _empty_surface(viewport, factor)
+                _paint_static(surface, frame, viewport, factor)
+                enc_metadata = self._enc_report(job, self._enc_composer())
+                if enc_metadata is None:
+                    return None
+                self._retain_static(
+                    key,
+                    surface,
+                    viewport,
+                    factor,
+                    enc_metadata,
+                    _static_residual(frame, shift, viewport, factor),
+                )
                 self._count_static(report)
-                self._touch_static(frame)
                 report["retained_bytes"] = self._retained_static_bytes()
-                return frame.surface, frame.enc_metadata, report
+                return surface, enc_metadata, report
             surface = _empty_surface(viewport, factor)
             _paint_static(surface, frame, viewport, factor)
             regions = _exposed_regions(
                 int(viewport.width), int(viewport.height), overlap
             )
             report["composed_pixels"] = 0
+            report["region_rects"] = [
+                (int(r[0]), int(r[1]), int(r[2]), int(r[3])) for r in regions
+            ]
             enc = self._enc_composer()
             for rect in regions:
                 if cancel.is_set():
@@ -1243,15 +1679,21 @@ class ViewportChartLayer:
                 cr.set_source_surface(region_surface, x, y)
                 cr.paint()
                 report["regions"] += 1
-                report["composed_pixels"] += (rect[2] - rect[0]) * (rect[3] - rect[1])
-            report["reused_pixels"] = (overlap[2] - overlap[0]) * (
-                overlap[3] - overlap[1]
-            )
+                report["composed_pixels"] += _device_rect_area(rect, factor)
+            report["reused_pixels"] = _device_rect_area(overlap, factor)
             enc_metadata = self._enc_report(job, enc)
             if enc_metadata is None:
                 return None
             report["mode"] = "regions"
-            self._retain_static(key, surface, viewport, factor, enc_metadata)
+            report["reason"] = "exposed"
+            self._retain_static(
+                key,
+                surface,
+                viewport,
+                factor,
+                enc_metadata,
+                _static_residual(frame, shift, viewport, factor),
+            )
             self._count_static(report)
             report["retained_bytes"] = self._retained_static_bytes()
             return surface, enc_metadata, report
@@ -1260,6 +1702,8 @@ class ViewportChartLayer:
             return None
         if enc_metadata is None:
             enc_metadata = disabled_enc_metadata()
+        if report["reason"] == "none":
+            report["reason"] = "full"
         self._retain_static(key, surface, viewport, factor, enc_metadata)
         self._count_static(report)
         report["retained_bytes"] = self._retained_static_bytes()
@@ -1271,23 +1715,28 @@ class ViewportChartLayer:
         A short history is kept so a warm reversal finds the frame it came
         from.  The frame that covers the target is preferred; otherwise the
         frame with the largest overlap is used and only the rest is composed.
+        The returned overlap is measured against the frame's *snapped* device
+        offset (see :func:`_static_shift`), so it describes the pixels the blit
+        actually lands.
         """
         full = (0, 0, int(viewport.width), int(viewport.height))
-        best = (None, None)
+        factor = key[1]
+        best = (None, None, None)
         best_area = 0
         for frame in self._static_frames.values():
-            if (frame.palette, frame.factor, frame.sources) != key:
+            if not _static_frame_serves(frame, key, viewport):
                 continue
-            if frame.viewport._zoom != viewport._zoom:
+            shift = _static_shift(frame, viewport, factor)
+            if shift is None:  # pragma: no cover - unreachable within the bound
                 continue
-            overlap = _intersection_rect(viewport, frame.viewport)
+            overlap = _intersection_rect(viewport, frame.viewport, shift, factor)
             if overlap is None:
                 continue
             if overlap == full:
-                return frame, overlap
+                return frame, overlap, shift
             area = (overlap[2] - overlap[0]) * (overlap[3] - overlap[1])
             if area > best_area:
-                best = (frame, overlap)
+                best = (frame, overlap, shift)
                 best_area = area
         return best
 
@@ -1366,9 +1815,17 @@ class ViewportChartLayer:
         with self._condition:
             return self._static_bytes
 
-    def _retain_static(self, key, surface, viewport, factor, enc_metadata):
-        """Keep the isobar-free surface, bounded by count and by quality."""
+    def _retain_static(
+        self, key, surface, viewport, factor, enc_metadata, snap=(0.0, 0.0)
+    ):
+        """Keep the isobar-free surface, bounded by count and by quality.
+
+        ``snap`` is the residual device offset the pixels carry after the blit
+        that produced them; it is stored so the next reuse cancels it.
+        """
         surface.flush()
+        self._static_serial += 1
+        serial = self._static_serial
         frame = _StaticFrame(
             surface=surface,
             viewport=viewport,
@@ -1377,16 +1834,42 @@ class ViewportChartLayer:
             sources=self._base_sources(),
             enc_metadata=enc_metadata,
             bytes=_surface_bytes(surface),
+            serial=serial,
+            snap=snap,
         )
-        self._static_serial += 1
-        self._static_frames[(key, self._static_serial)] = frame
+        self._static_frames[(key, serial)] = frame
         while len(self._static_frames) > STATIC_FRAME_LIMIT:
-            self._static_frames.popitem(last=False)
+            self._evict_static()
         with self._condition:
             self._static_bytes = sum(
                 frame.bytes for frame in self._static_frames.values()
             )
             self._static_count = len(self._static_frames)
+
+    def _evict_static(self):
+        """Drop one retained frame, a reduced-resolution preview first.
+
+        A preview frame at a ratio below the display's is every settled
+        composition's inferior, while the full-quality frame it shares the
+        pool with is what the next pan reuses.  Evicting by age alone lets two
+        or three previews each pan push out the frame that would have served
+        the next settle, so every pan composes the whole chart again.  A
+        reduced preview is dropped first; only when every slot holds a
+        display-density frame is the oldest of them dropped.  At a
+        high-density display a preview is already display-density, so it is
+        not a lesser frame and is not singled out.
+        """
+        preview = next(
+            (
+                key
+                for key, frame in self._static_frames.items()
+                if frame.factor < self._dpr
+            ),
+            None,
+        )
+        if preview is None:
+            preview = next(iter(self._static_frames))
+        del self._static_frames[preview]
 
     def _count_static(self, report):
         with self._condition:

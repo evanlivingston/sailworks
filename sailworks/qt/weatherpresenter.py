@@ -5,7 +5,7 @@ from dataclasses import replace
 
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, QTimer, Qt, Signal
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QApplication, QLabel, QWidget
+from PySide6.QtWidgets import QApplication, QLabel
 
 from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES, display_model_name
 
@@ -92,8 +92,7 @@ class WeatherPresenter(QObject):
         super().__init__(canvas)
         self.canvas = canvas
         self.widget = None
-        # The QWidget the map tab lays out: the viewport itself for the
-        # embedded host, or a window container for the native host.
+        # The QWidget the map tab lays out: the render host itself.
         self.host_widget = None
         self.closed = False
         self.reason = ""
@@ -238,25 +237,29 @@ class WeatherPresenter(QObject):
                 enc_visible=bool(
                     getattr(self.canvas.controller.settings, "chartENCVisible", True)
                 ),
+                # Experimental and off by default: the viewport supersedes the
+                # raster ENC source only when the user asks for the GPU scene,
+                # so the default construction is the existing raster path.
+                enc_scene_layer=bool(
+                    getattr(self.canvas.controller.settings, "chartENCScene", False)
+                ),
             )
             if self.native_fields:
                 kwargs["native_weather_fields"] = True
                 kwargs["native_weather_budget"] = (
                     self.canvas.controller.native_weather_budget
                 )
-            # A native Quick window presents at the display rate; the window
-            # container is the QWidget the map tab lays out.
-            from PySide6.QtGui import QWindow
-
+            # The render host is a QWidget: it is laid out directly, with no
+            # window container and no separate drawable.
             widget = _viewport_widget_class()(model, None, **kwargs)
             drawer_toggle = getattr(widget, "drawerToggleRequested", None)
             request_toggle = getattr(self.canvas, "_drawer_toggle_requested", None)
             if drawer_toggle is not None and request_toggle is not None:
                 drawer_toggle.connect(request_toggle)
-            if isinstance(widget, QWindow):
-                self.host_widget = QWidget.createWindowContainer(widget, self.canvas)
-            else:
-                self.host_widget = widget
+            self.host_widget = widget
+            # The window container used to parent itself on the canvas; the
+            # widget keeps that parent until the map tab lays it out.
+            widget.setParent(self.canvas)
             widget._measurement_canvas = self.canvas
             settings = self.canvas.controller.settings
             register = getattr(settings, "register_on_change", None)
@@ -342,9 +345,9 @@ class WeatherPresenter(QObject):
         )
 
     def _qml_status(self, status):
-        from PySide6.QtQuick import QQuickView
+        from PySide6.QtQuickWidgets import QQuickWidget
 
-        if status == QQuickView.Status.Error and self.widget is not None:
+        if status == QQuickWidget.Status.Error and self.widget is not None:
             self.fail("; ".join(error.toString() for error in self.widget.errors()))
 
     def _frame_rendered(self):
@@ -484,7 +487,13 @@ class WeatherPresenter(QObject):
         if self.widget is not None and (
             self.widget._chart_palette != self.canvas.controller.settings.chartPalette
         ):
-            self._drop_widget()
+            # A scene-only viewport adopts the palette in place; one with a
+            # raster chart composition binds its palette at construction, so
+            # its refusal recreates the widget as before.
+            adopt = getattr(self.widget, "set_chart_palette", None)
+            palette = self.canvas.controller.settings.chartPalette
+            if adopt is None or not adopt(palette):
+                self._drop_widget()
         if self.widget is None:
             self._create(source)
             self._source = source
@@ -596,7 +605,8 @@ class WeatherPresenter(QObject):
             widget.set_environment(cache[4], target, cache[1:4])
         if not self._rendered and not self.deadline.isActive():
             self.deadline.start()
-        # A native window cannot sit under a QWidget overlay.
+        # The map is an ordinary widget in this stack; keep it above the
+        # overlay children the canvas paints.
         if host is not None:
             host.raise_()
         timeline = getattr(self.canvas, "timeline", None)

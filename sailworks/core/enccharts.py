@@ -16,6 +16,16 @@ CATALOG_URL = "https://www.charts.noaa.gov/ENCs/ENCProdCat.xml"
 CACHE_SECONDS = 7 * 24 * 60 * 60
 
 
+def display_scale_denominator(meters_per_pixel):
+    """The nominal 1:N display scale for a view's metres per pixel.
+
+    The single conversion the ENC scale gates share: a raster or vector chart's
+    compilation scale and a feature's SCAMIN are both denominators of this
+    form, so this is the only place the 96 dpi assumption is applied.
+    """
+    return float(meters_per_pixel) * 3779.527559
+
+
 def chart_scale_rank(native_scale, meters_per_pixel):
     """Prefer compilation scales closest to the current nominal display scale.
 
@@ -24,7 +34,7 @@ def chart_scale_rank(native_scale, meters_per_pixel):
     """
     if not native_scale or meters_per_pixel <= 0:
         return (math.inf, math.inf)
-    display_scale = meters_per_pixel * 3779.527559
+    display_scale = display_scale_denominator(meters_per_pixel)
     return (abs(math.log2(native_scale / display_scale)), native_scale)
 
 
@@ -32,7 +42,7 @@ def chart_scale_visible(native_scale, meters_per_pixel):
     """Limit harbor clutter when zoomed out and overview geometry when zoomed in."""
     if not native_scale:
         return True
-    display_scale = meters_per_pixel * 3779.527559  # nominal 96 dpi
+    display_scale = display_scale_denominator(meters_per_pixel)
     if display_scale > native_scale * 16:
         return False
     return native_scale < 1000000 or native_scale <= display_scale * 8
