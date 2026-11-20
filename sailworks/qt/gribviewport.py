@@ -2877,6 +2877,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._pan_inertia_tick = QTimer(self)
             self._pan_inertia_tick.setInterval(16)
             self._pan_inertia_tick.timeout.connect(self._advance_pan_inertia)
+            # Render-request tick: while the viewport is moving, ask Qt to
+            # present a frame at vsync rate even if input events are sparse.
+            self._render_tick = QTimer(self)
+            self._render_tick.setInterval(16)
+            self._render_tick.timeout.connect(self._request_render_frame)
             self._wheel_zoom_target = None
             self._wheel_zoom_anchor = None
             self._wheel_zoom_last_tick = None
@@ -6029,6 +6034,22 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 window = window()
                 if window is not None and getattr(window, "update", None) is not None:
                     window.update()
+
+        def _request_render_frame(self):
+            """Render-tick handler: request a frame while the viewport moves.
+
+            Fires at 16ms while any drag, inertia, wheel zoom or gesture is
+            active, so Qt presents at vsync rate even when input events are
+            sparse.  A no-op while not moving, so the timer can be left
+            running during a gesture without spurious renders at rest.
+            Guarded so test doubles without ``update()`` are not broken.
+            """
+            if not self.is_moving():
+                render_tick = getattr(self, "_render_tick", None)
+                if render_tick is not None:
+                    render_tick.stop()
+                return
+            self._request_frame()
 
         def _rebase_retained_imagery(self, dx, dy):
             """Preserve the on-screen anchors when the bounded parent resets."""
@@ -10474,6 +10495,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._wheel_trackpad_panning = False
             self._native_gesture_active = False
             self._drag = None
+            render_tick = getattr(self, "_render_tick", None)
+            if render_tick is not None:
+                render_tick.stop()
             self._pan_inertia_tick.stop()
             self._pan_inertia = None
             self._pan_inertia_last_tick = None
@@ -10796,6 +10820,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self._drag_velocity.add(
                     time.monotonic(), self._drag.x(), self._drag.y()
                 )
+                # Request frames at vsync rate while dragging, so Qt
+                # re-renders even if mouse move events are sparse.
+                render_tick = getattr(self, "_render_tick", None)
+                if render_tick is not None:
+                    render_tick.start()
                 event.accept()
             else:
                 super().mousePressEvent(event)
@@ -10891,6 +10920,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 return
             position = event.position()
             self._drag = None
+            render_tick = getattr(self, "_render_tick", None)
+            if render_tick is not None:
+                render_tick.stop()
             if self._pan_inertia_enabled:
                 vx, vy = self._drag_velocity.release(
                     time.monotonic(), position.x(), position.y()
