@@ -107,6 +107,120 @@ def _trace_placement_skip(kind, reason, cause, camera):
     )
 
 
+def _item_offset(item, first, second):
+    """An item's current placement offset, or ``None`` when it cannot read.
+
+    The offset is ``imageX``/``imageY`` for the retained chart and ``x``/``y``
+    for the ENC scene item: both are ``mapContent``-local positions, so the
+    screen position the user sees is the offset plus the container's own
+    translation.
+    """
+    getter = getattr(item, "property", None)
+    if getter is None:
+        return None
+    try:
+        return (float(getter(first) or 0.0), float(getter(second) or 0.0))
+    except (TypeError, ValueError):
+        return None
+
+
+def _shift_item_offset(item, first, second, dx, dy):
+    """Shift an item's container-local offset by a rebased translation.
+
+    The offset is a position inside ``mapContent``, so when the bounded parent
+    resets its own translation the item must absorb the withdrawn translation
+    or it lands a pan away from the ground it covers.  Returns the written
+    ``(first, second)`` offset, or ``None`` when the item cannot be read.
+    """
+    offset = _item_offset(item, first, second)
+    if offset is None:
+        return None
+    placed = (offset[0] + dx, offset[1] + dy)
+    writer = getattr(item, "setProperty", None)
+    try:
+        if writer is not None:
+            writer(first, placed[0])
+            writer(second, placed[1])
+        else:
+            setattr(item, first, placed[0])
+            setattr(item, second, placed[1])
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return placed
+
+
+def _container_pan(reference, camera, dpr=None):
+    """The translation ``mapContent`` carries for ``camera``."""
+    if reference is None or camera is None:
+        return (0.0, 0.0)
+    try:
+        return reference.translation_to(camera, dpr)
+    except ValueError:
+        return (0.0, 0.0)
+
+
+def _trace_publication_anchor(layer, cause, camera, previous, current, container):
+    """Record a publication's screen position before and after it settles.
+
+    ``previous`` is the item's offset immediately before the publication wrote
+    its placement, ``current`` the offset it wrote, and ``container`` the
+    ``mapContent`` translation both are drawn under.  A publication that keeps
+    the content still reports zero ``deltaX``/``deltaY``; any other value is
+    the jump a user would see as the map snapping to another place.
+    """
+    if not enc_trace.enabled() or previous is None or current is None:
+        return None
+    container_x, container_y = container
+    screen_x = current[0] + container_x
+    screen_y = current[1] + container_y
+    previous_x = previous[0] + container_x
+    previous_y = previous[1] + container_y
+    return enc_trace.event(
+        "chart_publish_anchor",
+        layer=layer,
+        cause=cause,
+        imageX=current[0],
+        imageY=current[1],
+        containerX=container_x,
+        containerY=container_y,
+        screenX=screen_x,
+        screenY=screen_y,
+        previousScreenX=previous_x,
+        previousScreenY=previous_y,
+        deltaX=screen_x - previous_x,
+        deltaY=screen_y - previous_y,
+        **enc_trace.camera_fields(camera),
+    )
+
+
+def _trace_rebase(dx, dy, chart_before, chart_after, enc_before, enc_after, camera):
+    """Record one container rebase and the screen delta it left behind.
+
+    The withdrawn translation ``(dx, dy)`` is exactly what the old
+    ``mapContent`` added, so an offset's screen position before the reset is
+    ``offset + (dx, dy)`` while after it the parent is at zero and the screen
+    position is the offset itself.  A clean rebase reports zero deltas; any
+    other value is the geographic jump a user would see as a snap.
+    """
+    if not enc_trace.enabled():
+        return None
+    fields = {"dx": dx, "dy": dy}
+    for layer, before, after in (
+        ("chart", chart_before, chart_after),
+        ("enc", enc_before, enc_after),
+    ):
+        if before is None or after is None:
+            continue
+        previous = (before[0] + dx, before[1] + dy)
+        fields[f"{layer}PreviousScreenX"] = previous[0]
+        fields[f"{layer}PreviousScreenY"] = previous[1]
+        fields[f"{layer}ScreenX"] = after[0]
+        fields[f"{layer}ScreenY"] = after[1]
+        fields[f"{layer}DeltaX"] = after[0] - previous[0]
+        fields[f"{layer}DeltaY"] = after[1] - previous[1]
+    return enc_trace.event("chart_rebase", **fields, **enc_trace.camera_fields(camera))
+
+
 def place_retained_chart(
     item,
     x,
@@ -125,8 +239,10 @@ def place_retained_chart(
     applies it, so writing ``imageX``/``imageY`` would add the pan a second
     time.  The size is still written, and a size change (a zoom or a new
     composition) is expressed by the container in no way at all, so it is
-    placed in full.  A publication is placed in full so the new frame anchors
-    itself.  Returns the trace reason when the offset was left to the
+    placed in full.  A publication is placed in full too, but in the
+    container's own reference frame: the caller must hand over the placement
+    for the anchor camera, never one shifted by the pan the container already
+    carries.  Returns the trace reason when the offset was left to the
     container, otherwise ``None``.
     """
     if carries is None:
@@ -4892,27 +5008,19 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 getattr(self, "_map_content", None) is not None
                 and self._map_pan_reference is not None
             ):
-                anchor = self._map_pan_reference
                 anchor_camera = self._map_anchor_camera or self._camera
-                if (
-                    reference is None
-                    or PanReference.from_camera(
-                        reference, self._chart_composition_dpr or dpr
-                    ).classify(anchor, anchor.dpr)
-                    != CameraChange.PAN
-                ):
-                    x, y, width, height = chart_placement(
-                        self._chart_viewport, anchor_camera
-                    )
-                else:
-                    x, y, width, height = chart_placement(
-                        self._chart_viewport, reference
-                    )
-                    dx, dy = PanReference.from_camera(
-                        reference, self._chart_composition_dpr or dpr
-                    ).translation_to(anchor, anchor.dpr)
-                    x += dx
-                    y += dy
+                # The placement is expressed in the anchor camera's screen
+                # frame: ``mapContent`` adds ``anchor.translation_to(camera)``
+                # on top of it.  ``chart_placement`` for a composition camera
+                # *and* the chart-composition-to-anchor translation would add
+                # that same pan a second time, so a publication landing
+                # during a pan would move the chart by it instead of leaving
+                # the chart where the container already carries it.  A zoom
+                # (a size change) cannot be carried by the container at all,
+                # so it is placed in full by ``place_retained_chart``.
+                x, y, width, height = chart_placement(
+                    self._chart_viewport, anchor_camera
+                )
             elif reference is None:
                 x, y, width, height = chart_placement(
                     self._chart_viewport, self._camera
@@ -4934,6 +5042,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     x, y, width, height = chart_placement(
                         self._chart_viewport, self._camera
                     )
+            previous = (
+                _item_offset(self._chart, "imageX", "imageY")
+                if cause == "publication"
+                else None
+            )
             place_retained_chart(
                 self._chart,
                 x,
@@ -4943,6 +5056,15 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 cause=cause,
                 camera=self._camera,
             )
+            if cause == "publication":
+                _trace_publication_anchor(
+                    "chart",
+                    cause,
+                    self._camera,
+                    previous,
+                    (x, y),
+                    _container_pan(self._map_pan_reference, self._camera, dpr),
+                )
 
         def set_base(self, image, target, source_camera=None):
             """Compose the app's basemap inside Quick, below ENC and weather.
@@ -5865,6 +5987,35 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         item.setProperty(
                             name, float(item.property(name) or 0.0) + delta
                         )
+            # The retained chart and the ENC scene are positioned in the
+            # container frame too, and neither was shifted when the bounded
+            # parent reset: ``mapContent`` carried their pan, so dropping that
+            # translation left both a pan away from the ground they cover.
+            # They absorb the withdrawn translation exactly like the retained
+            # images above.  A layer the camera pass re-places from its own
+            # camera afterwards (``_place_chart`` for ``map_anchor_changed``,
+            # ``_place_enc_scene`` at the end of ``_update_shared_map_pan``)
+            # writes an absolute offset, which supersedes this shift instead
+            # of stacking on it: nothing is ever compensated twice.
+            chart = getattr(self, "_chart", None)
+            chart_before = _item_offset(chart, "imageX", "imageY")
+            chart_after = _shift_item_offset(chart, "imageX", "imageY", dx, dy)
+            scene = getattr(self, "_enc_scene_item", None)
+            enc_before = _item_offset(scene, "x", "y")
+            enc_after = _shift_item_offset(scene, "x", "y", dx, dy)
+            # The fallback paints the scene's refused cells into the item
+            # beneath it, which shares this item's parent and translation.
+            fallback = getattr(self, "_enc_fallback", None)
+            _shift_item_offset(getattr(fallback, "item", None), "x", "y", dx, dy)
+            _trace_rebase(
+                dx,
+                dy,
+                chart_before,
+                chart_after,
+                enc_before,
+                enc_after,
+                getattr(self, "_camera", None),
+            )
 
         def _place_fill_rect(self, item, rect):
             placement = (rect.x(), rect.y(), rect.width(), rect.height())
@@ -8918,6 +9069,15 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self._enc_scene_frame_camera = camera
                 frame = camera
                 rescaled = True
+            # The offset the container convention needs is the one that leaves
+            # only ``mapContent``'s own translation to draw the pan: the item's
+            # projection is composed for ``frame``, so its own coordinates are
+            # screen coordinates *for that camera* and it must cancel exactly
+            # ``reference.translation_to(frame)`` - ``enc_scene_placement``.
+            # That is the same expression for a publication as for a camera
+            # change: with the container carrying the pan, nothing about the
+            # adopt may add the reference-to-camera translation a second time.
+            previous = _item_offset(item, "x", "y") if cause == "publication" else None
             x, y = enc_scene_placement(reference, frame, self._camera_dpr)
             place_enc_scene_item(
                 item,
@@ -8928,6 +9088,15 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 rescaled=rescaled,
                 camera=self._camera,
             )
+            if cause == "publication":
+                _trace_publication_anchor(
+                    "enc",
+                    cause,
+                    self._camera,
+                    previous,
+                    (x, y),
+                    _container_pan(reference, camera, self._camera_dpr),
+                )
             if camera is None or frame is None:
                 return
             if rescaled:
