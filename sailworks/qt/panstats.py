@@ -27,13 +27,36 @@ and each hitch record carries the handler time inside its gap.
 
 from __future__ import annotations
 
+import faulthandler
 import json
 import math
 import os
+import shutil
+import subprocess
+import sys
+import threading
 import time
 
 #: Set this to enable the collector.  Unset (or empty) is off.
 ENV_VAR = "SAILWORKS_PAN_STATS"
+
+#: No frame for longer than this, with the camera still warm, is a stall.
+PAN_STATS_STALL_S = 0.5
+
+#: A camera change inside this window means a drag is (or was) in flight.
+PAN_STATS_STALL_CAMERA_S = 0.25
+
+#: How often the watchdog thread samples the frame and camera timestamps.
+PAN_STATS_STALL_TICK_S = 0.1
+
+#: How often the GUI thread refreshes the heartbeat.
+HEARTBEAT_MS = 100
+
+#: How many stall captures a session may write before the watchdog gives up.
+PAN_STATS_STALL_DUMPS = 5
+
+#: The macOS sampler; missing on other platforms, where capture is skipped.
+SAMPLE_BIN = "/usr/bin/sample"
 
 #: A frame is moving when the camera changed inside this window.
 MOVING_WINDOW_MS = 100.0
@@ -76,6 +99,13 @@ _quit_hooked = False
 _camera_ms = []
 _camera_ms_pending = 0.0
 _camera_ms_moving = 0.0
+_heartbeat_at = None
+_stall_dumped = False
+_stall_dumps = 0
+_watchdog = None
+_watchdog_stop = None
+_heartbeat_timer = None
+_sampler = None
 
 
 def reset():
@@ -86,6 +116,13 @@ def reset():
     global _holds, _resumes, _marker_ring, _hitch_count, _hitch_max_ms
     global _hitch_kind_counts, _hitch_records
     global _camera_ms, _camera_ms_pending, _camera_ms_moving
+    global _heartbeat_at, _stall_dumped, _stall_dumps
+    _stop_heartbeat_timer()
+    _stop_watchdog()
+    _stop_sampler()
+    _heartbeat_at = None
+    _stall_dumped = False
+    _stall_dumps = 0
     _started = None
     _last_event_at = None
     _last_camera_at = None
@@ -169,11 +206,13 @@ def frame_presented(render_ms=None):
     summary rates are built from presentation intervals, not from it.
     """
     global _last_frame_at, _moving_seconds, _idle_seconds
-    global _camera_ms_pending, _camera_ms_moving
+    global _camera_ms_pending, _camera_ms_moving, _stall_dumped
     if not enabled():
         return
     now = time.perf_counter()
     _stamp(now)
+    # A presented frame ends any stall episode, so the next drag may capture.
+    _stall_dumped = False
     previous = _last_frame_at
     _last_frame_at = now
     if previous is None:
@@ -384,6 +423,233 @@ def _default_frame_slot():
     frame_presented()
 
 
+def heartbeat():
+    """Mark the GUI thread alive so a recovered stall may capture again.
+
+    Written from a coalesced ``QTimer`` on the GUI thread.  It is not the
+    stall signal itself (frame and camera ages are), but it clears the latch
+    as soon as the event loop runs again.
+    """
+    global _heartbeat_at, _stall_dumped
+    if not enabled():
+        return
+    _heartbeat_at = time.perf_counter()
+    # A beat proves the GUI thread recovered: the next stall may dump again.
+    _stall_dumped = False
+
+
+def _stall_path():
+    """The dump destination: beside the stats file, or ``None`` for stderr."""
+    path = _path()
+    return None if path is None else path + ".stall"
+
+
+def stall_header(age, camera_age, record=None, sample="ok"):
+    """The one line that precedes a stall capture: ages plus summary fields."""
+    record = summary() if record is None else record
+    return (
+        "panstats-stall: age_ms={age_ms:.1f} camera_ms={camera_ms:.1f} "
+        "dump={dump:d}/{cap:d} sample={sample} {line}"
+    ).format(
+        age_ms=max(0.0, age) * 1000.0,
+        camera_ms=max(0.0, camera_age) * 1000.0,
+        dump=_stall_dumps,
+        cap=PAN_STATS_STALL_DUMPS,
+        sample=sample,
+        line=summary_line(record),
+    )
+
+
+def _dump_to_stderr(header):
+    """Write the header and every thread's stack to stderr, best effort."""
+    try:
+        sys.stderr.write(header + "\n")
+        sys.stderr.flush()
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+    except (AttributeError, OSError, ValueError):
+        # A captured stream has no descriptor; the header still went out.
+        pass
+
+
+def _spawn_sampler(native_path):
+    """Start the native sampler beside the stacks; never waits, never raises."""
+    global _sampler
+    _stop_sampler()
+    try:
+        _sampler = subprocess.Popen(
+            [SAMPLE_BIN, str(os.getpid()), "1", "1", "-file", native_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        _sampler = None
+        return False
+    return True
+
+
+def _stop_sampler():
+    """Terminate the child sampler if it is still running; idempotent."""
+    global _sampler
+    process, _sampler = _sampler, None
+    if process is None:
+        return False
+    try:
+        if process.poll() is None:
+            process.terminate()
+    except OSError:
+        pass
+    return True
+
+
+def _capture_stall(age, camera_age):
+    """Write one header plus all-thread stacks, then sample the natives.
+
+    The Python stacks are written first so a native grab cannot delay them;
+    the sampler runs beside the sidecar as ``<stats>.stall.native``.
+    """
+    global _stall_dumps
+    _stall_dumps += 1
+    path = _stall_path()
+    sample = "unavailable" if path is None else "ok"
+    if path is not None and shutil.which(SAMPLE_BIN) is None:
+        sample = "missing"
+    header = stall_header(age, camera_age, sample=sample)
+    if path is None:
+        _dump_to_stderr(header)
+        return "stderr"
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(header + "\n")
+            handle.flush()
+            faulthandler.dump_traceback(file=handle, all_threads=True)
+    except OSError:
+        return None
+    if sample == "ok":
+        _spawn_sampler(path + ".native")
+    return path
+
+
+def check_stall(now=None):
+    """Capture the stacks when a drag has stopped presenting frames.
+
+    Stalled means both: no frame for more than ``PAN_STATS_STALL_S`` and a
+    camera change inside ``PAN_STATS_STALL_CAMERA_S``.  The first separates a
+    hang from an idle window; the second separates a drag from a freeze that
+    began before it.  One capture per episode, capped per session.  Returns
+    the capture destination, or ``None``.
+    """
+    global _stall_dumped
+    if not enabled():
+        return None
+    if now is None:
+        now = time.perf_counter()
+    frame_at = _last_frame_at
+    camera_at = _last_camera_at
+    if frame_at is None or camera_at is None:
+        return None
+    age = now - frame_at
+    camera_age = now - camera_at
+    if age <= PAN_STATS_STALL_S:
+        _stall_dumped = False
+        return None
+    if camera_age > PAN_STATS_STALL_CAMERA_S:
+        # The drag ended, so the episode is over: a later drag may capture.
+        _stall_dumped = False
+        return None
+    if _stall_dumps >= PAN_STATS_STALL_DUMPS:
+        _stop_watchdog()
+        return None
+    if _stall_dumped:
+        return None
+    _stall_dumped = True
+    return _capture_stall(age, camera_age)
+
+
+def _watchdog_loop(stop):
+    """Sample the heartbeat until ``stop`` is set or the dump cap is hit."""
+    while not stop.wait(PAN_STATS_STALL_TICK_S):
+        try:
+            check_stall()
+        except (OSError, RuntimeError, ValueError):
+            _stop_watchdog()
+            return
+
+
+def _start_watchdog():
+    """Start the daemon watchdog once; a no-op while disabled."""
+    global _watchdog, _watchdog_stop, _heartbeat_at, _stall_dumped, _stall_dumps
+    if not enabled():
+        return None
+    thread = _watchdog
+    if thread is not None and thread.is_alive():
+        return thread
+    _heartbeat_at = time.perf_counter()
+    _stall_dumped = False
+    _stall_dumps = 0
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=_watchdog_loop, args=(stop,), name="panstats-stall", daemon=True
+    )
+    _watchdog_stop = stop
+    _watchdog = thread
+    thread.start()
+    return thread
+
+
+def _stop_watchdog():
+    """Ask the watchdog to finish; safe from the watchdog itself, twice."""
+    global _watchdog, _watchdog_stop
+    stop, _watchdog_stop = _watchdog_stop, None
+    _watchdog = None
+    if stop is not None:
+        stop.set()
+    return stop is not None
+
+
+def _start_heartbeat_timer():
+    """Start the coalesced GUI heartbeat timer, or a no-op without Qt."""
+    global _heartbeat_timer
+    if not enabled() or _heartbeat_timer is not None:
+        return _heartbeat_timer
+    try:
+        from PySide6.QtCore import QCoreApplication, Qt, QTimer
+    except ImportError:
+        return None
+    if QCoreApplication.instance() is None:
+        return None
+    timer = QTimer()
+    try:
+        timer.setTimerType(Qt.TimerType.CoarseTimer)
+        timer.setInterval(HEARTBEAT_MS)
+        timer.timeout.connect(heartbeat)
+        timer.start()
+    except (RuntimeError, TypeError):
+        return None
+    _heartbeat_timer = timer
+    _start_watchdog()
+    return timer
+
+
+def _stop_heartbeat_timer():
+    """Stop and drop the heartbeat timer; safe to call twice."""
+    global _heartbeat_timer
+    timer, _heartbeat_timer = _heartbeat_timer, None
+    if timer is None:
+        return False
+    try:
+        timer.stop()
+    except RuntimeError:
+        pass
+    return True
+
+
+def shutdown():
+    """Stop the sampler, the watchdog and the heartbeat timer; idempotent."""
+    _stop_sampler()
+    _stop_heartbeat_timer()
+    _stop_watchdog()
+
+
 def _direct_connection():
     try:
         from PySide6.QtCore import Qt
@@ -428,6 +694,7 @@ def _hook_quit():
 
 def _on_quit():
     flush()
+    shutdown()
 
 
 def connect_window(window, on_frame=None):
@@ -439,6 +706,9 @@ def connect_window(window, on_frame=None):
     """
     if not enabled() or window is None:
         return None
+    # The heartbeat and its watchdog ride the same wiring: the timer fires on
+    # the GUI thread, so a blocked event loop stops refreshing the heartbeat.
+    _start_heartbeat_timer()
     key = id(window)
     if key in _connections:
         return None
@@ -496,4 +766,6 @@ def disconnect_window(window):
         source.disconnect(slot)
     except (RuntimeError, TypeError):
         pass
+    if not _connections:
+        shutdown()
     return True

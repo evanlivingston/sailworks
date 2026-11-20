@@ -8391,6 +8391,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self._panstats_render_basis = None
                 render_ms = (now - basis) * 1000.0
             panstats.frame_presented(render_ms)
+            # A presented frame also proves the GUI thread is alive, so the
+            # stall watchdog sees the freshest signal; off unless enabled.
+            panstats.heartbeat()
 
         # -- optional diagnostic trace (SAILWORKS_ENC_TRACE) ---------------
         def _enc_trace_begin_demand(self, camera):

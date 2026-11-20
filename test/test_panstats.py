@@ -1,6 +1,8 @@
 """Tests for the opt-in pan metrics collector."""
 
 import json
+import os
+import subprocess
 import time
 
 import pytest
@@ -68,6 +70,38 @@ class FakeWindow:
 
 def boom(*_args, **_kwargs):
     raise AssertionError("clock read while disabled")
+
+
+class Sampler:
+    """Stand-in for a launched ``sample`` child process."""
+
+    def __init__(self, argv, alive=False):
+        self.argv = argv
+        self.alive = alive
+        self.terminated = False
+
+    def poll(self):
+        return None if self.alive and not self.terminated else 0
+
+    def terminate(self):
+        self.terminated = True
+
+
+@pytest.fixture(autouse=True)
+def sampler(monkeypatch):
+    """Record sampler spawns so no real ``sample`` process ever starts."""
+    spawned = []
+
+    def fake_popen(argv, **kwargs):
+        assert kwargs["stdout"] is subprocess.DEVNULL
+        assert kwargs["stderr"] is subprocess.DEVNULL
+        process = Sampler(argv)
+        spawned.append(process)
+        return process
+
+    monkeypatch.setattr(panstats.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(panstats.shutil, "which", lambda _name: panstats.SAMPLE_BIN)
+    return spawned
 
 
 def test_disabled_reads_no_clock(monkeypatch):
@@ -404,3 +438,164 @@ def test_hitch_carries_camera_handler_time(monkeypatch, tmp_path):
     hitch = written["hitch_records"][0]
     assert hitch["gap_ms"] == 290.0
     assert hitch["camera_ms"] == 20.0
+
+
+def test_stall_during_motion_captures_once(monkeypatch, tmp_path, sampler):
+    path = tmp_path / "pan.jsonl"
+    monkeypatch.setenv(panstats.ENV_VAR, str(path))
+    clock = Clock(10.0)
+    monkeypatch.setattr(time, "perf_counter", clock)
+    panstats.frame_presented()
+    clock.now = 10.4
+    panstats.camera_changed()
+    clock.now = 10.6
+    dump = tmp_path / "pan.jsonl.stall"
+
+    assert panstats.check_stall(clock.now) == str(dump)
+    assert len(sampler) == 1
+    assert sampler[0].argv[:2] == ["/usr/bin/sample", str(os.getpid())]
+    assert sampler[0].argv[2:] == ["1", "1", "-file", str(dump) + ".native"]
+
+    text = dump.read_text(encoding="utf-8")
+    assert text.count("panstats-stall:") == 1
+    header = text.splitlines()[0]
+    assert "age_ms=600.0" in header
+    assert "camera_ms=200.0" in header
+    assert "dump=1/5" in header
+    assert "sample=ok" in header
+    assert "panstats: camera_hz=" in header
+    assert "(most recent call first)" in text
+
+    # The same stall episode captures only once.
+    clock.now = 10.7
+    assert panstats.check_stall(clock.now) is None
+    assert len(sampler) == 1
+    assert dump.read_text(encoding="utf-8") == text
+
+
+def test_idle_camera_does_not_capture(monkeypatch, tmp_path, sampler):
+    path = tmp_path / "pan.jsonl"
+    monkeypatch.setenv(panstats.ENV_VAR, str(path))
+    clock = Clock(5.0)
+    monkeypatch.setattr(time, "perf_counter", clock)
+    panstats.camera_changed()
+    clock.now = 10.0
+    panstats.frame_presented()
+    clock.now = 10.6
+
+    assert panstats.check_stall(clock.now) is None
+    assert sampler == []
+    assert not (tmp_path / "pan.jsonl.stall").exists()
+
+
+def test_second_episode_captures_again_then_caps(monkeypatch, tmp_path, sampler):
+    path = tmp_path / "pan.jsonl"
+    monkeypatch.setenv(panstats.ENV_VAR, str(path))
+    clock = Clock(100.0)
+    monkeypatch.setattr(time, "perf_counter", clock)
+
+    def episode():
+        clock.now += 1.0
+        panstats.camera_changed()
+        clock.now += 1.0
+        panstats.frame_presented()
+        clock.now += 0.6
+        return panstats.check_stall(clock.now)
+
+    dump = tmp_path / "pan.jsonl.stall"
+    assert episode() == str(dump)
+    assert episode() == str(dump)
+    assert dump.read_text(encoding="utf-8").count("panstats-stall:") == 2
+    assert "dump=2/5" in dump.read_text(encoding="utf-8")
+
+    for _ in range(panstats.PAN_STATS_STALL_DUMPS):
+        episode()
+
+    text = dump.read_text(encoding="utf-8")
+    assert text.count("panstats-stall:") == panstats.PAN_STATS_STALL_DUMPS
+    assert len(sampler) == panstats.PAN_STATS_STALL_DUMPS
+    assert panstats._stall_dumps == panstats.PAN_STATS_STALL_DUMPS
+    assert panstats.check_stall(clock.now + 1.0) is None
+
+
+def test_missing_sample_still_writes_header(monkeypatch, tmp_path, sampler):
+    path = tmp_path / "pan.jsonl"
+    monkeypatch.setenv(panstats.ENV_VAR, str(path))
+    monkeypatch.setattr(panstats.shutil, "which", lambda _name: None)
+    clock = Clock(0.0)
+    monkeypatch.setattr(time, "perf_counter", clock)
+    panstats.frame_presented()
+    clock.now = 0.4
+    panstats.camera_changed()
+    clock.now = 0.6
+    dump = tmp_path / "pan.jsonl.stall"
+
+    assert panstats.check_stall(clock.now) == str(dump)
+    assert sampler == []
+    header = dump.read_text(encoding="utf-8").splitlines()[0]
+    assert "sample=missing" in header
+    assert not (tmp_path / "pan.jsonl.stall.native").exists()
+
+
+def test_stall_switch_writes_to_stderr(monkeypatch, capfd):
+    monkeypatch.setenv(panstats.ENV_VAR, "1")
+    clock = Clock(5.0)
+    monkeypatch.setattr(time, "perf_counter", clock)
+    panstats.frame_presented()
+    clock.now = 5.4
+    panstats.camera_changed()
+    clock.now = 5.6
+
+    assert panstats.check_stall(clock.now) == "stderr"
+    _, err = capfd.readouterr()
+    assert "panstats-stall: age_ms=600.0 camera_ms=200.0" in err
+    assert "sample=unavailable" in err
+
+
+def test_disabled_starts_no_watchdog_timer_or_file(monkeypatch, tmp_path, sampler):
+    monkeypatch.setattr(time, "perf_counter", boom)
+    window = FakeWindow(explode=True)
+
+    assert panstats._start_watchdog() is None
+    assert panstats._start_heartbeat_timer() is None
+    assert panstats.ensure_connected(window) is None
+    panstats.heartbeat()
+    assert panstats.check_stall() is None
+    assert panstats._watchdog is None
+    assert panstats._heartbeat_timer is None
+    assert sampler == []
+    assert not (tmp_path / "pan.jsonl.stall").exists()
+
+
+def test_watchdog_thread_is_daemon_and_stops(monkeypatch):
+    monkeypatch.setenv(panstats.ENV_VAR, "1")
+    thread = panstats._start_watchdog()
+
+    assert thread is not None
+    assert thread.daemon is True
+    assert thread.is_alive()
+    assert panstats._start_watchdog() is thread
+
+    panstats.shutdown()
+    assert panstats._watchdog is None
+    thread.join(2.0)
+    assert not thread.is_alive()
+
+
+def test_shutdown_terminates_live_sampler(monkeypatch, tmp_path):
+    monkeypatch.setenv(panstats.ENV_VAR, "1")
+    clock = Clock(0.0)
+    monkeypatch.setattr(time, "perf_counter", clock)
+    panstats.frame_presented()
+    clock.now = 0.4
+    panstats.camera_changed()
+    clock.now = 0.6
+    assert panstats.check_stall(clock.now) == "stderr"
+
+    live = Sampler([panstats.SAMPLE_BIN], alive=True)
+    panstats._sampler = live
+    panstats.shutdown()
+
+    assert live.terminated is True
+    assert panstats._sampler is None
+    assert panstats.shutdown() is None  # idempotent
