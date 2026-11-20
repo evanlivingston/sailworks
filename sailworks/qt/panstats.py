@@ -121,6 +121,8 @@ _paint_ring = None
 _render_ms = []
 _render_ring = None
 _render_basis = None
+_render_gap_ms = []
+_last_render_complete_at = None
 _render_connections = {}
 _heartbeat_at = None
 _stall_dumped = False
@@ -178,6 +180,8 @@ def reset():
     _render_ms = []
     _render_ring = None
     _render_basis = None
+    _render_gap_ms = []
+    _last_render_complete_at = None
     _render_connections = {}
 
 
@@ -242,7 +246,7 @@ def frame_presented(render_ms=None):
     """
     global _last_frame_at, _moving_seconds, _idle_seconds
     global _camera_ms_pending, _camera_ms_moving, _stall_dumped
-    global _render_basis, _render_ms, _render_ring
+    global _render_basis, _render_ms, _render_ring, _last_render_complete_at
     if not enabled():
         return
     now = time.perf_counter()
@@ -251,6 +255,7 @@ def frame_presented(render_ms=None):
     _stall_dumped = False
     previous = _last_frame_at
     _last_frame_at = now
+    _last_render_complete_at = now
     render_sample = None
     if _render_basis is not None:
         render_sample = max(0.0, (now - _render_basis) * 1000.0)
@@ -340,11 +345,20 @@ def painted(elapsed_ms):
 
 
 def _render_started():
-    """Stamp the start of a Quick render; only ever connected while enabled."""
-    global _render_basis
+    """Stamp the start of a Quick render; only ever connected while enabled.
+
+    Also measures the gap from the previous frame's afterRendering to this
+    beforeRendering: the time Qt spends between presenting one frame and
+    starting the next (QML prep, Metal submit, vsync wait, event loop).
+    """
+    global _render_basis, _render_gap_ms, _last_render_complete_at
     if not enabled():
         return
-    _render_basis = time.perf_counter()
+    now = time.perf_counter()
+    _render_basis = now
+    if _last_render_complete_at is not None:
+        gap_ms = (now - _last_render_complete_at) * 1000.0
+        _render_gap_ms.append(gap_ms)
 
 
 def published(kind=None):
@@ -490,6 +504,8 @@ def summary():
         "paint_ms_p95": round(_percentile(_paint_ms, 95), 1),
         "render_ms_p50": round(_percentile(_render_ms, 50), 1),
         "render_ms_p95": round(_percentile(_render_ms, 95), 1),
+        "gap_ms_p50": round(_percentile(_render_gap_ms, 50), 1),
+        "gap_ms_p95": round(_percentile(_render_gap_ms, 95), 1),
         "repaints": _repaints,
         "repaints_hz": round(_rate(_repaints, elapsed), 1),
         "repaints_moving": _repaints_moving,
@@ -525,6 +541,8 @@ def summary_line(record=None):
         "paint_ms_p95={paint_ms_p95:.1f} "
         "render_ms_p50={render_ms_p50:.1f} "
         "render_ms_p95={render_ms_p95:.1f} "
+        "gap_ms_p50={gap_ms_p50:.1f} "
+        "gap_ms_p95={gap_ms_p95:.1f} "
         "repaints={repaints:d} "
         "repaints_hz={repaints_hz:.1f} "
         "repaints_moving={repaints_moving:d} "
