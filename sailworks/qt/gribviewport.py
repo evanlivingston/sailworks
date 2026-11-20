@@ -2745,10 +2745,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
 
     The map is hosted in a ``QQuickWidget``: Qt renders the scene into the
     widget's own backing store, so there is no separate native window with a
-    drawable handoff to wait on.  A native ``QQuickView`` was used before; its
-    render thread intermittently blocked in the compositor's
-    ``nextDrawable``.  Qt is imported lazily so the model and the tests stay
-    usable headless.
+    drawable handoff to wait on.  Qt is imported lazily so the model and the
+    tests stay usable headless.
     """
     from PySide6.QtCore import QEvent, QObject, QRectF, QTimer, QUrl, Qt, Signal
     from PySide6.QtGui import QColor, QSurfaceFormat, QVector2D
@@ -6010,6 +6008,27 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 # A moved retained layer is a repaint request for the map.
                 panstats.repaint_requested()
                 setattr(self, attribute, placement)
+                _request_frame = getattr(self, "_request_frame", None)
+                if _request_frame is not None:
+                    _request_frame()
+
+        def _request_frame(self):
+            """Ask Qt to present a paint after map-content placement.
+
+            QQuickWidget does not always pick up a dirty QML item promptly,
+            so an explicit ``update()`` schedules the render.  Nudge the
+            underlying quick window too in case the widget defers its own
+            update.  Guarded so test doubles without either method are not
+            broken.
+            """
+            update = getattr(self, "update", None)
+            if update is not None:
+                update()
+            window = getattr(self, "quickWindow", None)
+            if window is not None:
+                window = window()
+                if window is not None and getattr(window, "update", None) is not None:
+                    window.update()
 
         def _rebase_retained_imagery(self, dx, dy):
             """Preserve the on-screen anchors when the bounded parent resets."""
@@ -6261,6 +6280,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 item.setProperty("panX", dx)
                 item.setProperty("panY", dy)
                 panstats.repaint_requested()
+                _request_frame = getattr(self, "_request_frame", None)
+                if _request_frame is not None:
+                    _request_frame()
                 return
 
             if not rebase and not anchor_changed and not content_changed:
@@ -6281,6 +6303,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             panstats.repaint_requested()
             item.setProperty("panX", dx)
             item.setProperty("panY", dy)
+            _request_frame = getattr(self, "_request_frame", None)
+            if _request_frame is not None:
+                _request_frame()
 
         def set_marine(self, sources, instant, visible):
             if self._camera is not None:
@@ -9114,6 +9139,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             parent.setProperty("x", dx)
             parent.setProperty("y", dy)
             self._place_enc_scene()
+            _request_frame = getattr(self, "_request_frame", None)
+            if _request_frame is not None:
+                _request_frame()
             return anchor_changed
 
         def _place_enc_scene(self, cause="camera"):
