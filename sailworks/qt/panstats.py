@@ -28,6 +28,12 @@ The viewport's own paint is timed by its caller (``painted``) and Qt Quick's
 render by the ``beforeRendering``/``afterRendering`` pair, so a slow frame can
 be split between compositing the rendered texture and producing it.  Both are
 summarised as p50/p95 and summed inside each hitch gap.
+
+Every repaint request is counted by its caller (``repaint_requested``), split
+by whether the camera was moving at the time.  Comparing the request rate with
+the presented-frame rate shows whether frames are rare because requests are
+rare or because Qt coalesces or drops the requests we do make.  Each hitch
+record also carries the requests that fell inside its gap.
 """
 
 from __future__ import annotations
@@ -95,6 +101,9 @@ _moving_seconds = 0.0
 _idle_seconds = 0.0
 _publishes_moving = 0
 _raster_skips = 0
+_repaints = 0
+_repaints_moving = 0
+_repaint_ring = None
 _holds = 0
 _resumes = 0
 _marker_ring = None
@@ -127,6 +136,7 @@ def reset():
     global _started, _last_event_at, _last_camera_at, _camera_changes
     global _last_frame_at, _moving_intervals, _idle_intervals
     global _moving_seconds, _idle_seconds, _publishes_moving, _raster_skips
+    global _repaints, _repaints_moving, _repaint_ring
     global _holds, _resumes, _marker_ring, _hitch_count, _hitch_max_ms
     global _hitch_kind_counts, _hitch_records
     global _camera_ms, _camera_ms_pending, _camera_ms_moving
@@ -150,6 +160,9 @@ def reset():
     _idle_seconds = 0.0
     _publishes_moving = 0
     _raster_skips = 0
+    _repaints = 0
+    _repaints_moving = 0
+    _repaint_ring = None
     _holds = 0
     _resumes = 0
     _marker_ring = None
@@ -276,7 +289,8 @@ def _record_hitch(gap_ms, previous, now, camera_ms=0.0):
     ``camera_ms`` is the total camera-handler time inside the gap, so a hitch
     caused by handler saturation can be read directly instead of inferred
     from the marker kinds alone.  ``paint_ms`` and ``render_ms`` likewise sum
-    the viewport paint and Quick render samples taken inside the same gap.
+    the viewport paint and Quick render samples taken inside the same gap,
+    and ``repaints`` counts the repaint requests made inside it.
     """
     global _hitch_count, _hitch_max_ms
     _hitch_count += 1
@@ -293,6 +307,7 @@ def _record_hitch(gap_ms, previous, now, camera_ms=0.0):
             "camera_ms": round(camera_ms, 1),
             "paint_ms": round(_window_sum(_paint_ring, previous, now), 1),
             "render_ms": round(_window_sum(_render_ring, previous, now), 1),
+            "repaints": _window_count(_repaint_ring, previous, now),
             "markers": markers,
         }
     )
@@ -357,6 +372,29 @@ def skipped(kind=None):
     _raster_skips += 1
 
 
+def repaint_requested():
+    """Record one repaint request made for the map.
+
+    The caller owns the request - this only counts it - so the summary can say
+    whether frames are rare because requests are rare or because Qt coalesces
+    or drops them.  Requests are also kept in a bounded ring so a hitch can
+    carry the ones that fell inside its gap.  No clock is read while disabled.
+    """
+    global _repaints, _repaints_moving, _repaint_ring
+    if not enabled():
+        return
+    now = time.perf_counter()
+    _stamp(now)
+    _repaints += 1
+    if _moving(now):
+        _repaints_moving += 1
+    if _repaint_ring is None:
+        from collections import deque
+
+        _repaint_ring = deque(maxlen=SAMPLE_RING_SIZE)
+    _repaint_ring.append(now)
+
+
 def held(kind=None):
     """Record a publication held back, e.g. for a camera pause."""
     global _holds
@@ -398,6 +436,13 @@ def _window_sum(ring, previous, now):
     if not ring:
         return 0.0
     return sum(ms for at, ms in ring if previous < at <= now)
+
+
+def _window_count(ring, previous, now):
+    """How many entries landed in ``(previous, now]``; zero without any."""
+    if not ring:
+        return 0
+    return sum(1 for at in ring if previous < at <= now)
 
 
 def _hitch_top():
@@ -445,6 +490,10 @@ def summary():
         "paint_ms_p95": round(_percentile(_paint_ms, 95), 1),
         "render_ms_p50": round(_percentile(_render_ms, 50), 1),
         "render_ms_p95": round(_percentile(_render_ms, 95), 1),
+        "repaints": _repaints,
+        "repaints_hz": round(_rate(_repaints, elapsed), 1),
+        "repaints_moving": _repaints_moving,
+        "repaints_moving_hz": round(_rate(_repaints_moving, _moving_seconds), 1),
     }
 
 
@@ -475,7 +524,11 @@ def summary_line(record=None):
         "paint_ms_p50={paint_ms_p50:.1f} "
         "paint_ms_p95={paint_ms_p95:.1f} "
         "render_ms_p50={render_ms_p50:.1f} "
-        "render_ms_p95={render_ms_p95:.1f}"
+        "render_ms_p95={render_ms_p95:.1f} "
+        "repaints={repaints:d} "
+        "repaints_hz={repaints_hz:.1f} "
+        "repaints_moving={repaints_moving:d} "
+        "repaints_moving_hz={repaints_moving_hz:.1f}"
     ).format(**record)
 
 

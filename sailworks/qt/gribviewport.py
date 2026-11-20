@@ -5930,6 +5930,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     ("imageX", "imageY", "imageWidth", "imageHeight"), placement
                 ):
                     item.setProperty(name, value)
+                # A moved retained layer is a repaint request for the map.
+                panstats.repaint_requested()
                 setattr(self, attribute, placement)
 
         def _rebase_retained_imagery(self, dx, dy):
@@ -6181,6 +6183,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     dx = dy = 0.0
                 item.setProperty("panX", dx)
                 item.setProperty("panY", dy)
+                panstats.repaint_requested()
                 return
 
             if not rebase and not anchor_changed and not content_changed:
@@ -6198,6 +6201,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             dx, dy = window.reference.translation_to(
                 self._map_pan_reference, self._map_pan_reference.dpr
             )
+            panstats.repaint_requested()
             item.setProperty("panX", dx)
             item.setProperty("panY", dy)
 
@@ -9020,6 +9024,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         reference, 0.5 * max(float(camera.width), float(camera.height))
                     )
             dx, dy = reference.translation_to(camera, dpr)
+            # One counted repaint request per camera pass: these two writes are
+            # what the scene re-renders for.  A no-op while the stats are off.
+            panstats.repaint_requested()
             parent.setProperty("x", dx)
             parent.setProperty("y", dy)
             self._place_enc_scene()

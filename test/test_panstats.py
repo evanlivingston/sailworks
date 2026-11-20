@@ -31,6 +31,10 @@ FIELDS = [
     "paint_ms_p95",
     "render_ms_p50",
     "render_ms_p95",
+    "repaints",
+    "repaints_hz",
+    "repaints_moving",
+    "repaints_moving_hz",
 ]
 
 
@@ -132,6 +136,7 @@ def test_disabled_reads_no_clock(monkeypatch):
     panstats.skipped("raster_skip")
     panstats.held("enc_scene")
     panstats.resumed("enc_scene")
+    panstats.repaint_requested()
     assert panstats.summary() == {}
     assert panstats.summary_line() == ""
     assert panstats.flush() == ""
@@ -140,6 +145,9 @@ def test_disabled_reads_no_clock(monkeypatch):
     assert panstats._camera_ms == []
     assert panstats._camera_ms_pending == 0.0
     assert panstats._camera_ms_moving == 0.0
+    assert panstats._repaints == 0
+    assert panstats._repaints_moving == 0
+    assert panstats._repaint_ring is None
     assert window.afterRendering.slots == []
 
 
@@ -219,7 +227,8 @@ def test_summary_line_order_and_rounding(monkeypatch):
         "resumes=0 session_s=3.0 hitches=0 hitch_max_ms=0.0 hitch_top=none "
         "raster_skips=0 camera_ms_p50=0.0 camera_ms_p95=0.0 camera_ms_max=0.0 "
         "camera_busy_pct=0.0 paint_ms_p50=0.0 paint_ms_p95=0.0 "
-        "render_ms_p50=0.0 render_ms_p95=0.0"
+        "render_ms_p50=0.0 render_ms_p95=0.0 repaints=0 repaints_hz=0.0 "
+        "repaints_moving=0 repaints_moving_hz=0.0"
     )
 
 
@@ -718,3 +727,89 @@ def test_shutdown_terminates_live_sampler(monkeypatch, tmp_path):
     assert live.terminated is True
     assert panstats._sampler is None
     assert panstats.shutdown() is None  # idempotent
+
+
+def test_repaint_requests_counted_and_split_by_motion(monkeypatch):
+    monkeypatch.setenv(panstats.ENV_VAR, "1")
+    clock = Clock()
+    monkeypatch.setattr(time, "perf_counter", clock)
+
+    panstats.camera_changed(object())  # 0.000
+    panstats.frame_presented()  # first frame: no interval
+    clock.now = 0.010
+    panstats.repaint_requested()
+    clock.now = 0.020
+    panstats.repaint_requested()
+    clock.now = 0.040
+    panstats.frame_presented()  # 40 ms moving interval
+    clock.now = 0.500
+    panstats.repaint_requested()  # idle: the camera change is 500 ms old
+    clock.now = 0.520
+    panstats.repaint_requested()
+    clock.now = 2.000
+
+    record = panstats.summary()
+    assert list(record) == FIELDS
+    assert record["repaints"] == 4
+    assert record["repaints_hz"] == 2.0
+    assert record["repaints_moving"] == 2
+    # Two moving requests over the 40 ms of moving-frame wall time.
+    assert record["repaints_moving_hz"] == 50.0
+
+
+def test_repaints_without_motion_have_no_moving_rate(monkeypatch):
+    monkeypatch.setenv(panstats.ENV_VAR, "1")
+    clock = Clock()
+    monkeypatch.setattr(time, "perf_counter", clock)
+
+    clock.now = 1.000
+    panstats.repaint_requested()
+    clock.now = 2.000
+
+    record = panstats.summary()
+    assert record["repaints"] == 1
+    assert record["repaints_hz"] == 1.0
+    assert record["repaints_moving"] == 0
+    assert record["repaints_moving_hz"] == 0.0
+
+
+def test_hitch_carries_repaint_requests(monkeypatch, tmp_path):
+    path = tmp_path / "pan.jsonl"
+    monkeypatch.setenv(panstats.ENV_VAR, str(path))
+    clock = Clock()
+    monkeypatch.setattr(time, "perf_counter", clock)
+
+    panstats.camera_changed(object())
+    clock.now = 0.005
+    panstats.repaint_requested()  # before the previous frame: not in the gap
+    clock.now = 0.010
+    panstats.frame_presented()
+    clock.now = 0.020
+    panstats.repaint_requested()
+    clock.now = 0.030
+    panstats.repaint_requested()
+    clock.now = 0.300
+    panstats.frame_presented()  # 290 ms gap carrying the two later requests
+
+    record = panstats.summary()
+    assert record["hitches"] == 1
+    assert record["repaints"] == 3
+
+    panstats.flush()
+    written = json.loads(path.read_text(encoding="utf-8").strip())
+    hitch = written["hitch_records"][0]
+    assert hitch["gap_ms"] == 290.0
+    assert hitch["repaints"] == 2
+
+
+def test_repaint_ring_is_bounded(monkeypatch):
+    monkeypatch.setenv(panstats.ENV_VAR, "1")
+    clock = Clock()
+    monkeypatch.setattr(time, "perf_counter", clock)
+
+    for step in range(panstats.SAMPLE_RING_SIZE * 2):
+        clock.now = step * 0.001
+        panstats.repaint_requested()
+
+    assert panstats._repaints == panstats.SAMPLE_RING_SIZE * 2
+    assert len(panstats._repaint_ring) == panstats.SAMPLE_RING_SIZE
