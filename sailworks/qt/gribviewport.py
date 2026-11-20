@@ -916,6 +916,75 @@ def scene_presents_chart(metadata, camera, item):
     return scene_draws_chart(metadata, camera) and enc_scene_covers_view(item)
 
 
+def ensure_chart_content(widget, reason, generation=None):
+    """Compose the raster now unless a presented scene draws this view.
+
+    The viewport always shows chart content.  The raster is suppressed only
+    while ``enc_scene_covers_view`` holds; the moment the scene is withdrawn,
+    hidden, left with zero vertices, never adopted or published outside the
+    viewport, the raster is the only layer that can cover the view and must
+    compose at once - not after the settle window and not after the 500 ms
+    coverage re-check.  The deferral and suppression bookkeeping are cleared
+    so neither can hold the composition back, and the request is flagged
+    (``_chart_force_coverage``) so the weather head start cannot starve the
+    only chart on screen.
+
+    A covering scene is untouched: this never makes the raster duplicate a
+    frame that already draws the view.  Every call records a
+    ``chart_blank_guard`` trace event naming the scene state and the reason,
+    so a future blank is visible as an event rather than a missing picture.
+    """
+    item = getattr(widget, "_enc_scene_item", None)
+    covers = enc_scene_covers_view(item)
+    shown = getattr(item, "shown_vertex_count", None)
+    is_visible = getattr(item, "isVisible", None)
+    scene_verts = None
+    if callable(shown):
+        try:
+            scene_verts = int(shown())
+        except (RuntimeError, TypeError, ValueError):
+            scene_verts = None
+    scene_visible = None
+    if callable(is_visible):
+        try:
+            scene_visible = bool(is_visible())
+        except RuntimeError:
+            scene_visible = None
+    request = (
+        not covers
+        and not getattr(widget, "_disposed", False)
+        and getattr(widget, "_chart_model", None) is not None
+        and getattr(widget, "_camera", None) is not None
+    )
+    if enc_trace.enabled():
+        enc_trace.event(
+            "chart_blank_guard",
+            reason=reason,
+            generation=generation,
+            scene_verts=scene_verts,
+            scene_visible=scene_visible,
+            scene_covers=covers,
+            raster_requested=request,
+            raster_generation=getattr(widget, "_chart_visible_generation", None),
+            **enc_trace.camera_fields(getattr(widget, "_camera", None)),
+        )
+    if not request:
+        return False
+    widget._chart_scene_deferral = None
+    widget._chart_scene_suppressed_at = None
+    widget._chart_scene_suppressed_camera = None
+    widget._chart_force_coverage = True
+    timer = getattr(widget, "_chart_timer", None)
+    if timer is not None:
+        timer.start(1)
+        return True
+    request_now = getattr(widget, "_request_chart", None)
+    if callable(request_now):
+        request_now(cause="scene_gap")
+        return True
+    return False
+
+
 def camera_geometry(camera):
     """The camera fields that decide whether a frame covers a view.
 
@@ -3055,6 +3124,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._chart_redelivery_generation = None
             self._chart_budget_refusal = None
             self._chart_visible_generation = None
+            # Set when the ENC scene stops drawing the view: the raster is then
+            # the only chart on screen and neither the settle window nor the
+            # weather head start may withhold it (see ``ensure_chart_content``).
+            self._chart_force_coverage = False
             # A layer toggle withdraws the previous composition, so the next
             # ready frame is not a ready-to-ready swap.  Arm one fade for it.
             self._chart_swap_fade_armed = False
@@ -4280,6 +4353,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
         def _withdraw_enc_scene(self):
             """Hide the presented ENC scene: it is not current content."""
             self._cancel_enc_scene_partial_hold()
+            withdrawn = getattr(self, "_enc_scene_ready_generation", None)
             self._enc_scene_provisional = False
             self._enc_scene_ready_generation = None
             self._enc_scene_partial_generation = None
@@ -4294,6 +4368,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             if fallback is not None:
                 fallback.clear("withdrawn")
             trace_raster_visibility(self, "scene_withdrawn")
+            # Nothing draws chart content any more: the raster must, now.
+            ensure_chart_content(self, "scene_withdrawn", generation=withdrawn)
 
         def _mark_enc_scene_updating(self):
             """Keep the previous ENC scene up and label it provisional.
@@ -4558,12 +4634,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._place_enc_scene(cause="publication")
             item.setVisible(True)
             # The adopted frame is now what the user sees.  If it does not
-            # draw this viewport, the raster must cover the gap: release the
-            # composition the metadata-only "skip" cancelled a moment ago.
+            # draw this viewport, the raster must cover the gap at once: a
+            # held or deferred composition would leave the viewport blank
+            # until the 500 ms re-check found the returned coverage.
             if not scene_presents_chart(metadata, self._camera, item):
-                restart = getattr(self, "_restart_chart_settle", None)
-                if restart is not None:
-                    restart()
+                ensure_chart_content(
+                    self, "scene_not_presenting", generation=generation
+                )
             trace_raster_visibility(self, "scene_published")
             if partial:
                 # Nothing on screen reached the demanded view, so these cells
@@ -6453,11 +6530,17 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             # mid-drag.  A scene that exists but does not cover (zero
             # vertices, no viewport overlap, a zoomed-out stale frame) or one
             # that is hidden draws nothing here: the raster composes exactly
-            # as it does without a scene layer.
+            # as it does without a scene layer.  A reported gap (see
+            # ``ensure_chart_content``) means the raster is the only chart on
+            # screen: nothing below may defer it to a re-check or starve it
+            # behind the weather window.
+            force_coverage = bool(getattr(self, "_chart_force_coverage", False))
             self._chart_scene_deferral = None
             self._chart_scene_suppressed_at = None
             self._chart_scene_suppressed_camera = None
             if enc_scene_covers_view(getattr(self, "_enc_scene_item", None)):
+                # The presented scene is the chart after all: the gap is gone.
+                self._chart_force_coverage = False
                 panstats.skipped("raster_skip")
                 if enc_trace.enabled():
                     enc_trace.event(
@@ -6499,7 +6582,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 )
             elif self._model.busy():
                 head_start = CHART_WEATHER_BUSY_WAIT_MS
-            if head_start is not None:
+            if head_start is not None and not force_coverage:
                 # The window is bounded from the last successful composition
                 # (or the viewport's start), never from the last camera change:
                 # a move every settle interval would otherwise re-arm it
@@ -6513,6 +6596,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     # again after it expires, and the chart proceeds regardless.
                     self._chart_timer.start(max(1, math.ceil(head_start - waited)))
                     return
+            self._chart_force_coverage = False
             self.counters["chart_requests"] += 1
             self._chart_requested_after_weather = self._weather_ready_at is not None
             self._chart_request_state = self._chart_state_now()

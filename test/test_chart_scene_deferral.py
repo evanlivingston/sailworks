@@ -22,6 +22,7 @@ from sailworks.qt.gribviewport import (
     apply_scene_publication,
     defer_chart_for_scene,
     enc_scene_covers_view,
+    ensure_chart_content,
     plan_scene_deferral,
     resolve_scene_deferral,
     scene_chart_deferral_live,
@@ -84,6 +85,9 @@ class _SceneItem:
 
     def scene_covers_view(self):
         return self.covers
+
+    def setVisible(self, value):
+        self.visible = bool(value)
 
 
 # ---- pure decision -------------------------------------------------------
@@ -562,6 +566,135 @@ def test_widget_composes_without_a_scene_layer(viewport_class):
     assert defer_chart_for_scene(state, 42, NOW) is False
     assert state._chart_scene_deferral is None
     assert timer.started == []
+
+
+def test_a_withdrawn_scene_requests_the_raster_at_once(viewport_class):
+    """Withdrawal leaves nothing on screen: the raster composes immediately."""
+    timer = FakeTimer()
+    item = _SceneItem()
+    state = SimpleNamespace(
+        _camera=CAMERA,
+        _chart_model=_FakeChartModel(),
+        _chart_timer=timer,
+        _chart_visible_generation=None,
+        _chart_scene_deferral=_deferral(),
+        _chart_scene_suppressed_at=NOW,
+        _chart_scene_suppressed_camera=(1, 2, 3, 4, 5),
+        _enc_scene_item=item,
+        _enc_scene_ready_generation=42,
+        _enc_scene_partial_generation=42,
+        _enc_scene_provisional=True,
+        _enc_scene_cells_order=(),
+        _enc_scene_cell_states=(),
+        _enc_fallback=None,
+        _disposed=False,
+        _cancel_enc_scene_partial_hold=lambda: None,
+    )
+
+    viewport_class._withdraw_enc_scene(state)
+
+    assert item.isVisible() is False
+    assert state._enc_scene_ready_generation is None
+    # Not the 500 ms coverage re-check and not the settle window: the next
+    # event-loop turn asks the chart layer.
+    assert timer.started == [1]
+    # Neither a deferral nor a suppression budget may hold the raster back.
+    assert state._chart_scene_deferral is None
+    assert state._chart_scene_suppressed_at is None
+    assert state._chart_scene_suppressed_camera is None
+    assert state._chart_force_coverage is True
+
+
+def test_a_scene_with_no_geometry_composes_the_raster(viewport_class):
+    """A generation that adopted nothing is not chart content."""
+    timer = FakeTimer()
+    state = SimpleNamespace(
+        _camera=CAMERA,
+        _chart_model=_FakeChartModel(),
+        _chart_timer=timer,
+        _chart_visible_generation=7,
+        _enc_scene_item=_SceneItem(vertices=0, covers=False),
+        _disposed=False,
+    )
+    assert ensure_chart_content(state, "scene_not_presenting", generation=42) is True
+    assert timer.started == [1]
+    assert state._chart_force_coverage is True
+
+
+def test_a_hidden_scene_composes_the_raster(viewport_class):
+    timer = FakeTimer()
+    state = SimpleNamespace(
+        _camera=CAMERA,
+        _chart_model=_FakeChartModel(),
+        _chart_timer=timer,
+        _chart_visible_generation=3,
+        _enc_scene_item=_SceneItem(visible=False),
+        _disposed=False,
+    )
+    assert ensure_chart_content(state, "scene_hidden") is True
+    assert timer.started == [1]
+
+
+def test_a_covering_scene_still_suppresses_the_raster(viewport_class):
+    """No regression: a healthy covering mesh is not duplicated by a raster."""
+    timer = FakeTimer()
+    state = SimpleNamespace(
+        _camera=CAMERA,
+        _chart_model=_FakeChartModel(),
+        _chart_timer=timer,
+        _chart_visible_generation=3,
+        _enc_scene_item=_SceneItem(),
+        _disposed=False,
+    )
+    assert ensure_chart_content(state, "scene_adopted") is False
+    assert timer.started == []
+    assert getattr(state, "_chart_force_coverage", False) is False
+
+
+def test_a_disposed_viewport_does_not_compose(viewport_class):
+    timer = FakeTimer()
+    state = SimpleNamespace(
+        _camera=CAMERA,
+        _chart_model=_FakeChartModel(),
+        _chart_timer=timer,
+        _enc_scene_item=_SceneItem(vertices=0),
+        _disposed=True,
+    )
+    assert ensure_chart_content(state, "scene_withdrawn") is False
+    assert timer.started == []
+
+
+def test_blank_guard_trace_names_the_reason_and_scene_state(
+    monkeypatch, tmp_path, viewport_class
+):
+    target = tmp_path / "trace.jsonl"
+    monkeypatch.setenv(enc_trace.ENV_PATH, str(target))
+    enc_trace.reset()
+    try:
+        timer = FakeTimer()
+        state = SimpleNamespace(
+            _camera=CAMERA,
+            _chart_model=_FakeChartModel(),
+            _chart_timer=timer,
+            _chart_visible_generation=None,
+            _enc_scene_item=_SceneItem(vertices=0, covers=False, visible=False),
+            _disposed=False,
+        )
+        ensure_chart_content(state, "scene_withdrawn", generation=42)
+        records = [
+            json.loads(line) for line in target.read_text(encoding="utf-8").splitlines()
+        ]
+        guard = [r for r in records if r["event"] == "chart_blank_guard"]
+        assert len(guard) == 1
+        record = guard[0]
+        assert record["reason"] == "scene_withdrawn"
+        assert record["generation"] == 42
+        assert record["scene_verts"] == 0
+        assert record["scene_visible"] is False
+        assert record["scene_covers"] is False
+        assert record["raster_requested"] is True
+    finally:
+        enc_trace.reset()
 
 
 def test_widget_skips_raster_when_the_scene_publishes(viewport_class):
