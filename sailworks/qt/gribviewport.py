@@ -6045,6 +6045,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 window = window()
                 if window is not None and getattr(window, "update", None) is not None:
                     window.update()
+            if os.environ.get("SAILWORKS_SYNC_PAINT"):
+                # Experiment: while the mouse button is held, macOS runs the
+                # event loop in tracking mode and timer/posted-event driven
+                # renders can be starved.  A synchronous paint presents the
+                # frame from the input event itself.
+                repaint = getattr(self, "repaint", None)
+                if repaint is not None:
+                    repaint()
 
         def _rebase_retained_imagery(self, dx, dy):
             """Preserve the on-screen anchors when the bounded parent resets."""
