@@ -599,6 +599,35 @@ def test_stall_during_motion_captures_once(monkeypatch, tmp_path, sampler):
     assert dump.read_text(encoding="utf-8") == text
 
 
+def test_stall_can_ignore_startup_and_use_a_longer_threshold(
+    monkeypatch, tmp_path, sampler
+):
+    path = tmp_path / "pan.jsonl"
+    monkeypatch.setenv(panstats.ENV_VAR, str(path))
+    monkeypatch.setenv(panstats.ENV_STALL_S, "2.0")
+    monkeypatch.setenv(panstats.ENV_STALL_AFTER_S, "5.0")
+    clock = Clock(0.0)
+    monkeypatch.setattr(time, "perf_counter", clock)
+    panstats.frame_presented()
+    clock.now = 0.4
+    panstats.camera_changed()
+    clock.now = 0.6
+    # A startup gap is not a drag stall, even above the default threshold.
+    assert panstats.check_stall(clock.now) is None
+    assert sampler == []
+
+    # After the ignore window, a 3 s gap with a warm camera is captured.
+    clock.now = 5.0
+    panstats.frame_presented()
+    clock.now = 7.8
+    panstats.camera_changed()
+    clock.now = 8.0
+    dump = tmp_path / "pan.jsonl.stall"
+    assert panstats.check_stall(clock.now) == str(dump)
+    assert "age_ms=3000.0" in dump.read_text(encoding="utf-8")
+    assert len(sampler) == 1
+
+
 def test_idle_camera_does_not_capture(monkeypatch, tmp_path, sampler):
     path = tmp_path / "pan.jsonl"
     monkeypatch.setenv(panstats.ENV_VAR, str(path))

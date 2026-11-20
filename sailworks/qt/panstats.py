@@ -54,6 +54,12 @@ ENV_VAR = "SAILWORKS_PAN_STATS"
 #: No frame for longer than this, with the camera still warm, is a stall.
 PAN_STATS_STALL_S = 0.5
 
+#: Override the stall threshold (seconds), e.g. to skip startup gaps.
+ENV_STALL_S = "SAILWORKS_PAN_STATS_STALL_S"
+
+#: Ignore stall captures during the first N seconds of a session.
+ENV_STALL_AFTER_S = "SAILWORKS_PAN_STATS_STALL_AFTER_S"
+
 #: A camera change inside this window means a drag is (or was) in flight.
 PAN_STATS_STALL_CAMERA_S = 0.25
 
@@ -184,6 +190,32 @@ def reset():
 def enabled():
     """Whether the collector was asked for.  Reads no clock."""
     return bool(os.environ.get(ENV_VAR, "").strip())
+
+
+def _stall_threshold_s():
+    """The stall threshold: the env override when valid, else the default."""
+    raw = os.environ.get(ENV_STALL_S)
+    if raw:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0.0:
+            return value
+    return PAN_STATS_STALL_S
+
+
+def _stall_after_s():
+    """How long to ignore stall captures at session start, in seconds."""
+    raw = os.environ.get(ENV_STALL_AFTER_S)
+    if raw:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0.0:
+            return value
+    return 0.0
 
 
 def _path():
@@ -684,9 +716,12 @@ def check_stall(now=None):
     camera_at = _last_camera_at
     if frame_at is None or camera_at is None:
         return None
+    if _started is not None and now - _started < _stall_after_s():
+        # Startup and first-load gaps are not interaction stalls.
+        return None
     age = now - frame_at
     camera_age = now - camera_at
-    if age <= PAN_STATS_STALL_S:
+    if age <= _stall_threshold_s():
         _stall_dumped = False
         return None
     if camera_age > PAN_STATS_STALL_CAMERA_S:
