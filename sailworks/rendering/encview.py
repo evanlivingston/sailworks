@@ -103,6 +103,118 @@ def _cell_ms(timings, path, stage, started):
     _add_cell_ms(timings, path, stage, (time.perf_counter() - started) * 1000.0)
 
 
+#: How many per-cell cache rows one traced publication carries.  The rows are
+#: a plan-ordered sample, not a second copy of the plan, so one composition
+#: reports a readable list however many cells it holds.
+CELL_CACHE_TRACE_LIMIT = 32
+
+
+def _cache_trace(timings):
+    """The bounded per-cell cache trace, or ``None`` when tracing is off.
+
+    The flag is the same ``timings["cells"]`` the per-cell durations use, so a
+    build nobody traces formats nothing and keeps no keys.  ``None`` here is
+    the fast path: no row, no ``repr`` and no cache counter read.
+    """
+    if _cell_detail(timings) is None:
+        return None
+    trace = timings.get("cells_cache")
+    if trace is None:
+        trace = timings["cells_cache"] = {
+            "cells": [],
+            "dropped": 0,
+            "cache": None,
+        }
+    return trace
+
+
+def _json_safe(value):
+    """A trace-friendly copy of one key component; JSON never sees bytes."""
+    if isinstance(value, bytes):
+        return value.hex()
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _cache_trace_row(task, lookup, reason=None):
+    """One cell's actual mesh-cache lookup and the key it asked about.
+
+    ``task.key`` is the tuple :func:`_prepare_cell` already built for that
+    lookup, so this never computes a second identity and never touches the
+    cache.  Only the components are copied: ``trim`` is the existing geometry
+    digest and ``granule`` the existing rounded rectangle, both already
+    compact.  A skipped cell never reached the cache, so it reports no key.
+    A key naming a different file than the cell is itself the finding, so
+    that case keeps the full key path; both sides use ``realpath`` because
+    the cache key does, and on macOS ``/var`` and ``/private/var`` name the
+    same file.
+    """
+    row = {
+        "index": int(task.index),
+        "cell": os.path.basename(os.fspath(task.cell.path)),
+        "lookup": lookup or "?",
+    }
+    if reason is not None:
+        row["reason"] = reason
+    key = task.key
+    if key is None or lookup == "skipped":
+        return row
+    (
+        key_path,
+        version,
+        scale_bucket,
+        tolerance,
+        palette_key,
+        stroke_pixels,
+        granule,
+        trim,
+        display_scale,
+    ) = key
+    cell_path = os.path.realpath(os.fspath(task.cell.path))
+    if cell_path != key_path:
+        row["key_path"] = str(key_path)
+    # ``version`` is a tuple today; a string must stay one string, not
+    # become a list of characters.
+    safe_version = list(version) if isinstance(version, tuple) else _json_safe(version)
+    row["key"] = {
+        "version": safe_version,
+        "scale_bucket": _json_safe(scale_bucket),
+        "tolerance": _json_safe(tolerance),
+        "palette": _json_safe(palette_key),
+        "stroke_pixels": _json_safe(stroke_pixels),
+        "granule": (None if granule is None else [float(value) for value in granule]),
+        "trim": _json_safe(trim),
+        "display_scale": _json_safe(display_scale),
+    }
+    return row
+
+
+def _note_cell_cache(trace, task, lookup, owner, reason=None):
+    """Append one lookup row; always called from the thread that owns ``trace``.
+
+    The lookup is decided on the worker, but it travels back in
+    :class:`_CellOutcome` so this list is still written from one thread.  The
+    counters are the cache's own cumulative ones, so ``refused``/``evictions``
+    are never inferred from a miss.
+    """
+    if trace is None:
+        return
+    rows = trace["cells"]
+    if len(rows) < CELL_CACHE_TRACE_LIMIT:
+        rows.append(_cache_trace_row(task, lookup, reason))
+    else:
+        trace["dropped"] += 1
+    if owner is not None:
+        trace["cache"] = {
+            "evictions": int(getattr(owner, "evictions", 0)),
+            "refused": int(getattr(owner, "refused", 0)),
+            "pinned_evictions_avoided": int(
+                getattr(owner, "pinned_evictions_avoided", 0)
+            ),
+        }
+
+
 def _cancelled(cancelled) -> bool:
     return cancelled is not None and bool(cancelled())
 
@@ -851,6 +963,13 @@ class _CellOutcome:
     #: Stages measured on the worker thread; merged by the caller, so the
     #: shared ``timings`` mapping is only ever written from one thread.
     timings: dict | None = None
+    #: The mesh-cache lookup this cell performed: ``"hit"``, ``"miss"`` or
+    #: ``"uncacheable"``.  Decided where the lookup happens and merged by the
+    #: caller, so the trace is still appended from one thread.
+    cache_lookup: str | None = None
+    #: Why an ``"uncacheable"`` cell had no lookup: ``"no-cache"`` when the
+    #: build passed no cache, ``"no-key"`` when the cell had no identity.
+    cache_reason: str | None = None
 
 
 def _same_extent(left, right):
@@ -1133,17 +1252,14 @@ def _prepare_cell(
                 clip_region = cell.clip
                 cacheable = granule is not None
             elif reuse_granules and region is not None:
-                # In the fixed reference frame the granule comes from the
-                # global grid, so its key survives a pan, a viewport and a
-                # zoom inside one level instead of changing with the view.
-                candidate = _granule_region(
-                    region,
-                    step=(
-                        _absolute_granule_step(region)
-                        if mesh_projection is not None
-                        else None
-                    ),
-                )
+                # The granule always comes from the global grid, even when the
+                # mesh itself is view-dependent (``mesh_scale=1.0``).  A
+                # view-relative grid moves its lines with the camera, so a
+                # half-pixel pan re-keys a cell that should still be a hit;
+                # the mesh key keeps the zoom-dependent scale and tolerance,
+                # which is what makes crossing a zoom level rebuild.  The
+                # granule clip is still bounded to ground this cell owns.
+                candidate = _granule_region(region, step=_absolute_granule_step(region))
                 if candidate is not None and _granule_owned(
                     base, planned, region, candidate
                 ):
@@ -1326,9 +1442,16 @@ def _mesh_cell(
         return _CellOutcome(cancelled=True)
 
     cell = task.cell
-    entry = (
-        owner.get(task.key) if (owner is not None and task.key is not None) else None
-    )
+    cacheable = owner is not None and task.key is not None
+    entry = owner.get(task.key) if cacheable else None
+    if not cacheable:
+        lookup = "uncacheable"
+        # Two different reasons: no cache was supplied for this build, or
+        # this cell has no identity to look up (unknown tolerance/granule).
+        uncacheable_reason = "no-cache" if owner is None else "no-key"
+    else:
+        lookup = "hit" if entry is not None else "miss"
+        uncacheable_reason = None
     if entry is None:
         query_geometry = _ogr_geometry(task.query_region)
         started = time.perf_counter()
@@ -1341,7 +1464,11 @@ def _mesh_cell(
         )
         _stage(timings, "query", started)
         if records is None or _cancelled(cancelled):
-            return _CellOutcome(cancelled=True)
+            return _CellOutcome(
+                cancelled=True,
+                cache_lookup=lookup,
+                cache_reason=uncacheable_reason,
+            )
         marker_scale = _marker_scale(task, task.clip_region or task.query_region)
         if marker_scale is None:
             marker_scale = 2.0 * task.tolerance if task.tolerance else 1e-9
@@ -1394,11 +1521,17 @@ def _mesh_cell(
             if task.key is not None:
                 owner.put(task.key, entry, task.granule, pin=pin)
     if _cancelled(cancelled):
-        return _CellOutcome(cancelled=True)
+        return _CellOutcome(
+            cancelled=True,
+            cache_lookup=lookup,
+            cache_reason=uncacheable_reason,
+        )
 
     # A cache hit skips the cell scene's per-record query entirely; the
     # soundings travel with the mesh because they share its coverage.
     return _CellOutcome(
+        cache_lookup=lookup,
+        cache_reason=uncacheable_reason,
         contribution=_CellContribution(
             cell=cell,
             scene_key=(scene.path, scene.version),
@@ -1409,7 +1542,7 @@ def _mesh_cell(
             soundings=entry.soundings,
             unsupported=tuple(entry.unsupported),
             coverage_state=entry.coverage_state,
-        )
+        ),
     )
 
 
@@ -1570,9 +1703,22 @@ def build_view_scene(
     a fresh OGR read are three distinguishable cases.  The parent stages
     contain their children and are not additive across that boundary.  A mesh
     cache hit bypasses the geometry stages, so a warm run shows only
-    ``"cell_open"``.  ``None`` (the default) records nothing.  Worker stages
-    are merged on the calling thread, so the mapping is still written from one
-    thread only.
+    ``"cell_open"``.
+
+    When ``timings["cells"]`` is present (the caller's trace flag), this call
+    also writes ``timings["cells_cache"]``: ``{"cells": [...], "dropped": n,
+    "cache": {...}}``.  Each ``cells`` row names one planned cell by ``index``
+    and basename, its actual lookup (``"hit"``, ``"miss"``, ``"uncacheable"``,
+    or ``"skipped"``/``"error"`` when no mesh lookup happened) and the
+    components of the key it asked about, read from the identity already built
+    for that lookup.  The list is bounded to
+    :data:`CELL_CACHE_TRACE_LIMIT` rows in plan order and ``dropped`` counts the
+    rest; ``cache`` snapshots the mesh cache's cumulative ``evictions``,
+    ``refused`` and ``pinned_evictions_avoided`` counters.  Every note is made
+    on the calling thread, after the worker that performed the lookup returns,
+    so the list has a single writer.  ``None`` (the default) records nothing.
+    Worker stages are merged on the calling thread, so the mapping is still
+    written from one thread only.
     """
     plan = tuple(plan)
     if _cancelled(cancelled):
@@ -1587,6 +1733,10 @@ def build_view_scene(
     display_scale = bucket_display_scale(display_scale)
 
     owner = default_mesh_cache() if mesh_cache is _DEFAULT else mesh_cache
+    # The whole cache trace is opt-in through ``timings["cells"]``: when it is
+    # absent this is ``None`` and every note below is a no-op, so an untraced
+    # build formats no keys and reads no counters.
+    cache_trace = _cache_trace(timings)
     region = _view_region(plan, bounding)
     palette_key = _palette_key(palette)
     hits_before = owner.hits if owner is not None else 0
@@ -1695,6 +1845,9 @@ def build_view_scene(
                 return None
             if isinstance(scene, SkippedCell):
                 skipped.append(scene)
+                _note_cell_cache(
+                    cache_trace, task, "skipped", owner, reason=scene.reason
+                )
                 # A skipped cell is resolved progress, not a contribution.
                 if not _progress(len(contributions) + len(skipped)):
                     return None
@@ -1717,6 +1870,13 @@ def build_view_scene(
             _cell_ms(timings, task.cell.path, "mesh", cell_mesh_started)
             if outcome.cancelled:
                 return None
+            _note_cell_cache(
+                cache_trace,
+                task,
+                outcome.cache_lookup,
+                owner,
+                reason=outcome.cache_reason,
+            )
             contributions.append(outcome.contribution)
             if not _progress(len(contributions) + len(skipped)):
                 return None
@@ -1755,12 +1915,15 @@ def build_view_scene(
                         f"error: {type(exc).__name__}: {exc}",
                     ),
                     timings=local,
+                    cache_lookup="error",
                 )
             return _CellOutcome(
                 contribution=outcome.contribution,
                 skipped=outcome.skipped,
                 cancelled=outcome.cancelled,
                 timings=local,
+                cache_lookup=outcome.cache_lookup,
+                cache_reason=outcome.cache_reason,
             )
 
         pending: dict[int, Future] = {}
@@ -1793,7 +1956,15 @@ def build_view_scene(
                     next_task += 1
 
                 if index in skipped_slots:
-                    skipped.append(skipped_slots.pop(index))
+                    scene_skip = skipped_slots.pop(index)
+                    skipped.append(scene_skip)
+                    _note_cell_cache(
+                        cache_trace,
+                        tasks[index],
+                        "skipped",
+                        owner,
+                        reason=scene_skip.reason,
+                    )
                 else:
                     outcome = _await(pending.pop(index), cancelled)
                     if outcome is None:
@@ -1808,6 +1979,21 @@ def build_view_scene(
                         )
                     if outcome.cancelled:
                         return None
+                    _note_cell_cache(
+                        cache_trace,
+                        tasks[index],
+                        outcome.cache_lookup,
+                        owner,
+                        reason=(
+                            outcome.cache_reason
+                            if outcome.cache_lookup == "uncacheable"
+                            else (
+                                None
+                                if outcome.skipped is None
+                                else outcome.skipped.reason
+                            )
+                        ),
+                    )
                     if outcome.skipped is not None:
                         skipped.append(outcome.skipped)
                     else:

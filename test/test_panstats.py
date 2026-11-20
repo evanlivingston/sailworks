@@ -599,6 +599,35 @@ def test_stall_during_motion_captures_once(monkeypatch, tmp_path, sampler):
     assert dump.read_text(encoding="utf-8") == text
 
 
+def test_stall_can_ignore_startup_and_use_a_longer_threshold(
+    monkeypatch, tmp_path, sampler
+):
+    path = tmp_path / "pan.jsonl"
+    monkeypatch.setenv(panstats.ENV_VAR, str(path))
+    monkeypatch.setenv(panstats.ENV_STALL_S, "2.0")
+    monkeypatch.setenv(panstats.ENV_STALL_AFTER_S, "5.0")
+    clock = Clock(0.0)
+    monkeypatch.setattr(time, "perf_counter", clock)
+    panstats.frame_presented()
+    clock.now = 0.4
+    panstats.camera_changed()
+    clock.now = 0.6
+    # A startup gap is not a drag stall, even above the default threshold.
+    assert panstats.check_stall(clock.now) is None
+    assert sampler == []
+
+    # After the ignore window, a 3 s gap with a warm camera is captured.
+    clock.now = 5.0
+    panstats.frame_presented()
+    clock.now = 7.8
+    panstats.camera_changed()
+    clock.now = 8.0
+    dump = tmp_path / "pan.jsonl.stall"
+    assert panstats.check_stall(clock.now) == str(dump)
+    assert "age_ms=3000.0" in dump.read_text(encoding="utf-8")
+    assert len(sampler) == 1
+
+
 def test_idle_camera_does_not_capture(monkeypatch, tmp_path, sampler):
     path = tmp_path / "pan.jsonl"
     monkeypatch.setenv(panstats.ENV_VAR, str(path))
@@ -614,6 +643,26 @@ def test_idle_camera_does_not_capture(monkeypatch, tmp_path, sampler):
     assert not (tmp_path / "pan.jsonl.stall").exists()
 
 
+def test_a_long_stall_captures_even_when_the_camera_event_is_old(
+    monkeypatch, tmp_path, sampler
+):
+    path = tmp_path / "pan.jsonl"
+    monkeypatch.setenv(panstats.ENV_VAR, str(path))
+    clock = Clock(10.0)
+    monkeypatch.setattr(time, "perf_counter", clock)
+    panstats.frame_presented()
+    clock.now = 10.4
+    panstats.camera_changed()
+    # Three seconds later the drag still has no frame.  The camera event is
+    # old, but it arrived after the last frame, so this is a drag stall.
+    clock.now = 13.0
+    dump = tmp_path / "pan.jsonl.stall"
+    assert panstats.check_stall(clock.now) == str(dump)
+    assert "age_ms=3000.0" in dump.read_text(encoding="utf-8")
+    assert "camera_ms=2600.0" in dump.read_text(encoding="utf-8")
+    assert len(sampler) == 1
+
+
 def test_second_episode_captures_again_then_caps(monkeypatch, tmp_path, sampler):
     path = tmp_path / "pan.jsonl"
     monkeypatch.setenv(panstats.ENV_VAR, str(path))
@@ -622,8 +671,8 @@ def test_second_episode_captures_again_then_caps(monkeypatch, tmp_path, sampler)
 
     def episode():
         # A frame lands, then the drag stalls while input keeps arriving: the
-        # camera change must stay inside PAN_STATS_STALL_CAMERA_S of the check,
-        # or check_stall reads the episode as a drag that already ended.
+        # camera change is after the last frame, so the episode is a drag even
+        # if the event is already old when the watchdog looks.
         clock.now += 1.0
         panstats.frame_presented()
         clock.now += 0.6

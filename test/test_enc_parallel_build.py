@@ -127,19 +127,30 @@ def _projection(points):
     return np.asarray(points, dtype=np.float64) * 3.0
 
 
-def _build(plan, *, workers, mesh_cache=None, on_cell=None, cancelled=None):
+def _build(
+    plan,
+    *,
+    workers,
+    mesh_cache=None,
+    on_cell=None,
+    cancelled=None,
+    timings=None,
+    palette="cm93",
+    stroke_pixels=1.5,
+):
     """A build with a fresh scene cache and the synthetic-cell loader."""
     return encview.build_view_scene(
         plan,
         encscene.SceneCache(CACHE_BYTES),
         projection=_projection,
-        stroke_pixels=1.5,
-        palette="cm93",
+        stroke_pixels=stroke_pixels,
+        palette=palette,
         cancelled=cancelled,
         bounding=None,
         loader=_load,
         mesh_cache=mesh_cache,
         on_cell=on_cell,
+        timings=timings,
         workers=workers,
     )
 
@@ -499,3 +510,87 @@ def test_concurrent_puts_never_overshoot_the_budget():
     surviving = sum(entry.nbytes for entry in resident if entry is not None)
     assert 0 <= cache.resident_bytes <= cache.max_bytes
     assert cache.resident_bytes == surviving
+
+
+# ------------------------------------------------------- per-cell cache trace
+def _trace():
+    """A traced build's timings mapping: ``cells`` is the trace flag."""
+    return {"cells": {}}
+
+
+def test_cache_trace_reports_actual_miss_then_hit_serial(tmp_path):
+    plan = _plan_of(tmp_path, count=2)
+    mesh_cache = encview.MeshCache(CACHE_BYTES)
+
+    cold = _trace()
+    assert _build(plan, workers=1, mesh_cache=mesh_cache, timings=cold) is not None
+    rows = cold["cells_cache"]["cells"]
+    assert [row["lookup"] for row in rows] == ["miss", "miss"]
+    assert [row["index"] for row in rows] == [0, 1]
+    assert [row["cell"] for row in rows] == [
+        os.path.basename(os.fspath(cell.path)) for cell in plan
+    ]
+    assert cold["cells_cache"]["dropped"] == 0
+    assert cold["cells_cache"]["cache"] == {
+        "evictions": 0,
+        "refused": 0,
+        "pinned_evictions_avoided": 0,
+    }
+
+    warm = _trace()
+    assert _build(plan, workers=1, mesh_cache=mesh_cache, timings=warm) is not None
+    warm_rows = warm["cells_cache"]["cells"]
+    assert [row["lookup"] for row in warm_rows] == ["hit", "hit"]
+    # The hit asked the same key the miss stored: no component drifted.
+    assert [row["key"] for row in warm_rows] == [row["key"] for row in rows]
+
+
+def test_cache_trace_parallel_rows_follow_plan_order(tmp_path):
+    plan = _plan_of(tmp_path, count=4)
+    mesh_cache = encview.MeshCache(CACHE_BYTES)
+    assert _build(plan, workers=4, mesh_cache=mesh_cache, timings=_trace()) is not None
+
+    timings = _trace()
+    scene = _build(plan, workers=4, mesh_cache=mesh_cache, timings=timings)
+    assert scene is not None and scene.mesh_hits == len(plan)
+    rows = timings["cells_cache"]["cells"]
+    assert [row["index"] for row in rows] == list(range(len(plan)))
+    assert [row["lookup"] for row in rows] == ["hit"] * len(plan)
+
+
+def test_cache_trace_shows_the_one_key_component_that_changed(tmp_path):
+    plan = _plan_of(tmp_path, count=1)
+    mesh_cache = encview.MeshCache(CACHE_BYTES)
+    first = _trace()
+    second = _trace()
+
+    assert _build(plan, workers=1, mesh_cache=mesh_cache, timings=first) is not None
+    assert (
+        _build(plan, workers=1, mesh_cache=mesh_cache, timings=second, palette=None)
+        is not None
+    )
+
+    before = first["cells_cache"]["cells"][0]
+    after = second["cells_cache"]["cells"][0]
+    # A different palette is a different key, so the second lookup misses.
+    assert before["lookup"] == "miss" and after["lookup"] == "miss"
+    changed = {
+        name for name in before["key"] if before["key"][name] != after["key"][name]
+    }
+    assert changed == {"palette"}
+    assert before["key"]["palette"] == "cm93" and after["key"]["palette"] is None
+
+
+def test_untraced_build_keeps_no_cache_rows(tmp_path, monkeypatch):
+    plan = _plan_of(tmp_path, count=2)
+    mesh_cache = encview.MeshCache(CACHE_BYTES)
+    formatted = []
+    monkeypatch.setattr(
+        encview, "_cache_trace_row", lambda *args, **kwargs: formatted.append(args)
+    )
+
+    timings = {}
+    assert _build(plan, workers=1, mesh_cache=mesh_cache, timings=timings) is not None
+    assert "cells" not in timings
+    assert "cells_cache" not in timings
+    assert formatted == []

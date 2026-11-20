@@ -4487,9 +4487,16 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 # breakdown behind them; both in milliseconds.
                 published_phases = enc_trace.build_phases(timings)
                 stage_ms = enc_trace.phase_ms(
-                    timings, already_ms=("assembly_ms",), exclude=("cells",)
+                    timings,
+                    already_ms=("assembly_ms",),
+                    exclude=("cells", "cells_cache"),
                 )
                 cells_ms = enc_trace.cell_detail(timings.get("cells"))
+                # The per-cell mesh-cache attribution, separate from
+                # ``phase_cells``: that list is truncated to the heaviest few
+                # by duration, while this one keeps plan order and names the
+                # lookup and key behind each cell (also bounded by the build).
+                cells_cache = timings.get("cells_cache")
                 shown = getattr(item, "shown_vertex_count", None)
                 reaches = getattr(item, "scene_covers_view", None)
                 enc_trace.event(
@@ -4514,12 +4521,21 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         if state.get("state") in ("unavailable", "oversized", "error")
                     ],
                     assembly_ms=assembly,
+                    # Per-scene mesh deltas, not the cumulative worker cache.
+                    mesh_cache_hits=scene.mesh_hits,
+                    mesh_cache_misses=scene.mesh_misses,
+                    mesh_cache_built=scene.mesh_built,
+                    cache_counters=(
+                        None if metadata is None else metadata.get("cache_counters")
+                    ),
+                    granule=None if metadata is None else metadata.get("granule"),
                     # Top-level phases sum to no more than ``assembly_ms``;
                     # ``stage_ms`` is the nested breakdown behind them and
                     # ``phase_cells`` names the heaviest cells (bounded).
                     phases=published_phases,
                     stage_ms=stage_ms,
                     phase_cells=cells_ms,
+                    cells_cache=cells_cache,
                     # What the *previous* frame draws while this one lands:
                     # a retained frame with no vertex or no viewport overlap
                     # is the "nothing on screen" state, not a slow update.
@@ -6029,6 +6045,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 window = window()
                 if window is not None and getattr(window, "update", None) is not None:
                     window.update()
+            if os.environ.get("SAILWORKS_SYNC_PAINT"):
+                # Experiment: while the mouse button is held, macOS runs the
+                # event loop in tracking mode and timer/posted-event driven
+                # renders can be starved.  A synchronous paint presents the
+                # frame from the input event itself.
+                repaint = getattr(self, "repaint", None)
+                if repaint is not None:
+                    repaint()
 
         def _rebase_retained_imagery(self, dx, dy):
             """Preserve the on-screen anchors when the bounded parent resets."""

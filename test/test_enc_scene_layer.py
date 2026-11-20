@@ -470,6 +470,62 @@ def test_cache_counters_snapshot_reads_each_worker_owned_cache():
     }
 
 
+@pytest.mark.parametrize("trace_enabled", (False, True))
+def test_partial_cache_snapshot_is_opt_in(tmp_path, cell, monkeypatch, trace_enabled):
+    scene = _assembled(cell)
+    layer = _layer(tmp_path)
+    monkeypatch.setattr(encscenelayer.enc_trace, "enabled", lambda: trace_enabled)
+    snapshots = []
+    monkeypatch.setattr(
+        encscenelayer,
+        "_cache_counters",
+        lambda *_: snapshots.append(True) or {"mesh_hits": 100000, "mesh_misses": 3},
+    )
+    try:
+        assert layer._publish_partial(layer._generation, scene, 1, 2, threading.Event())
+        metadata = layer.published[2]
+        assert metadata["mesh_cache_hits"] == scene.mesh_hits
+        if trace_enabled:
+            assert metadata["cache_counters"]["mesh_hits"] == 100000
+            assert metadata["mesh_cache_hits"] != 100000
+        else:
+            assert "cache_counters" not in metadata
+        assert len(snapshots) == int(trace_enabled)
+    finally:
+        layer.close()
+
+
+@pytest.mark.parametrize("trace_enabled", (False, True))
+def test_final_cache_snapshot_is_opt_in(tmp_path, cell, monkeypatch, trace_enabled):
+    scene = _assembled(cell)
+    layer = _layer(tmp_path)
+    ready = threading.Event()
+    layer._on_state = lambda state: (
+        ready.set() if state == encscenelayer.STATE_READY else None
+    )
+    layer._compose = lambda camera, cancel: (scene, _metadata(camera))
+    monkeypatch.setattr(encscenelayer.enc_trace, "enabled", lambda: trace_enabled)
+    snapshots = []
+    monkeypatch.setattr(
+        encscenelayer,
+        "_cache_counters",
+        lambda *_: snapshots.append(True) or {"mesh_hits": 100000, "mesh_misses": 3},
+    )
+    try:
+        layer.request(_Camera())
+        assert ready.wait(TIMEOUT)
+        metadata = layer.published[2]
+        assert metadata["mesh_cache_hits"] == scene.mesh_hits
+        if trace_enabled:
+            assert metadata["cache_counters"]["mesh_hits"] == 100000
+            assert metadata["mesh_cache_hits"] != 100000
+        else:
+            assert "cache_counters" not in metadata
+        assert len(snapshots) == int(trace_enabled)
+    finally:
+        layer.close()
+
+
 def test_unavailable_reports_the_composition_reason(tmp_path):
     failed = threading.Event()
 

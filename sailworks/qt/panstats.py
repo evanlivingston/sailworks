@@ -54,8 +54,11 @@ ENV_VAR = "SAILWORKS_PAN_STATS"
 #: No frame for longer than this, with the camera still warm, is a stall.
 PAN_STATS_STALL_S = 0.5
 
-#: A camera change inside this window means a drag is (or was) in flight.
-PAN_STATS_STALL_CAMERA_S = 0.25
+#: Override the stall threshold (seconds), e.g. to skip startup gaps.
+ENV_STALL_S = "SAILWORKS_PAN_STATS_STALL_S"
+
+#: Ignore stall captures during the first N seconds of a session.
+ENV_STALL_AFTER_S = "SAILWORKS_PAN_STATS_STALL_AFTER_S"
 
 #: How often the watchdog thread samples the frame and camera timestamps.
 PAN_STATS_STALL_TICK_S = 0.1
@@ -184,6 +187,32 @@ def reset():
 def enabled():
     """Whether the collector was asked for.  Reads no clock."""
     return bool(os.environ.get(ENV_VAR, "").strip())
+
+
+def _stall_threshold_s():
+    """The stall threshold: the env override when valid, else the default."""
+    raw = os.environ.get(ENV_STALL_S)
+    if raw:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0.0:
+            return value
+    return PAN_STATS_STALL_S
+
+
+def _stall_after_s():
+    """How long to ignore stall captures at session start, in seconds."""
+    raw = os.environ.get(ENV_STALL_AFTER_S)
+    if raw:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0.0:
+            return value
+    return 0.0
 
 
 def _path():
@@ -669,11 +698,13 @@ def _capture_stall(age, camera_age):
 def check_stall(now=None):
     """Capture the stacks when a drag has stopped presenting frames.
 
-    Stalled means both: no frame for more than ``PAN_STATS_STALL_S`` and a
-    camera change inside ``PAN_STATS_STALL_CAMERA_S``.  The first separates a
-    hang from an idle window; the second separates a drag from a freeze that
-    began before it.  One capture per episode, capped per session.  Returns
-    the capture destination, or ``None``.
+    Stalled means both: no frame for more than the stall threshold and a
+    camera change that arrived *after* the last presented frame.  The first
+    separates a hang from an idle window; the second separates a drag from a
+    freeze that began before it.  A camera event may itself be seconds old by
+    the time the watchdog checks: the drag still has no frame, so the age of
+    the event must not hide the stall.  One capture per episode, capped per
+    session.  Returns the capture destination, or ``None``.
     """
     global _stall_dumped
     if not enabled():
@@ -684,13 +715,16 @@ def check_stall(now=None):
     camera_at = _last_camera_at
     if frame_at is None or camera_at is None:
         return None
+    if _started is not None and now - _started < _stall_after_s():
+        # Startup and first-load gaps are not interaction stalls.
+        return None
     age = now - frame_at
-    camera_age = now - camera_at
-    if age <= PAN_STATS_STALL_S:
+    if age <= _stall_threshold_s():
         _stall_dumped = False
         return None
-    if camera_age > PAN_STATS_STALL_CAMERA_S:
-        # The drag ended, so the episode is over: a later drag may capture.
+    if camera_at <= frame_at:
+        # The camera changed before the last frame, so this is not a drag
+        # waiting for a frame: the episode is over and a later drag may capture.
         _stall_dumped = False
         return None
     if _stall_dumps >= PAN_STATS_STALL_DUMPS:
@@ -699,7 +733,7 @@ def check_stall(now=None):
     if _stall_dumped:
         return None
     _stall_dumped = True
-    return _capture_stall(age, camera_age)
+    return _capture_stall(age, now - camera_at)
 
 
 def _watchdog_loop(stop):

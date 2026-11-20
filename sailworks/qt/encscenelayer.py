@@ -217,6 +217,16 @@ def display_scale_for(viewport):
         return None
 
 
+def _view_granule(plan, viewport):
+    """The current view's granule and step, shared with neighbour prefetch."""
+    region = encview._view_region(plan, viewport)
+    step = encview._absolute_granule_step(region)
+    return (
+        encview._granule_region(region, step=step) if step is not None else None,
+        step,
+    )
+
+
 def assemble_scene(
     plan,
     viewport,
@@ -842,11 +852,7 @@ class EncSceneLayer:
             if traced:
                 enc_trace.event("enc_prefetch_skip", reason="stale")
             return
-        region = encview._view_region(basis["plan"], basis["viewport"])
-        step = encview._absolute_granule_step(region)
-        granule = None
-        if step is not None:
-            granule = encview._granule_region(region, step=step)
+        granule, step = _view_granule(basis["plan"], basis["viewport"])
         if granule is None:
             # Unknown extent: there is no neighbour to name, so do nothing.
             if traced:
@@ -1104,6 +1110,10 @@ class EncSceneLayer:
                 return False
             published = dict(metadata) if metadata is not None else {}
             published.update(_scene_fields(scene))
+            if enc_trace.enabled():
+                published["cache_counters"] = _cache_counters(
+                    self._mesh_cache, self._scene_cache, self._scene_store
+                )
             # This snapshot's own refused cells, not the finished scene's:
             # a partial frame must not show a hole it cannot fill.
             published["unavailable_clips"] = self._unavailable_clips(plan, scene)
@@ -1245,6 +1255,10 @@ class EncSceneLayer:
                         state, report = scene_report(scene)
                         metadata = dict(metadata)
                         metadata.update(report)
+                        if enc_trace.enabled():
+                            metadata["cache_counters"] = _cache_counters(
+                                self._mesh_cache, self._scene_cache, self._scene_store
+                            )
                         # Every planned cell is resolved in a finished scene;
                         # ``skipped`` gives the ones that drew nothing, and the
                         # plan's own unreadable cells are named alongside them.
@@ -1449,6 +1463,11 @@ class EncSceneLayer:
             )
         if plan is None or cancel.is_set():
             return None, metadata
+        if enc_trace.enabled():
+            granule, _step = _view_granule(plan, viewport)
+            metadata["granule"] = (
+                encview._granule_key(granule) if granule is not None else None
+            )
         metadata["planned_cells"] = len(plan) + len(unavailable)
         metadata["unavailable"] = tuple(
             (cell.path, cell.reason) for cell in unavailable
