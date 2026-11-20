@@ -23,6 +23,11 @@ The per-camera handler is timed by its caller and handed in as
 Those times are summarised (p50/p95/max) and attributed to the frame window
 they fell in: ``camera_busy_pct`` is handler time over moving-frame wall time,
 and each hitch record carries the handler time inside its gap.
+
+The viewport's own paint is timed by its caller (``painted``) and Qt Quick's
+render by the ``beforeRendering``/``afterRendering`` pair, so a slow frame can
+be split between compositing the rendered texture and producing it.  Both are
+summarised as p50/p95 and summed inside each hitch gap.
 """
 
 from __future__ import annotations
@@ -67,6 +72,9 @@ HITCH_MS = 100.0
 #: How many recent markers the attribution ring keeps.
 RING_SIZE = 64
 
+#: How many recent paint/render samples the attribution ring keeps.
+SAMPLE_RING_SIZE = 256
+
 #: How many markers a single hitch record may carry.
 HITCH_MARKERS_MAX = 8
 
@@ -99,6 +107,12 @@ _quit_hooked = False
 _camera_ms = []
 _camera_ms_pending = 0.0
 _camera_ms_moving = 0.0
+_paint_ms = []
+_paint_ring = None
+_render_ms = []
+_render_ring = None
+_render_basis = None
+_render_connections = {}
 _heartbeat_at = None
 _stall_dumped = False
 _stall_dumps = 0
@@ -116,6 +130,8 @@ def reset():
     global _holds, _resumes, _marker_ring, _hitch_count, _hitch_max_ms
     global _hitch_kind_counts, _hitch_records
     global _camera_ms, _camera_ms_pending, _camera_ms_moving
+    global _paint_ms, _paint_ring, _render_ms, _render_ring
+    global _render_basis, _render_connections
     global _heartbeat_at, _stall_dumped, _stall_dumps
     _stop_heartbeat_timer()
     _stop_watchdog()
@@ -144,6 +160,12 @@ def reset():
     _camera_ms = []
     _camera_ms_pending = 0.0
     _camera_ms_moving = 0.0
+    _paint_ms = []
+    _paint_ring = None
+    _render_ms = []
+    _render_ring = None
+    _render_basis = None
+    _render_connections = {}
 
 
 def enabled():
@@ -202,11 +224,12 @@ def frame_presented(render_ms=None):
     """Record one presented frame and its interval since the previous one.
 
     ``render_ms`` is the before->after render time when the caller knows it;
-    it is accepted so the wiring can pass what it already computed, but the
-    summary rates are built from presentation intervals, not from it.
+    a sample taken by the ``beforeRendering`` hook wins over one handed in.
+    The summary rates are built from presentation intervals, not from it.
     """
     global _last_frame_at, _moving_seconds, _idle_seconds
     global _camera_ms_pending, _camera_ms_moving, _stall_dumped
+    global _render_basis, _render_ms, _render_ring
     if not enabled():
         return
     now = time.perf_counter()
@@ -215,6 +238,19 @@ def frame_presented(render_ms=None):
     _stall_dumped = False
     previous = _last_frame_at
     _last_frame_at = now
+    render_sample = None
+    if _render_basis is not None:
+        render_sample = max(0.0, (now - _render_basis) * 1000.0)
+        _render_basis = None
+    elif render_ms is not None:
+        render_sample = max(0.0, float(render_ms))
+    if render_sample is not None:
+        if _render_ring is None:
+            from collections import deque
+
+            _render_ring = deque(maxlen=SAMPLE_RING_SIZE)
+        _render_ms.append(render_sample)
+        _render_ring.append((now, render_sample))
     if previous is None:
         # Nothing has been presented yet, so no window has opened: handler
         # time before the first frame belongs to no interval.
@@ -239,7 +275,8 @@ def _record_hitch(gap_ms, previous, now, camera_ms=0.0):
 
     ``camera_ms`` is the total camera-handler time inside the gap, so a hitch
     caused by handler saturation can be read directly instead of inferred
-    from the marker kinds alone.
+    from the marker kinds alone.  ``paint_ms`` and ``render_ms`` likewise sum
+    the viewport paint and Quick render samples taken inside the same gap.
     """
     global _hitch_count, _hitch_max_ms
     _hitch_count += 1
@@ -254,6 +291,8 @@ def _record_hitch(gap_ms, previous, now, camera_ms=0.0):
         {
             "gap_ms": round(gap_ms, 1),
             "camera_ms": round(camera_ms, 1),
+            "paint_ms": round(_window_sum(_paint_ring, previous, now), 1),
+            "render_ms": round(_window_sum(_render_ring, previous, now), 1),
             "markers": markers,
         }
     )
@@ -261,6 +300,36 @@ def _record_hitch(gap_ms, previous, now, camera_ms=0.0):
         del _hitch_records[: len(_hitch_records) - HITCH_RECORDS_MAX]
     for kind in dict.fromkeys(marker["kind"] for marker in markers):
         _hitch_kind_counts[kind] = _hitch_kind_counts.get(kind, 0) + 1
+
+
+def painted(elapsed_ms):
+    """Record one viewport widget paint, timed by its caller.
+
+    The caller owns the clock so the collector keeps a single one over the
+    paint: the wrapper reads ``perf_counter`` around ``super().paintEvent``
+    and hands the duration in.  The same sample is kept for the hitch window
+    it fell in, so a spike can be split between paint and Quick render.
+    """
+    global _paint_ms, _paint_ring
+    if not enabled():
+        return
+    now = time.perf_counter()
+    _stamp(now)
+    value = max(0.0, float(elapsed_ms))
+    if _paint_ring is None:
+        from collections import deque
+
+        _paint_ring = deque(maxlen=SAMPLE_RING_SIZE)
+    _paint_ms.append(value)
+    _paint_ring.append((now, value))
+
+
+def _render_started():
+    """Stamp the start of a Quick render; only ever connected while enabled."""
+    global _render_basis
+    if not enabled():
+        return
+    _render_basis = time.perf_counter()
 
 
 def published(kind=None):
@@ -324,6 +393,13 @@ def _percentile(values, percent):
     return ordered[rank - 1]
 
 
+def _window_sum(ring, previous, now):
+    """Total of the samples taken in ``(previous, now]``; zero without any."""
+    if not ring:
+        return 0.0
+    return sum(ms for at, ms in ring if previous < at <= now)
+
+
 def _hitch_top():
     """The marker kind most often present in a hitch window, or ``none``."""
     if not _hitch_kind_counts:
@@ -365,6 +441,10 @@ def summary():
         "camera_ms_p95": round(_percentile(_camera_ms, 95), 1),
         "camera_ms_max": round(max(_camera_ms), 1) if _camera_ms else 0.0,
         "camera_busy_pct": round(_camera_busy_pct(), 1),
+        "paint_ms_p50": round(_percentile(_paint_ms, 50), 1),
+        "paint_ms_p95": round(_percentile(_paint_ms, 95), 1),
+        "render_ms_p50": round(_percentile(_render_ms, 50), 1),
+        "render_ms_p95": round(_percentile(_render_ms, 95), 1),
     }
 
 
@@ -391,7 +471,11 @@ def summary_line(record=None):
         "camera_ms_p50={camera_ms_p50:.1f} "
         "camera_ms_p95={camera_ms_p95:.1f} "
         "camera_ms_max={camera_ms_max:.1f} "
-        "camera_busy_pct={camera_busy_pct:.1f}"
+        "camera_busy_pct={camera_busy_pct:.1f} "
+        "paint_ms_p50={paint_ms_p50:.1f} "
+        "paint_ms_p95={paint_ms_p95:.1f} "
+        "render_ms_p50={render_ms_p50:.1f} "
+        "render_ms_p95={render_ms_p95:.1f}"
     ).format(**record)
 
 
@@ -673,6 +757,37 @@ def _frame_source(window):
     return None
 
 
+def _render_source(window):
+    """The Quick window's ``beforeRendering`` signal, or ``None``."""
+    getter = getattr(window, "quickWindow", None)
+    quick = getter() if callable(getter) else None
+    if quick is None:
+        return None
+    signal = getattr(quick, "beforeRendering", None)
+    if signal is not None and hasattr(signal, "connect"):
+        return signal
+    return None
+
+
+def _bind_render_clock(window, key):
+    """Connect ``beforeRendering`` once per window; a no-op while disabled."""
+    if not enabled() or key in _render_connections:
+        return None
+    source = _render_source(window)
+    if source is None:
+        return None
+    connection = _direct_connection()
+    try:
+        if connection is None:
+            source.connect(_render_started)
+        else:
+            source.connect(_render_started, connection)
+    except (RuntimeError, TypeError):
+        return None
+    _render_connections[key] = (source, _render_started)
+    return key
+
+
 def _hook_quit():
     """Print once at application exit; a no-op without a Qt application."""
     global _quit_hooked
@@ -724,6 +839,7 @@ def connect_window(window, on_frame=None):
         except (RuntimeError, TypeError):
             return None
         _connections[key] = (source, slot)
+    _bind_render_clock(window, key)
     destroyed = getattr(window, "destroyed", None)
     if destroyed is not None and hasattr(destroyed, "connect"):
         try:
@@ -758,6 +874,13 @@ def disconnect_window(window):
     """Drop the connection made by ``connect_window``; idempotent."""
     if window is None:
         return False
+    render_entry = _render_connections.pop(id(window), None)
+    if render_entry is not None:
+        source, slot = render_entry
+        try:
+            source.disconnect(slot)
+        except (RuntimeError, TypeError):
+            pass
     entry = _connections.pop(id(window), None)
     if entry is None:
         return False

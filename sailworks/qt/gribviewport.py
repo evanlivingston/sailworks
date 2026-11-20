@@ -8387,6 +8387,22 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             ) == getattr(self, "_image_fill_requested_key", None)
 
         # -- optional pan metrics (SAILWORKS_PAN_STATS) --------------------
+        def paintEvent(self, event):
+            """Time the widget paint around Qt's own compositing.
+
+            ``QQuickWidget`` renders the scene to a texture and composites it
+            here, so this interval is the frame's second half; the render it
+            wraps is timed separately by ``beforeRendering``/``afterRendering``.
+            No clock is read while the collector is off.
+            """
+            if not panstats.enabled():
+                return super().paintEvent(event)
+            started = time.perf_counter()
+            try:
+                return super().paintEvent(event)
+            finally:
+                panstats.painted((time.perf_counter() - started) * 1000.0)
+
         def _panstats_after_rendering(self):
             """Record one presented frame, with its render time when known.
 

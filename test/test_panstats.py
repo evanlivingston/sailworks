@@ -27,6 +27,10 @@ FIELDS = [
     "camera_ms_p95",
     "camera_ms_max",
     "camera_busy_pct",
+    "paint_ms_p50",
+    "paint_ms_p95",
+    "render_ms_p50",
+    "render_ms_p95",
 ]
 
 
@@ -66,6 +70,18 @@ class FakeWindow:
     def __init__(self, explode=False):
         self.afterRendering = FakeSignal(explode)
         self.destroyed = FakeSignal(explode)
+
+
+class FakeQuickHost(FakeWindow):
+    """A wrapper whose ``quickWindow()`` exposes a ``beforeRendering``."""
+
+    def __init__(self, explode=False):
+        super().__init__(explode)
+        self.quick = type("Quick", (), {})()
+        self.quick.beforeRendering = FakeSignal(explode)
+
+    def quickWindow(self):
+        return self.quick
 
 
 def boom(*_args, **_kwargs):
@@ -202,7 +218,8 @@ def test_summary_line_order_and_rounding(monkeypatch):
         "frame_p95_ms=12.0 frames_idle_hz=0.0 publishes_moving=0 holds=0 "
         "resumes=0 session_s=3.0 hitches=0 hitch_max_ms=0.0 hitch_top=none "
         "raster_skips=0 camera_ms_p50=0.0 camera_ms_p95=0.0 camera_ms_max=0.0 "
-        "camera_busy_pct=0.0"
+        "camera_busy_pct=0.0 paint_ms_p50=0.0 paint_ms_p95=0.0 "
+        "render_ms_p50=0.0 render_ms_p95=0.0"
     )
 
 
@@ -440,6 +457,106 @@ def test_hitch_carries_camera_handler_time(monkeypatch, tmp_path):
     assert hitch["camera_ms"] == 20.0
 
 
+def test_paint_and_render_percentiles(monkeypatch):
+    monkeypatch.setenv(panstats.ENV_VAR, "1")
+    clock = Clock()
+    monkeypatch.setattr(time, "perf_counter", clock)
+
+    samples = ((10.0, 4.0), (20.0, 6.0), (30.0, 8.0), (40.0, 10.0), (500.0, 100.0))
+    for step, (paint, render) in enumerate(samples):
+        clock.now = step * 0.2 + 0.050
+        panstats.painted(paint)
+        clock.now = step * 0.2 + 0.060
+        panstats._render_started()
+        clock.now = step * 0.2 + 0.060 + render / 1000.0
+        panstats.frame_presented()
+
+    record = panstats.summary()
+    assert record["paint_ms_p50"] == 30.0
+    assert record["paint_ms_p95"] == 500.0
+    assert record["render_ms_p50"] == 8.0
+    assert record["render_ms_p95"] == 100.0
+
+
+def test_hitch_carries_paint_and_render_sums(monkeypatch, tmp_path):
+    path = tmp_path / "pan.jsonl"
+    monkeypatch.setenv(panstats.ENV_VAR, str(path))
+    clock = Clock()
+    monkeypatch.setattr(time, "perf_counter", clock)
+
+    panstats.camera_changed(object())
+    clock.now = 0.010
+    panstats.frame_presented()
+    clock.now = 0.020
+    panstats.painted(12.0)
+    clock.now = 0.030
+    panstats.painted(8.0)
+    clock.now = 0.040
+    panstats._render_started()
+    clock.now = 0.300
+    panstats.frame_presented()  # 290 ms gap containing both paint samples
+
+    panstats.flush()
+    written = json.loads(path.read_text(encoding="utf-8").strip())
+    hitch = written["hitch_records"][0]
+    assert hitch["paint_ms"] == 20.0
+    assert hitch["render_ms"] == 260.0
+
+
+def test_disabled_paint_and_render_read_no_clock(monkeypatch):
+    monkeypatch.setattr(time, "perf_counter", boom)
+    window = FakeQuickHost(explode=True)
+
+    assert panstats.connect_window(window) is None
+    panstats.painted(10.0)
+    panstats._render_started()
+
+    assert panstats._paint_ring is None
+    assert panstats._render_ring is None
+    assert panstats._render_basis is None
+    assert panstats._paint_ms == []
+    assert panstats._render_ms == []
+    assert window.quick.beforeRendering.slots == []
+    assert window.afterRendering.slots == []
+
+
+def test_render_signal_connected_once_and_released(monkeypatch):
+    monkeypatch.setenv(panstats.ENV_VAR, "1")
+    monkeypatch.setattr(time, "perf_counter", Clock())
+    window = FakeQuickHost()
+
+    panstats.connect_window(window, lambda: None)
+    panstats.connect_window(window, lambda: None)
+    assert window.quick.beforeRendering.slots == [panstats._render_started]
+
+    panstats.disconnect_window(window)
+    assert window.quick.beforeRendering.slots == []
+    assert panstats._render_connections == {}
+
+
+def test_odd_and_missing_samples_do_not_raise(monkeypatch):
+    monkeypatch.setenv(panstats.ENV_VAR, "1")
+    clock = Clock()
+    monkeypatch.setattr(time, "perf_counter", clock)
+
+    empty = panstats.summary()
+    assert empty["paint_ms_p50"] == 0.0
+    assert empty["render_ms_p95"] == 0.0
+
+    panstats.painted(-4.0)
+    panstats.painted(0.0)
+    clock.now = 0.002
+    panstats._render_started()
+    clock.now = 0.001  # a clock that went backwards cannot make a negative sample
+    panstats.frame_presented()
+
+    record = panstats.summary()
+    assert record["paint_ms_p50"] == 0.0
+    assert record["paint_ms_p95"] == 0.0
+    assert record["render_ms_p50"] == 0.0
+    assert record["render_ms_p95"] == 0.0
+
+
 def test_stall_during_motion_captures_once(monkeypatch, tmp_path, sampler):
     path = tmp_path / "pan.jsonl"
     monkeypatch.setenv(panstats.ENV_VAR, str(path))
@@ -495,11 +612,13 @@ def test_second_episode_captures_again_then_caps(monkeypatch, tmp_path, sampler)
     monkeypatch.setattr(time, "perf_counter", clock)
 
     def episode():
-        clock.now += 1.0
-        panstats.camera_changed()
+        # A frame lands, then the drag stalls while input keeps arriving: the
+        # camera change must stay inside PAN_STATS_STALL_CAMERA_S of the check,
+        # or check_stall reads the episode as a drag that already ended.
         clock.now += 1.0
         panstats.frame_presented()
         clock.now += 0.6
+        panstats.camera_changed()
         return panstats.check_stall(clock.now)
 
     dump = tmp_path / "pan.jsonl.stall"
