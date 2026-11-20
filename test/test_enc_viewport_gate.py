@@ -624,10 +624,37 @@ def test_world_chart_scene_stays_visible_when_weather_is_unavailable():
     assert not barbs.visible
 
 
+class _RecordingChartModel:
+    """A chart model double that records each request's camera and keywords.
+
+    The viewport calls ``request(camera, cause=...)``, and previews add
+    ``preview=True``, so the double accepts any call shape and keeps it:
+    ``calls`` holds one ``(camera, kwargs)`` pair per request.
+    """
+
+    def __init__(self):
+        self.calls = []
+
+    def request(self, *args, **kwargs):
+        camera = args[0] if args else kwargs.pop("camera", None)
+        self.calls.append((camera, kwargs))
+        # These tests assert the request shape only; a generation would pull
+        # the widget into its post-request bookkeeping, which other tests cover.
+        return None
+
+    @property
+    def cameras(self):
+        return [camera for camera, _ in self.calls]
+
+    @property
+    def causes(self):
+        return [kwargs.get("cause") for _, kwargs in self.calls]
+
+
 def test_initial_weather_miss_does_not_block_enc_request():
-    requests = []
+    requests = _RecordingChartModel()
     widget = SimpleNamespace(
-        _chart_model=SimpleNamespace(request=requests.append),
+        _chart_model=requests,
         _camera="camera",
         _weather_ready_at=None,
         _enc_chart_layer=True,
@@ -640,16 +667,18 @@ def test_initial_weather_miss_does_not_block_enc_request():
     )
     method = _viewport_widget_class()._request_chart
     method(widget)
-    assert requests == ["camera"]
+    # An unavailable weather model must not veto the raster: the chart is
+    # requested for this camera, as a settle (never a preview).
+    assert requests.calls == [("camera", {"cause": "settle"})]
     widget._model.busy = lambda: True
     method(widget)
-    assert requests == ["camera", "camera"]
+    assert requests.calls == [("camera", {"cause": "settle"})] * 2
 
 
 def test_independent_chart_request_does_not_wait_for_weather():
-    requests = []
+    requests = _RecordingChartModel()
     widget = SimpleNamespace(
-        _chart_model=SimpleNamespace(request=requests.append),
+        _chart_model=requests,
         _camera="camera",
         _weather_ready_at=None,
         _chart_without_weather=False,
@@ -663,7 +692,7 @@ def test_independent_chart_request_does_not_wait_for_weather():
 
     _viewport_widget_class()._request_chart(widget)
 
-    assert requests == ["camera"]
+    assert requests.calls == [("camera", {"cause": "settle"})]
     assert widget.counters["chart_requests"] == 1
     assert widget._chart_requested_after_weather is False
 
@@ -671,10 +700,10 @@ def test_independent_chart_request_does_not_wait_for_weather():
 def test_settled_chart_gives_busy_weather_a_bounded_head_start(monkeypatch):
     now = [100.0]
     monkeypatch.setattr("sailworks.qt.gribviewport.time.perf_counter", lambda: now[0])
-    requests = []
+    requests = _RecordingChartModel()
     timer = Mock()
     widget = SimpleNamespace(
-        _chart_model=SimpleNamespace(request=requests.append),
+        _chart_model=requests,
         _camera="camera",
         _weather_ready_at=1,
         _flush_held_enc_scene_adoption=lambda: None,
@@ -687,24 +716,26 @@ def test_settled_chart_gives_busy_weather_a_bounded_head_start(monkeypatch):
     method = _viewport_widget_class()._request_chart
 
     method(widget)
-    assert requests == []
+    assert requests.calls == []
     now[0] = 100.101
     method(widget)
-    assert requests == []
+    assert requests.calls == []
     assert timer.start.called
     now[0] = 100.151
     method(widget)
-    assert requests == ["camera"]
+    assert requests.calls == [("camera", {"cause": "settle"})]
 
 
 def test_weather_head_start_does_not_rearm_across_continuous_camera_moves(monkeypatch):
     """A move every settle interval must not starve the chart for ever."""
+    from sailworks.qt.gribviewportchart import CHART_STARTUP_HEAD_START_MS
+
     now = [100.0]
     monkeypatch.setattr("sailworks.qt.gribviewport.time.perf_counter", lambda: now[0])
-    requests = []
+    requests = _RecordingChartModel()
     timer = Mock()
     widget = SimpleNamespace(
-        _chart_model=SimpleNamespace(request=requests.append),
+        _chart_model=requests,
         _camera="camera",
         _weather_ready_at=None,
         _chart_without_weather=False,
@@ -728,13 +759,20 @@ def test_weather_head_start_does_not_rearm_across_continuous_camera_moves(monkey
         widget._chart_camera_changed = now[0]
         now[0] += 0.12
         method(widget)
-        fired.append(len(requests))
+        fired.append(len(requests.calls))
 
-    # The first three settles still honour the (draining) weather window; the
-    # fourth proceeds even though the camera has never stopped moving.
-    assert fired == [0, 0, 0, 1, 2, 3]
-    assert widget.counters["chart_requests"] == 3
-    assert timer.start.called
+    # The first settle still honours the (draining) weather window, which
+    # expires 150ms after the basis; every later settle proceeds even though
+    # the camera has never stopped moving.  A window re-armed from each move
+    # would see only 120ms of wait and defer all six.
+    assert fired == [0, 1, 2, 3, 4, 5]
+    assert widget.counters["chart_requests"] == 5
+    assert requests.cameras == ["camera"] * 5
+    assert requests.causes == ["settle"] * 5
+    # The window was armed once, with the remainder of the original basis,
+    # never restarted from the newest camera move.
+    assert timer.start.call_count == 1
+    assert 0 < timer.start.call_args.args[0] <= CHART_STARTUP_HEAD_START_MS
 
 
 def test_retained_chart_bounds_the_weather_head_start(monkeypatch):
@@ -743,10 +781,10 @@ def test_retained_chart_bounds_the_weather_head_start(monkeypatch):
 
     now = [100.0]
     monkeypatch.setattr("sailworks.qt.gribviewport.time.perf_counter", lambda: now[0])
-    requests = []
+    requests = _RecordingChartModel()
     timer = Mock()
     widget = SimpleNamespace(
-        _chart_model=SimpleNamespace(request=requests.append),
+        _chart_model=requests,
         _camera="camera",
         _weather_ready_at=None,
         _chart_without_weather=False,
@@ -764,22 +802,22 @@ def test_retained_chart_bounds_the_weather_head_start(monkeypatch):
 
     now[0] = 100.12
     method(widget)
-    assert requests == []
+    assert requests.calls == []
     assert timer.start.called
 
     now[0] = 100.0 + (CHART_RETAINED_HEAD_START_MS + 50) / 1000.0
     method(widget)
-    assert requests == ["camera"]
+    assert requests.calls == [("camera", {"cause": "settle"})]
 
 
 def test_scene_request_does_not_wait_for_the_weather_head_start(monkeypatch):
     """The resident ENC scene is asked even while the raster waits."""
     now = [100.0]
     monkeypatch.setattr("sailworks.qt.gribviewport.time.perf_counter", lambda: now[0])
-    requests = []
+    requests = _RecordingChartModel()
     scene = Mock()
     widget = SimpleNamespace(
-        _chart_model=SimpleNamespace(request=requests.append),
+        _chart_model=requests,
         _camera="camera",
         _weather_ready_at=None,
         _chart_without_weather=False,
@@ -798,7 +836,7 @@ def test_scene_request_does_not_wait_for_the_weather_head_start(monkeypatch):
     now[0] = 100.12
     _viewport_widget_class()._request_chart(widget)
 
-    assert requests == []
+    assert requests.calls == []
     scene.assert_called_once_with()
 
 
@@ -824,7 +862,7 @@ def test_interactive_preview_does_not_wait_for_weather_with_a_retained_chart(
     request = _viewport_widget_class()._request_interactive_chart
 
     request(widget)
-    chart.request.assert_called_once_with("camera", preview=True)
+    chart.request.assert_called_once_with("camera", preview=True, cause="preview")
     assert widget.counters["chart_requests"] == 1
 
     # With nothing on screen the preview would be a blank; the weather keeps
@@ -845,9 +883,9 @@ def test_interactive_preview_does_not_wait_for_weather_with_a_retained_chart(
 
 
 def test_world_basemap_request_does_not_wait_for_weather():
-    requests = []
+    requests = _RecordingChartModel()
     widget = SimpleNamespace(
-        _chart_model=SimpleNamespace(request=requests.append),
+        _chart_model=requests,
         _camera="camera",
         _weather_ready_at=None,
         _chart_without_weather=True,
@@ -861,7 +899,7 @@ def test_world_basemap_request_does_not_wait_for_weather():
 
     _viewport_widget_class()._request_chart(widget)
 
-    assert requests == ["camera"]
+    assert requests.calls == [("camera", {"cause": "settle"})]
 
 
 def test_text_size_observer_forwards_the_actual_draw(monkeypatch):
