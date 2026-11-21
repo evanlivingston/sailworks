@@ -3494,3 +3494,38 @@ def test_preview_is_unchanged_by_the_settle_gate(monkeypatch):
     exposed = _preview_state(_CoveringScene(covering=False))
     request(exposed)
     assert exposed._chart_model.requests == ["preview"]
+
+
+def test_force_recomposes_a_covered_view_after_an_install(tmp_path):
+    """A forced demand composes the whole view; an idle refresh still reuses."""
+    layer, composer, _enc, _sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    try:
+        _image, first = layer._compose(camera, Event())
+        assert first["static"]["mode"] == "full"
+        assert len(composer.calls) == 1
+
+        # An ordinary covered demand -- the idle refresh at the same camera --
+        # reuses the retained frame and composes no chart pixel.
+        _image, covered = layer._compose(camera, Event())
+        assert covered["static"]["mode"] == "reused"
+        assert covered["static"]["reason"] == "covered"
+        assert covered["static"]["composed_pixels"] == 0
+        assert len(composer.calls) == 1
+
+        # A chart install withdraws that frame: the whole view is composed
+        # again, exactly once, even though the frame still covers it.
+        image, forced = layer._compose(camera, Event(), force=True)
+        assert forced["static"]["mode"] == "full"
+        assert forced["static"]["reuse_serial"] is None
+        assert len(composer.calls) == 2
+        # The composed surface carries the viewport margin, so its pixel count
+        # comes from the composition actually made, not the camera's own size.
+        width, height, factor = composer.calls[-1]
+        assert forced["static"]["composed_pixels"] == round(
+            width * height * factor * factor
+        )
+        # These are the new composition's pixels, not the retained frame's.
+        assert image.pixelColor(5, 5).getRgb()[:3] == (0, 255, 0)
+    finally:
+        layer.close()

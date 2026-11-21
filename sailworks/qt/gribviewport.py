@@ -6528,6 +6528,61 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 metadata, self._camera, getattr(self, "_enc_scene_item", None)
             )
 
+        def attach_data_controller(self, controller):
+            """Bind the data controller that may fetch NOAA coverage here."""
+            self._detach_data_controller()
+            self.data_controller = controller
+            controller.autoChartReady.connect(self._auto_chart_ready)
+
+        def _detach_data_controller(self):
+            """Drop the ready signal from a retained controller, if any.
+
+            The controller outlives this widget, so a signal left connected
+            would call into a disposed viewport after a recreate.
+            """
+            controller = getattr(self, "data_controller", None)
+            if controller is None:
+                self.data_controller = None
+                return
+            try:
+                controller.autoChartReady.disconnect(self._auto_chart_ready)
+            except (RuntimeError, TypeError):
+                # Already disconnected, or the controller is being destroyed.
+                pass
+            self.data_controller = None
+
+        def _auto_chart_demand(self, cause="settle"):
+            """Offer a settled view to the data controller's auto-downloader.
+
+            Runs on the GUI thread but reads only the camera: the catalog and
+            the network stay on the data controller's own worker.  Only a
+            genuinely settled demand may start a download; an interactive or
+            preview cause while the camera is being dragged must not.
+            """
+            from sailworks.qt.encdemand import auto_chart_view
+
+            if cause not in ("settle", "timer", "auto-chart"):
+                return
+            controller = getattr(self, "data_controller", None)
+            download = getattr(controller, "download_missing_chart", None)
+            if download is None:
+                return
+            changed = getattr(self, "_chart_camera_changed", 0.0)
+            if (time.perf_counter() - changed) * 1000.0 < CHART_IDLE_MS:
+                # The view is still moving; the settle timer asks again.
+                return
+            view = auto_chart_view(getattr(self, "_camera", None))
+            if view is None:
+                return
+            bounds, meters_per_pixel = view
+            download(bounds, meters_per_pixel)
+
+        def _auto_chart_ready(self):
+            """A chart was installed for this view: request both fresh frames."""
+            from sailworks.qt.encdemand import auto_chart_ready_request
+
+            auto_chart_ready_request(self)
+
         def _request_chart(self, cause="settle"):
             """Ask the chart layer for its own generation.
 
@@ -6545,6 +6600,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             # a pause of ``ENC_SCENE_ADOPT_SETTLE_MS`` is enough to adopt, so
             # a frame lands mid-drag instead of waiting for release.
             self._flush_held_enc_scene_adoption()
+            # A settled camera may need a chart that is not installed yet.
+            demand = getattr(self, "_auto_chart_demand", None)
+            if demand is not None:
+                demand(cause)
             # The scene is asked before any raster scheduling: in scene mode it
             # *is* the chart, so a weather head start, a chart deferral or a
             # missing raster layer must not starve it.  Withholding it until
@@ -6558,8 +6617,15 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 pending = None
             scene_generation = None
             request_scene = getattr(self, "_request_enc_scene", None)
+            # An installed chart changes what the scene can draw, so the
+            # request left by ``_auto_chart_ready`` replaces a covered demand.
+            replace_scene = bool(getattr(self, "_chart_scene_replace", False))
+            if replace_scene:
+                self._chart_scene_replace = False
             if request_scene is not None:
-                if pending is None:
+                if replace_scene:
+                    scene_generation = request_scene(replace=True)
+                elif pending is None:
                     scene_generation = request_scene()
                 else:
                     scene_generation = pending.get("generation")
@@ -6587,7 +6653,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._chart_scene_deferral = None
             self._chart_scene_suppressed_at = None
             self._chart_scene_suppressed_camera = None
-            if enc_scene_covers_view(getattr(self, "_enc_scene_item", None)):
+            if not replace_scene and enc_scene_covers_view(
+                getattr(self, "_enc_scene_item", None)
+            ):
                 # The presented scene is the chart after all: the gap is gone.
                 self._chart_force_coverage = False
                 panstats.skipped("raster_skip")
@@ -8442,6 +8510,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             if self._disposed:
                 return
             self._disposed = True
+            self._detach_data_controller()
             self._enc_trace_disconnect()
             fallback = getattr(self, "_enc_fallback", None)
             if fallback is not None:

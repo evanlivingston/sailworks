@@ -763,6 +763,11 @@ class ViewportChartLayer:
         self._sampler = None
         self._sampler_sources: "tuple[DisplayWeatherSource, ...]" = ()
         self._composer_instance = None
+        # Set by the worker for the duration of one request: this request
+        # knows the chart sources changed, so the retained static frame must
+        # not be reused.  The worker owns the flag; the GUI thread never
+        # reads it.
+        self._force_static_compose = False
         # Retained isobar-free static content, owned by the worker thread.
         # ``_static_bytes`` mirrors its payload for the GUI-visible report.
         self._static_frames = OrderedDict()
@@ -971,7 +976,7 @@ class ViewportChartLayer:
             if self._pending is not None:
                 self._pending[2].set()
                 self.counters["cancelled"] += 1
-            self._pending = (generation, camera, Event(), preview)
+            self._pending = (generation, camera, Event(), preview, replace)
             self._requested_at[generation] = time.perf_counter()
             while len(self._requested_at) > 64:
                 self._requested_at.pop(next(iter(self._requested_at)))
@@ -1259,13 +1264,14 @@ class ViewportChartLayer:
                 if reset_sources:
                     self._release()
                     self._sources = ()
-                generation, camera, cancel, preview = request
+                generation, camera, cancel, preview, force = request
                 began = time.perf_counter()
                 error = ""
                 image = None
                 metadata = None
                 self._outcome = None
                 try:
+                    self._force_static_compose = force
                     if not cancel.is_set():
                         if preview and not self._await_idle(cancel):
                             self._outcome = "yielded"
@@ -1277,6 +1283,8 @@ class ViewportChartLayer:
                             image, metadata = self._compose(camera, cancel)
                 except Exception as exc:  # a chart failure is never fatal
                     error = str(exc)
+                finally:
+                    self._force_static_compose = False
                 ended = time.perf_counter()
                 requested_at = self._requested_at.pop(generation, None)
                 if metadata is not None and requested_at is not None:
@@ -1435,7 +1443,7 @@ class ViewportChartLayer:
                 self._enc_source = None
 
     # --------------------------------------------------------- composition
-    def _compose(self, camera, cancel, preview=False):
+    def _compose(self, camera, cancel, preview=False, force=None):
         """Compose the chart layer: the application's base chart and isobars.
 
         The base chart is the application's own composition; the ENC cells
@@ -1446,6 +1454,13 @@ class ViewportChartLayer:
         and a forecast-time change composes no chart pixel at all.  The
         composition runs on the chart worker, never on the GUI thread and
         never on the field worker.
+
+        ``force`` withdraws the retained raster for this composition only: a
+        request that knows the sources changed (a chart just installed)
+        recomposes the whole view even when a retained frame still covers it,
+        because the covered frame was composed from the sources before the
+        change and would otherwise be handed back as current.  An ordinary
+        demand leaves it False and keeps the reuse.
         """
         from sailworks.core.mapviewport import MapViewport
 
@@ -1471,7 +1486,17 @@ class ViewportChartLayer:
             self._outcome = "stale"
             return None, None
         composed_at = time.perf_counter()
-        static = self._static_content(job, viewport, factor, cancel)
+        static = self._static_content(
+            job,
+            viewport,
+            factor,
+            cancel,
+            force=(
+                force
+                if force is not None
+                else getattr(self, "_force_static_compose", False)
+            ),
+        )
         static_ms = (time.perf_counter() - composed_at) * 1000.0
         if static is None:
             return None, None
@@ -1560,7 +1585,7 @@ class ViewportChartLayer:
         }
         return image, metadata
 
-    def _static_content(self, job, viewport, factor, cancel):
+    def _static_content(self, job, viewport, factor, cancel, force=False):
         """The isobar-free chart content, reusing what still covers the view.
 
         Returns ``(surface, enc_metadata, report)``.  The surface is the base
@@ -1568,6 +1593,12 @@ class ViewportChartLayer:
         retained frame that encloses the view is painted as it is; one that
         overlaps composes only the exposed rectangles; no frame at this
         quality composes the whole view.  ``None`` means cancelled.
+
+        ``force`` ignores every retained frame, so the whole view is composed
+        again even where a frame covers it.  A chart that was just installed
+        changes what those pixels should be, and a covered frame composed
+        before the install would otherwise be reused as if it were current.
+        The reuse is unchanged for every other demand.
         """
         key = (self._palette, factor, self._base_sources())
         import cairo
@@ -1593,6 +1624,12 @@ class ViewportChartLayer:
             "retained_bytes": 0,
         }
         frame, overlap, shift = self._best_static_frame(key, viewport)
+        if force:
+            # The pixels a retained frame holds were composed from sources
+            # that have since changed.  They are not this demand's chart, so
+            # the frame is not offered at all: the whole view is composed and
+            # retained as usual below.
+            frame, overlap, shift = None, None, None
         if frame is not None and overlap is not None:
             # A frame at a fractional device offset is translated to the
             # nearest whole device pixel rather than rejected: a mouse pan

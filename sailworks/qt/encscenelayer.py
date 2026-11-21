@@ -53,6 +53,33 @@ def partial_incompleteness(done, total):
 #: Bounded whole-cell scene cache, owned by this worker only.
 SCENE_CACHE_BYTES = 64 * 1024 * 1024
 
+#: Complete publications kept for motion fallback and return pans, oldest
+#: first.  The newest is also ``_published``; the others are the frames a
+#: recent camera move drew.  Three covers the A-B-A and A-B-C-A return legs a
+#: pan produces while staying a bounded set of resident scenes.
+RETAINED_SCENES = 3
+
+#: Byte budget for the retained publications.  A scene's vertex payload is
+#: what actually costs memory; the count cap above normally binds first, and
+#: this only guards an unusually dense view.  It is a separate budget from
+#: the per-cell mesh cache above, owned by this worker only.
+RETAINED_SCENE_BYTES = SCENE_CACHE_BYTES
+
+
+def _retained_scene_bytes(entries):
+    """The resident vertex payload of retained publications, oldest first.
+
+    A coarse guard: only each scene's own ``positions`` array is counted,
+    which is the dominant term; colours and labels scale with it.
+    """
+    total = 0
+    for _generation, scene, _metadata in entries:
+        positions = getattr(scene, "positions", None)
+        if positions is not None:
+            total += int(positions.nbytes)
+    return total
+
+
 #: Bounded per-cell mesh cache, a separate budget owned by this worker only.
 #: A warm view change reuses these meshes instead of re-tessellating.  It must
 #: hold one view's resident cells: each mesh is clipped to its cell's own
@@ -491,15 +518,25 @@ class EncSceneLayer:
         self._condition = Condition()
         self._pending = None
         self._active = None
+        #: The payload a retained-scene promotion must publish once
+        #: ``request`` leaves the lock (see :meth:`_reuse`).
+        self._notify_after_lock = None
         #: The demand the worker yielded for weather priority.  It stays open:
         #: ``resume`` re-posts this same generation instead of minting a newer
         #: one that would supersede the work the retry was meant to continue.
         self._yielded = None
         self._generation = 0
         self._published = None
-        #: The last complete (READY) publication.  It is kept across camera
-        #: changes so a pan or zoom can present it until its replacement is
-        #: genuinely assembled instead of blanking the chart.
+        #: Complete publications kept across camera changes, oldest first and
+        #: capped at :data:`RETAINED_SCENES` entries.  The newest is presented
+        #: while its replacement assembles; a return pan into ground a
+        #: retained frame already covers is answered from that frame instead
+        #: of recomposing it (see :meth:`_reuse`).
+        self._retained_ready = []
+        #: The newest complete publication: the frame motion falls back to
+        #: while its replacement assembles, and the frame a partial must not
+        #: displace.  Kept separate from the return-pan cache above, which is
+        #: byte-capped and may also hold older scenes.
         self._last_ready = None
         self._state = STATE_IDLE
         self._error = ""
@@ -542,6 +579,7 @@ class EncSceneLayer:
         self.counters = dict(
             requests=0,
             reuses=0,
+            retained_reuses=0,
             assemblies=0,
             publications=0,
             partial_publications=0,
@@ -722,46 +760,82 @@ class EncSceneLayer:
         """Ask for a scene at this camera (GUI thread).
 
         A published scene that still describes this camera, forecast instant
-        and pixel ratio is reused.  Only the pending slot is replaced; active
-        work finishes and is rejected if superseded.
+        and pixel ratio is reused; so is a retained complete scene whose
+        composed ring covers this camera (see :meth:`_retained_covering`).
+        Only the pending slot is replaced; active work finishes and is
+        rejected if superseded.
         """
+        notify_publish = None
         with self._condition:
             if self._closed:
                 return None
             reused = self._reuse(camera, replace)
             if reused is not None:
-                return reused
-            # A fresh demand supersedes any demand left open by a yield.
-            self._yielded = None
-            self._generation += 1
-            generation = self._generation
-            # Only a fresh demand restarts the courtesy clock.  A retry of an
-            # outstanding (yielded) demand must keep the original instant, or
-            # resetting it here would make the yield budget unreachable: every
-            # retry would look like a brand-new demand and defer forever.
-            if self._state == STATE_READY or self._demand_at is None:
-                self._demand_at = time.perf_counter()
-            if self._pending is not None:
-                self._pending[2].set()
-                self.counters["cancelled"] += 1
-            # A real request always wins: anything the idle prefetch holds is
-            # dropped here, and its worker re-checks the event between cells.
-            if self._prefetch is not None:
-                self._prefetch[0].set()
-                self._prefetch = None
-                self.counters["prefetch_cancelled"] += 1
-            self._pending = (generation, camera, Event())
-            self._state = STATE_LOADING
-            self._error = ""
-            self._incomplete = ""
-            self._progress_done = 0
-            self._progress_total = 0
-            self.counters["requests"] += 1
-            if self._thread is None:
-                self._thread = Thread(
-                    target=self._run, name="grib-viewport-enc-scene", daemon=True
-                )
-                self._thread.start()
+                # A retained-scene promotion publishes the re-adopted payload
+                # after the lock: the presentation must reach the viewport,
+                # which an exact reuse never needs (it already shows it).
+                notify_publish = self._notify_after_lock
+                self._notify_after_lock = None
+                if notify_publish is not None:
+                    # The promotion answers this camera, so an older demand
+                    # still outstanding was made for the camera the promoted
+                    # frame replaces.  Supersede it exactly as a fresh demand
+                    # would: a stale completion must not publish an older
+                    # generation after the promotion minted a newer one.
+                    self._yielded = None
+                    for slot in (self._pending, self._active):
+                        if slot is not None and len(slot) > 2:
+                            slot[2].set()
+                            self.counters["cancelled"] += 1
+                    if self._prefetch is not None:
+                        self._prefetch[0].set()
+                        self._prefetch = None
+                        self.counters["prefetch_cancelled"] += 1
+            else:
+                # A fresh demand supersedes any demand left open by a yield.
+                self._yielded = None
+                self._generation += 1
+                generation = self._generation
+                # Only a fresh demand restarts the courtesy clock.  A retry of
+                # an outstanding (yielded) demand must keep the original
+                # instant, or resetting it here would make the yield budget
+                # unreachable: every retry would look like a brand-new demand
+                # and defer forever.
+                if self._state == STATE_READY or self._demand_at is None:
+                    self._demand_at = time.perf_counter()
+                if self._pending is not None:
+                    self._pending[2].set()
+                    self.counters["cancelled"] += 1
+                # A real request always wins: anything the idle prefetch
+                # holds is dropped here, and its worker re-checks the event
+                # between cells.
+                if self._prefetch is not None:
+                    self._prefetch[0].set()
+                    self._prefetch = None
+                    self.counters["prefetch_cancelled"] += 1
+                self._pending = (generation, camera, Event())
+                self._state = STATE_LOADING
+                self._error = ""
+                self._incomplete = ""
+                self._progress_done = 0
+                self._progress_total = 0
+                self.counters["requests"] += 1
+                if self._thread is None:
+                    self._thread = Thread(
+                        target=self._run, name="grib-viewport-enc-scene", daemon=True
+                    )
+                    self._thread.start()
+        if reused is not None:
+            if notify_publish is not None:
+                self._notify_publish(notify_publish)
+                self._notify_state(STATE_READY)
+                if enc_trace.enabled():
+                    enc_trace.event(
+                        "scene_retained_reuse",
+                        generation=reused,
+                        **enc_trace.camera_fields(camera),
+                    )
+            return reused
         self._notify_state(STATE_LOADING)
         with self._condition:
             self._condition.notify_all()
@@ -932,7 +1006,114 @@ class EncSceneLayer:
         if self._published is not None and self._reusable(camera):
             self.counters["reuses"] += 1
             return self._published[0]
+        retained = self._retained_covering(camera)
+        if retained is not None:
+            self.counters["retained_reuses"] += 1
+            self._notify_after_lock = self._promote_retained(retained)
+            return self._published[0]
         return None
+
+    def _retained_covering(self, camera):
+        """A retained complete scene whose composed ring covers this camera.
+
+        A return pan asks for ground an earlier composition already drew at
+        the same scale.  The ring is scanned newest first, and an entry
+        answers only when the demanded camera is inside the ring that entry
+        actually composed (its viewport grown by ``compose_margin``), carries
+        this demand's content generation and was made for this exact scale,
+        pixel ratio and forecast instant.  ``None`` when nothing qualifies:
+        the demand then composes as before, with the newest retained frame
+        still presented while it assembles.
+        """
+        for entry in reversed(self._retained_ready):
+            if self._retained_covers(entry, camera):
+                return entry
+        return None
+
+    def _retained_covers(self, entry, camera):
+        """Whether one retained publication still serves this camera."""
+        _generation, _scene, metadata = entry
+        if metadata is None or metadata.get("partial"):
+            return False
+        if metadata.get("time") != camera.stamp():
+            return False
+        if metadata.get("dpr", 1) != self._dpr:
+            return False
+        # A publication without a content marker cannot prove it was drawn
+        # with the current palette, so it does not answer rather than risk
+        # promoting stale content.
+        if metadata.get("content") != self.content_generation:
+            return False
+        view = metadata.get("camera")
+        if view is None:
+            return False
+        if (
+            float(view.zoom),
+            float(view.width),
+            float(view.height),
+        ) != (
+            float(camera.zoom),
+            float(camera.width),
+            float(camera.height),
+        ):
+            # A different scale is different content: stroke widths, the
+            # sounding gate and the mesh frame all belong to one zoom.
+            return False
+        projection = metadata.get("projection")
+        margin = metadata.get("compose_margin")
+        if projection is None or margin is None:
+            return False
+        try:
+            point = projection(
+                np.array(
+                    [[float(camera.center_lon), float(camera.center_lat)]],
+                    dtype=np.float64,
+                )
+            )
+        except Exception:  # noqa: BLE001 - a dead projection is only a miss
+            return False
+        if point.shape != (1, 2) or not np.isfinite(point).all():
+            return False
+        # The projection is the retained frame's own: its viewport centre is
+        # (w/2, h/2), and equal scales make the demanded viewport the same
+        # size, so the demanded view fits the composed ring exactly when the
+        # demanded centre projects within ``margin`` of the retained centre
+        # on both axes.
+        margin = float(margin)
+        dx = abs(float(point[0, 0]) - float(view.width) / 2.0)
+        dy = abs(float(point[0, 1]) - float(view.height) / 2.0)
+        return dx <= margin and dy <= margin
+
+    def _promote_retained(self, entry):
+        """Re-publish a retained complete scene as the current publication.
+
+        Runs under the lock from :meth:`_reuse`.  The scene is published
+        unchanged - its own camera, projection and composed ring travel with
+        it, which is what makes the item adopt its already-built GPU
+        coverage - and the payload is copied so stale markers a fallback read
+        added never leak into the current publication.
+
+        The re-publication carries a *fresh* monotonic generation, never the
+        older one the entry was first published under: no listener can
+        mistake it for a publication it has already seen and drop it.  The
+        scene object itself is what the GPU item keys node reuse on, not the
+        generation.
+        """
+        _generation, scene, metadata = entry
+        published = dict(metadata) if metadata is not None else {}
+        published["retained_reuse"] = True
+        self._generation += 1
+        generation = self._generation
+        self._published = (generation, scene, published)
+        # The promoted scene is the complete frame motion now falls back to.
+        self._last_ready = self._published
+        self._state = STATE_READY
+        self._error = ""
+        self._incomplete = INCOMPLETE_LABELS
+        total = published.get("planned_cells", published.get("cells", 0))
+        self._progress_done = total
+        self._progress_total = total
+        return self._published
 
     def _reusable(self, camera):
         """True only for a ready scene that still describes this camera.
@@ -967,7 +1148,8 @@ class EncSceneLayer:
             was_published = self._published is not None or self._last_ready is not None
             self._published = None
             # A new ratio invalidates every uploaded pixel, so the retained
-            # complete scene goes with it.
+            # complete scenes go with it.
+            self._retained_ready = []
             self._last_ready = None
             self._incomplete = ""
             self._progress_done = 0
@@ -1003,7 +1185,8 @@ class EncSceneLayer:
             was_published = self._published is not None or self._last_ready is not None
             self._published = None
             # The palette is part of a scene's identity; the retained complete
-            # scene was drawn with the old colours and must go too.
+            # scenes were drawn with the old colours and must go too.
+            self._retained_ready = []
             self._last_ready = None
             self._incomplete = ""
             self._progress_done = 0
@@ -1022,6 +1205,7 @@ class EncSceneLayer:
                 return
             self._closed = True
             self._published = None
+            self._retained_ready = []
             self._last_ready = None
             self._incomplete = ""
             self._progress_done = 0
@@ -1281,6 +1465,19 @@ class EncSceneLayer:
                             self._published = (generation, scene, metadata)
                             # This is the frame motion may fall back to.
                             self._last_ready = self._published
+                            # Complete publications are kept for motion
+                            # fallback and return pans, oldest first and
+                            # capped: the newest is the motion fallback,
+                            # older entries answer a return pan through
+                            # ``_retained_covering`` without a recomposition.
+                            self._retained_ready.append(self._published)
+                            del self._retained_ready[:-RETAINED_SCENES]
+                            while (
+                                len(self._retained_ready) > 1
+                                and _retained_scene_bytes(self._retained_ready)
+                                > RETAINED_SCENE_BYTES
+                            ):
+                                del self._retained_ready[0]
                             self._state = STATE_READY
                             self._incomplete = INCOMPLETE_LABELS
                             # The finished scene resolved every planned cell,

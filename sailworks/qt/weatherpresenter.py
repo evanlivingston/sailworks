@@ -256,6 +256,13 @@ class WeatherPresenter(QObject):
             request_toggle = getattr(self.canvas, "_drawer_toggle_requested", None)
             if drawer_toggle is not None and request_toggle is not None:
                 drawer_toggle.connect(request_toggle)
+            # The data controller may download NOAA charts for this view: the
+            # viewport offers it a settled camera, and an install asks the
+            # stationary viewport for fresh frames.
+            attach = getattr(widget, "attach_data_controller", None)
+            data = getattr(self.canvas.controller, "data", None)
+            if data is not None and attach is not None:
+                attach(data)
             self.host_widget = widget
             # The window container used to parent itself on the canvas; the
             # widget keeps that parent until the map tab lays it out.
