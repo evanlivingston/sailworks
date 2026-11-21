@@ -85,6 +85,54 @@ makes translucent fills approximate rather than Cairo-identical.  Symbols are
 flat marker triangles; sounding text is a second textured glyph node built
 from :class:`sailworks.qt.glyphatlas.GlyphAtlas`, not QML text items.
 
+Fixed-width strokes
+-------------------
+S-52 line widths are screen constants, but a retained scene is zoomed by one
+affine matrix, which scales every baked stroke width with it.  The coastline
+(``COALNE``, 1.5 logical px) and depth contour (``DEPCNT``, 0.5 px) classes
+are therefore kept at their logical width by rewriting their vertices in
+place.  At frame adoption the intact per-segment quads of those classes are
+parsed out of the baked soup -- each segment is exactly six vertices, so
+centreline, unit normal and width are recovered exactly -- and on every
+presented camera change those six-vertex runs are recomputed and written
+back into the very cell buffers they came from: the centreline stays the
+baked one, which the shared matrix maps exactly like the cells, and the
+half-width is re-laid perpendicular to the transformed segment at the
+class's logical pixels, mapped back through the matrix's linear part so the
+values land in the cells' reference-frame coordinates.  Per-cell draw order
+and the per-cell cull mask are untouched: no second node exists, and a
+culled cell's runs are not rewritten while it is culled.  At the published
+camera the matrix is the identity and the buffers already hold the parsed
+corners bit for bit, so the settled picture is unchanged.  A frame whose
+eligible segments exceed :data:`RESTROKE_MAX_SEGMENTS`, or whose quads do
+not parse (clipped fragments, a foreign soup layout, a run crossing a cell
+boundary), keeps the previous rendering for the whole frame instead of a
+partial mixture.  The write touches only the stroke runs, but marking a
+cell's geometry dirty makes Qt re-upload that cell's whole buffer, so a
+camera change pays one buffer upload per visible restroke-bearing cell.
+
+Fixed-size point symbols
+------------------------
+Point symbols are flat marker triangles baked into the same cell buffers at
+the adopting camera's scale, so the affine matrix scales every symbol with
+the zoom.  Every ``MARKER`` part is kept at its logical size the same way
+the strokes are: at frame adoption each part's layout is recovered exactly --
+the mesh records no marker metadata, so the :mod:`encmarkers` template is
+identified by shape-matching its staged vertices, which yields the original
+feature anchor of every point (the template origin, never a centroid) and
+the template offsets around it.  On every presented camera change those
+vertices are rewritten in place inside their cell buffers: the anchor stays
+the baked one (the shared matrix maps it exactly like the cells, so the
+symbol keeps its ground position) and the offsets are mapped back through
+the matrix's linear part, so the symbol renders at its adopted logical
+extent whatever the zoom.  A part whose layout does not resolve to an
+:class:`encmarkers` template, whose vertices exceed
+:data:`MARKER_MAX_VERTICES`, or that straddles a cell boundary keeps the
+previous rendering for the whole frame -- every symbol scales as before --
+rather than a half-patched mixture.  Per-cell draw order and the per-cell
+cull mask are untouched: no second node exists, and a culled cell's markers
+are not rewritten while it is culled.
+
 :meth:`EncMeshItem.set_view_scene` accepts an assembled
 :class:`encview.ViewScene` (positions, parts, per-part colours, cell spans) and
 uploads it through the same single coloured node, so a multi-cell scene costs
@@ -113,8 +161,13 @@ from PySide6.QtQuick import (
     QSGVertexColorMaterial,
 )
 
-from sailworks.rendering.vectordrawer import encsounding
-from sailworks.rendering.vectordrawer.encmesh import EMPTY_MESH, SceneMesh
+from sailworks.rendering.vectordrawer import encmarkers, encsounding
+from sailworks.rendering.vectordrawer.encmesh import (
+    EMPTY_MESH,
+    LINE,
+    MARKER,
+    SceneMesh,
+)
 from sailworks.rendering.vectordrawer.encpalette import NEUTRAL, vertex_colours
 from sailworks.qt import enc_trace
 from sailworks.qt.glyphatlas import GlyphAtlas
@@ -690,6 +743,438 @@ def coverage_boxes_reach(boxes, width: float, height: float) -> bool:
     )
 
 
+#: S-52 line classes whose strokes keep a fixed logical-pixel width while a
+#: retained scene is zoomed: the coastline (1.5 px) and the depth contour
+#: (0.5 px) from :data:`sailworks.rendering.vectordrawer.encmesh.LINE_STYLES`.
+#: Every other class keeps the baked behaviour, where the affine matrix
+#: scales the stroke width with the zoom.
+RESTROKE_CLASSES = frozenset({"COALNE", "DEPCNT"})
+
+#: Most segments one frame's restroke may carry.  The per-camera patch
+#: re-derives each segment's six vertices on the render thread, so the bound
+#: caps that per-frame work and the bytes it copies (~6 vertices and 12 bytes
+#: each per segment; Qt re-uploads a touched cell's whole buffer to the GPU).
+#: A frame whose eligible segments exceed the bound keeps the previous
+#: rendering for the whole frame -- every class scales as before -- rather
+#: than drawing a half-parsed mixture.
+RESTROKE_MAX_SEGMENTS = 64_000
+
+#: Most marker vertices one frame's fixed-size patch may carry.  The
+#: per-camera patch re-derives each part's vertices on the render thread, so
+#: the bound caps that per-frame work; a frame whose markers exceed the
+#: bound keeps the previous rendering for the whole frame -- every symbol
+#: scales as before -- rather than drawing a half-patched mixture.
+MARKER_MAX_VERTICES = 64_000
+
+#: The staged marker template geometry per kind, flattened to ``(N, 2)``
+#: float64 in emission order -- exactly the arrays
+#: :func:`sailworks.rendering.vectordrawer.encmesh.build_scene_mesh` scales
+#: by ``marker_scale`` and translates onto the feature anchors.
+_MARKER_TEMPLATES = {
+    kind: np.asarray(encmarkers.triangles(kind), dtype=np.float64).reshape(-1, 2)
+    for kind in encmarkers.KINDS
+}
+
+#: The affine that maps a frame onto the camera it was adopted for.
+_IDENTITY_AFFINE = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+
+
+class _RestrokePlan:
+    """Fixed-width stroke data parsed from one adopted static frame.
+
+    ``corners`` holds each eligible segment's four distinct reference-frame
+    corners as an ``(S, 4, 2)`` float32 array ordered ``(near_start,
+    near_end, far_end, far_start)`` -- the values the baked cell buffers
+    carry, so writing them back under the identity matrix is bit-exact with
+    the soup the frame replaced.  ``runs`` records where each parsed stretch
+    sits: ``(first_vertex, segments)`` per contributing ``LINE`` part, in
+    part order, so the per-cell patch can find the runs inside the cell
+    buffers without re-parsing the soup.
+    """
+
+    __slots__ = ("segments", "corners", "runs")
+
+    def __init__(self, segments, corners, runs):
+        self.segments = int(segments)
+        self.corners = corners
+        self.runs = tuple(runs)
+
+
+def _restroke_plan(mesh, local):
+    """Parse the fixed-width stroke quads out of a mesh's baked soup, or ``None``.
+
+    :func:`sailworks.rendering.vectordrawer.encstroke.stroke_lines` emits
+    exactly six vertices per segment, ``(near_start, near_end, far_end,
+    near_start, far_end, far_start)``, so an unclipped quad repeats its first
+    and third corners bit for bit.  A ``LINE`` part of a
+    :data:`RESTROKE_CLASSES` class whose vertices are a whole number of such
+    groups therefore yields, per segment, the centreline endpoints, the unit
+    normal and the reference-frame width -- everything the per-frame
+    derivation needs, with no new field on the mesh or the scene and no
+    change to the disk cache identity.
+
+    A clipped stroke fragment loses the six-vertex layout, so parsing stops
+    at the first group that does not repeat its corners: the prefix joins
+    the restroke and everything from there on keeps the baked rendering,
+    exactly as it behaves today.  ``None`` means the frame carries no
+    eligible segments, or more than :data:`RESTROKE_MAX_SEGMENTS` of them;
+    the caller then renders the frame exactly as before.
+    """
+    parts = getattr(mesh, "parts", ())
+    if not parts:
+        return None
+    positions = np.asarray(mesh.positions)
+    if positions.ndim != 2 or positions.shape[1] != 2:
+        return None
+    corner_blocks = []
+    runs = []
+    total = 0
+    for part in parts:
+        if part.kind != LINE or part.source_class not in RESTROKE_CLASSES:
+            continue
+        first = int(part.first_vertex)
+        count = int(part.vertex_count)
+        if count < 6 or count % 6 != 0:
+            continue
+        if first < 0 or first + count > positions.shape[0]:
+            continue
+        groups = count // 6
+        source_block = positions[first : first + count].reshape(groups, 6, 2)
+        reference_block = local[first : first + count].reshape(groups, 6, 2)
+        paired = np.all(source_block[:, 0] == source_block[:, 3], axis=1) & np.all(
+            source_block[:, 2] == source_block[:, 4], axis=1
+        )
+        delta = reference_block[:, 0] - reference_block[:, 5]
+        widths = np.hypot(delta[:, 0], delta[:, 1])
+        step = (reference_block[:, 1] + reference_block[:, 2]) - (
+            reference_block[:, 0] + reference_block[:, 3]
+        )
+        steps = np.hypot(step[:, 0], step[:, 1])
+        usable = paired & (widths > 0.0) & (steps > 0.0)
+        broken = np.flatnonzero(~usable)
+        take = int(broken[0]) if broken.size else groups
+        if take == 0:
+            continue
+        total += take
+        if total > RESTROKE_MAX_SEGMENTS:
+            return None
+        corner_blocks.append(reference_block[:take, [0, 1, 2, 5], :])
+        runs.append((first, take))
+    if not corner_blocks:
+        return None
+    corners = np.concatenate(corner_blocks).astype(np.float32)
+    return _RestrokePlan(total, corners, runs)
+
+
+def _restroke_quad_rows(corners, lin=None):
+    """Emission-order ``(S, 6, 2)`` float32 positions for parsed segments.
+
+    ``lin is None`` expands the parsed corners into the stroker's six-vertex
+    emission order -- the baked cell buffers' own vertices, bit for bit.  If
+    ``lin`` is the linear part ``(a, b, d, e)`` of the frame matrix, the
+    centreline stays where it is baked (the matrix maps it exactly like the
+    cells) and each half-width is re-laid perpendicular to the transformed
+    segment at the class's reference-frame pixels, then mapped back through
+    the inverse linear part so the values land in the cells' reference-frame
+    coordinates and the cell matrix puts them on the intended item pixels.
+    A segment whose transformed direction collapses, or a singular linear
+    part where no offset survives the mapping, keeps its baked corners: the
+    cells' own matrix, whatever it does to the width.
+    """
+    corners = np.asarray(corners, dtype=np.float32)
+    segments = int(corners.shape[0])
+    quad = np.empty((segments, 6, 2), dtype=np.float32)
+    quad[:, 0] = corners[:, 0]
+    quad[:, 1] = corners[:, 1]
+    quad[:, 2] = corners[:, 2]
+    quad[:, 3] = corners[:, 0]
+    quad[:, 4] = corners[:, 2]
+    quad[:, 5] = corners[:, 3]
+    if lin is None:
+        return quad
+    a, b, d, e = (float(value) for value in lin)
+    det = a * e - b * d
+    if det == 0.0:
+        return quad
+    quads = corners.astype(np.float64)
+    centre0 = (quads[:, 0] + quads[:, 3]) * 0.5
+    centre1 = (quads[:, 1] + quads[:, 2]) * 0.5
+    delta = quads[:, 0] - quads[:, 3]
+    width = np.hypot(delta[:, 0], delta[:, 1])
+    unit_normal = delta / width[:, None]
+    unit_direction = np.column_stack((unit_normal[:, 1], -unit_normal[:, 0]))
+    sx = a * unit_direction[:, 0] + b * unit_direction[:, 1]
+    sy = d * unit_direction[:, 0] + e * unit_direction[:, 1]
+    length = np.hypot(sx, sy)
+    usable = length > 0.0
+    scale = np.where(usable, length, 1.0)
+    half = width * 0.5
+    # The item-pixel offset: perpendicular to the transformed segment, at
+    # half the class's reference-frame (logical) width.
+    off_x = (-sy / scale) * half
+    off_y = (sx / scale) * half
+    # Back through the inverse linear part, into reference-frame offsets.
+    local_x = np.where(usable, (e * off_x - b * off_y) / det, 0.0)
+    local_y = np.where(usable, (-d * off_x + a * off_y) / det, 0.0)
+    offset = np.column_stack((local_x, local_y))
+    near0 = centre0 + offset
+    far0 = centre0 - offset
+    near1 = centre1 + offset
+    far1 = centre1 - offset
+    quad[:, 0] = near0
+    quad[:, 1] = near1
+    quad[:, 2] = far1
+    quad[:, 3] = near0
+    quad[:, 4] = far1
+    quad[:, 5] = far0
+    return quad
+
+
+def _restroke_groups(plan, ranges):
+    """Split a plan's runs across the cell spans, or ``None`` if one straddles.
+
+    ``ranges`` are the ``(first_vertex, vertex_count)`` cell spans the cell
+    buffers were built from, in composite order.  Each parsed run must sit
+    inside exactly one cell: a run split across two cells would have its
+    halves patched at different cameras and drawn as a torn quad, so such a
+    plan is rejected and the frame keeps the baked rendering whole.  Each
+    group is ``(cell_index, cell_first, run_first, corner_start, take)``.
+    """
+    groups = []
+    corner_start = 0
+    run_index = 0
+    runs = plan.runs
+    for cell_index, (first, length) in enumerate(ranges):
+        cell_end = first + length
+        while run_index < len(runs) and runs[run_index][0] < cell_end:
+            run_first, take = runs[run_index]
+            run_first = int(run_first)
+            take = int(take)
+            if run_first < first or run_first + take * 6 > cell_end:
+                return None
+            groups.append((cell_index, first, run_first, corner_start, take))
+            corner_start += take
+            run_index += 1
+    if run_index != len(runs):
+        return None
+    return tuple(groups)
+
+
+class _MarkerPart:
+    """One parsed marker part: span, per-point block size, anchors, offsets.
+
+    ``first``/``count`` locate the part's vertices in the composite soup,
+    ``block`` is the per-point vertex count of the marker template,
+    ``anchors`` are the feature anchors and ``offsets`` the per-block
+    template offsets around them.  The parse phase recovers ``anchors`` in
+    source units (``offsets`` is ``None``); the reference phase rewrites both
+    into reference-frame local pixels.
+    """
+
+    __slots__ = ("first", "count", "block", "anchors", "offsets")
+
+    def __init__(self, first, count, block, anchors, offsets):
+        self.first = first
+        self.count = count
+        self.block = block
+        self.anchors = anchors
+        self.offsets = offsets
+
+
+class _MarkerPlan:
+    """Fixed-size marker data parsed from one adopted static frame.
+
+    ``entries`` holds one :class:`_MarkerPart` per parsed ``MARKER`` part in
+    vertex order.  The anchors are the original exact feature positions
+    recovered by shape matching, never a centroid; ``None`` entries are
+    impossible -- a part that does not resolve keeps the whole frame's baked
+    rendering instead.
+    """
+
+    __slots__ = ("entries",)
+
+    def __init__(self, entries):
+        self.entries = entries
+
+
+def _match_marker_template(block: np.ndarray):
+    """Recover ``(block, anchors)`` for one staged marker part, or ``None``.
+
+    :func:`sailworks.rendering.vectordrawer.encmesh.build_scene_mesh` stages
+    every point of a ``MARKER`` part as ``anchor +
+    encmarkers.triangles(kind) * marker_scale`` in source units, all points
+    of the part sharing one template, and records no marker metadata on the
+    mesh.  The template is therefore recovered by exact shape matching: a
+    candidate kind qualifies only when scaling its flattened template
+    reproduces every staged vertex of every point block from one anchor per
+    block, inside float64 staging roundoff.  The recovered anchors are the
+    original feature anchors -- the template origin, never a vertex
+    centroid.
+
+    Kinds whose templates are geometrically identical can tie, and a disc
+    template at twice the scale matches a smaller disc; every such tie
+    yields the same anchors and the same rendered geometry, so the first
+    qualifying kind in :data:`encmarkers.KINDS` order is taken.  ``None``
+    means no kind reproduces the layout (a foreign soup, a split fragment)
+    and the caller keeps the baked rendering whole.
+    """
+    count = int(block.shape[0])
+    extent = float(np.abs(block).max()) if count else 0.0
+    tolerance = 1e-9 * max(extent, 1.0)
+    for kind in encmarkers.KINDS:
+        template = _MARKER_TEMPLATES[kind]
+        size = int(template.shape[0])
+        if size == 0 or size > count or count % size:
+            continue
+        blocks = block.reshape(count // size, size, 2)
+        offsets = blocks - blocks[:, :1]
+        shape = template - template[:1]
+        lengths = np.hypot(shape[:, 0], shape[:, 1])
+        index = int(np.argmax(lengths))
+        if not lengths[index] > 0.0:
+            continue
+        block_lengths = np.hypot(offsets[:, index, 0], offsets[:, index, 1])
+        if not np.allclose(block_lengths, block_lengths[0], rtol=1e-9, atol=0.0):
+            continue
+        scale = float(block_lengths[0]) / float(lengths[index])
+        if not np.isfinite(scale) or not scale > 0.0:
+            continue
+        if not np.allclose(offsets, shape * scale, rtol=0.0, atol=tolerance):
+            continue
+        anchors = blocks[:, 0] - template[:1] * scale
+        return size, anchors
+    return None
+
+
+def _marker_plan(mesh):
+    """Parse the fixed-size marker runs out of a mesh's parts, or ``None``.
+
+    Every ``MARKER`` part must resolve to one :mod:`encmarkers` template at
+    one scale, with one anchor per point block reproduced exactly (see
+    :func:`_match_marker_template`); the first part that does not rejects
+    the plan, and the frame keeps the baked rendering whole -- all markers
+    or none, so a scene never draws a half-patched mixture.  The vertex
+    bound mirrors the stroke patch: :data:`MARKER_MAX_VERTICES` caps the
+    per-frame rewrite.
+    """
+    parts = getattr(mesh, "parts", ())
+    if not parts:
+        return None
+    positions = np.asarray(mesh.positions)
+    if positions.ndim != 2 or positions.shape[1] != 2:
+        return None
+    entries = []
+    total = 0
+    for part in parts:
+        if part.kind != MARKER:
+            continue
+        first = int(part.first_vertex)
+        count = int(part.vertex_count)
+        if first < 0 or count < 3 or first + count > positions.shape[0]:
+            return None
+        parsed = _match_marker_template(positions[first : first + count])
+        if parsed is None:
+            return None
+        size, anchors = parsed
+        total += count
+        if total > MARKER_MAX_VERTICES:
+            return None
+        entries.append(_MarkerPart(first, count, size, anchors, None))
+    if not entries:
+        return None
+    return _MarkerPlan(tuple(entries))
+
+
+def _marker_reference(entries, local64, projection, origin, base):
+    """Move parsed marker parts into their reference-frame coordinates.
+
+    Each block's anchor is projected through the same float64 path the
+    staged vertices took -- origin subtraction, then projection -- and the
+    template offsets are the reference-frame block minus that anchor: the
+    exact values the baked cell buffers hold around the anchor.
+    """
+    moved = []
+    for entry in entries:
+        anchors = np.asarray(entry.anchors, dtype=np.float64)
+        if origin is not None:
+            anchors = anchors - np.asarray(origin, dtype=np.float64).reshape(1, 2)
+        if projection is not None:
+            anchors = np.asarray(projection(anchors), dtype=np.float64)
+        anchors = anchors - base
+        blocks = local64[entry.first : entry.first + entry.count].reshape(
+            -1, entry.block, 2
+        )
+        moved.append(
+            _MarkerPart(
+                entry.first,
+                entry.count,
+                entry.block,
+                anchors,
+                blocks - anchors[:, None, :],
+            )
+        )
+    return _MarkerPlan(tuple(moved))
+
+
+def _marker_groups(plan, ranges):
+    """Split a plan's parts across the cell spans, or ``None`` if one straddles.
+
+    ``ranges`` are the ``(first_vertex, vertex_count)`` cell spans the cell
+    buffers were built from, in composite order.  Each parsed part must sit
+    inside exactly one cell: a part split across two cells would have its
+    halves patched at different cameras and drawn as a torn symbol, so such
+    a plan is rejected and the frame keeps the baked rendering whole.  Each
+    group is ``(cell_index, cell_first, entry_index)``.
+    """
+    groups = []
+    entry_index = 0
+    entries = plan.entries
+    for cell_index, (first, length) in enumerate(ranges):
+        cell_end = first + length
+        while entry_index < len(entries) and entries[entry_index].first < cell_end:
+            entry = entries[entry_index]
+            if entry.first < first or entry.first + entry.count > cell_end:
+                return None
+            groups.append((cell_index, first, entry_index))
+            entry_index += 1
+    if entry_index != len(entries):
+        return None
+    return tuple(groups)
+
+
+def _marker_offsets(offsets, lin):
+    """Reference-frame offsets that render at their reference-frame extent.
+
+    ``lin`` is the linear part ``(a, b, d, e)`` of the cell matrix.  Each
+    template offset is mapped back through the inverse linear part, so the
+    matrix renders it at exactly its reference-frame (logical) extent: the
+    symbol's screen size is the adopted frame's, whatever the zoom.  A
+    singular linear part keeps the baked offsets -- the cells' own matrix,
+    whatever it does to the size.
+    """
+    if lin is None:
+        return offsets
+    a, b, d, e = (float(value) for value in lin)
+    det = a * e - b * d
+    if det == 0.0:
+        return offsets
+    tx, ty = offsets[..., 0], offsets[..., 1]
+    return np.stack(((e * tx - b * ty) / det, (-d * tx + a * ty) / det), axis=-1)
+
+
+def _marker_rows(entry, lin):
+    """Emission-order ``(count, 2)`` float64 positions for one marker part.
+
+    ``lin is None`` expands the parsed anchors and offsets into the baked
+    cell buffers' own vertices.  With ``lin``, the anchors stay where they
+    are baked (the matrix maps them exactly like the cells) and the offsets
+    pre-compensate the matrix's linear part (see :func:`_marker_offsets`).
+    """
+    return (entry.anchors[:, None, :] + _marker_offsets(entry.offsets, lin)).reshape(
+        -1, 2
+    )
+
+
 class _CellGeometry:
     """One static vertex buffer: a cell's vertices and their reference bbox."""
 
@@ -706,15 +1191,39 @@ class _StaticFrame:
     ``cells`` holds one :class:`_CellGeometry` per contributing cell in
     composite order.  ``reference`` holds the reference-frame positions of up
     to four probe vertices and ``samples`` their source positions, which is all
-    a later frame needs to recover the pan/zoom matrix.
+    a later frame needs to recover the pan/zoom matrix.  ``restroke`` carries
+    the fixed-width stroke patch's data, or ``None`` when the frame keeps
+    the previous rendering for every class; ``restroke_groups`` is that
+    plan's per-cell split across ``cells``.
     """
 
-    __slots__ = ("cells", "reference", "samples")
+    __slots__ = (
+        "cells",
+        "reference",
+        "samples",
+        "restroke",
+        "restroke_groups",
+        "markers",
+        "marker_groups",
+    )
 
-    def __init__(self, cells, reference, samples):
+    def __init__(
+        self,
+        cells,
+        reference,
+        samples,
+        restroke=None,
+        restroke_groups=(),
+        markers=None,
+        marker_groups=(),
+    ):
         self.cells = cells
         self.reference = reference
         self.samples = samples
+        self.restroke = restroke
+        self.restroke_groups = restroke_groups
+        self.markers = markers
+        self.marker_groups = marker_groups
 
 
 def build_static_frame(
@@ -734,16 +1243,46 @@ def build_static_frame(
     count = int(positions.shape[0])
     if count == 0:
         return None
-    colours = _premultiplied_colours(
-        vertex_colours(getattr(mesh, "parts", ()), count, default_color)
-    )
+    straight = vertex_colours(getattr(mesh, "parts", ()), count, default_color)
     base = (positions.min(axis=0) + positions.max(axis=0)) / 2.0
-    local = np.ascontiguousarray(positions - base, dtype=np.float32)
+    local64 = positions - base
+    local = np.ascontiguousarray(local64, dtype=np.float32)
+    try:
+        plan = _restroke_plan(mesh, local64)
+    except Exception:  # noqa: BLE001 - the fixed-width patch is optional; a
+        # parse surprise must never break the frame, and the fallback -- plan
+        # None -- renders the frame exactly as the previous behaviour does.
+        plan = None
+    try:
+        markers = _marker_plan(mesh)
+    except Exception:  # noqa: BLE001 - the fixed-size patch is optional; a
+        # parse surprise must never break the frame, and the fallback -- plan
+        # None -- renders the frame exactly as the previous behaviour does.
+        markers = None
+    colours = _premultiplied_colours(straight)
 
     spans = tuple(getattr(mesh, "cells", ()))
     ranges = [(int(span.first_vertex), int(span.vertex_count)) for span in spans] or [
         (0, count)
     ]
+    groups = ()
+    if plan is not None:
+        groups = _restroke_groups(plan, ranges)
+        if groups is None:
+            # A parsed run crosses a cell boundary: patching per cell would
+            # split its quad across two buffers drawn at different times, so
+            # the frame keeps the baked rendering whole.
+            plan = None
+            groups = ()
+    marker_groups = ()
+    if markers is not None:
+        marker_groups = _marker_groups(markers, ranges)
+        if marker_groups is None:
+            # A marker part crosses a cell boundary: patching per cell would
+            # split the symbol across two buffers drawn at different times,
+            # so the frame keeps the baked rendering whole.
+            markers = None
+            marker_groups = ()
     cells = []
     for first, length in ranges:
         if length <= 0:
@@ -766,6 +1305,11 @@ def build_static_frame(
             )
         )
 
+    # Markers join the frame in reference-frame coordinates: the anchors and
+    # per-block template offsets the per-camera patch rewrites around.
+    if markers is not None:
+        markers = _marker_reference(markers.entries, local64, projection, origin, base)
+
     # Probes: the extreme vertices of the reference frame, which are the
     # best-conditioned triple for the solve and the widest baseline for the
     # residual check.
@@ -784,7 +1328,9 @@ def build_static_frame(
             break
     reference = (positions[probes] - base).astype(np.float64)
     sources = np.asarray(mesh.positions, dtype=np.float64)[probes]
-    return _StaticFrame(tuple(cells), reference, sources)
+    return _StaticFrame(
+        tuple(cells), reference, sources, plan, groups, markers, marker_groups
+    )
 
 
 class EncMeshItem(QQuickItem):
@@ -897,6 +1443,25 @@ class EncMeshItem(QQuickItem):
         #: app-level capture harness so a matrix-path frame is not confused
         #: with a fallback frame.
         self.fallback_activations = 0
+
+        #: Fixed-width stroke bookkeeping (see :func:`_restroke_plan`).  The
+        #: stroke vertices live in the cell buffers; this records the camera
+        #: the patched cells reflect (``_restroke_coeffs``, ``None`` when no
+        #: cell is patched), the patched cells' indices, and whether the
+        #: buffers are known to hold the baked corners (``_restroke_fresh``
+        #: False).  There is no overlay node: the patch rewrites runs inside
+        #: the cell buffers, keeping per-cell draw order and culling.
+        self._restroke_coeffs = None
+        self._restroke_patched = set()
+        self._restroke_fresh = False
+
+        #: Fixed-size point-symbol bookkeeping (see :func:`_marker_plan`),
+        #: mirroring the stroke patch's: the camera the patched cells
+        #: reflect, the patched cells' indices, and whether the buffers are
+        #: known to hold the baked vertices (``_marker_fresh`` False).
+        self._marker_coeffs = None
+        self._marker_patched = set()
+        self._marker_fresh = False
 
         # Sounding text state.  The atlas image is CPU-side and reusable; the
         # texture and text node belong to whatever node Qt currently owns.
@@ -1393,6 +1958,16 @@ class EncMeshItem(QQuickItem):
         self._retained_restore = False
         if slot is not None:
             self._retained_dead.extend(slot[2])
+        # The cell buffers die with the nodes; a rebuilt graph uploads
+        # ``cell.vertices``, which the patch never mutates (the baked
+        # corners).  Demand one rewrite anyway: the recorded camera no longer
+        # describes anything.
+        self._restroke_coeffs = None
+        self._restroke_patched = set()
+        self._restroke_fresh = True
+        self._marker_coeffs = None
+        self._marker_patched = set()
+        self._marker_fresh = True
         self._text_node = None
         self._text_geometry = None
         self._text_material = None
@@ -1618,6 +2193,246 @@ class EncMeshItem(QQuickItem):
         )
         self._matrix_count += 1
 
+    def _write_restroke_cell(self, cell_index, groups, flat) -> None:
+        """Rewrite one cell's stroke runs inside its geometry buffer.
+
+        ``groups`` are that cell's ``(cell_index, cell_first, run_first,
+        corner_start, take)`` records and ``flat`` is ``None`` for the baked
+        write -- the parsed corners in the stroker's emission order, bit for
+        bit -- or an ``(S * 6, 2)`` float32 array covering the cell's
+        segments in the same order.  Each run is one ``memmove`` of full
+        12-byte rows at its own offset in the cell's buffer, so only the
+        stroke vertices are copied: the colours, the triangle order and
+        everything around them are exactly as uploaded.  Render thread only;
+        the caller decides which cells are written.
+        """
+        nodes = self._cell_nodes
+        if cell_index >= len(nodes):
+            return
+        node = nodes[cell_index]
+        if node is None or not _wrapper_is_valid(node):
+            return
+        geometry = node.geometry()
+        if geometry is None:
+            return
+        cells = self._static.cells
+        buffer = cells[cell_index].vertices
+        total = int(buffer.shape[0])
+        stride = VERTEX_DTYPE.itemsize
+        base = _vertex_address(geometry)
+        written = 0
+        marked = False
+        for _, cell_first, run_first, corner_start, take in groups:
+            start = int(run_first) - int(cell_first)
+            count = int(take) * 6
+            if start < 0 or start + count > total:
+                # Defensive: the run was validated against the cell spans at
+                # adoption; never write outside the buffer regardless.
+                continue
+            rows = np.empty(count, dtype=VERTEX_DTYPE)
+            if flat is None:
+                corners = self._static.restroke.corners[
+                    int(corner_start) : int(corner_start) + int(take)
+                ]
+                flat_run = _restroke_quad_rows(corners).reshape(count, 2)
+            else:
+                flat_run = flat[written : written + count]
+            rows["x"] = flat_run[:, 0]
+            rows["y"] = flat_run[:, 1]
+            rows["rgba"] = buffer[start : start + count]["rgba"]
+            ctypes.memmove(
+                ctypes.c_void_p(base + start * stride),
+                ctypes.c_void_p(rows.ctypes.data),
+                count * stride,
+            )
+            written += count
+            marked = True
+        if marked:
+            node.markDirty(QSGNode.DirtyStateBit.DirtyGeometry)
+
+    def _update_restroke(self, coeffs) -> None:
+        """Keep the fixed-width stroke vertices in the cell buffers current.
+
+        Runs on the render thread after the cell matrix is applied.  There is
+        no overlay node: the parsed segments' six-vertex runs are rewritten
+        inside the very cell buffers they were parsed from, in the cells'
+        reference-frame coordinates, so per-cell draw order and the per-cell
+        cull mask stay exactly the baked behaviour's.  Nothing runs here when
+        the camera has not changed since the last write, so a still viewport
+        costs nothing.  At the camera a frame was adopted for the matrix is
+        the identity and the buffers already hold the parsed corners bit for
+        bit; a return to it restores them the same way.
+
+        A culled cell draws zero vertices, so its runs are not rewritten
+        while it stays culled; a cell leaving the patch set is restored to
+        its baked corners instead, so a buffer is always either baked or
+        current for the recorded camera, whichever camera shows it next.  A
+        rebuilt or restored graph starts from ``_restroke_fresh``, which
+        reconciles every restroke-bearing cell once.
+
+        Cost, honestly: the write touches only the stroke runs, but marking a
+        cell's geometry dirty makes Qt re-upload that cell's whole buffer to
+        the GPU, so a camera change pays one buffer upload per visible
+        restroke-bearing cell plus one per cell just restored -- bounded by
+        the scene, not by :data:`RESTROKE_MAX_SEGMENTS`.
+        """
+        frame = self._static
+        plan = frame.restroke if frame is not None else None
+        if plan is None:
+            # Nothing parses: the cell buffers hold the baked rendering and
+            # nothing touches them, whatever the camera does.
+            self._restroke_coeffs = None
+            self._restroke_patched = set()
+            self._restroke_fresh = False
+            return
+        groups = frame.restroke_groups
+        exact = coeffs is None or coeffs == _IDENTITY_AFFINE
+        if self._restroke_fresh:
+            pass  # unknown buffer provenance: always reconcile below
+        elif exact:
+            if not self._restroke_patched:
+                return
+        elif coeffs == self._restroke_coeffs:
+            return
+        by_cell = {}
+        for group in groups:
+            by_cell.setdefault(group[0], []).append(group)
+        visible = self._cell_visible
+        new_patched = set()
+        for cell_index, cell_groups in by_cell.items():
+            onscreen = cell_index < len(visible) and bool(visible[cell_index])
+            if onscreen and not exact:
+                corners = np.concatenate(
+                    [
+                        plan.corners[int(start) : int(start) + int(take)]
+                        for _, _, _, start, take in cell_groups
+                    ]
+                )
+                quad = _restroke_quad_rows(
+                    corners, (coeffs[0], coeffs[1], coeffs[3], coeffs[4])
+                )
+                self._write_restroke_cell(cell_index, cell_groups, quad.reshape(-1, 2))
+                new_patched.add(cell_index)
+            elif (
+                onscreen or cell_index in self._restroke_patched or self._restroke_fresh
+            ):
+                # An exact camera after a patch, a cell just culled out of
+                # the patch set, or buffers of unknown provenance (a rebuilt
+                # or restored graph): write the baked corners back.
+                self._write_restroke_cell(cell_index, cell_groups, None)
+        self._restroke_coeffs = None if exact else coeffs
+        self._restroke_patched = new_patched
+        self._restroke_fresh = False
+
+    def _write_marker_cell(self, cell_index, cell_groups, lin) -> None:
+        """Rewrite one cell's marker runs inside its geometry buffer.
+
+        ``cell_groups`` are that cell's ``(cell_first, entry_index)`` records
+        and ``lin`` is the linear part ``(a, b, d, e)`` of the current
+        matrix, or ``None`` for the baked write -- the anchors and template
+        offsets the buffers were uploaded with.  Each part is one ``memmove``
+        of full 12-byte rows at its own offset in the cell's buffer, so only
+        the marker vertices are copied: the colours, the triangle order and
+        everything around them are exactly as uploaded.  Render thread only;
+        the caller decides which cells are written.
+        """
+        nodes = self._cell_nodes
+        if cell_index >= len(nodes):
+            return
+        node = nodes[cell_index]
+        if node is None or not _wrapper_is_valid(node):
+            return
+        geometry = node.geometry()
+        if geometry is None:
+            return
+        plan = self._static.markers
+        buffer = self._static.cells[cell_index].vertices
+        total = int(buffer.shape[0])
+        stride = VERTEX_DTYPE.itemsize
+        base = _vertex_address(geometry)
+        marked = False
+        for cell_first, entry_index in cell_groups:
+            entry = plan.entries[entry_index]
+            start = int(entry.first) - int(cell_first)
+            count = int(entry.count)
+            if start < 0 or start + count > total:
+                # Defensive: the part was validated against the cell spans at
+                # adoption; never write outside the buffer regardless.
+                continue
+            rows = np.empty(count, dtype=VERTEX_DTYPE)
+            flat = _marker_rows(entry, lin)
+            rows["x"] = flat[:, 0]
+            rows["y"] = flat[:, 1]
+            rows["rgba"] = buffer[start : start + count]["rgba"]
+            ctypes.memmove(
+                ctypes.c_void_p(base + start * stride),
+                ctypes.c_void_p(rows.ctypes.data),
+                count * stride,
+            )
+            marked = True
+        if marked:
+            node.markDirty(QSGNode.DirtyStateBit.DirtyGeometry)
+
+    def _update_markers(self, coeffs) -> None:
+        """Keep the fixed-size marker vertices in the cell buffers current.
+
+        Runs on the render thread after the cell matrix is applied, with the
+        same in-place discipline as the stroke patch: the parsed parts'
+        vertices are rewritten inside the very cell buffers they were parsed
+        from, so per-cell draw order and the per-cell cull mask stay exactly
+        the baked behaviour's, and nothing runs when the camera has not
+        changed since the last write.  Each block's anchor stays the baked
+        one -- the shared matrix maps it exactly like the cells, so the
+        symbol keeps its ground position -- and the template offsets are
+        mapped back through the matrix's linear part, so the symbol renders
+        at its adopted logical extent whatever the zoom.  At the camera a
+        frame was adopted for the matrix is the identity and the rewrite
+        reproduces the baked vertices; a culled cell's parts are not
+        rewritten while it stays culled; a rebuilt or restored graph starts
+        from ``_marker_fresh``, which reconciles every marker-bearing cell
+        once.
+        """
+        frame = self._static
+        plan = frame.markers if frame is not None else None
+        if plan is None:
+            # Nothing parses: the cell buffers hold the baked rendering and
+            # nothing touches them, whatever the camera does.
+            self._marker_coeffs = None
+            self._marker_patched = set()
+            self._marker_fresh = False
+            return
+        exact = coeffs is None or coeffs == _IDENTITY_AFFINE
+        if self._marker_fresh:
+            pass  # unknown buffer provenance: always reconcile below
+        elif exact:
+            if not self._marker_patched:
+                return
+        elif coeffs == self._marker_coeffs:
+            return
+        by_cell = {}
+        for cell_index, cell_first, entry_index in frame.marker_groups:
+            by_cell.setdefault(cell_index, []).append((cell_first, entry_index))
+        visible = self._cell_visible
+        new_patched = set()
+        for cell_index, cell_groups in by_cell.items():
+            onscreen = cell_index < len(visible) and bool(visible[cell_index])
+            if onscreen and not exact:
+                self._write_marker_cell(
+                    cell_index,
+                    cell_groups,
+                    (coeffs[0], coeffs[1], coeffs[3], coeffs[4]),
+                )
+                new_patched.add(cell_index)
+            elif onscreen or cell_index in self._marker_patched or self._marker_fresh:
+                # An exact camera after a patch, a cell just culled out of
+                # the patch set, or buffers of unknown provenance (a rebuilt
+                # or restored graph): write the baked anchors and offsets
+                # back.
+                self._write_marker_cell(cell_index, cell_groups, None)
+        self._marker_coeffs = None if exact else coeffs
+        self._marker_patched = new_patched
+        self._marker_fresh = False
+
     def _cull_cells(self, coeffs) -> None:
         """Keep only cells whose transformed bbox reaches the item; O(cells).
 
@@ -1824,6 +2639,10 @@ class EncMeshItem(QQuickItem):
         self._cell_nodes = nodes
         self._cell_vertex_counts = list(counts)
         self._cell_visible = visible
+        # The restored frame carries its own stroke and marker plans; the
+        # rewrites are reconciled from them on the next camera.
+        self._restroke_fresh = True
+        self._marker_fresh = True
         return True
 
     def _upload_cells(self) -> None:
@@ -1938,6 +2757,8 @@ class EncMeshItem(QQuickItem):
             )
             self._ensure_content()
             self._upload_cells()
+            self._restroke_fresh = True
+            self._marker_fresh = True
         self._geometry_dirty = False
         coeffs = self._frame_coeffs()
         if coeffs is None and self._static is not None:
@@ -1955,6 +2776,8 @@ class EncMeshItem(QQuickItem):
             )
             self._ensure_content()
             self._upload_cells()
+            self._restroke_fresh = True
+            self._marker_fresh = True
             coeffs = self._frame_coeffs()
         if coeffs is None:
             # Nothing to transform (empty scene, or a degenerate probe set that
@@ -1963,9 +2786,13 @@ class EncMeshItem(QQuickItem):
             # complete picture while its replacement assembles.
             if self._content_node is not None and not self._cell_nodes:
                 self._content_node.setMatrix(QMatrix4x4())
+            self._update_restroke(None)
+            self._update_markers(None)
             return
         self._apply_matrix(coeffs)
         self._cull_cells(coeffs)
+        self._update_restroke(coeffs)
+        self._update_markers(coeffs)
 
     def _children_are_usable(self, node, static: bool) -> bool:
         if node is not self._node or self._built_static != static:
