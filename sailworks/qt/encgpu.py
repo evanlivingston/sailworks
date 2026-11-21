@@ -339,6 +339,23 @@ CLIP_PAD = 32.0
 #: exact figure from the published scene through :meth:`EncMeshItem.set_compose_margin`.
 SCENE_MARGIN = 256.0
 
+#: Vertex bytes one replaced frame may keep resident for a return pan.
+#: Exactly one frame is kept: the one presented immediately before the
+#: current one, so an A->B->A pan at one zoom re-attaches its already-built
+#: nodes instead of rebuilding and re-uploading them.  The retained nodes
+#: stay detached from the scene graph, so they draw nothing while another
+#: scene is presented, and they are released on the render thread when a
+#: later frame replaces them.
+RETAINED_FRAME_VERTEX_BYTES = 64 * 1024 * 1024
+
+
+def _frame_vertex_bytes(frame) -> int:
+    """The uploaded vertex bytes of a static frame: the retention budget."""
+    if frame is None:
+        return 0
+    return sum(int(cell.vertices.nbytes) for cell in frame.cells)
+
+
 #: Most per-cell rows one ``enc_cull`` trace record carries.  A record is
 #: written once per cull pass, not once per cell, so the trace stays small.
 TRACE_CULL_LIMIT = 8
@@ -846,6 +863,26 @@ class EncMeshItem(QQuickItem):
         #: the next upload, while an empty rebuild keeps the last complete
         #: frame on screen.
         self._drop_cells_on_upload = False
+        #: Retention for return pans: ``(scene, static frame, cell nodes,
+        #: counts, visible mask)`` for the frame presented immediately before
+        #: the current one, with its nodes detached from the graph.  One
+        #: entry, bounded by :data:`RETAINED_FRAME_VERTEX_BYTES`; nodes are
+        #: only mutated on the render thread (see :meth:`_update_static`).
+        self._retained = None
+        #: Set by :meth:`set_view_scene` when the incoming scene is the
+        #: retained one: the next paint re-attaches the retained nodes
+        #: instead of rebuilding them.
+        self._retained_restore = False
+        #: The outgoing ``(scene, static frame)`` a replace may retain,
+        #: captured on the GUI thread before ``_static`` is cleared.
+        self._outgoing = None
+        #: True when the next ``_upload_cells`` should retain the outgoing
+        #: frame.
+        self._retention_wanted = False
+        #: Node objects a GUI-thread invalidation left behind; the render
+        #: thread releases them, because QSG nodes may not be deleted on the
+        #: GUI thread.
+        self._retained_dead = []
         #: How far past the item the presented scene was composed.  Culling
         #: must keep the cells in that ring: they are what a pan brings into
         #: view before the replacement arrives.
@@ -1071,6 +1108,7 @@ class EncMeshItem(QQuickItem):
             return False
         self._mesh = mesh
         self._view_scene = None
+        self._invalidate_retention()
         # A new mesh replaces the picture, an empty one included: the caller
         # asked for that content, so no cell of the previous frame survives it.
         self._static = None
@@ -1083,6 +1121,43 @@ class EncMeshItem(QQuickItem):
     def clear_mesh(self) -> bool:
         return self.set_mesh(None)
 
+    def setVisible(self, visible) -> None:  # noqa: N802 - Qt override
+        """Present or withdraw the item; hiding drops the retained frame.
+
+        A hidden item draws nothing and its scene-graph children may be
+        released while it is hidden, so a frame retained for a return pan is
+        not kept across a hidden period (see :meth:`_invalidate_retention`).
+        """
+        super().setVisible(visible)
+        if not visible:
+            self._invalidate_retention()
+
+    def _invalidate_retention(self) -> None:
+        """Drop retention on the GUI thread; the render thread frees the nodes.
+
+        QSG nodes may not be deleted on the GUI thread, so the detached
+        retained nodes are parked for the next ``updatePaintNode`` to release.
+        Until then they stay out of the graph and draw nothing.
+        """
+        slot = self._retained
+        self._retained = None
+        self._retained_restore = False
+        self._outgoing = None
+        self._retention_wanted = False
+        if slot is not None:
+            self._retained_dead.extend(slot[2])
+
+    def _release_dead_retained(self) -> None:
+        """Release retained nodes parked by a GUI-thread invalidation.
+
+        Runs on the render thread: dropping the last Python reference deletes
+        the C++ nodes here, where QSG node teardown is allowed.
+        """
+        if self._retained_dead:
+            dead = self._retained_dead
+            self._retained_dead = []
+            del dead
+
     def set_view_scene(self, view_scene) -> bool:
         """Present one assembled multi-cell :class:`encview.ViewScene`.
 
@@ -1093,6 +1168,12 @@ class EncMeshItem(QQuickItem):
         coloured layout; the flat ``set_mesh``/``set_color`` path is unaffected.
         ``None`` clears to empty geometry.  Re-presenting the scene already on
         display is a no-op, so an unchanged frame does not re-upload.
+        Re-presenting the *retained* scene -- the one presented immediately
+        before the current one, kept bounded by
+        :data:`RETAINED_FRAME_VERTEX_BYTES` -- re-attaches the nodes it
+        already built on the next paint instead of rebuilding them: a
+        same-zoom return pan costs no vertex upload and never draws both
+        frames at once (see :meth:`_restore_retained`).
 
         An empty scene (for example a plan whose only cells were oversized and
         skipped) allocates zero vertices rather than leaving the previous
@@ -1103,6 +1184,32 @@ class EncMeshItem(QQuickItem):
         mesh = EMPTY_MESH if view_scene is None else view_scene
         if view_scene is self._view_scene and mesh is self._mesh:
             return False
+        outgoing = (self._view_scene, self._static)
+        restore = (
+            view_scene is not None
+            and self._retained is not None
+            and view_scene is self._retained[0]
+        )
+        self._retained_restore = restore
+        if restore:
+            # A return pan to the retained scene: the outgoing frame is
+            # captured for the swap the next paint performs, so the retained
+            # and presented frames trade places and the slot stays bounded
+            # at one (see :meth:`_restore_retained`).
+            self._outgoing = outgoing
+            self._retention_wanted = True
+        elif (
+            self._view_scene is not None
+            and view_scene is not None
+            and self._static is not None
+            and _frame_vertex_bytes(self._static) <= RETAINED_FRAME_VERTEX_BYTES
+        ):
+            # A replacement scene: the frame being replaced may be retained
+            # for the return pan that comes back to it.
+            self._outgoing = outgoing
+            self._retention_wanted = True
+        else:
+            self._invalidate_retention()
         self._view_scene = view_scene
         self._mesh = mesh
         self._colored = True
@@ -1128,6 +1235,9 @@ class EncMeshItem(QQuickItem):
             return False
         self._colored = colored
         self._static = None
+        # The baked vertex colours belong to the old layout, so a retained
+        # frame drawn with them cannot answer a demand made after the change.
+        self._invalidate_retention()
         self._geometry_dirty = True
         self._material_dirty = True
         self.update()
@@ -1142,6 +1252,7 @@ class EncMeshItem(QQuickItem):
             # The flat colour is the fallback baked into vertices for parts
             # without palette metadata, so it is a geometry change here.
             self._static = None
+            self._invalidate_retention()
             self._geometry_dirty = True
         else:
             self._material_dirty = True
@@ -1273,6 +1384,18 @@ class EncMeshItem(QQuickItem):
         # against the next build's nodes silently truncates the mask.
         self._cell_vertex_counts = []
         self._cell_visible = ()
+        # The parked slot goes with the graph its nodes lived in, but a
+        # pending replace-time retention intent survives: it describes the
+        # scene change the caller asked for, and the next upload records the
+        # entry from it.  An entry whose parked nodes died with this graph is
+        # exactly the stale entry ``_restore_retained`` refuses.  A GUI-thread
+        # invalidation (:meth:`_invalidate_retention`) cancels the intent
+        # outright instead -- the frame it described is no longer presentable.
+        slot = self._retained
+        self._retained = None
+        self._retained_restore = False
+        if slot is not None:
+            self._retained_dead.extend(slot[2])
         self._text_node = None
         self._text_geometry = None
         self._text_material = None
@@ -1421,6 +1544,7 @@ class EncMeshItem(QQuickItem):
         untouched: Qt still owns the geometry and material it was given and
         frees them exactly once.
         """
+        self._invalidate_retention()
         self._forget_scene_graph()
         super().releaseResources()
 
@@ -1641,8 +1765,79 @@ class EncMeshItem(QQuickItem):
         self._geometry = None
         self._material = None
 
+    def _restore_retained(self) -> bool:
+        """Re-attach the retained frame's nodes for a return pan.
+
+        Runs on the render thread from :meth:`_update_static`.  The retained
+        and presented frames trade places: the presented frame becomes the
+        retained one (if it qualifies) and the retained frame's nodes are
+        re-attached exactly as they were, so the return costs no vertex
+        rebuild or upload, and the two frames are never in the graph at the
+        same time.  ``False`` leaves the state untouched when the entry no
+        longer matches the scene on display, the graph was rebuilt since, or
+        a retained node did not survive.
+        """
+        slot = self._retained
+        if (
+            slot is None
+            or slot[0] is not self._view_scene
+            or not self._static_mode()
+            or not self._built_static
+            or self._content_node is None
+            or not _wrapper_is_valid(self._content_node)
+            or not self._cell_nodes
+        ):
+            return False
+        scene, frame, nodes, counts, visible = slot
+        if len(nodes) != len(frame.cells) or not nodes:
+            return False
+        if not all(_wrapper_is_valid(node) for node in nodes):
+            self._retained = None
+            return False
+        outgoing_scene, outgoing_frame = self._outgoing or (None, None)
+        self._outgoing = None
+        current_nodes = list(self._cell_nodes)
+        current_counts = list(self._cell_vertex_counts)
+        current_visible = self._cell_visible
+        for child in current_nodes:
+            try:
+                self._content_node.removeChildNode(child)
+            except Exception:  # pragma: no cover - Qt already dropped it
+                pass
+        for child in nodes:
+            self._content_node.appendChildNode(child)
+        self._retained = None
+        if (
+            outgoing_scene is not None
+            and outgoing_scene is not scene
+            and outgoing_frame is not None
+            and len(current_nodes) == len(outgoing_frame.cells)
+            and _frame_vertex_bytes(outgoing_frame) <= RETAINED_FRAME_VERTEX_BYTES
+        ):
+            # The presented frame becomes the retained one, so an immediate
+            # return to it is answered the same way.  One entry, always.
+            self._retained = (
+                outgoing_scene,
+                outgoing_frame,
+                current_nodes,
+                current_counts,
+                current_visible,
+            )
+        self._static = frame
+        self._cell_nodes = nodes
+        self._cell_vertex_counts = list(counts)
+        self._cell_visible = visible
+        return True
+
     def _upload_cells(self) -> None:
         """Create one static-pattern geometry node per cell under the content."""
+        # The replace-time retention intent is consumed here whatever the
+        # upload does: a frame that ends up dropped or empty must not carry
+        # a stale intent into a later, unrelated upload.
+        want = self._retention_wanted
+        outgoing_scene, outgoing_frame = self._outgoing or (None, None)
+        self._retention_wanted = False
+        self._outgoing = None
         content = self._content_node
         # Reset the per-cell bookkeeping only when there is no content node, so
         # the lists can never lag behind the nodes they describe.
@@ -1691,6 +1886,25 @@ class EncMeshItem(QQuickItem):
             # Nothing in the new frame draws.  Keep the previous complete frame
             # attached rather than swapping in an empty one mid-motion.
             return
+        # Retain the outgoing frame, if the replace asked for it and it is
+        # inside the budget: its already-uploaded nodes are detached here and
+        # parked in the slot, so a return pan to that scene re-attaches them
+        # instead of rebuilding and re-uploading (see ``_restore_retained``).
+        # Exactly one frame is retained; the slot's previous occupant is
+        # released here, on the render thread.
+        previous_retained = self._retained
+        self._retained = None
+        if want and outgoing_scene is not None and outgoing_frame is not None:
+            if _frame_vertex_bytes(outgoing_frame) <= RETAINED_FRAME_VERTEX_BYTES:
+                self._retained = (
+                    outgoing_scene,
+                    outgoing_frame,
+                    list(self._cell_nodes),
+                    list(self._cell_vertex_counts),
+                    self._cell_visible,
+                )
+        if previous_retained is not None:
+            self._retained_dead.extend(previous_retained[2])
         for child in self._cell_nodes:
             try:
                 content.removeChildNode(child)
@@ -1712,6 +1926,12 @@ class EncMeshItem(QQuickItem):
 
     def _update_static(self) -> None:
         """Present the scene through the reference frame, uploading on change."""
+        if self._retained_restore:
+            # A return pan asked for the retained scene: try to re-attach its
+            # nodes before any rebuild.  A refused restore falls through and
+            # rebuilds exactly as a scene the item never saw would.
+            self._retained_restore = False
+            self._restore_retained()
         if self._static is None or not self._cell_nodes:
             self._static = build_static_frame(
                 self._mesh,
@@ -1805,6 +2025,10 @@ class EncMeshItem(QQuickItem):
                 self._material = material
             self._built_colored = self._colored
             self._built_static = static
+        # Node wrappers a GUI-thread invalidation parked are released here:
+        # this runs on the render thread in every mode, after any rebuild
+        # that may have extended the park list.
+        self._release_dead_retained()
 
         if self._material_dirty:
             # QSGVertexColorMaterial has no uniform colour to update.
