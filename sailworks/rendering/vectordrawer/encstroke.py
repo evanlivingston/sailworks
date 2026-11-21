@@ -487,6 +487,11 @@ def stroke_lines(
         )
         unit = delta / lengths[:, None]
         normal = np.column_stack((-unit[:, 1], unit[:, 0])) * (widths / 2.0)[:, None]
+        # The six-vertex emission order below is load-bearing:
+        # ``sailworks.qt.encgpu`` parses these quads back into centreline,
+        # normal and width for the fixed-width stroke patch, and stops at
+        # the first group whose corners are not repeated exactly.  Changing
+        # the layout silently disables the patch's prefix parse.
         near_start = starts + normal
         near_end = ends + normal
         far_end = ends - normal
