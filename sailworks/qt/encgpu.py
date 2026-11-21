@@ -1153,10 +1153,7 @@ class EncMeshItem(QQuickItem):
         Runs on the render thread: dropping the last Python reference deletes
         the C++ nodes here, where QSG node teardown is allowed.
         """
-        if self._retained_dead:
-            dead = self._retained_dead
-            self._retained_dead = []
-            del dead
+        self._retained_dead.clear()
 
     def set_view_scene(self, view_scene) -> bool:
         """Present one assembled multi-cell :class:`encview.ViewScene`.
