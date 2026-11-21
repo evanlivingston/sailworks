@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QTabWidget,
     QTabBar,
@@ -193,6 +194,29 @@ def _canvases(host):
         log_map = getattr(host, "log_map", None)
     canvases.append(log_map)
     return tuple(canvas for canvas in canvases if canvas is not None)
+
+
+class ChartDownloadProgress(QWidget):
+    """Status-bar busy indicator, visible only while an ENC fetch runs."""
+
+    def __init__(self, data_controller, parent=None):
+        super().__init__(parent)
+        self.data = data_controller
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.bar = QProgressBar()
+        # Range (0, 0) is Qt's indeterminate mode: a small moving segment.
+        self.bar.setRange(0, 0)
+        self.bar.setFixedWidth(72)
+        self.bar.setMaximumHeight(10)
+        self.bar.setTextVisible(False)
+        self.bar.setToolTip("Downloading NOAA chart")
+        layout.addWidget(self.bar)
+        data_controller.changed.connect(self.sync)
+        self.hide()
+
+    def sync(self):
+        self.setVisible(self.data.chart_downloading)
 
 
 class PreviewWindow(QMainWindow):
@@ -493,6 +517,10 @@ class PreviewWindow(QMainWindow):
             self.statusBar().addPermanentWidget(self.instruments)
             self.log_import_progress = LogImportProgress(controller, self)
             self.statusBar().addPermanentWidget(self.log_import_progress)
+            self.chart_download_progress = ChartDownloadProgress(
+                controller.data, self
+            )
+            self.statusBar().addPermanentWidget(self.chart_download_progress)
             controller.boat_changed.connect(self._boat_changed)
             controller.changed.connect(self.refresh)
             controller.connection_task.changed.connect(self.refresh)

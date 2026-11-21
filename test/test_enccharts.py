@@ -11,6 +11,8 @@ import requests
 from sailworks.core.enccharts import (
     ENCCatalog,
     ENCCell,
+    MAX_REDIRECTS,
+    _checked_url,
     parse_catalog,
     polygon_contains,
 )
@@ -46,6 +48,15 @@ def response_for_archive(files):
     response.__exit__ = Mock(return_value=False)
     response.url = "https://www.charts.noaa.gov/ENCs/US5TEST1.zip"
     response.iter_content.return_value = [data.getvalue()]
+    return response
+
+
+def response_for_catalog(data):
+    response = Mock()
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    response.status_code = 200
+    response.content = data
     return response
 
 
@@ -148,3 +159,93 @@ class TestENCDownloads(unittest.TestCase):
 
         parse.assert_not_called()
         get.assert_not_called()
+
+    @patch("sailworks.core.enccharts.requests.get")
+    def test_auto_path_uses_a_stale_cache_without_network(self, get):
+        cache = Path(self.temporary.name) / "catalog.xml"
+        cache.write_bytes(catalog_xml())
+        os.utime(cache, (0, 0))
+        get.side_effect = AssertionError("the automatic path must not fetch")
+        self.catalog.load(fetch=False)
+        self.assertEqual(self.catalog.chart_at(1, 1).name, "US5TEST1")
+
+    @patch("sailworks.core.enccharts.requests.get")
+    def test_auto_path_fetches_once_when_there_is_no_cache(self, get):
+        get.return_value = response_for_catalog(catalog_xml())
+        self.catalog.load(fetch=False)
+        get.assert_called_once()
+        self.assertIsNotNone(self.catalog.chart_at(1, 1))
+        # The next automatic load uses the cache it just wrote.
+        self.catalog.load(fetch=False)
+        get.assert_called_once()
+
+    @patch("sailworks.core.enccharts.requests.get")
+    def test_download_lock_is_per_cell_not_catalog_wide(self, get):
+        get.return_value = response_for_archive(
+            {"ENC_ROOT/US5TEST1/US5TEST1.000": b"base"}
+        )
+        held = []
+        original = self.catalog._download
+
+        def spy(cell):
+            held.append(self.catalog._lock._is_owned())
+            return original(cell)
+
+        self.catalog._download = spy
+        self.catalog.download(self.cell)
+        self.assertEqual(held, [False])
+        self.assertIs(
+            self.catalog._cell_lock("US5TEST1"), self.catalog._cell_lock("US5TEST1")
+        )
+        self.assertIsNot(
+            self.catalog._cell_lock("US5TEST1"), self.catalog._cell_lock("US3TEST1")
+        )
+
+    @patch("sailworks.core.enccharts.requests.get")
+    def test_redirect_to_another_host_is_never_requested(self, get):
+        get.return_value = Mock(
+            status_code=302, headers={"location": "https://evil.example/chart.zip"}
+        )
+        with self.assertRaisesRegex(ValueError, "host"):
+            self.catalog.download(self.cell)
+        self.assertEqual(get.call_count, 1)
+        self.assertEqual(
+            get.call_args.args[0], "https://www.charts.noaa.gov/ENCs/US5TEST1.zip"
+        )
+
+    @patch("sailworks.core.enccharts.requests.get")
+    def test_a_noaa_redirect_hop_is_followed_after_validation(self, get):
+        redirect = Mock(
+            status_code=301,
+            headers={"location": "https://charts.noaa.gov/ENCs/US5TEST1.zip"},
+        )
+        archive = response_for_archive({"ENC_ROOT/US5TEST1/US5TEST1.000": b"base"})
+        get.side_effect = [redirect, archive]
+        path = Path(self.catalog.download(self.cell))
+        self.assertEqual(path.read_bytes(), b"base")
+        self.assertEqual(
+            get.call_args_list[1].args[0], "https://charts.noaa.gov/ENCs/US5TEST1.zip"
+        )
+
+    @patch("sailworks.core.enccharts.requests.get")
+    def test_redirects_are_bounded(self, get):
+        get.return_value = Mock(
+            status_code=307,
+            headers={"location": "https://charts.noaa.gov/ENCs/US5TEST1.zip"},
+        )
+        with self.assertRaisesRegex(ValueError, "Too many"):
+            self.catalog.download(self.cell)
+        self.assertEqual(get.call_count, MAX_REDIRECTS + 1)
+
+
+class TestChartURLSafety(unittest.TestCase):
+    def test_only_https_noaa_hosts_are_accepted(self):
+        _checked_url("https://www.charts.noaa.gov/ENCs/US5TEST1.zip")
+        _checked_url("https://charts.noaa.gov/ENCs/US5TEST1.zip")
+        for url in (
+            "http://www.charts.noaa.gov/ENCs/US5TEST1.zip",
+            "https://evil.example/ENCs/US5TEST1.zip",
+            "https://charts.noaa.gov.evil.example/ENCs/US5TEST1.zip",
+        ):
+            with self.assertRaisesRegex(ValueError, "host"):
+                _checked_url(url)
