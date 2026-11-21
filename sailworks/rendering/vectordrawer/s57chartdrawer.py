@@ -39,7 +39,7 @@ class S57ChartDrawer(CM93ChartDrawer):
     #: it.
     FEATURE_CACHE_ENTRIES = 4096
 
-    def draw(self, gpsmap, cr, vector_file, bounding):
+    def draw(self, gpsmap, cr, vector_file, bounding, coverage=None):
         palette = Style.chart_palettes[self.palette]
         cancelled = getattr(gpsmap, "render_cancelled", lambda: False)
         min_lon, max_lon, min_lat, max_lat = bounding.GetEnvelope()
@@ -57,11 +57,12 @@ class S57ChartDrawer(CM93ChartDrawer):
         if collected is None:
             return
         areas, lines, points = collected
+        edge_filter = self._coverage_edge_filter(coverage, tolerance)
         cr.set_line_join(cairo.LINE_JOIN_ROUND)
         for feature in sorted(areas, key=lambda f: self.AREA_ORDER.get(f.obj_name, 3)):
             if cancelled():
                 return
-            self._render_area(gpsmap, cr, feature, palette)
+            self._render_area(gpsmap, cr, feature, palette, edge_filter)
         for feature in lines:
             if cancelled():
                 return
@@ -200,26 +201,152 @@ class S57ChartDrawer(CM93ChartDrawer):
                     name, attributes, geom.GetGeometryRef(i), areas, lines, points
                 )
 
-    def _render_area(self, gpsmap, cr, feature, palette):
+    def _render_area(self, gpsmap, cr, feature, palette, edge_filter=None):
         fill, stroke = self._get_area_styles(
             feature.obj_name, feature.attributes, palette
         )
         cr.new_path()
         # One path with even/odd fill preserves islands and polygon holes.
         cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
+        projected = []
         for ring in feature.geometry:
             if len(ring) < 3:
                 continue
             xs, ys = self._geo_to_screen_batch(gpsmap, ring)
+            projected.append((ring, xs, ys))
             cr.move_to(xs[0], ys[0])
             for x, y in zip(xs[1:], ys[1:]):
                 cr.line_to(x, y)
             cr.close_path()
         fill.apply(cr)
         cr.fill_preserve()
+        if feature.obj_name == "DEPARE" and edge_filter is not None:
+            # The fill stays whole; only the stroke is re-laid, so the
+            # geographic portrayal and the polygon's own holes are untouched.
+            cr.new_path()
+            for ring, xs, ys in projected:
+                self._stroke_exposed_edges(cr, ring, xs, ys, edge_filter)
         stroke.apply(cr)
         cr.stroke()
         cr.set_fill_rule(cairo.FILL_RULE_WINDING)
+
+    def _coverage_edge_filter(self, coverage, tolerance):
+        """The coverage-boundary filter for DEPARE outlines, or ``None``.
+
+        Quilted same-scale cells meet along their coverage boundaries, and
+        each cell strokes its own depth areas right up to that boundary, so
+        the join shows a doubled outline where no real contour exists.  When
+        coverage is supplied, the filter carries the coverage boundaries and
+        the coincidence tolerance.  The boundaries go through the same
+        ``SimplifyPreserveTopology`` call as the DEPARE rings: a shared edge
+        simplifies to the same chord on both sides, so one tolerance is the
+        exact coincidence window.  An interior contour that merely passes
+        within one tolerance of the boundary is the only real outline this
+        can mask.  ``None`` means draw every outline, as before.
+        """
+        if not coverage:
+            return None
+        boundaries = []
+        for geometry in coverage:
+            if geometry is None:
+                continue
+            boundary = geometry.Boundary()
+            if boundary is None or boundary.IsEmpty():
+                continue
+            if tolerance > 0:
+                simplified = boundary.SimplifyPreserveTopology(tolerance)
+                if simplified is not None and not simplified.IsEmpty():
+                    boundary = simplified
+            boundaries.append(boundary)
+        if not boundaries:
+            return None
+        return tuple(boundaries), tolerance
+
+    def _stroke_exposed_edges(self, cr, ring, xs, ys, edge_filter):
+        """Add the ring's outline, skipping its coverage-boundary segments.
+
+        Only DEPARE calls this: every other area keeps its full outline, and
+        no fill or interior contour is ever clipped by it.
+        """
+        boundaries, epsilon = edge_filter
+        candidates = self._nearby_boundaries(ring, boundaries, epsilon)
+        if not candidates:
+            # The ring is far from every coverage boundary: the whole
+            # outline is real and is drawn closed, exactly as before.
+            cr.move_to(xs[0], ys[0])
+            for x, y in zip(xs[1:], ys[1:]):
+                cr.line_to(x, y)
+            cr.close_path()
+            return
+        closed = ring[0] == ring[-1]
+        count = len(ring) - 1 if closed else len(ring)
+        suppressed = [
+            self._on_coverage_boundary(
+                ring[i], ring[(i + 1) % len(ring)], candidates, epsilon
+            )
+            for i in range(count)
+        ]
+        if not any(suppressed):
+            # Nothing lies on the coverage boundary: the whole outline is
+            # real and is drawn as the original closed path -- the closing
+            # join included -- exactly as before.
+            cr.move_to(xs[0], ys[0])
+            for x, y in zip(xs[1:], ys[1:]):
+                cr.line_to(x, y)
+            cr.close_path()
+            return
+        drawing = False
+        for i in range(count):
+            j = (i + 1) % len(ring)
+            if suppressed[i]:
+                drawing = False
+                continue
+            if not drawing:
+                cr.move_to(xs[i], ys[i])
+                drawing = True
+            cr.line_to(xs[j], ys[j])
+
+    @staticmethod
+    def _nearby_boundaries(ring, boundaries, epsilon):
+        """The coverage boundaries whose envelope may reach this ring.
+
+        The envelope gap is a lower bound of the true distance, so a
+        boundary beyond it cannot carry any of the ring's segments and the
+        per-segment tests are skipped for it.
+        """
+        lons = [point[1] for point in ring]
+        lats = [point[0] for point in ring]
+        max_lon, min_lon = max(lons), min(lons)
+        max_lat, min_lat = max(lats), min(lats)
+        near = []
+        for boundary in boundaries:
+            min_x, max_x, min_y, max_y = boundary.GetEnvelope()
+            dx = max(min_x - max_lon, min_lon - max_x, 0.0)
+            dy = max(min_y - max_lat, min_lat - max_y, 0.0)
+            if dx * dx + dy * dy <= epsilon * epsilon:
+                near.append(boundary)
+        return near
+
+    @staticmethod
+    def _on_coverage_boundary(p1, p2, boundaries, epsilon):
+        """Whether one ring segment lies on a coverage boundary.
+
+        An edge that merely touches the boundary at a corner keeps its
+        stroke: only an edge lying along the boundary is suppressed, so a
+        chord between two cell corners stays a real contour.
+        """
+        segment = ogr.Geometry(ogr.wkbLineString)
+        segment.AddPoint_2D(p1[1], p1[0])
+        segment.AddPoint_2D(p2[1], p2[0])
+        midpoint = ogr.Geometry(ogr.wkbPoint)
+        midpoint.AddPoint_2D((p1[1] + p2[1]) / 2.0, (p1[0] + p2[0]) / 2.0)
+        for boundary in boundaries:
+            if (
+                segment.Distance(boundary) <= epsilon
+                and midpoint.Distance(boundary) <= epsilon
+            ):
+                return True
+        return False
 
     def _render_soundings(self, gpsmap, cr, feature):
         if gpsmap.get_scale() > 100:

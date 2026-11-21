@@ -135,7 +135,9 @@ class GDALVectorChart(ChartLayer):
                 g.Intersects(bounding_geometry) for g in self._coverage
             ):
                 return
-        self.drawer.draw(gpsmap, cr, self.vector_file, bounding_geometry)
+        self.drawer.draw(
+            gpsmap, cr, self.vector_file, bounding_geometry, coverage=self._coverage
+        )
 
     def do_render(self, gpsmap):
         pass

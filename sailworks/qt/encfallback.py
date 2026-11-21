@@ -29,6 +29,7 @@ from PySide6.QtGui import QImage, QPainter
 from PySide6.QtQuick import QQuickPaintedItem
 
 from sailworks.qt import enc_trace
+from sailworks.rendering.gdalvectorchart import GDALVectorChart
 from sailworks.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
 
 #: The palette the drawer uses when the caller does not name one.
@@ -182,7 +183,20 @@ def _paint(image, canvas, clip, clip_wkb, cell_path, palette, offset=(0, 0)):
         if vector_file is None:
             raise FileNotFoundError("cannot open ENC cell %s" % (cell_path,))
         drawer = S57ChartDrawer(_HeadlessSettings(palette or DEFAULT_PALETTE))
-        drawer.draw(canvas, cr, vector_file, bounding)
+        # The seam filter must be the cell's actual source coverage, read
+        # from the opened handle: the paint clip is the view's, and a
+        # clip-derived filter would mask contours that merely sit near the
+        # plan's edge.  Coverage discovery is best effort: a cell whose
+        # M_COVR cannot be read -- or that has none -- paints normally with
+        # the plain draw call, exactly as before.
+        try:
+            coverage = GDALVectorChart.read_coverage(vector_file)
+        except Exception:
+            coverage = None
+        if coverage:
+            drawer.draw(canvas, cr, vector_file, bounding, coverage=coverage)
+        else:
+            drawer.draw(canvas, cr, vector_file, bounding)
         del drawer
         cr.restore()
         surface.flush()
