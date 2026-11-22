@@ -145,7 +145,6 @@ does not use it.
 from __future__ import annotations
 
 import ctypes
-import dataclasses
 import os
 import weakref
 

@@ -1917,9 +1917,10 @@ def build_view_scene(
         thread and never in parallel with another.
         """
         started = time.perf_counter()
-        build = lambda cancel, path=cell.path, version=cell.version: loader(
-            path, version, cancel
-        )
+
+        def build(cancel, path=cell.path, version=cell.version):
+            return loader(path, version, cancel)
+
         scene = scene_cache.get_or_build(
             cell.path,
             cell.version,

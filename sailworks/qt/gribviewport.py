@@ -37,7 +37,6 @@ from sailworks.qt.gpuweatherfields import (
     GeographicField,
     validate_binding,
 )
-from sailworks.rendering.vectordrawer import encmesh
 from sailworks.rendering.weatherbarbs import (
     BarbView,
     FIELD_LATTICE_PX,
@@ -68,7 +67,6 @@ from sailworks.qt.viewporttransform import (
     enc_scene_cover_stale,
     enc_compose_margin,
     enc_scene_placement,
-    enc_scene_pan,
     same_frame,
     zoom_preview_transform,
 )
@@ -2778,7 +2776,6 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
         CHART_INTERACTIVE_MS,
         CHART_RETAINED_HEAD_START_MS,
         CHART_SCENE_SKIP_MS,
-        CHART_SCENE_SUPPRESS_MAX_MS,
         CHART_STARTUP_HEAD_START_MS,
         CHART_STARTUP_SCENE_HOLD_MS,
         CHART_WEATHER_BUSY_WAIT_MS,
@@ -11190,8 +11187,6 @@ def saved_chart_palette(data_dir, settings=None):
 
 def main(argv=None):
     """Launch a read-only standalone viewport; no paths means saved selection."""
-    import argparse
-
     from PySide6.QtCore import QDateTime, Qt
     from PySide6.QtWidgets import (
         QApplication,
