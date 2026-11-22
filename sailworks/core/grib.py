@@ -17,6 +17,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 
 import datetime
 import logging
+from collections import OrderedDict
 from functools import lru_cache
 from typing import NamedTuple, Optional, Tuple
 
@@ -121,6 +122,86 @@ class RindexData(NamedTuple):
     v: np.ndarray
 
 
+RINDEX_CACHE_BYTE_LIMIT = 128 * 1024 * 1024
+
+
+class _RindexCache:
+    """LRU whole-grid hour cache bounded by bytes, oldest entry evicted first.
+
+    Every hour on the same grid shares one lat/lon pair, accounted once in
+    ``current_bytes``; a per-hour entry costs only its ``u`` and ``v`` bytes.
+    """
+
+    def __init__(self, byte_limit=RINDEX_CACHE_BYTE_LIMIT):
+        self.byte_limit = byte_limit
+        self._entries = OrderedDict()  # hour -> (RindexData, u+v bytes)
+        self._entry_bytes = 0
+        self._shared_key = None
+        self._shared_bytes = 0
+        self.peak_bytes = 0
+        self.hits = 0
+        self.misses = 0
+        self.decodes = 0
+        self.evictions = 0
+
+    @property
+    def current_bytes(self):
+        return self._shared_bytes + self._entry_bytes
+
+    def share(self, key, lat, lon):
+        """Account the grid shared by every hour exactly once."""
+        if key == self._shared_key:
+            return
+        self._entries.clear()
+        self._entry_bytes = 0
+        self._shared_key = key
+        self._shared_bytes = lat.nbytes + lon.nbytes
+        self.peak_bytes = max(self.peak_bytes, self.current_bytes)
+
+    def get(self, t):
+        entry = self._entries.get(t)
+        if entry is None:
+            self.misses += 1
+            return None
+        self._entries.move_to_end(t)
+        self.hits += 1
+        return entry[0]
+
+    def put(self, t, data):
+        size = data.u.nbytes + data.v.nbytes
+        if t in self._entries:
+            _, replaced_bytes = self._entries.pop(t)
+            self._entry_bytes -= replaced_bytes
+        # Make room before storing, so the budget is never exceeded even
+        # transiently. One entry always survives: an hour larger than the
+        # whole budget is still cached rather than dropped.
+        while self._entries and self.current_bytes + size > self.byte_limit:
+            _, (_, evicted_bytes) = self._entries.popitem(last=False)
+            self._entry_bytes -= evicted_bytes
+            self.evictions += 1
+        self._entries[t] = (data, size)
+        self._entry_bytes += size
+        self.peak_bytes = max(self.peak_bytes, self.current_bytes)
+
+    def statistics(self):
+        return {
+            "limit_bytes": self.byte_limit,
+            "current_bytes": self.current_bytes,
+            "peak_bytes": self.peak_bytes,
+            "entries": len(self._entries),
+            "hits": self.hits,
+            "misses": self.misses,
+            "decodes": self.decodes,
+            "evictions": self.evictions,
+        }
+
+    def clear(self):
+        self._entries.clear()
+        self._entry_bytes = 0
+        self._shared_key = None
+        self._shared_bytes = 0
+
+
 class Grib(weatherrouting.Grib):
     def __init__(
         self,
@@ -141,6 +222,8 @@ class Grib(weatherrouting.Grib):
         self.end_time = self.start_time + datetime.timedelta(hours=self.last_forecast)
         self.path = path
         self.dataset = _gdal_open(path)
+        self._rindex_cache = _RindexCache()
+        self._rindex_grid = None
 
     def _find_bands_for_time(self, t):
         """Find bands for U and V wind components at a given time."""
@@ -193,9 +276,17 @@ class Grib(weatherrouting.Grib):
 
         return None
 
-    @lru_cache(maxsize=2048)
     def get_rindex_data(self, t):
-        """Whole grid at hour ``t`` as :class:`RindexData` (no tuple building)."""
+        """Whole grid at hour ``t`` as :class:`RindexData`, cached by bytes."""
+        cached = self._rindex_cache.get(t)
+        if cached is not None:
+            return cached
+        data = self._decode_rindex_data(t)
+        self._rindex_cache.put(t, data)
+        return data
+
+    def _decode_rindex_data(self, t):
+        """Decode hour ``t``; the caller owns caching."""
         u_band, v_band = self._find_bands_for_time(t)
         if u_band is None or v_band is None:
             raise ValueError(f"Wind data not found for forecast hour {t}")
@@ -203,12 +294,18 @@ class Grib(weatherrouting.Grib):
         u = u_band.ReadAsArray()
         v = v_band.ReadAsArray()
 
-        gt = self.dataset.GetGeoTransform()
-        ys, xs = np.indices(u.shape, dtype=np.float64)
-        lat = gt[3] + (xs + 0.5) * gt[4] + (ys + 0.5) * gt[5]
-        lon = gt[0] + (xs + 0.5) * gt[1] + (ys + 0.5) * gt[2]
+        grid = self._rindex_grid
+        if grid is None or grid[0] != u.shape:
+            gt = self.dataset.GetGeoTransform()
+            ys, xs = np.indices(u.shape, dtype=np.float64)
+            lat = gt[3] + (xs + 0.5) * gt[4] + (ys + 0.5) * gt[5]
+            lon = gt[0] + (xs + 0.5) * gt[1] + (ys + 0.5) * gt[2]
+            grid = (u.shape, lat.ravel(), lon.ravel())
+            self._rindex_grid = grid
+        self._rindex_cache.share(grid[0], grid[1], grid[2])
+        self._rindex_cache.decodes += 1
 
-        return RindexData(lat.ravel(), lon.ravel(), u.ravel(), v.ravel())
+        return RindexData(grid[1], grid[2], u.ravel(), v.ravel())
 
     @property
     def sampling(self):
@@ -251,6 +348,8 @@ class Grib(weatherrouting.Grib):
         if "_sampling" in self.__dict__:
             self._sampling.close()
         self.__dict__.pop("_sampler", None)
+        self._rindex_cache.clear()
+        self._rindex_grid = None
         self.dataset = None
 
     @lru_cache(maxsize=1)

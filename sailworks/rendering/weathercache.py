@@ -392,6 +392,9 @@ class SourceBandCache(OrderedDict):
         super().__init__()
         self.cache, self.owner = cache, owner
         self.limit = int(limit)
+        # Local-view counters shared with `GridIndex.array`; the session cache
+        # keeps the authoritative statistics.
+        self.hits = self.misses = self.decodes = 0
 
     def _key(self, band):
         return self.cache.key(self.owner, band)

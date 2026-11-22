@@ -110,8 +110,76 @@ class Record:
     grid_relative: bool = False
 
 
+# Decoded bands are float64 grid copies, so bound them by bytes. A normal
+# sampling pass touches u+v at two bracketing hours, so never keep fewer.
+_BAND_CACHE_BYTE_LIMIT = 64 * 1024 * 1024
+_BAND_CACHE_MIN_ENTRIES = 4
+
+
+class SourceBandLRU(OrderedDict):
+    """Decoded bands in LRU order, evicting the oldest past a byte budget."""
+
+    def __init__(
+        self,
+        byte_limit=_BAND_CACHE_BYTE_LIMIT,
+        min_entries=_BAND_CACHE_MIN_ENTRIES,
+    ):
+        super().__init__()
+        self.byte_limit = byte_limit
+        self.min_entries = min_entries
+        self.current_bytes = 0
+        self.peak_bytes = 0
+        self.hits = 0
+        self.misses = 0
+        self.decodes = 0
+        self.evictions = 0
+
+    def __setitem__(self, band, array):
+        if band in self:
+            self.current_bytes -= OrderedDict.__getitem__(self, band).nbytes
+        super().__setitem__(band, array)
+        self.move_to_end(band)
+        self.current_bytes += array.nbytes
+        self.peak_bytes = max(self.peak_bytes, self.current_bytes)
+        while self.current_bytes > self.byte_limit and len(self) > self.min_entries:
+            self.__delitem__(next(iter(self)))
+            self.evictions += 1
+
+    def __delitem__(self, band):
+        self.current_bytes -= OrderedDict.__getitem__(self, band).nbytes
+        OrderedDict.__delitem__(self, band)
+
+    def popitem(self, last=True):
+        if not self:
+            raise KeyError("dictionary is empty")
+        band = next(reversed(self)) if last else next(iter(self))
+        value = OrderedDict.__getitem__(self, band)
+        self.__delitem__(band)
+        return band, value
+
+    def clear(self):
+        super().clear()
+        self.current_bytes = 0
+
+    def statistics(self):
+        return {
+            "limit_bytes": self.byte_limit,
+            "current_bytes": self.current_bytes,
+            "peak_bytes": self.peak_bytes,
+            "entries": len(self),
+            "hits": self.hits,
+            "misses": self.misses,
+            "decodes": self.decodes,
+            "evictions": self.evictions,
+            "min_entries": self.min_entries,
+        }
+
+
 class GridIndex:
     """Metadata index and bounded decoded-band cache, private to each worker."""
+
+    _BAND_CACHE_BYTE_LIMIT = _BAND_CACHE_BYTE_LIMIT
+    _BAND_CACHE_MIN_ENTRIES = _BAND_CACHE_MIN_ENTRIES
 
     # Scalar routing compares neighboring headings at exact coordinates, so it
     # samples individual points far more often than it builds display arrays.
@@ -144,7 +212,7 @@ class GridIndex:
             and self.transform[2] == self.transform[4] == 0
             and abs(abs(self.transform[1]) * self.width - 360) < 1e-6
         )
-        self.arrays = OrderedDict()
+        self.arrays = SourceBandLRU()
         self._scalar_arrays: OrderedDict[int, list[float]] = OrderedDict()
         self._scalar_array_bytes = 0
         self._stencil = lru_cache(maxsize=4096)(self._stencil_for)
@@ -287,20 +355,22 @@ class GridIndex:
         if self.dataset is None:
             raise ValueError("Forecast handle is closed")
         cached = self.arrays.get(record.band)
-        if cached is None:
-            band = self.dataset.GetRasterBand(record.band)
-            cached = np.asarray(band.ReadAsArray(), dtype=np.float64)
-            invalid = ~np.isfinite(cached)
-            nodata = band.GetNoDataValue()
-            if nodata is not None:
-                invalid |= cached == nodata
-            if band.GetMaskFlags() != gdal.GMF_ALL_VALID:
-                invalid |= band.GetMaskBand().ReadAsArray() == 0
-            cached = np.where(invalid, np.nan, cached)
-            self.arrays[record.band] = cached
-            if len(self.arrays) > 6:
-                self.arrays.popitem(last=False)
-        self.arrays.move_to_end(record.band)
+        if cached is not None:
+            self.arrays.move_to_end(record.band)
+            self.arrays.hits += 1
+            return cached
+        self.arrays.misses += 1
+        band = self.dataset.GetRasterBand(record.band)
+        cached = np.asarray(band.ReadAsArray(), dtype=np.float64)
+        invalid = ~np.isfinite(cached)
+        nodata = band.GetNoDataValue()
+        if nodata is not None:
+            invalid |= cached == nodata
+        if band.GetMaskFlags() != gdal.GMF_ALL_VALID:
+            invalid |= band.GetMaskBand().ReadAsArray() == 0
+        cached = np.where(invalid, np.nan, cached)
+        self.arrays.decodes += 1
+        self.arrays[record.band] = cached
         return cached
 
     def pixel(self, lats, lons):

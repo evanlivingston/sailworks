@@ -320,7 +320,7 @@ class WorkerGrib(Grib):
         )
         self._hours = Grib._get_available_forecast_hours.__wrapped__(self)
         self._index_data = lru_cache(maxsize=2)(
-            lambda hour: Grib.get_rindex_data.__wrapped__(self, hour)
+            lambda hour: self._decode_rindex_data(hour)
         )
 
     def _get_available_forecast_hours(self):  # type: ignore[override]
