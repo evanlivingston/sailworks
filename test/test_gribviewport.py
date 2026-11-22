@@ -3183,6 +3183,10 @@ class _SceneItem:
     def setY(self, y):
         self.y = y
 
+    def set_position(self, x, y):
+        self.x = x
+        self.y = y
+
 
 def test_the_container_carries_a_camera_change_by_default():
     # Flip this expectation with CONTAINER_CARRIES_PAN.

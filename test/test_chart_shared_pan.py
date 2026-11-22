@@ -254,6 +254,10 @@ class _SceneItem:
     def setY(self, value):
         self.y = float(value)
 
+    def set_position(self, x, y):
+        self.x = float(x)
+        self.y = float(y)
+
     def set_projection(self, value):
         """Accept the re-solved projection a rescale writes."""
         self.projection = value

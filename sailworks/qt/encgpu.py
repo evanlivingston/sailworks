@@ -146,6 +146,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import weakref
 
 import numpy as np
 from PySide6.QtGui import QColor, QMatrix4x4
@@ -163,6 +164,8 @@ from PySide6.QtQuick import (
 
 from sailworks.rendering.vectordrawer import encmarkers, encsounding
 from sailworks.rendering.vectordrawer.encmesh import (
+    AREA_FILL,
+    AREA_OUTLINE,
     EMPTY_MESH,
     LINE,
     MARKER,
@@ -1352,6 +1355,260 @@ def build_static_frame(
     )
 
 
+#: Part kinds the fill mesh keeps when the scene is split for GPU lines.
+#: Markers move to their own item so sounding text (which only the marker item
+#: carries) paints above the line payload; every other kind, including the
+#: line classes that are not on the GPU payload, stays here.
+FILL_KINDS = frozenset({AREA_FILL, AREA_OUTLINE, LINE})
+
+#: Part kinds the marker mesh keeps.  The split never duplicates a marker: it
+#: exists only in this item.
+MARKER_KINDS = frozenset({MARKER})
+
+
+def _size_scene_item(item, container):
+    """Cover ``container`` with one ENC item and keep it covering it.
+
+    ``widthChanged``/``heightChanged`` carry no argument, so the slot has to
+    read the container's current size: connecting ``item.setWidth`` directly
+    would call it with zero arguments and raise.
+    """
+    item.setWidth(container.width())
+    item.setHeight(container.height())
+    container.widthChanged.connect(lambda: item.setWidth(container.width()))
+    container.heightChanged.connect(lambda: item.setHeight(container.height()))
+    return item
+
+
+def _scene_slot(container, name):
+    """The declarative child slot of the ENC scene container."""
+    from PySide6.QtQuick import QQuickItem
+
+    slot = container.findChild(QQuickItem, name)
+    if slot is None:
+        raise RuntimeError(f"The ENC scene layer has no {name}")
+    return slot
+
+
+class EncSceneLayers:
+    """The ENC scene's drawing layers behind one explicit viewport surface.
+
+    :meth:`single` wraps the one :class:`EncMeshItem` that carries every kind
+    and the CPU stroke.  :meth:`split` wraps the GPU line path's three
+    siblings: the fill mesh (areas, area outlines and the CPU line classes),
+    the native line item, and the marker mesh (point symbols and sounding
+    text).  The QML container declares ``encFillSlot``, ``encLineSlot`` and
+    ``encMarkerSlot`` in that order, so the fill paints under the native lines
+    and the lines under the symbols and labels without a per-frame reorder and
+    without any Python ``setZ`` write.
+
+    The viewport treats both shapes the same: camera state goes to the mesh
+    members, placement writes the same offset to them, and coverage,
+    visibility, vertex, label and cell-node counts are answered here.  The
+    native line item is deliberately *not* moved by :meth:`set_position` or
+    :meth:`write_offset`: it compensates the shared ``mapContent`` pan itself
+    (see :func:`sailworks.qt.encgpu_lines.compensate_pan`), so writing the
+    scene's publication offset to it would double that pan.
+
+    Every member is declared here.  There is no ``__getattr__`` forwarding:
+    diagnostics and the viewport cannot silently depend on one member's
+    private surface, and no method shadows Python's ``property`` builtin.
+    """
+
+    def __init__(self, fill, marker=None, lines=None):
+        self._fill = fill
+        self._marker = marker
+        self._lines = lines
+        self._meshes = (fill,) if marker is None else (fill, marker)
+
+    @classmethod
+    def single(cls, mesh):
+        """Wrap one item that draws every kind and its own CPU stroke."""
+        return cls(mesh)
+
+    @classmethod
+    def split(cls, fill, marker, lines):
+        """Wrap the GPU line split's mesh siblings, in paint order."""
+        return cls(fill, marker, lines)
+
+    @classmethod
+    def create(cls, container, line_item=None):
+        """Parent the ENC scene's layers on their QML slots and size them.
+
+        The scene's coordinates are viewport logical pixels, so the meshes
+        cover the container rather than a zero-sized rect.  The scene starts
+        hidden: it is shown only when a ready scene is published, never as an
+        empty overlay.
+
+        ``ViewportChartScene.qml`` declares ``encFillSlot``, ``encLineSlot``
+        and ``encMarkerSlot`` in paint order.  When ``line_item`` is given,
+        the fill mesh is parented to the fill slot, the marker mesh to the
+        marker slot, and the native item is reparented into the line slot, so
+        the line payload paints above the fills and below the symbols and
+        labels without a Python ``setZ`` write.  Without it -- the flag off,
+        the module unavailable, creation failed -- one all-kinds mesh item is
+        parented to the fill slot.  Both paths return the same explicit
+        surface.
+        """
+        if line_item is not None:
+            fill_slot = _scene_slot(container, "encFillSlot")
+            line_slot = _scene_slot(container, "encLineSlot")
+            marker_slot = _scene_slot(container, "encMarkerSlot")
+            fill = _size_scene_item(
+                EncMeshItem(fill_slot, kinds=FILL_KINDS, text_enabled=False),
+                container,
+            )
+            marker = _size_scene_item(
+                EncMeshItem(marker_slot, kinds=MARKER_KINDS, text_enabled=True),
+                container,
+            )
+            line_item.setParentItem(line_slot)
+            layers = cls.split(fill, marker, line_item)
+            layers.set_visible(False)
+            return layers
+
+        try:
+            slot = _scene_slot(container, "encFillSlot")
+        except RuntimeError:
+            # A bare container (a test scene without the declarative slots)
+            # has no fill slot: parent to the container itself, as before.
+            slot = container
+        layers = cls.single(_size_scene_item(EncMeshItem(slot), container))
+        layers.set_visible(False)
+        return layers
+
+    @property
+    def fill(self):
+        return self._fill
+
+    @property
+    def marker(self):
+        return self._marker
+
+    @property
+    def lines(self):
+        return self._lines
+
+    @property
+    def meshes(self):
+        """The mesh members that receive camera state and placement."""
+        return self._meshes
+
+    def set_view_scene(self, scene):
+        changed = False
+        for item in self._meshes:
+            changed = bool(item.set_view_scene(scene)) or changed
+        return changed
+
+    def set_projection(self, projection):
+        for item in self._meshes:
+            item.set_projection(projection)
+
+    def set_compose_margin(self, margin):
+        for item in self._meshes:
+            item.set_compose_margin(margin)
+
+    def set_scale(self, scale):
+        for item in self._meshes:
+            item.set_scale(scale)
+
+    def set_visible(self, visible):
+        visible = bool(visible)
+        for item in self._meshes:
+            item.setVisible(visible)
+        if not visible and self._lines is not None:
+            # A hidden scene never leaves its line layer on screen.  Showing
+            # leaves the lines alone: the payload write that follows a
+            # publication is what makes them visible again.
+            self._lines.setVisible(False)
+
+    def is_visible(self):
+        return bool(self._fill.isVisible())
+
+    def set_width(self, width):
+        for item in self._meshes:
+            item.setWidth(width)
+
+    def set_height(self, height):
+        for item in self._meshes:
+            item.setHeight(height)
+
+    def set_position(self, x, y):
+        """Place the meshes at the scene's container-local offset."""
+        for item in self._meshes:
+            item.setX(x)
+            item.setY(y)
+
+    def read_offset(self):
+        """The fill mesh's ``(x, y)``, or ``None`` when it cannot be read."""
+        try:
+            return (
+                float(self._fill.property("x") or 0.0),
+                float(self._fill.property("y") or 0.0),
+            )
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    def write_offset(self, x, y):
+        """Write the same offset to every mesh; ``None`` when it cannot write."""
+        try:
+            for item in self._meshes:
+                item.setProperty("x", x)
+                item.setProperty("y", y)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        return (x, y)
+
+    @property
+    def text_labels(self):
+        """Sounding labels laid out by the meshes, in draw order.
+
+        The marker mesh owns text drawing (the fill mesh is built with
+        ``text_enabled=False``), so a fill-only read would report zero labels
+        to diagnostics.
+        """
+        labels = []
+        for item in self._meshes:
+            labels.extend(getattr(item, "labels", ()) or ())
+        return tuple(labels)
+
+    def shown_vertex_count(self):
+        """Vertices drawn by the meshes, summed.
+
+        The marker mesh draws its own buffers, so the fill mesh's count alone
+        would under-report a presented frame as empty.
+        """
+        return sum(int(item.shown_vertex_count()) for item in self._meshes)
+
+    def scene_covers_view(self):
+        """Only the fill mesh owns the cells that can cover the viewport."""
+        return bool(self._fill.scene_covers_view())
+
+    def scene_reaches_view(self):
+        return any(bool(item.scene_reaches_view()) for item in self._meshes)
+
+    @property
+    def cell_node_count(self):
+        """Cell draw nodes across the meshes, for the state-probe surface."""
+        return sum(item.cell_node_count() for item in self._meshes)
+
+    @property
+    def view_scene(self):
+        return self._fill.view_scene
+
+    @property
+    def generation(self):
+        return self._fill.generation
+
+    @property
+    def upload_count(self):
+        return self._fill.upload_count
+
+    @property
+    def unsupported_count(self):
+        return self._fill.unsupported_count
+
+
 class EncMeshItem(QQuickItem):
     """A QQuickItem that presents one SceneMesh as a single DrawTriangles node.
 
@@ -1373,6 +1630,12 @@ class EncMeshItem(QQuickItem):
     from the view scene's source soundings with the current projection and
     scale, so the 32x16 dedupe stays per camera instead of in cached geometry.
     The child is appended after the triangle node, so labels paint on top.
+
+    ``kinds`` optionally restricts the presented scene to an allowlist of part
+    kinds (``None`` draws every part).  The GPU-line split uses two items: a
+    fill item with the area/CPU-line kinds and ``text_enabled=False``, and a
+    marker item with :data:`MARKER_KINDS`.  Filtering packs the scene's
+    vertices and cell spans; it never touches the shared mesh cache.
     """
 
     _DEFAULT_COLOR = QColor(120, 155, 190, 255)
@@ -1385,6 +1648,7 @@ class EncMeshItem(QQuickItem):
         glyph_pixel_size=11.0,
         texture_factory=None,
         text_enabled=True,
+        kinds=None,
         legacy_project=None,
     ):
         super().__init__(parent)
@@ -1510,6 +1774,17 @@ class EncMeshItem(QQuickItem):
         #: earlier teardown crash needed (see ``_detach_text_node``).  Turning
         #: it off draws triangles and markers only.
         self._text_enabled = bool(text_enabled)
+        #: Optional part-kind allowlist.  ``None`` presents the scene whole
+        #: (the current default).  The GPU-line split sets one allowlist per
+        #: item so a marker never appears in the fill mesh, and the fill mesh
+        #: never carries sounding text.
+        self._kinds = None if kinds is None else frozenset(kinds)
+        #: Bounded source->filtered mapping so re-presenting a scene the item
+        #: already filtered (the retained return pan) keeps the same filtered
+        #: identity and can restore its nodes instead of rebuilding.  Two
+        #: entries cover the presented and retained scenes; the source is a
+        #: weak reference so the cache never pins a published scene.
+        self._filter_cache = ()
 
     @property
     def mesh(self) -> SceneMesh:
@@ -1523,6 +1798,11 @@ class EncMeshItem(QQuickItem):
     def view_scene(self):
         """The presented ``ViewScene``, or ``None`` on the flat mesh path."""
         return self._view_scene
+
+    @property
+    def kinds(self):
+        """The part-kind allowlist, or ``None`` when the scene is drawn whole."""
+        return self._kinds
 
     def _default_rgba(self) -> tuple[int, int, int, int]:
         return tuple(getattr(self._color, channel)() for channel in _QCOLOR_TO_RGBA)
@@ -1575,6 +1855,10 @@ class EncMeshItem(QQuickItem):
         if len(mask) != len(counts):
             return int(sum(counts))
         return int(sum(count for count, shown in zip(counts, mask) if shown))
+
+    def cell_node_count(self) -> int:
+        """Cell draw nodes this frame has attached, for the state probe."""
+        return len(self._cell_nodes)
 
     def scene_covers_view(self) -> bool:
         """Whether the cells this frame *draws* cover the whole viewport.
@@ -1741,13 +2025,43 @@ class EncMeshItem(QQuickItem):
         """
         self._retained_dead.clear()
 
+    def _filtered_view_scene(self, view_scene):
+        """The presented copy of ``view_scene`` after this item's kind filter.
+
+        With no allowlist the scene is presented whole.  Otherwise the
+        filtered copy is memoised by source identity, bounded to the presented
+        and retained scenes, so a return pan re-presents the exact object its
+        retained nodes were built from.  The source reference is weak: the
+        item never keeps a published scene alive just to remember the filter.
+        """
+        if view_scene is None or self._kinds is None:
+            return view_scene
+        for reference, filtered in self._filter_cache:
+            try:
+                source = reference()
+            except TypeError:  # pragma: no cover - defensive
+                source = None
+            if source is view_scene:
+                return filtered
+        filtered = view_scene.subset(self._kinds, keep_soundings=self._text_enabled)
+        try:
+            entry = (weakref.ref(view_scene), filtered)
+        except TypeError:  # pragma: no cover - non-weakrefable fake scene
+            return filtered
+        self._filter_cache = (entry,) + tuple(self._filter_cache[:1])
+        return filtered
+
     def set_view_scene(self, view_scene) -> bool:
         """Present one assembled multi-cell :class:`encview.ViewScene`.
 
         The scene's contiguous float64 ``positions`` and ordered ``parts`` are
         uploaded through the existing single batched coloured geometry node, so
         part order is preserved exactly as assembled and per-part colours
-        travel in the vertex buffer.  Presenting a view scene enables the
+        travel in the vertex buffer.  An item with a ``kinds`` allowlist
+        presents a packed copy containing only those parts (see
+        :meth:`sailworks.rendering.encview.ViewScene.subset`); the default item
+        presents the scene whole.
+        Presenting a view scene enables the
         coloured layout; the flat ``set_mesh``/``set_color`` path is unaffected.
         ``None`` clears to empty geometry.  Re-presenting the scene already on
         display is a no-op, so an unchanged frame does not re-upload.
@@ -1765,13 +2079,16 @@ class EncMeshItem(QQuickItem):
         inspectable after upload.
         """
         mesh = EMPTY_MESH if view_scene is None else view_scene
-        if view_scene is self._view_scene and mesh is self._mesh:
+        presented = self._filtered_view_scene(view_scene)
+        if presented is not None:
+            mesh = presented
+        if presented is self._view_scene and mesh is self._mesh:
             return False
         outgoing = (self._view_scene, self._static)
         restore = (
-            view_scene is not None
+            presented is not None
             and self._retained is not None
-            and view_scene is self._retained[0]
+            and presented is self._retained[0]
         )
         self._retained_restore = restore
         if restore:
@@ -1793,7 +2110,7 @@ class EncMeshItem(QQuickItem):
             self._retention_wanted = True
         else:
             self._invalidate_retention()
-        self._view_scene = view_scene
+        self._view_scene = presented
         self._mesh = mesh
         self._colored = True
         # A replacement scene is what the viewport asked for.  A scene with no
@@ -2038,6 +2355,9 @@ class EncMeshItem(QQuickItem):
         consumed by ``updatePaintNode``.  A widget without a window yet has no
         device pixel ratio; the atlas is then built on the next setter.
         """
+        if not self._text_enabled:
+            # A fill/marker split item without text never builds an atlas.
+            return
         try:
             self._ensure_atlas()
         except Exception:  # noqa: BLE001 - labels are optional; never break a frame

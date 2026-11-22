@@ -159,16 +159,54 @@ Item {
                 objectName: "chartLayer"
                 anchors.fill: parent
             }
-            // The opt-in GPU ENC scene: the viewport parents one EncMeshItem
-            // here and shows it only while a ready scene is published.  The
-            // container follows the ENC layer toggle and is hidden until it
-            // actually hosts the item, so the default path has nothing to
-            // draw and nothing to report.
+            // The opt-in GPU ENC scene: the viewport parents its layers into
+            // the slots below and shows the container only while a ready
+            // scene is published.  The container follows the ENC layer toggle
+            // and stays hidden until a mesh is actually hosted, so the
+            // default path has nothing to draw and nothing to report.  The
+            // slots are empty Items, so their presence alone must not make
+            // the container visible.
             Item {
+                id: encSceneLayer
                 objectName: "encSceneLayer"
                 anchors.fill: parent
-                visible: root.encVisible && children.length > 0
+                readonly property int hostedItems:
+                    encFillSlot.children.length
+                    + encLineSlot.children.length
+                    + encMarkerSlot.children.length
+                visible: root.encVisible && hostedItems > 0
+                // Paint order is the declaration order of these slots: the
+                // fill mesh (areas, area outlines and CPU line classes)
+                // paints under the native GPU lines, which paint under the
+                // marker mesh (point symbols and sounding text).  Nothing in
+                // Python writes `z`; the tree decides the order.
+                Item {
+                    id: encFillSlot
+                    objectName: "encFillSlot"
+                    anchors.fill: parent
+                }
+                Item {
+                    id: encLineSlot
+                    objectName: "encLineSlot"
+                    anchors.fill: parent
+                }
+                Item {
+                    id: encMarkerSlot
+                    objectName: "encMarkerSlot"
+                    anchors.fill: parent
+                }
             }
+            // GPU ENC lines are deliberately *not* declared here.
+            // `SAILWORKS_ENC_GPU_LINES` makes the viewport build a
+            // `GpuLineItem` from `SailworksRouting` and reparent it into
+            // `encLineSlot`, so a process without the built module (the
+            // default) never imports it and always starts normally.
+            //
+            // When the native item exists, the fill and marker meshes are
+            // parented to their slots and the line item moves to the line
+            // slot.  When the module is unavailable one all-kinds mesh is
+            // parented to the fill slot and carries the CPU stroke, exactly
+            // as before the split.
             // Images and numerical fill are reference-local.
             Item {
                 objectName: "environmentFillBand"

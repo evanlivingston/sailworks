@@ -1,6 +1,7 @@
 #include <QtQml/QQmlExtensionPlugin>
 #include <QtQml/qqml.h>
 
+#include "gpulineitem.h"
 #include "routingretaineditem.h"
 
 class SailworksRoutingPlugin : public QQmlExtensionPlugin {
@@ -10,6 +11,7 @@ class SailworksRoutingPlugin : public QQmlExtensionPlugin {
  public:
   void registerTypes(const char *uri) override {
     qmlRegisterType<RoutingRetainedItem>(uri, 1, 0, "RoutingRetainedItem");
+    qmlRegisterType<GpuLineItem>(uri, 1, 0, "GpuLineItem");
   }
 };
 

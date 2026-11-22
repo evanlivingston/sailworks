@@ -85,6 +85,13 @@ class _Harness:
         self._camera_dpr = None
         self._disposed = False
         self.status_updates = 0
+        # The real widget always holds a line layer; this harness only needs
+        # the two calls the scene adoption and withdrawal make on it.
+        self._enc_gpu_line_layer = SimpleNamespace(
+            update=lambda *args, **kwargs: None,
+            clear=lambda: None,
+            set_camera=lambda *args, **kwargs: None,
+        )
 
 
 def _harness(item):
@@ -180,7 +187,17 @@ def test_the_enc_scene_container_resolves_from_the_real_scene(app):
         # It fills the map band, and it holds nothing until the viewport
         # parents the scene item there.
         assert container.width() == 96 and container.height() == 96
-        assert container.childItems() == []
+        slots = [
+            child
+            for child in container.childItems()
+            if child.objectName().endswith("Slot")
+        ]
+        assert [slot.objectName() for slot in slots] == [
+            "encFillSlot",
+            "encLineSlot",
+            "encMarkerSlot",
+        ]
+        assert all(not slot.childItems() for slot in slots)
     finally:
         _release(view)
 
@@ -194,15 +211,15 @@ def test_a_published_scene_reaches_the_render_thread(app):
     item = enc_scene_item(container)
     harness = _harness(item)
     try:
-        assert not item.isVisible(), "the item must start hidden"
-        assert item.width() == container.width() > 0
-        assert item.height() == container.height() > 0
+        assert not item.is_visible(), "the item must start hidden"
+        assert item.fill.width() == container.width() > 0
+        assert item.fill.height() == container.height() > 0
         assert container.isVisible(), "a parented item must show its container"
 
         scene = _view_scene()
         start = frames.rendered()
         harness._enc_scene_published((1, scene, {}))
-        assert item.isVisible()
+        assert item.is_visible()
         assert item.view_scene is scene
         assert harness._enc_scene_generation == 1
 
@@ -211,16 +228,18 @@ def test_a_published_scene_reaches_the_render_thread(app):
             "afterRendering never fired for the published scene "
             f"(sceneGraphError={view.sceneGraphErrors() if hasattr(view, 'sceneGraphErrors') else 'n/a'})"
         )
-        assert item._built_colored and item._built_static
+        assert item.fill._built_colored and item.fill._built_static
         # The static path uploads one geometry node per contributing cell under
         # one transform node: six vertices for A's two triangles, three for B's
         # single triangle.  A dropped cell loses a node, a truncated one loses
         # vertices, and either breaks the sum below.
-        cell_vertices = [node.geometry().vertexCount() for node in item._cell_nodes]
+        cell_vertices = [
+            node.geometry().vertexCount() for node in item.fill._cell_nodes
+        ]
         assert len(cell_vertices) == len(scene.cells) == 2
         assert cell_vertices == [6, 3]
-        assert item._content_node is not None
-        assert item._content_node.childCount() == len(cell_vertices)
+        assert item.fill._content_node is not None
+        assert item.fill._content_node.childCount() == len(cell_vertices)
         assert sum(cell_vertices) == scene.vertex_count == 9
         assert sum(cell_vertices) // 3 == len(scene.positions) // 3 == 3
 
@@ -229,11 +248,11 @@ def test_a_published_scene_reaches_the_render_thread(app):
         # already draws stays presented.
         harness._enc_scene_state_changed("unavailable")
         assert harness._enc_scene_state == "unavailable"
-        assert item.isVisible()
+        assert item.is_visible()
         assert item.view_scene is scene
     finally:
         view.afterRendering.disconnect(handler)
-        item.setParentItem(None)
+        item.fill.setParentItem(None)
         _release(view)
 
 
@@ -254,7 +273,14 @@ def test_the_default_path_creates_no_item_and_hides_the_container(app):
 
     view, _root, container = _load_scene()
     try:
-        assert container.childItems() == []
+        # The declarative slots exist, but no scene item is parented into any
+        # of them and the container stays hidden.
+        assert [slot.objectName() for slot in container.childItems()] == [
+            "encFillSlot",
+            "encLineSlot",
+            "encMarkerSlot",
+        ]
+        assert all(not slot.childItems() for slot in container.childItems())
         assert not container.isVisible(), "an empty container must stay hidden"
     finally:
         _release(view)

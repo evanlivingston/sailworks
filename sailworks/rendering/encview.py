@@ -273,6 +273,10 @@ class CellMesh:
     #: Honest byte estimate: vertex, sounding and colour buffers plus part
     #: overhead.
     nbytes: int
+    #: Packed screen-constant GPU line payload (COALNE/DEPCNT), clipped to the
+    #: same coverage and cached with the mesh.  Empty when the slice was off
+    #: at build time.  Counted in :attr:`nbytes`.
+    line_segments: object = encmesh.EMPTY_LINE_SEGMENTS
 
 
 #: Estimated Python overhead of one ``MeshPart``/``UnsupportedPart`` entry.
@@ -570,6 +574,12 @@ class ViewScene:
     colours: np.ndarray = dataclasses.field(
         default_factory=lambda: np.empty((0, 4), dtype=np.uint8)
     )
+    #: Packed screen-constant GPU line payload for every contributing cell, in
+    #: the same composite order the vertex buffer uses.  Each segment already
+    #: carries its own width and colour, so no part offset applies.
+    line_segments: object = dataclasses.field(
+        default_factory=lambda: encmesh.EMPTY_LINE_SEGMENTS
+    )
 
     @property
     def is_empty(self) -> bool:
@@ -607,6 +617,90 @@ class ViewScene:
         ):
             return self.colours
         return encpalette.vertex_colours(self.parts, self.vertex_count, default)
+
+    def subset(self, kinds, *, keep_soundings=True):
+        """Restrict the scene to the parts whose kind is in ``kinds``.
+
+        The fill and marker items must not draw each other's geometry, so each
+        one uploads a filtered copy of the same assembled scene.  Vertex ranges
+        are packed down to the kept parts and every cell span is recomputed,
+        keeping the scene's composite order.  ``unsupported``/``skipped``
+        metadata and the cache counters are carried through unchanged; they
+        describe the assembly, not the item's slice of it.
+
+        A scene that already contains only the requested kinds is returned
+        as-is, so the item's identity-based no-op and retained-frame
+        bookkeeping keep working for the unsplit path.  ``keep_soundings=False``
+        drops the SOUNDG array: only the marker item lays out labels, so the
+        fill copy must not retain a second reference to it.
+        """
+        parts = tuple(self.parts or ())
+        if not parts:
+            filtered = self
+        else:
+            kept = tuple(part for part in parts if part.kind in kinds)
+            if len(kept) == len(parts):
+                filtered = self
+            else:
+                positions = np.asarray(self.positions)
+                count = int(positions.shape[0])
+                mask = np.zeros(count, dtype=bool)
+                for part in kept:
+                    first = int(part.first_vertex)
+                    mask[first : first + int(part.vertex_count)] = True
+
+                new_parts = []
+                offset = 0
+                for part in parts:
+                    if part.kind not in kinds:
+                        continue
+                    new_parts.append(dataclasses.replace(part, first_vertex=offset))
+                    offset += int(part.vertex_count)
+
+                cells = []
+                first_part = 0
+                first_vertex = 0
+                for span in tuple(self.cells or ()):
+                    start = int(span.first_part)
+                    selected = [
+                        part
+                        for part in parts[start : start + int(span.part_count)]
+                        if part.kind in kinds
+                    ]
+                    vertex_count = sum(int(part.vertex_count) for part in selected)
+                    cells.append(
+                        dataclasses.replace(
+                            span,
+                            first_part=first_part,
+                            part_count=len(selected),
+                            first_vertex=first_vertex,
+                            vertex_count=vertex_count,
+                        )
+                    )
+                    first_part += len(selected)
+                    first_vertex += vertex_count
+
+                colours = self.colours
+                new_colours = colours
+                if colours is not None:
+                    colours = np.asarray(colours)
+                    if colours.shape[:1] == (count,):
+                        new_colours = colours[mask]
+
+                filtered = dataclasses.replace(
+                    self,
+                    positions=positions[mask],
+                    parts=tuple(new_parts),
+                    cells=tuple(cells),
+                    colours=new_colours,
+                )
+
+        if keep_soundings:
+            return filtered
+        soundings = filtered.soundings
+        if soundings is not None and int(np.asarray(soundings).shape[0]):
+            return dataclasses.replace(filtered, soundings=encsounding.EMPTY_SOUNDINGS)
+        return filtered
 
 
 EMPTY_VIEW_SCENE = ViewScene(
@@ -659,12 +753,15 @@ def _oversized(scene_cache, path, version) -> bool:
     return bool(is_oversized(path, version)) if is_oversized is not None else False
 
 
-def _mesh_nbytes(positions, soundings, parts, unsupported, colours) -> int:
+def _mesh_nbytes(
+    positions, soundings, parts, unsupported, colours, line_segments=None
+) -> int:
     """Account a mesh honestly: exact buffers plus per-part Python overhead."""
     return (
         int(positions.nbytes)
         + int(soundings.nbytes)
         + int(colours.nbytes)
+        + (0 if line_segments is None else int(line_segments.nbytes))
         + (len(parts) + len(unsupported)) * PART_OVERHEAD_BYTES
     )
 
@@ -839,6 +936,7 @@ class _CellContribution:
     soundings: np.ndarray
     unsupported: tuple
     coverage_state: str
+    line_segments: object = encmesh.EMPTY_LINE_SEGMENTS
 
 
 def _assemble(
@@ -855,6 +953,7 @@ def _assemble(
     """
     chunks: list[np.ndarray] = []
     colour_chunks: list[np.ndarray] = []
+    segment_chunks: list = []
     parts: list[encmesh.MeshPart] = []
     cells: list[CellSpan] = []
     unsupported: list[CellUnsupported] = []
@@ -876,6 +975,8 @@ def _assemble(
             colour_chunks.append(contribution.colours)
         if contribution.soundings.shape[0]:
             sounding_chunks.append(contribution.soundings)
+        if not contribution.line_segments.is_empty:
+            segment_chunks.append(contribution.line_segments)
         cells.append(
             CellSpan(
                 path=contribution.cell.path,
@@ -919,6 +1020,7 @@ def _assemble(
         mesh_built=(owner.triangulations - built_before if owner is not None else 0),
         soundings=soundings,
         colours=colours,
+        line_segments=encmesh.concat_line_segments(segment_chunks),
     )
 
 
@@ -951,6 +1053,8 @@ class _CellTask:
     display_scale: float | None = None
     #: The quantised rectangle this mesh was clipped to, when it is cacheable.
     granule: tuple | None = None
+    #: ``None`` follows :func:`encmesh.gpu_lines_enabled`; resolved per build.
+    gpu_lines: bool | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1487,6 +1591,7 @@ def _mesh_cell(
             marker_scale=marker_scale,
             simplify=task.tolerance,
             timings=timings,
+            gpu_lines=getattr(task, "gpu_lines", None),
         )
         started = time.perf_counter()
         soundings = encsounding.soundings_from_records(
@@ -1505,6 +1610,7 @@ def _mesh_cell(
             mesh.parts,
             mesh.unsupported,
             colours,
+            mesh.line_segments,
         )
         _stage(timings, "account", started)
         entry = CellMesh(
@@ -1514,6 +1620,7 @@ def _mesh_cell(
             coverage_state=mesh.coverage_state,
             soundings=soundings,
             colours=colours,
+            line_segments=mesh.line_segments,
             nbytes=nbytes,
         )
         if owner is not None:
@@ -1542,6 +1649,7 @@ def _mesh_cell(
             soundings=entry.soundings,
             unsupported=tuple(entry.unsupported),
             coverage_state=entry.coverage_state,
+            line_segments=entry.line_segments,
         ),
     )
 
@@ -1809,9 +1917,10 @@ def build_view_scene(
         thread and never in parallel with another.
         """
         started = time.perf_counter()
-        build = lambda cancel, path=cell.path, version=cell.version: loader(
-            path, version, cancel
-        )
+
+        def build(cancel, path=cell.path, version=cell.version):
+            return loader(path, version, cancel)
+
         scene = scene_cache.get_or_build(
             cell.path,
             cell.version,

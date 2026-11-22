@@ -80,7 +80,7 @@ jobs:
     - name: Build retained routing QSG module
       run: |
         sudo apt-get install -y qt6-base-dev qt6-declarative-dev \
-          qml6-module-qtquick qml6-module-qtqml-workerscript
+          qt6-shadertools-dev qml6-module-qtquick qml6-module-qtqml-workerscript
         cmake -S native/routing/qt -B build/routing-qt \
           -DCMAKE_BUILD_TYPE=Release
         cmake --build build/routing-qt --parallel 4

@@ -29,6 +29,7 @@ from typing import Any, cast
 
 from sailworks.core.mapmotion import DragVelocity, PanInertia
 from sailworks.qt import enc_trace, panstats
+from sailworks.qt.encgpu_lines import EncGpuLineLayer
 from sailworks.qt.gpuweatherfields import (
     FIELD_COLUMNS,
     FieldIdentity,
@@ -66,7 +67,6 @@ from sailworks.qt.viewporttransform import (
     enc_scene_cover_stale,
     enc_compose_margin,
     enc_scene_placement,
-    enc_scene_pan,
     same_frame,
     zoom_preview_transform,
 )
@@ -115,6 +115,18 @@ def _item_offset(item, first, second):
     screen position the user sees is the offset plus the container's own
     translation.
     """
+    reader = getattr(item, "read_offset", None)
+    if callable(reader):
+        try:
+            offset = reader()
+        except (TypeError, ValueError):
+            return None
+        if offset is None:
+            return None
+        try:
+            return (float(offset[0]), float(offset[1]))
+        except (TypeError, ValueError, IndexError):
+            return None
     getter = getattr(item, "property", None)
     if getter is None:
         return None
@@ -136,6 +148,12 @@ def _shift_item_offset(item, first, second, dx, dy):
     if offset is None:
         return None
     placed = (offset[0] + dx, offset[1] + dy)
+    writer = getattr(item, "write_offset", None)
+    if callable(writer):
+        try:
+            return writer(placed[0], placed[1])
+        except (AttributeError, TypeError, ValueError):
+            return None
     writer = getattr(item, "setProperty", None)
     try:
         if writer is not None:
@@ -282,8 +300,7 @@ def place_enc_scene_item(
     if carries and cause == "camera" and not rescaled:
         _trace_placement_skip("enc_place_skip", "container_carries", cause, camera)
         return "container_carries"
-    item.setX(x)
-    item.setY(y)
+    item.set_position(x, y)
     return None
 
 
@@ -2759,7 +2776,6 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
         CHART_INTERACTIVE_MS,
         CHART_RETAINED_HEAD_START_MS,
         CHART_SCENE_SKIP_MS,
-        CHART_SCENE_SUPPRESS_MAX_MS,
         CHART_STARTUP_HEAD_START_MS,
         CHART_STARTUP_SCENE_HOLD_MS,
         CHART_WEATHER_BUSY_WAIT_MS,
@@ -2921,6 +2937,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             # the flag resolved on: the default path constructs none of them.
             self._enc_scene_container = None
             self._enc_scene_item: Any = None
+            #: Native GPU line layer (``encGpuLineLayer``), built only once
+            #: the viewport has successfully created its ``GpuLineItem``.
+            #: One object owns the item, its component and all writes to it.
+            self._enc_gpu_line_layer = EncGpuLineLayer()
             self._enc_scene_model = None
             self._enc_scene_state = "idle"
             #: The camera the presented ENC scene was composed for; its
@@ -3309,9 +3329,22 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                             "The GRIB viewport could not load its ENC scene"
                         )
                     self._enc_scene_container = container
+                    # The native line item must exist before the scene item is
+                    # split: the pair is only safe (and only layered) when the
+                    # GPU layer actually draws the extracted classes.  Env
+                    # opt-out, module missing or creation failed all leave
+                    # ``line_item`` None and get the single all-kinds item.
+                    # The layer records the availability gate as it builds,
+                    # before the scene layer exists and long before any worker
+                    # build, so the mesh side and the drawing side cannot
+                    # disagree.
+                    layer = self._enc_gpu_line_layer
+                    line_item = layer.create(self, container)
                     # The item is the GUI thread's only handle on the scene:
                     # the layer's worker never touches it.
-                    self._enc_scene_item = enc_scene_item(container)
+                    self._enc_scene_item = enc_scene_item(
+                        container, gpu_lines=line_item is not None, lines=line_item
+                    )
                     self._enc_scene_model = EncSceneLayer(
                         data_dir=chart_data_dir,
                         palette=self._chart_palette,
@@ -4196,8 +4229,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     return getattr(self, "_enc_scene_demand_generation", None)
             item = getattr(self, "_enc_scene_item", None)
             if item is not None:
-                item.setWidth(camera.width)
-                item.setHeight(camera.height)
+                item.set_width(camera.width)
+                item.set_height(camera.height)
             # A real demand always wins: an armed or running prefetch is
             # dropped before the ask, so it can never delay this generation.
             self._enc_prefetch_armed_demand = None
@@ -4325,7 +4358,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._enc_scene_cell_states = ()
             item = getattr(self, "_enc_scene_item", None)
             if item is not None:
-                item.setVisible(False)
+                item.set_visible(False)
+            # The GPU line layer never outlives the scene it was drawn for.
+            self._enc_gpu_line_layer.clear()
             trace_raster_visibility(self, "scene_withdrawn")
             # Nothing draws chart content any more: the raster must, now.
             ensure_chart_content(self, "scene_withdrawn", generation=withdrawn)
@@ -4343,6 +4378,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             """
             if getattr(self, "_enc_scene_item", None) is None:
                 return
+            # The GPU line layer projects degrees from the live camera,
+            # so a pan or zoom moves it with the view immediately instead of
+            # waiting for the next publication.  No-op when it is unbuilt.
+            self._enc_gpu_line_layer.set_camera(self._camera)
             self._enc_scene_provisional = True
             self._update_enc_status()
 
@@ -4595,7 +4634,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             # Cancel the container pan: this scene's projection already
             # includes the camera that composed it.
             self._place_enc_scene(cause="publication")
-            item.setVisible(True)
+            item.set_visible(True)
+            # Trial GPU ENC lines: upload the payload of the very frame that
+            # just became visible, with the camera it is presented for, so
+            # both layers always describe the same publication.
+            self._enc_gpu_line_layer.update(scene, self._camera)
             # The adopted frame is now what the user sees.  If it does not
             # draw this viewport, the raster must cover the gap at once: a
             # held or deferred composition would leave the viewport blank
@@ -4967,9 +5010,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             shown = getattr(item, "shown_vertex_count", None)
             reaches = getattr(item, "scene_covers_view", None)
             return {
-                "visible": None if item is None else bool(item.isVisible()),
+                "visible": None if item is None else bool(item.is_visible()),
                 "cells": len(getattr(self, "_enc_scene_cells_order", ()) or ()),
-                "cell_nodes": len(getattr(item, "_cell_nodes", ()) or ()),
+                "cell_nodes": (
+                    None
+                    if item is None
+                    else int(getattr(item, "cell_node_count", 0) or 0)
+                ),
                 "vertices": None if shown is None else int(shown()),
                 "covers_view": None if reaches is None else bool(reaches()),
                 "state": getattr(self, "_enc_scene_state", None),
@@ -10993,26 +11040,17 @@ def enc_scene_catalog(data_dir, palette=None):
     return EncCatalog(data_dir)
 
 
-def enc_scene_item(container):
-    """Parent the GPU ENC item on its QML container and size it to it.
+def enc_scene_item(container, *, gpu_lines=False, lines=None):
+    """Parent the ENC scene's layers on their QML slots and size them.
 
-    The scene's coordinates are viewport logical pixels, so the item covers
-    the container rather than a zero-sized rect.  The two connections keep it
-    covering the container across a resize.  The item starts hidden: it is
-    shown only when a ready scene is published, never as an empty overlay.
+    A thin wrapper over :meth:`sailworks.qt.encgpu.EncSceneLayers.create`: the
+    flag and the created native line item decide between the split and the
+    single all-kinds mesh, and the layer surface is the same either way.  The
+    scene starts hidden; only a ready publication shows it.
     """
-    from .encgpu import EncMeshItem
+    from .encgpu import EncSceneLayers
 
-    item = EncMeshItem(container)
-    item.setWidth(container.width())
-    item.setHeight(container.height())
-    # ``widthChanged``/``heightChanged`` carry no argument, so the slot has to
-    # read the container's current size: connecting ``item.setWidth`` directly
-    # would call it with zero arguments and raise.
-    container.widthChanged.connect(lambda: item.setWidth(container.width()))
-    container.heightChanged.connect(lambda: item.setHeight(container.height()))
-    item.setVisible(False)
-    return item
+    return EncSceneLayers.create(container, lines if gpu_lines else None)
 
 
 def viewport_layer_flags(args):
@@ -11149,8 +11187,6 @@ def saved_chart_palette(data_dir, settings=None):
 
 def main(argv=None):
     """Launch a read-only standalone viewport; no paths means saved selection."""
-    import argparse
-
     from PySide6.QtCore import QDateTime, Qt
     from PySide6.QtWidgets import (
         QApplication,

@@ -89,6 +89,22 @@ class _SceneItem:
     def setVisible(self, value):
         self.visible = bool(value)
 
+    def set_visible(self, value):
+        self.setVisible(value)
+
+    def is_visible(self):
+        return self.isVisible()
+
+    def set_width(self, value):
+        self.width = value
+
+    def set_height(self, value):
+        self.height = value
+
+    def set_position(self, x, y):
+        self.x = x
+        self.y = y
+
 
 # ---- pure decision -------------------------------------------------------
 
@@ -588,6 +604,11 @@ def test_a_withdrawn_scene_requests_the_raster_at_once(viewport_class):
         _enc_scene_cell_states=(),
         _disposed=False,
         _cancel_enc_scene_partial_hold=lambda: None,
+        _enc_gpu_line_layer=SimpleNamespace(
+            update=lambda *args, **kwargs: None,
+            clear=lambda: None,
+            set_camera=lambda *args, **kwargs: None,
+        ),
     )
 
     viewport_class._withdraw_enc_scene(state)

@@ -271,7 +271,7 @@ def frame_presented(render_ms=None):
     """
     global _last_frame_at, _moving_seconds, _idle_seconds
     global _camera_ms_pending, _camera_ms_moving, _stall_dumped
-    global _render_basis, _render_ms, _render_ring
+    global _render_basis, _render_ring
     if not enabled():
         return
     now = time.perf_counter()
@@ -354,7 +354,7 @@ def painted(elapsed_ms):
     and hands the duration in.  The same sample is kept for the hitch window
     it fell in, so a spike can be split between paint and Quick render.
     """
-    global _paint_ms, _paint_ring
+    global _paint_ring
     if not enabled():
         return
     now = time.perf_counter()
