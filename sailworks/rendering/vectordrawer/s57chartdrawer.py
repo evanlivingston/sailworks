@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import cairo
 from osgeo import ogr
 
+from sailworks.rendering.scene import policy
 from sailworks.rendering.style import Style
 
 from .cm93chartdrawer import CM93ChartDrawer, SOUNDING_STYLE
@@ -17,22 +18,11 @@ CollectedFeatures = tuple[
 
 
 class S57ChartDrawer(CM93ChartDrawer):
-    AREA_ORDER = {"DEPARE": 0, "DRGARE": 1, "LNDARE": 2}
-    SKIP_LAYERS = {"DSID", "M_COVR", "M_QUAL", "M_NSYS", "M_CSCL", "M_SDAT", "M_VDAT"}
-    AREA_LAYERS = {
-        "LNDARE",
-        "DEPARE",
-        "DRGARE",
-        "BUAARE",
-        "BUISGL",
-        "LAKARE",
-        "RIVERS",
-        "ACHARE",
-        "ANCBRT",
-        "RESARE",
-        "CTNARE",
-    }
-    ATTRIBUTE_FIELDS = {"DEPARE": ("DRVAL1", "DRVAL2"), "BOYLAT": ("COLOUR",)}
+    #: Portrayal policy owned by :mod:`sailworks.rendering.scene.policy`.
+    AREA_ORDER = policy.AREA_ORDER
+    SKIP_LAYERS = policy.SKIP_LAYERS
+    AREA_LAYERS = policy.AREA_LAYERS
+    ATTRIBUTE_FIELDS = policy.ATTRIBUTE_FIELDS
 
     #: The drawer's own feature cache, in entries.  The cache belongs to the
     #: drawer: it lives and dies with it, and the entry count is what bounds
@@ -374,8 +364,9 @@ class S57ChartDrawer(CM93ChartDrawer):
         if feature.obj_name == "BOYLAT":
             colours = feature.attributes.get("COLOUR") or []
             colour = str(colours[0]) if colours else ""
-            if colour in ("3", "4"):
-                feature.attributes["CATLAM"] = 1 if colour == "3" else 2
+            catlam = policy.BOYLAT_CATLAM.get(colour)
+            if catlam is not None:
+                feature.attributes["CATLAM"] = catlam
             else:
                 feature.obj_name = "BOYSPP"
         super()._render_point(gpsmap, cr, feature, palette, scale)
