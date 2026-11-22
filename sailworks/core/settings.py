@@ -57,7 +57,10 @@ class SettingsManager(Storage):
         self.keepEblOriginals = True
         self.smoothZoom = True
         self.panInertia = True
-        self.mapRenderer = "cpu"
+        # GPU is the only production map renderer.  The key is kept so a saved
+        # legacy "cpu" value loads without error; it is not an effective
+        # renderer choice.
+        self.mapRenderer = "gpu"
         self.weatherNextCredentialsPath = ""
         # Per-workflow folder last used by a file dialog, keyed by the plain
         # strings documented in sailworks/qt/filedialogpaths.py.
@@ -67,10 +70,9 @@ class SettingsManager(Storage):
         self.chartSatelliteVisible = False
         self.satellitePack = ""
         self.chartENCVisible = True
-        # Experimental GPU scene source for the ENC overlay.  Off is the
-        # raster ENC path every existing user has, so the scene is only ever
-        # drawn when it is explicitly asked for.
-        self.chartENCScene = False
+        # The GPU ENC scene is the product's only ENC presenter; the old
+        # ``chartENCScene`` opt-in is gone, and a saved value for it does
+        # nothing.
         self.chartRasterVisible = True
         self.chartMBTilesVisible = True
         self.chartCM93Visible = True

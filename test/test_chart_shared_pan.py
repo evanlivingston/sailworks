@@ -358,7 +358,6 @@ def _gribviewport_place(item, offset, camera):
 
     _gv.place_enc_scene_item(
         item,
-        None,
         offset[0],
         offset[1],
         cause="publication",

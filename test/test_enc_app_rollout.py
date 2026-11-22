@@ -82,46 +82,30 @@ def test_app_constructs_enc_only_viewport_by_default(presenter, monkeypatch):
     presenter._create(None)
     model_factory.assert_called_once_with(None, grid=False)
     kwargs = factory.call_args.kwargs
-    assert kwargs["chart_layer"] and kwargs["enc_chart_layer"] and kwargs["enc_only"]
+    assert kwargs["chart_layer"] and kwargs["enc_only"]
+    assert not kwargs.get("enc_chart_layer")
     assert kwargs["chart_palette"] == "dark"
-    # The GPU ENC scene is opt-in: the default construction is the raster path.
-    assert kwargs["enc_scene_layer"] is False
+    # The GPU ENC scene is the product's ENC presentation, always.
+    assert kwargs["enc_scene_layer"] is True
     assert presenter.enc_active
 
 
-def test_the_scene_setting_reaches_the_viewport(presenter, monkeypatch):
-    presenter.canvas.controller.settings.chartENCScene = True
+def test_the_gpu_scene_is_mandatory_and_has_no_setting(presenter, monkeypatch):
     factory = Mock()
     monkeypatch.setattr(weatherpresenter, "_viewport_widget_class", lambda: factory)
     monkeypatch.setattr(presenter, "_model", Mock(return_value=Mock()))
+    assert not hasattr(presenter.canvas.controller.settings, "chartENCScene")
 
     presenter._create(None)
 
     kwargs = factory.call_args.kwargs
     assert kwargs["enc_scene_layer"] is True
-    # The raster source is still requested; the viewport's mode resolution is
-    # what turns it off, so the scene supersedes it instead of drawing twice.
-    assert kwargs["enc_chart_layer"]
+    assert not kwargs.get("enc_chart_layer")
 
 
-def test_an_unset_scene_setting_leaves_the_raster_path_unchanged(
-    presenter, monkeypatch
-):
-    # No ``chartENCScene`` attribute at all: what an older settings object
-    # looks like before the key exists.
-    factory = Mock()
-    monkeypatch.setattr(weatherpresenter, "_viewport_widget_class", lambda: factory)
-    monkeypatch.setattr(presenter, "_model", Mock(return_value=Mock()))
+def test_enc_scene_setting_is_gone(tmp_path, monkeypatch):
+    import json
 
-    presenter._create(None)
-
-    kwargs = factory.call_args.kwargs
-    assert kwargs["enc_scene_layer"] is False
-    assert kwargs["enc_chart_layer"]
-    assert kwargs["enc_only"]
-
-
-def test_enc_scene_setting_defaults_off_and_round_trips(tmp_path, monkeypatch):
     from sailworks.core import storage
     from sailworks.core.settings import SettingsManager
 
@@ -129,12 +113,19 @@ def test_enc_scene_setting_defaults_off_and_round_trips(tmp_path, monkeypatch):
     settings_dir.mkdir()
     monkeypatch.setattr(storage, "DATA_DIR", str(settings_dir))
 
+    # The removed opt-in is not a default and has no effective selector: a
+    # fresh profile carries no key at all, so nothing can consult one.
     settings = SettingsManager()
-    assert settings["chartENCScene"] is False
-    settings.chartENCScene = True
-    assert settings["chartENCScene"] is True
-    # A restart reads the same file, so the opt-in survives it.
-    assert SettingsManager()["chartENCScene"] is True
+    assert "chartENCScene" not in settings.to_dict()
+    assert settings.get("chartENCScene") is None
+
+    # Storage preserves unknown keys when it loads an older profile, so a
+    # saved ``chartENCScene`` survives as inert data.  It stays inert because
+    # no default creates it and no presenter reads it; the presentation test
+    # above proves the GPU scene is used regardless of settings.
+    (settings_dir / "settings.json").write_text(json.dumps({"chartENCScene": True}))
+    legacy = SettingsManager()
+    assert legacy.get("chartENCScene") is True
 
 
 def test_desktop_map_uses_world_chart_layer_with_enc(presenter, monkeypatch):
@@ -151,7 +142,8 @@ def test_desktop_map_uses_world_chart_layer_with_enc(presenter, monkeypatch):
     model_factory.assert_called_once_with(None, grid=True)
     kwargs = factory.call_args.kwargs
     assert kwargs["chart_layer"]
-    assert kwargs["enc_chart_layer"]
+    assert not kwargs.get("enc_chart_layer")
+    assert kwargs["enc_scene_layer"] is True
     assert kwargs["chart_without_weather"]
     assert kwargs["gpu_weather_fill"]
     assert not kwargs["enc_only"]
@@ -797,6 +789,401 @@ def test_rollout_readiness_rejects_a_previous_application_camera():
     canvas._zoom = 14
     widget._environment_key = 6
     assert not module.current_application_view(canvas, widget)
+
+
+def _rollout_tool():
+    path = Path(__file__).resolve().parents[1] / "tools/check_enc_app_rollout.py"
+    import sys
+
+    sys.path.insert(0, str(path.parent))
+    try:
+        spec = importlib.util.spec_from_file_location("enc_app_scene_gate", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.pop(0)
+    return module
+
+
+def _scene_widget(camera, *, metadata=None, layer=None, item=None, widget=None):
+    metadata = dict(
+        metadata
+        if metadata is not None
+        else {
+            "partial": False,
+            "camera": camera,
+            "cells_order": ({"path": "US5CA13M.000", "name": "US5CA13M"},),
+            "cell_states": ({"path": "US5CA13M.000", "state": "ready"},),
+        }
+    )
+    layer_fields = dict(
+        state="ready",
+        error=None,
+        incomplete="labels/symbols not yet drawn",
+        published=(3, object(), metadata),
+    )
+    layer_fields.update(layer or {})
+    item_fields = dict(
+        generation=4,
+        upload_count=1,
+        unsupported_count=0,
+        shown_vertex_count=lambda: 12,
+        scene_covers_view=lambda: True,
+        isVisible=lambda: True,
+        _text_labels=("S1",),
+    )
+    item_fields.update(item or {})
+    widget_fields = dict(
+        _camera=camera,
+        _enc_scene_layer=True,
+        _enc_scene_model=SimpleNamespace(**layer_fields),
+        _enc_scene_item=SimpleNamespace(**item_fields),
+        _enc_scene_ready_generation=3,
+        _camera_dpr=1.0,
+        isVisible=lambda: True,
+    )
+    widget_fields.update(widget or {})
+    return SimpleNamespace(**widget_fields)
+
+
+def test_scene_presentation_requires_published_adopted_and_drawn():
+    from sailworks.qt.gribviewport import ViewportCamera
+
+    module = _rollout_tool()
+    camera = ViewportCamera(
+        48.1125, -122.7375, 14.236, 710, 743, datetime(2026, 10, 19)
+    )
+
+    view = module.scene_presentation(_scene_widget(camera))
+    assert view["constructed"] and view["presented"]
+    assert view["published_generation"] == 3
+    assert view["adopted"] and view["drawn"]
+    assert view["covers_view"] and view["shown_vertices"] == 12
+    assert view["incomplete"] == "labels/symbols not yet drawn"
+    assert view["text_labels"] == 1
+
+    # A setting, a constructed layer and a ready environment are not enough:
+    # zero drawn vertices, a hidden item, a partial or a stale camera all mean
+    # the frame is not presented chart content.
+    empty = module.scene_presentation(
+        _scene_widget(camera, item={"shown_vertex_count": lambda: 0})
+    )
+    assert not empty["drawn"] and not empty["presented"]
+    hidden = module.scene_presentation(
+        _scene_widget(camera, item={"isVisible": lambda: False})
+    )
+    assert not hidden["drawn"] and not hidden["presented"]
+    partial = module.scene_presentation(
+        _scene_widget(camera, metadata={"partial": True, "camera": camera})
+    )
+    assert not partial["adopted"] and not partial["presented"]
+    other = ViewportCamera(48.3, -122.5, 14.236, 710, 743, datetime(2026, 10, 19))
+    stale = module.scene_presentation(
+        _scene_widget(camera, metadata={"partial": False, "camera": other})
+    )
+    assert stale["adopted"] and not stale["presented"]
+    superseded = module.scene_presentation(
+        _scene_widget(camera, widget={"_enc_scene_ready_generation": 2})
+    )
+    assert not superseded["adopted"] and superseded["presented"]
+    missing = _scene_widget(camera)
+    missing._enc_scene_item = None
+    absent = module.scene_presentation(missing)
+    assert not absent["constructed"] and not absent["presented"]
+
+
+def test_scene_sandbox_settings_pin_the_product_path_only():
+    module = _rollout_tool()
+    base = {
+        "chartENCVisible": False,
+        "chartENCScene": False,
+        "gribBarbDensity": "dense",
+    }
+
+    scene = module.sandbox_settings(base)
+    # The sandbox forces the charts and density the viewport serves.  There is
+    # no scene switch to force: the GPU scene is the product path.
+    assert scene["chartENCVisible"] is True
+    assert scene["gribBarbDensity"] == "very_dense"
+    assert scene["developerMode"] is True
+    assert base["chartENCVisible"] is False
+    # A legacy saved key is copied through untouched rather than invented or
+    # coerced; it has no effect because no presenter reads it.
+    assert scene["chartENCScene"] is False
+    assert "chartENCScene" not in module.sandbox_settings({"chartENCVisible": False})
+
+
+def _scene_canvas(camera):
+    return SimpleNamespace(
+        _center_lat=camera.center_lat,
+        _center_lon=camera.center_lon,
+        _zoom=camera.zoom,
+        width=lambda: camera.width,
+        height=lambda: camera.height,
+        time_control=SimpleNamespace(time=camera.time),
+    )
+
+
+def _scene_presenter(active=True, enc_active=True):
+    return SimpleNamespace(active=active, enc_active=enc_active)
+
+
+def test_scene_checks_read_the_snapshot_the_stage_records():
+    from sailworks.qt.gribviewport import ViewportCamera
+
+    module = _rollout_tool()
+    camera = ViewportCamera(
+        48.1125, -122.7375, 14.236, 710, 743, datetime(2026, 10, 19)
+    )
+    gate = module.scene_gate(
+        _scene_widget(camera), _scene_presenter(), _scene_canvas(camera)
+    )
+    assert module.scene_gate_presents(gate)
+    assert set(module.scene_checks(gate).values()) == {True}
+
+    # A camera the application has already left fails exactly the check that
+    # names it: adoption and drawing stay true, presentation does not.
+    moved = _scene_canvas(camera)
+    moved._zoom = 14.25
+    stale = module.scene_gate(_scene_widget(camera), _scene_presenter(), moved)
+    checks = module.scene_checks(stale)
+    assert not module.scene_gate_presents(stale)
+    assert stale["camera_mismatch"] == {
+        "zoom": {"camera": "14.236", "application": "14.25"}
+    }
+    assert checks["scene_adopted"] and checks["scene_drawn"]
+    assert not checks["scene_matches_application_camera"]
+
+    # A presenter that is not active means nothing on screen is the scene,
+    # even when the layer's last publication still looks complete.
+    down = module.scene_gate(
+        _scene_widget(camera), _scene_presenter(active=False), _scene_canvas(camera)
+    )
+    assert not module.scene_gate_presents(down)
+    down_checks = module.scene_checks(down)
+    assert down_checks["scene_layer_constructed"]
+    assert not any(
+        value
+        for name, value in down_checks.items()
+        if name != "scene_layer_constructed"
+    )
+
+
+def test_a_move_may_reuse_a_retained_scene_that_still_presents():
+    from sailworks.qt.gribviewport import ViewportCamera
+
+    module = _rollout_tool()
+    camera = ViewportCamera(
+        48.1125, -122.7375, 14.236, 710, 743, datetime(2026, 10, 19)
+    )
+    gate = module.scene_gate(
+        _scene_widget(camera), _scene_presenter(), _scene_canvas(camera)
+    )
+    published = gate["scene"]["published_generation"]
+    reused = {"scene": gate["scene"], "gate": gate}
+    # The retained generation is the only one there is; that is reuse, not a
+    # failed pan, as long as it still presents the application's camera.
+    assert module.moved_scene_presented(reused, published)
+    assert reused["publication_advanced"] is False
+
+    advanced = {
+        "scene": dict(gate["scene"], published_generation=published + 1),
+        "gate": gate,
+    }
+    assert module.moved_scene_presented(advanced, published)
+    assert advanced["publication_advanced"] is True
+
+    # A retained scene composed for the camera before the move is adopted and
+    # drawn, but it is not this view: the move still fails.
+    other = ViewportCamera(48.2, -122.6, 14.5, 710, 743, datetime(2026, 10, 19))
+    stale_gate = module.scene_gate(
+        _scene_widget(camera, metadata={"partial": False, "camera": other}),
+        _scene_presenter(),
+        _scene_canvas(camera),
+    )
+    stale = {"scene": stale_gate["scene"], "gate": stale_gate}
+    assert not module.moved_scene_presented(stale, published)
+    assert stale["publication_advanced"] is False
+
+
+def test_scene_gate_proves_the_scene_not_the_raster_enc_source():
+    from sailworks.qt.gribviewport import ViewportCamera
+
+    module = _rollout_tool()
+    camera = ViewportCamera(
+        48.1125, -122.7375, 14.236, 710, 743, datetime(2026, 10, 19)
+    )
+    # The GPU scene is the application's only ENC presentation.  The
+    # presenter's ``enc_active`` covers it, but it cannot distinguish the
+    # retired raster reference: the scene's own layer, model and item are
+    # still the proof the gate demands.
+    presenter = _scene_presenter(enc_active=True)
+    gate = module.scene_gate(_scene_widget(camera), presenter, _scene_canvas(camera))
+    assert gate["presenter_enc_active"] is True
+    assert gate["presenter_scene_active"] is True
+    assert module.scene_gate_presents(gate)
+
+    raster_only = _scene_widget(camera, widget={"_enc_scene_layer": False})
+    down = module.scene_gate(
+        raster_only, _scene_presenter(enc_active=True), _scene_canvas(camera)
+    )
+    assert down["presenter_scene_active"] is False
+    assert not module.scene_gate_presents(down)
+    checks = module.scene_checks(down)
+    assert checks["scene_layer_constructed"]
+    assert not any(
+        value for name, value in checks.items() if name != "scene_layer_constructed"
+    )
+
+
+def test_a_retained_pan_presents_through_the_applied_item_transform():
+    from sailworks.qt.gribviewport import ViewportCamera
+    from sailworks.qt.viewporttransform import PanReference, enc_scene_placement
+
+    module = _rollout_tool()
+    clock = datetime(2026, 10, 19)
+    build = ViewportCamera(48.1125, -122.7375, 14.236, 710, 743, clock)
+    moved = ViewportCamera(48.1200, -122.7000, 14.236, 710, 743, clock)
+    reference = PanReference.from_camera(build)
+    # The item cancels the container's translation relative to the frame it
+    # was composed for; here the reference *is* that frame, so it is zero.
+    assert enc_scene_placement(reference, build, 1.0) == (0.0, 0.0)
+
+    widget = _scene_widget(
+        moved,
+        metadata={"partial": False, "camera": build},
+        item={"x": lambda: 0.0, "y": lambda: 0.0},
+        widget={
+            "_enc_scene_frame_camera": build,
+            "_map_pan_reference": reference,
+        },
+    )
+    view = module.scene_presentation(widget)
+    # The published mesh still names the build camera; the applied transform,
+    # not that camera, proves the retained frame is this view.
+    assert view["published_camera"] is build
+    assert view["retained"]["same_frame"] and view["retained"]["same_time"]
+    assert view["retained"]["applied_offset"] == (0.0, 0.0)
+    assert view["retained"]["expected_offset"] == (0.0, 0.0)
+    assert view["retained"]["valid"]
+    assert view["presented"]
+
+    stage = module.scene_gate(widget, _scene_presenter(), _scene_canvas(moved))
+    assert module.moved_scene_presented({"scene": stage["scene"], "gate": stage}, 3)
+
+    # A reference that cannot express this frame's dpr or scale is not proof:
+    # a failed translation must not read as a valid zero placement.
+    mismatched = _scene_widget(
+        moved,
+        metadata={"partial": False, "camera": build},
+        item={"x": lambda: 0.0, "y": lambda: 0.0},
+        widget={
+            "_enc_scene_frame_camera": build,
+            "_map_pan_reference": PanReference.from_camera(build, dpr=2.0),
+            "_camera_dpr": 1.0,
+        },
+    )
+    unproven = module.scene_presentation(mismatched)
+    assert unproven["retained"]["expected_offset"] is None
+    assert not unproven["retained"]["valid"]
+    assert not unproven["presented"]
+
+
+def test_a_stale_retained_pan_fails_on_the_applied_transform():
+    from sailworks.qt.gribviewport import ViewportCamera
+    from sailworks.qt.viewporttransform import PanReference
+
+    module = _rollout_tool()
+    clock = datetime(2026, 10, 19)
+    build = ViewportCamera(48.1125, -122.7375, 14.236, 710, 743, clock)
+    moved = ViewportCamera(48.1200, -122.7000, 14.236, 710, 743, clock)
+    widget = _scene_widget(
+        moved,
+        metadata={"partial": False, "camera": build},
+        item={"x": lambda: 40.0, "y": lambda: 12.0},
+        widget={
+            "_enc_scene_frame_camera": build,
+            "_map_pan_reference": PanReference.from_camera(build),
+        },
+    )
+    view = module.scene_presentation(widget)
+    assert view["retained"]["applied_offset"] == (40.0, 12.0)
+    assert view["retained"]["expected_offset"] == (0.0, 0.0)
+    assert not view["retained"]["valid"]
+    assert view["published_camera"] is build
+    assert not view["presented"]
+
+    stage = module.scene_gate(widget, _scene_presenter(), _scene_canvas(moved))
+    assert not module.moved_scene_presented({"scene": stage["scene"], "gate": stage}, 3)
+
+
+def test_a_retained_frame_composed_for_another_time_is_not_presented():
+    from sailworks.qt.gribviewport import ViewportCamera
+    from sailworks.qt.viewporttransform import PanReference
+
+    module = _rollout_tool()
+    build = ViewportCamera(48.1125, -122.7375, 14.236, 710, 743, datetime(2026, 10, 19))
+    later = ViewportCamera(
+        48.1125, -122.7375, 14.236, 710, 743, datetime(2026, 10, 19, 6)
+    )
+    widget = _scene_widget(
+        later,
+        metadata={"partial": False, "camera": build},
+        item={"x": lambda: 0.0, "y": lambda: 0.0},
+        widget={
+            "_enc_scene_frame_camera": build,
+            "_map_pan_reference": PanReference.from_camera(build),
+        },
+    )
+    view = module.scene_presentation(widget)
+    assert view["retained"]["same_frame"]
+    assert not view["retained"]["same_time"]
+    assert not view["retained"]["valid"]
+    assert not view["presented"]
+
+
+def test_failure_visible_uses_the_application_status_contract():
+    module = _rollout_tool()
+    reason = "synthetic scene failure"
+
+    def status(visible=True):
+        return SimpleNamespace(
+            isVisible=lambda: visible,
+            text=lambda: "Weather renderer unavailable: " + reason,
+        )
+
+    presenter = SimpleNamespace(
+        active=False,
+        enc_active=False,
+        widget=None,
+        reason=reason,
+        status=status(),
+    )
+    controller = SimpleNamespace(
+        renderer_status=lambda: "Viewport unavailable: " + reason
+    )
+
+    shown = module.failure_surface(presenter, controller, reason, True)
+    assert shown["ok"] and shown["status_contract"] and shown["status_visible"]
+
+    # Outside developer mode the label is hidden by design: that is the
+    # contract, not a failure, and the renderer status still names the cause.
+    presenter.status = status(visible=False)
+    hidden = module.failure_surface(presenter, controller, reason, False)
+    assert hidden["ok"] and not hidden["status_visible"]
+
+    # In developer mode a hidden label is a real failure.
+    assert not module.failure_surface(presenter, controller, reason, True)["ok"]
+
+    # A different failure reason never satisfies the contract.
+    assert not module.failure_surface(presenter, controller, "another failure", False)[
+        "ok"
+    ]
+
+    # A still-active presenter is not a visible failure.
+    presenter.status = status()
+    presenter.active = True
+    assert not module.failure_surface(presenter, controller, reason, True)["ok"]
 
 
 def test_basemap_gate_checks_the_displayed_chart_not_legacy_cache():

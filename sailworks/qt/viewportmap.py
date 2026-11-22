@@ -152,11 +152,6 @@ class ViewportMap(
         self._environment_cache = None
         self._nav_cache = None
         self._dash_cache = None
-        self._gpu = None
-        self._gpu_geometry = None
-        self._gpu_batches = ()
-        self._gpu_wind_raster = None
-        self._gpu_raster_key = None
         self._overlay_pending = False
         self._shape_draft_kind = None
         self._shape_draft_points = []

@@ -632,7 +632,7 @@ def worker(config):
 
     def grab():
         started = time.perf_counter()
-        gpu = canvas._gpu
+        gpu = getattr(canvas, "_gpu", None)
         if gpu is not None and gpu.active:
             gpu.timer.stop()
             gpu._present()
@@ -706,12 +706,12 @@ def worker(config):
         settled_ms = (time.perf_counter() - began) * 1000
         if controller.chart_errors:
             raise RuntimeError("Saved chart layers failed to open")
-        if config.get("map_renderer") == "gpu" and (
-            canvas._gpu is None or not canvas._gpu.active or not canvas._gpu.initialized
-        ):
-            raise RuntimeError(
-                "GPU benchmark fell back: " + controller.renderer_status()
-            )
+        if config.get("map_renderer") == "gpu":
+            gpu = getattr(canvas, "_gpu", None)
+            if gpu is None or not gpu.active or not gpu.initialized:
+                raise RuntimeError(
+                    "GPU benchmark fell back: " + controller.renderer_status()
+                )
         initial_view = {
             "latitude": canvas._center_lat,
             "longitude": canvas._center_lon,
@@ -1041,12 +1041,12 @@ def worker(config):
             "gpu_probes": gpu_probes[gpu_probe_offset:replay_gpu_probe_end],
             "gpu_counters": (
                 dict(canvas._gpu.scene.counters)
-                if canvas._gpu is not None and canvas._gpu.active
+                if getattr(canvas, "_gpu", None) is not None and canvas._gpu.active
                 else None
             ),
             "gpu_resource_estimate": (
                 canvas._gpu.estimate
-                if canvas._gpu is not None and canvas._gpu.active
+                if getattr(canvas, "_gpu", None) is not None and canvas._gpu.active
                 else None
             ),
             "environment": {

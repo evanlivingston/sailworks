@@ -137,7 +137,7 @@ def replay(canvas, config):
     from PySide6.QtGui import QWheelEvent
     from PySide6.QtWidgets import QApplication
 
-    gpu = canvas._gpu
+    gpu = getattr(canvas, "_gpu", None)
     if gpu is None or not gpu.active or not gpu.initialized:
         raise RuntimeError("Native render probe requires initialized GPU presenter")
     if config["scenario"] not in SCENARIOS:

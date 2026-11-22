@@ -586,7 +586,6 @@ def test_a_withdrawn_scene_requests_the_raster_at_once(viewport_class):
         _enc_scene_provisional=True,
         _enc_scene_cells_order=(),
         _enc_scene_cell_states=(),
-        _enc_fallback=None,
         _disposed=False,
         _cancel_enc_scene_partial_hold=lambda: None,
     )

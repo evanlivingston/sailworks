@@ -971,14 +971,15 @@ class _MarkerPart:
     into reference-frame local pixels.
     """
 
-    __slots__ = ("first", "count", "block", "anchors", "offsets")
+    __slots__ = ("first", "count", "block", "anchors", "offsets", "kind")
 
-    def __init__(self, first, count, block, anchors, offsets):
+    def __init__(self, first, count, block, anchors, offsets, kind=None):
         self.first = first
         self.count = count
         self.block = block
         self.anchors = anchors
         self.offsets = offsets
+        self.kind = kind
 
 
 class _MarkerPlan:
@@ -998,7 +999,7 @@ class _MarkerPlan:
 
 
 def _match_marker_template(block: np.ndarray):
-    """Recover ``(block, anchors)`` for one staged marker part, or ``None``.
+    """Recover ``(block, anchors, kind)`` for one staged marker part, or ``None``.
 
     :func:`sailworks.rendering.vectordrawer.encmesh.build_scene_mesh` stages
     every point of a ``MARKER`` part as ``anchor +
@@ -1042,7 +1043,7 @@ def _match_marker_template(block: np.ndarray):
         if not np.allclose(offsets, shape * scale, rtol=0.0, atol=tolerance):
             continue
         anchors = blocks[:, 0] - template[:1] * scale
-        return size, anchors
+        return size, anchors, kind
     return None
 
 
@@ -1075,11 +1076,17 @@ def _marker_plan(mesh):
         parsed = _match_marker_template(positions[first : first + count])
         if parsed is None:
             return None
-        size, anchors = parsed
+        size, anchors, kind = parsed
+        # Shape matching cannot tell a DOT disc from a BUOY disc at half the
+        # scale: both are the same fan.  The part's source class is the only
+        # authority for the dot gate, and ``build_scene_mesh`` carries it.
+        source_class = getattr(part, "source_class", None)
+        if source_class:
+            kind = encmarkers.classify(source_class) or kind
         total += count
         if total > MARKER_MAX_VERTICES:
             return None
-        entries.append(_MarkerPart(first, count, size, anchors, None))
+        entries.append(_MarkerPart(first, count, size, anchors, None, kind))
     if not entries:
         return None
     return _MarkerPlan(tuple(entries))
@@ -1111,6 +1118,7 @@ def _marker_reference(entries, local64, projection, origin, base):
                 entry.block,
                 anchors,
                 blocks - anchors[:, None, :],
+                entry.kind,
             )
         )
     return _MarkerPlan(tuple(moved))
@@ -1173,6 +1181,17 @@ def _marker_rows(entry, lin):
     return (entry.anchors[:, None, :] + _marker_offsets(entry.offsets, lin)).reshape(
         -1, 2
     )
+
+
+def _hidden_marker_rows(entry):
+    """One part's vertices collapsed onto their anchors: zero-area triangles.
+
+    The cell buffers are shared across cameras, so a per-camera scale gate
+    must not rebuild the mesh.  Collapsing each block to its anchor draws
+    nothing for that part while keeping the buffer's vertex count, colours and
+    cell spans exactly as uploaded.
+    """
+    return np.repeat(np.asarray(entry.anchors, dtype=np.float64), entry.block, axis=0)
 
 
 class _CellGeometry:
@@ -1462,6 +1481,8 @@ class EncMeshItem(QQuickItem):
         self._marker_coeffs = None
         self._marker_patched = set()
         self._marker_fresh = False
+        #: Whether the generic dots currently hold zero-area vertices.
+        self._marker_dots_hidden = False
 
         # Sounding text state.  The atlas image is CPU-side and reusable; the
         # texture and text node belong to whatever node Qt currently owns.
@@ -1860,10 +1881,13 @@ class EncMeshItem(QQuickItem):
         return True
 
     def set_scale(self, scale) -> bool:
-        """Set the camera's display scale for the sounding gate.
+        """Set the camera's metres-per-pixel scale for the per-camera gates.
 
-        ``None`` applies no gate, matching :func:`encmesh.build_scene_mesh`.
-        The gate lives here, per camera, not in the cached scene soundings.
+        This is the same quantity as ``MapViewport.get_scale()``: the generic
+        dot and the sounding text are both gated at 100 m/px, matching the
+        Cairo drawer.  It is not a 1:N display-scale denominator.  ``None``
+        applies no gate, matching :func:`encmesh.build_scene_mesh`.  The gates
+        live here, per camera, not in the cached scene.
         """
         if scale is not None:
             scale = float(scale)
@@ -2324,13 +2348,15 @@ class EncMeshItem(QQuickItem):
         self._restroke_patched = new_patched
         self._restroke_fresh = False
 
-    def _write_marker_cell(self, cell_index, cell_groups, lin) -> None:
+    def _write_marker_cell(self, cell_index, cell_groups, lin, hide_dots=False) -> None:
         """Rewrite one cell's marker runs inside its geometry buffer.
 
         ``cell_groups`` are that cell's ``(cell_first, entry_index)`` records
         and ``lin`` is the linear part ``(a, b, d, e)`` of the current
         matrix, or ``None`` for the baked write -- the anchors and template
-        offsets the buffers were uploaded with.  Each part is one ``memmove``
+        offsets the buffers were uploaded with.  ``hide_dots`` collapses the
+        generic-dot parts onto their anchors, the per-camera scale gate.  Each
+        part is one ``memmove``
         of full 12-byte rows at its own offset in the cell's buffer, so only
         the marker vertices are copied: the colours, the triangle order and
         everything around them are exactly as uploaded.  Render thread only;
@@ -2360,7 +2386,10 @@ class EncMeshItem(QQuickItem):
                 # adoption; never write outside the buffer regardless.
                 continue
             rows = np.empty(count, dtype=VERTEX_DTYPE)
-            flat = _marker_rows(entry, lin)
+            if hide_dots and entry.kind == encmarkers.DOT:
+                flat = _hidden_marker_rows(entry)
+            else:
+                flat = _marker_rows(entry, lin)
             rows["x"] = flat[:, 0]
             rows["y"] = flat[:, 1]
             rows["rgba"] = buffer[start : start + count]["rgba"]
@@ -2401,13 +2430,19 @@ class EncMeshItem(QQuickItem):
             self._marker_patched = set()
             self._marker_fresh = False
             return
+        hidden = bool(
+            self._scale is not None and float(self._scale) > encmarkers.DOT_MAX_SCALE
+        )
+        gate_changed = hidden != self._marker_dots_hidden
         exact = coeffs is None or coeffs == _IDENTITY_AFFINE
         if self._marker_fresh:
             pass  # unknown buffer provenance: always reconcile below
-        elif exact:
+        elif exact and not gate_changed:
             if not self._marker_patched:
+                self._marker_dots_hidden = hidden
                 return
-        elif coeffs == self._marker_coeffs:
+        elif not exact and coeffs == self._marker_coeffs and not gate_changed:
+            self._marker_dots_hidden = hidden
             return
         by_cell = {}
         for cell_index, cell_first, entry_index in frame.marker_groups:
@@ -2421,6 +2456,7 @@ class EncMeshItem(QQuickItem):
                     cell_index,
                     cell_groups,
                     (coeffs[0], coeffs[1], coeffs[3], coeffs[4]),
+                    hidden,
                 )
                 new_patched.add(cell_index)
             elif onscreen or cell_index in self._marker_patched or self._marker_fresh:
@@ -2428,10 +2464,11 @@ class EncMeshItem(QQuickItem):
                 # the patch set, or buffers of unknown provenance (a rebuilt
                 # or restored graph): write the baked anchors and offsets
                 # back.
-                self._write_marker_cell(cell_index, cell_groups, None)
+                self._write_marker_cell(cell_index, cell_groups, None, hidden)
         self._marker_coeffs = None if exact else coeffs
         self._marker_patched = new_patched
         self._marker_fresh = False
+        self._marker_dots_hidden = hidden
 
     def _cull_cells(self, coeffs) -> None:
         """Keep only cells whose transformed bbox reaches the item; O(cells).

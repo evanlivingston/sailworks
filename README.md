@@ -165,22 +165,23 @@ Useful options:
 - `--log FILE` opens an interpreted NMEA log
 - `--early-weather` stages chart initialisation after weather preparation; the default
   startup is unchanged. See [early-weather startup](docs/early-weather-startup.md) for limits.
-- `--map-renderer {cpu,gpu}` overrides the saved map renderer for this session
+- `--map-renderer {cpu,gpu}` is accepted for script compatibility and ignored: the GPU map is
+  the only renderer
 - `--native-weather-fields` keeps the native weather texture cache (the default);
   `--no-native-weather-fields` restores the image-source path
 
 ### Renderer options
 
-CPU rendering is the default. The GPU presenter is **experimental** and is enabled per
-installation:
+The GPU presenter is the only production map renderer. The retired CPU map is not
+selectable, a saved `mapRenderer` value from an older install is ignored, and the
+settings UI reports the backend the viewport actually presented on.
 
-- Turn on **Settings → Display → GPU rendering (experimental)**. The change is applied on
-  restart; `--map-renderer cpu` or `--map-renderer gpu` overrides it for one session without
-  changing the saved choice.
 - Unsupported initialisation, scene-graph errors and resource-budget failures return the
-  affected map to CPU rendering.
+  affected map to CPU rendering at runtime and report that fallback explicitly in
+  **Settings → Appearance**. The renderer choice itself cannot be changed at runtime.
 - Validation covers Metal on Apple Silicon macOS. Other GPU backends, device-loss recovery and
-  long-session memory behaviour remain unverified, so CPU stays the default.
+  long-session memory behaviour remain unverified, so automatic runtime recovery to CPU stays
+  in place.
 - The GPU presenter retains base/navigation textures and wind meshes; route, track, AIS,
   dashboard and caption painting remain on the Qt widget path.
 

@@ -1,13 +1,17 @@
 """Focused checks for procedural ENC point markers (``encmarkers`` + mesh).
 
 These cover the triangle templates' shape and extents against the Cairo point
-symbols, BOYLAT ``COLOUR``/``CATLAM`` remapping, source order, the optional
-per-camera scale gate and the generic fallback for unknown point classes.
-They are Qt-free and do not measure performance or claim chart fidelity.
+symbols, the ink of the stroked shapes (half the line width beyond each path),
+the lateral-buoy disc and its port/starboard colour, BOYLAT ``COLOUR``/
+``CATLAM`` remapping, source order, the optional per-camera scale gate and the
+generic fallback for unknown point classes.  They are Qt-free, apart from one
+optional cross-check of the palette against the Cairo drawer's own styles, and
+do not measure performance or claim chart fidelity.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -20,27 +24,29 @@ from sailworks.rendering.vectordrawer import encmarkers, encpalette
 from sailworks.rendering.vectordrawer.encmesh import AREA_FILL, MARKER, build_scene_mesh
 
 O = 0.5 / np.sqrt(2.0)
-#: Cairo extents from ``cm93chartdrawer``; stroke-derived shapes allow 0.4 px
-#: for the filled-bar approximation.
+#: Cairo extents from ``cm93chartdrawer``.  Stroked shapes include the stroke's
+#: half width (beacon 1.5, wreck 1.0, landmark 1.0); the beacon's mitered
+#: corners are computed from the path inradius, so only its extents are
+#: approximated here.
 EXTENTS = {
     encmarkers.LIGHT: ((-7.0, -7.0, 7.0, 7.0), 1e-9),
-    encmarkers.BEACON: ((-4.0, -5.0, 4.0, 3.0), 1e-9),
+    encmarkers.BEACON: ((-5.2135, -6.6770, 5.2135, 3.75), 1e-3),
     encmarkers.BUOY: ((-3.0, -3.0, 3.0, 3.0), 1e-9),
-    encmarkers.BUOY_PORT: ((-3.0, -3.0, 3.0, 3.6), 1e-9),
-    encmarkers.BUOY_STARBOARD: ((-3.0, -3.0, 3.0, 3.6), 1e-9),
+    encmarkers.BUOY_PORT: ((-3.0, -3.0, 3.0, 3.0), 1e-9),
+    encmarkers.BUOY_STARBOARD: ((-3.0, -3.0, 3.0, 3.0), 1e-9),
     encmarkers.WRECK: ((-3.0 - O, -3.0 - O, 3.0 + O, 3.0 + O), 1e-9),
-    encmarkers.LANDMARK: ((-2.0, -2.0, 2.0, 2.0), 1e-9),
+    encmarkers.LANDMARK: ((-2.5, -2.5, 2.5, 2.5), 1e-9),
     encmarkers.DOT: ((-1.5, -1.5, 1.5, 1.5), 1e-9),
 }
 
 TRIANGLE_COUNTS = {
     encmarkers.LIGHT: 8 + 8,
-    encmarkers.BEACON: 1,
+    encmarkers.BEACON: 6,
     encmarkers.BUOY: 8,
-    encmarkers.BUOY_PORT: 4,
-    encmarkers.BUOY_STARBOARD: 4,
+    encmarkers.BUOY_PORT: 8,
+    encmarkers.BUOY_STARBOARD: 8,
     encmarkers.WRECK: 4,
-    encmarkers.LANDMARK: 2,
+    encmarkers.LANDMARK: 8,
     encmarkers.DOT: 8,
 }
 
@@ -161,15 +167,28 @@ def test_point_first_collection_draws_the_area_then_the_marker():
     assert [part.kind for part in mesh.parts] == [AREA_FILL, MARKER]
 
 
-def test_multipoint_is_one_contiguous_run():
+def test_multipoint_collapses_to_its_first_point():
+    """Cairo draws ``geometry[0]`` only: a MultiPoint gets one symbol."""
     template = _template(encmarkers.BUOY)
     mesh = build_scene_mesh(
         _scene(("BOYSPP", MultiPoint([(0, 0), (5, 5)]))), stroke_width=0.1
     )
     assert len(mesh.parts) == 1
-    triangles = mesh.part_positions(mesh.parts[0]).reshape(-1, 3, 2)
-    assert triangles[:8].reshape(-1, 2) == pytest.approx(template)
-    assert triangles[8:].reshape(-1, 2) == pytest.approx(template + (5.0, 5.0))
+    positions = mesh.part_positions(mesh.parts[0]).reshape(-1, 2)
+    assert positions == pytest.approx(template)
+    assert mesh.parts[0].triangle_count == TRIANGLE_COUNTS[encmarkers.BUOY]
+
+
+def test_collapsed_multipoint_keeps_the_marker_scale():
+    """Collapsing to the first point must not skip ``marker_scale``."""
+    template = _template(encmarkers.BUOY)
+    mesh = build_scene_mesh(
+        _scene(("BOYSPP", MultiPoint([(0, 0), (5, 5)]))),
+        stroke_width=0.1,
+        marker_scale=2.0,
+    )
+    assert len(mesh.parts) == 1
+    assert mesh.part_positions(mesh.parts[0]) == pytest.approx(template * 2.0)
 
 
 @pytest.mark.parametrize(
@@ -243,3 +262,130 @@ def test_non_positive_marker_scale_is_rejected():
         build_scene_mesh(
             _scene(("LIGHTS", Point(0, 0))), stroke_width=0.1, marker_scale=0.0
         )
+
+
+def _inradius(triangle) -> float:
+    (ax, ay), (bx, by), (cx, cy) = triangle
+    side_a = math.hypot(bx - cx, by - cy)
+    side_b = math.hypot(ax - cx, ay - cy)
+    side_c = math.hypot(ax - bx, ay - by)
+    area = abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) / 2.0
+    return 2.0 * area / (side_a + side_b + side_c)
+
+
+def _scaled_outline(path, factor):
+    """``path`` scaled about its incenter by ``factor``, as a tuple."""
+    (ax, ay), (bx, by), (cx, cy) = path
+    opposite_a = math.hypot(bx - cx, by - cy)
+    opposite_b = math.hypot(ax - cx, ay - cy)
+    opposite_c = math.hypot(ax - bx, ay - by)
+    perimeter = opposite_a + opposite_b + opposite_c
+    center_x = (opposite_a * ax + opposite_b * bx + opposite_c * cx) / perimeter
+    center_y = (opposite_a * ay + opposite_b * by + opposite_c * cy) / perimeter
+    return tuple(
+        (
+            center_x + (x - center_x) * factor,
+            center_y + (y - center_y) * factor,
+        )
+        for x, y in path
+    )
+
+
+def _covers_point(template, point) -> bool:
+    """Whether any triangle of ``template`` contains ``point``."""
+    px, py = point
+    for (ax, ay), (bx, by), (cx, cy) in template.reshape(-1, 3, 2):
+        denominator = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+        if denominator == 0.0:
+            continue
+        first = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / denominator
+        second = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / denominator
+        third = 1.0 - first - second
+        if first >= 0.0 and second >= 0.0 and third >= 0.0:
+            return True
+    return False
+
+
+def test_lateral_buoys_are_the_generic_disc_in_their_side_colour():
+    """Cairo fills the r=3 disc for BOYLAT, in red or green, not a chevron."""
+    disc = _template(encmarkers.BUOY)
+    assert _template(encmarkers.BUOY_PORT) == pytest.approx(disc)
+    assert _template(encmarkers.BUOY_STARBOARD) == pytest.approx(disc)
+    assert _bounds(encmarkers.BUOY_PORT) == pytest.approx((-3.0, -3.0, 3.0, 3.0))
+    assert encpalette.marker_colour(encmarkers.BUOY_PORT) != encpalette.marker_colour(
+        encmarkers.BUOY_STARBOARD
+    )
+
+
+def test_light_rays_are_the_cairo_half_pixel_stroke():
+    template = _template(encmarkers.LIGHT)
+    rays = template[encmarkers.DISC_SEGMENTS * 3 :].reshape(-1, 3, 2)
+    assert len(rays) == 8
+    angles = []
+    for base_a, base_b, tip in rays:
+        # Cairo draws from r=4 to r=7 with ``set_line_width(0.5)``: the two
+        # base corners straddle radius 4, and the tip is the stroke's end.
+        base_midpoint = (base_a + base_b) / 2.0
+        assert np.hypot(*base_midpoint) == pytest.approx(4.0)
+        assert np.hypot(*tip) == pytest.approx(7.0)
+        assert np.hypot(*(base_a - base_b)) == pytest.approx(0.5)
+        angles.append(math.degrees(math.atan2(tip[1], tip[0])) % 360.0)
+    assert angles == pytest.approx([0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0])
+
+
+def test_beacon_is_the_hollow_cairo_stroke():
+    """Cairo strokes the 1.5 px triangle: a 0.75 px band either side, hollow."""
+    template = _template(encmarkers.BEACON)
+    # The Cairo path: apex (0, -5), base corners (+/-4, 3), closed and stroked.
+    path_inradius = 2.0 * 32.0 / (8.0 + 2.0 * math.hypot(4.0, 8.0))
+    xs = template[:, 0]
+    ys = template[:, 1]
+    assert max(xs) == pytest.approx(-min(xs))
+    assert max(ys) == pytest.approx(3.75)
+    assert min(ys) == pytest.approx(-6.677, abs=1e-3)
+    # The centre is unpainted; the band covers both stroke boundaries.
+    assert not _covers_point(template, (0.0, 0.0))
+    assert _covers_point(template, (0.0, -5.0))
+    assert _covers_point(template, (0.0, 3.0))
+    assert _covers_point(template, (-4.0, 3.0))
+    # The ring's unique vertices are exactly Cairo's two stroke boundaries:
+    # the path dilated and eroded by half the 1.5 px line width.
+    path = ((0.0, -5.0), (-4.0, 3.0), (4.0, 3.0))
+    inner = _scaled_outline(path, 1.0 - 0.75 / path_inradius)
+    outer = _scaled_outline(path, 1.0 + 0.75 / path_inradius)
+    unique = np.unique(template, axis=0)
+    edges = np.unique(np.asarray(inner + outer), axis=0)
+    assert unique.shape == edges.shape == (6, 2)
+    assert np.allclose(unique, edges, atol=1e-9)
+
+
+def test_landmark_is_the_hollow_cairo_square():
+    """Cairo strokes a 4x4 square 1 px wide: a ring, not a filled block."""
+    template = _template(encmarkers.LANDMARK)
+    assert _bounds(encmarkers.LANDMARK) == pytest.approx((-2.5, -2.5, 2.5, 2.5))
+    assert not _covers_point(template, (0.0, 0.0))
+    top_bar = template[:6]
+    assert float(top_bar[:, 1].max() - top_bar[:, 1].min()) == pytest.approx(1.0)
+    # The corners belong to one bar only, so the four bars tile the ring.
+    assert _covers_point(template, (2.0, -2.0))
+    assert _covers_point(template, (2.0, 0.0))
+    assert not _covers_point(template, (0.5, 0.5))
+
+
+def test_marker_colours_match_the_cairo_point_styles():
+    """``encpalette`` must mirror the drawer's module-level point styles."""
+    pytest.importorskip("cairo")
+    from sailworks.rendering.vectordrawer import cm93chartdrawer
+
+    mirrored = {
+        encmarkers.LIGHT: cm93chartdrawer.LIGHT_STYLE,
+        encmarkers.BEACON: cm93chartdrawer.BEACON_STYLE,
+        encmarkers.BUOY: cm93chartdrawer.DEFAULT_POINT,
+        encmarkers.BUOY_PORT: cm93chartdrawer.BUOY_RED,
+        encmarkers.BUOY_STARBOARD: cm93chartdrawer.BUOY_GREEN,
+        encmarkers.WRECK: cm93chartdrawer.WRECK_STYLE,
+        encmarkers.LANDMARK: cm93chartdrawer.BEACON_STYLE,
+        encmarkers.DOT: cm93chartdrawer.DEFAULT_POINT,
+    }
+    for kind, style in mirrored.items():
+        assert encpalette.marker_colour(kind) == encpalette.rgba(style), kind

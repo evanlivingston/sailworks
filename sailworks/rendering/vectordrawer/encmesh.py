@@ -912,6 +912,16 @@ def build_scene_mesh(
         lineal = tuple(part for kind, part in ordered if kind == "line")
         other = tuple(part for kind, part in ordered if kind == "other")
         points = tuple(part for part in other if part.geom_type == "Point")
+        # The Cairo drawer draws only ``geometry[0]`` for a point feature
+        # (``_render_point``); an ordinary MultiPoint carries one symbol at its
+        # first point, not one per member.  SOUNDG is the exception: its text
+        # path keeps every point (the 32x16 screen-box dedupe is per camera in
+        # ``encsounding``), so the multiplicity is preserved here.  The
+        # collapse happens before the ``point_clip`` test below, so the first
+        # member alone decides visibility, exactly as Cairo clips the one
+        # symbol it draws; a later member inside the clip cannot resurrect it.
+        if points and record.source_class != "SOUNDG":
+            points = points[:1]
         # Markers are additive symbols, so a point may be kept in a region the
         # fill clip excludes.  ``point_clip`` is the cell's own visible coverage
         # in a quilt, where ``clip_geometry`` has already been trimmed to the

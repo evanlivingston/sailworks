@@ -138,9 +138,6 @@ class MapHostMixin:
         presenter = getattr(self, "_weather_presenter", None)
         if presenter is not None:
             presenter.request()
-        gpu = getattr(self, "_gpu", None)
-        if gpu is not None and gpu.active:
-            gpu.request()
 
     def queue_draw(self):
         if self.disposed:

@@ -94,11 +94,10 @@ class SessionController(QObject):
         self.models_analysis = None
         self._analysis_root = analysis_root
         self._analysis_state = analysis_state
-        selected_renderer = map_renderer or self.settings.get("mapRenderer", "cpu")
-        self.map_renderer = (
-            selected_renderer if selected_renderer in ("cpu", "gpu") else "cpu"
-        )
-        self.renderer_override = map_renderer is not None
+        # GPU is the only production map renderer.  ``map_renderer`` stays
+        # accepted so existing tools and scripts keep running, but it cannot
+        # select the retired CPU map; a saved legacy "cpu" choice is ignored.
+        self.map_renderer = "gpu"
         self._renderer_states: WeakKeyDictionary[Any, dict[str, Any]] = (
             WeakKeyDictionary()
         )
@@ -245,9 +244,7 @@ class SessionController(QObject):
         apis = sorted({s["api"] for s in states if s["actual"] == "gpu" and s["api"]})
         if apis:
             return "GPU: " + ", ".join(apis)
-        if self.map_renderer == "gpu":
-            return "GPU requested; waiting for a visible map"
-        return "CPU" + (" (command-line override)" if self.renderer_override else "")
+        return "GPU requested; waiting for a visible map"
 
     def start_connections(self):
         if (

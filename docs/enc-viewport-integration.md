@@ -56,6 +56,17 @@ relax gates. Correctness, native fidelity and whole-experience performance are
 separate outcomes. Completion requires honest coverage of acceptance criteria;
 do not close #78 because the integration merely draws a coastline.
 
+### Refused ENC cells (2026-11-21, decided)
+
+A planned cell the assembly refuses (``unavailable``/``oversized``/``error``)
+is not painted by any Cairo overlay: the ground the viewport already has
+beneath the mesh -- the raster chart or the background -- shows through that
+cell's clip. Selection and portrayal of drawn cells are unchanged. The refusal
+stays observable in the publication's own metadata: ``cell_states`` names each
+cell and its reason, and with tracing on the ``scene_publish`` event reports
+``unavailable`` as ``(path, reason)`` pairs. The former trimmed-clip metadata
+and the opt-in log-only fallback are removed; no other recovery path changes.
+
 ## Phase 1 amendment (recorded before any run)
 
 The user directed complete integration and the rejected alternate representations
@@ -224,3 +235,164 @@ repeat lifecycle checks in the same complete run. No further run is authorized
 by this budget. No Phase 2 entry, rollout, performance acceptance, commit or issue
 closure is claimed. Normal app defaults remain unchanged. Sibling uncommitted
 experiment work is preserved.
+
+## Cairo → GPU ENC mark inventory (step 1, 2026-11-21)
+
+Scope of this section: the inventory only. It records what the reference Cairo
+drawer actually emits and what the GPU scene has to reach to match it. It makes
+no fidelity or performance claim, and it does not re-measure a recorded view.
+
+Selector/reproduction note: this inventory was taken while the application
+could still choose the raster ENC source. Since step 3 the application always
+presents ENC as the GPU scene (`WeatherPresenter._create` passes
+`enc_scene_layer=True`); there is no `chartENCScene` setting or panel toggle
+for a raster app run. `--map-renderer` was never the ENC selector and is now
+inert.
+
+### Verified inheritance
+
+`S57ChartDrawer(CM93ChartDrawer)` (`sailworks/rendering/vectordrawer/s57chartdrawer.py:19`).
+It overrides `draw`, the feature collection/cache chain
+(`_collect_layers`, `_ensure_feature_cache`, `_prepare_feature`,
+`_feature_cache_*`, `_compute_feature`, `_collect`), `_render_area`, the
+DEPARE coverage-boundary filter (`_coverage_edge_filter`,
+`_stroke_exposed_edges`, `_nearby_boundaries`, `_on_coverage_boundary`),
+`_render_soundings` and `_render_point`. Every remaining mark is inherited from
+`CM93ChartDrawer` unchanged; there is no other override layer between them.
+
+### Symbol-atlas finding (corrects a prior assumption)
+
+The S-57 symbol provider is **not** part of the S57 Cairo portrayal. The only
+atlas blit in the tree is `SymbolsProvider.draw_light`, which ends in
+`self.draw(cr, "LIGHTS13", xx, yy)`
+(`sailworks/rendering/vectordrawer/s57symbolprovider.py:176`), and its only
+caller is `OSMChartDrawer.draw_light` (`osmchartdrawer.py:111`). `S57ChartDrawer`
+and `CM93ChartDrawer` never construct or call a symbols provider, so **zero**
+atlas sprites are drawn on the ENC path and no LIGHTS13 blit exists there.
+
+Therefore the atlas inventory is not evidence of drawn-but-missing symbols, and
+an inventory diff must not be reported as lost detail. Within the atlas itself,
+one key (`LIGHTS13`) is blitted and the rest are unused — that is an unused-asset
+fact, not a lost-mark fact.
+
+### Cairo marks actually emitted
+
+Areas (`_render_area`, one even/odd path per feature, `fill_preserve` then
+`stroke`): `LNDARE`, `DEPARE`, `DRGARE`, `BUAARE`, `BUISGL`, `LAKARE`, `RIVERS`,
+`ACHARE`, `ANCBRT`, `RESARE`, `CTNARE`, in `AREA_ORDER` depth→dredged→land→other.
+Only `DEPARE` re-lays its stroke against the coverage boundary; fills and
+interior contours are never clipped.
+
+Conditional style to preserve: `DEPARE` picks its fill from `DRVAL1 < 5`
+(shallow sea), else `DRVAL2 < 20` (medium), else deep; every area's outline is
+`CONTOUR_STYLE` unless `land_stroke`. This is a data-dependent style, not a
+constant cosmetic stroke, and a GPU pass that fills a flat depth colour diverges
+from Cairo on exactly the shallow bands that matter for navigation.
+
+Lines (`_render_line`): `COALNE` 1.5 px land stroke; `DEPCNT` contour;
+`NAVLNE`/`FERYRT`/`TSELNE` dashed 4.0; `SLCONS` 1.0; everything else a 0.5 px
+`DEFAULT_LINE`. Dash is reset after each stroke.
+
+Point marks, in `_render_point` precedence order:
+
+| Cairo mark | Feature classes | Emission |
+|---|---|---|
+| light | `LIGHTS` | yellow circle r=4 plus eight rays, 0.5 px stroke (`_draw_light`) |
+| beacon | `BCNCAR`/`BCNLAT`/`BCNISD`/`BCNSAW`/`BCNSPP` | stroked triangle, 1.5 px |
+| buoy | `BOYCAR`/`BOYISD`/`BOYSAW`/`BOYSPP` | filled generic dot r=3, `DEFAULT_POINT` |
+| lateral buoy | `BOYLAT` | filled dot r=3, red when `CATLAM == 1`, else green |
+| wreck | `WRECKS`/`UWTROC`/`OBSTRN` | stroked X |
+| landmark | `LNDMRK`/`SILTNK`/`CHIMNY`/`TOWERS` | 4×4 stroked rectangle, 1.0 px |
+| generic dot | any other point, scale ≤ 100 | `DEFAULT_POINT` dot r=1.5 |
+
+Two distinctions this inventory keeps explicit:
+
+- The generic dot is a **drawn** mark, not an absent one. "Point class not in a
+  specific branch" means `DEFAULT_POINT` at r=1.5, never "nothing drawn", and it
+  is suppressed entirely at scale > 100.
+- `BOYLAT` is **not** keyed on `CATLAM` in the source data. The override reads
+  `COLOUR` (`ATTRIBUTE_FIELDS = {"BOYLAT": ("COLOUR",)}`) and synthesizes
+  `CATLAM = 1` for `COLOUR == "3"`, `2` for `"4"`, and otherwise rewrites the
+  feature to `BOYSPP` so it falls to the generic dot. A GPU comparison that
+  selects on a raw `CATLAM` attribute will disagree with Cairo on both the
+  colour and the class.
+
+Non-sounding text: the ENC Cairo drawer emits **no** text other than sounding
+values. `_render_soundings` only `show_text(f"{p[2]:.1f}")`
+(`s57chartdrawer.py:370`, base at `cm93chartdrawer.py:258`), gated at
+scale ≤ 100, font 11 (base 8), skipping non-finite depths and de-duplicating on
+32×16 px boxes. Light-character text exists only in the OSM `draw_light` path.
+This document therefore makes no claim about place names, buoy labels or any
+other annotation: none is proven drawn by the ENC Cairo drawer.
+
+### GPU-side state, and what the counts mean
+
+`encmesh.py:102` declares `NOT_RENDERED = ("symbols", "text", "soundings")`,
+documented as "present in a cell but deliberately left to the retained
+CPU/symbol path". `encgpu.py` does bake point symbols as flat marker triangles
+(`encmarkers.triangles(kind)`), soundings as textured glyph quads from
+`GlyphAtlas`, and labels through `glyph_quads`/`apply_glyph_labels`, with marker
+and glyph geometry adopting the current camera so symbols keep a logical size.
+
+So the `NOT_RENDERED` tuple is a division-of-labour declaration, not a list of
+visual omissions. Tallying entries in it — or counting features whose class
+falls in it — is **not** symptom proof: it does not establish that a mark is
+missing on screen, because the retained path is expected to draw those marks.
+An inventory count can size a migration; only a rendered comparison can show a
+gap.
+
+### Migration targets
+
+- `sailworks/rendering/vectordrawer/s57chartdrawer.py` — the override list above
+  is the reference behaviour for selection, area order, DEPARE banding and the
+  `BOYLAT` `COLOUR`→`CATLAM` rule.
+- `sailworks/rendering/vectordrawer/cm93chartdrawer.py` — the inherited point,
+  line and sounding styles that the ENC path does not restyle.
+- `sailworks/rendering/vectordrawer/encmesh.py` — `NOT_RENDERED`, `AREA_ORDER`/
+  `AREA_LAYERS`/line/area style tables that already mirror Cairo.
+- `sailworks/qt/encgpu.py` — marker, glyph and sounding node construction.
+- `sailworks/rendering/vectordrawer/encmarkers.py`,
+  `sailworks/rendering/vectordrawer/encsounding.py` — procedural mark shapes and
+  sounding placement.
+- `sailworks/rendering/vectordrawer/encscene.py`, `sailworks/qt/viewportenc.py` —
+  scene assembly and which drawer is actually used
+  (`ViewportS57ChartDrawer`).
+- `sailworks/qt/weatherpresenter.py` — the application's `enc_scene_layer=True`
+  construction, now the only production ENC entry point.
+
+### Validation commands
+
+Documentation-only step, so no product test is claimed to pass:
+
+```
+python tools/check_doc_links.py
+python tools/check_doc_anchors.py
+git diff --check -- docs/enc-viewport-integration.md
+```
+
+For a later code step, select the changed modules' tests rather than the suite:
+
+```
+ls test | grep -i -E 'enc|s57|vectordrawer|encgpu|encscene'
+python -m pytest -q <matched modules>
+python tools/gate_runner.py     # one-command rendering gate
+```
+
+## Step 3 decision (2026-11-21): GPU ENC mandatory in the application
+
+The user authorized removing the selectable application Cairo ENC path. The
+normal application constructs the viewport with `enc_scene_layer=True` and
+never requests `enc_chart_layer`; `resolve_enc_modes` therefore turns the
+raster source off for every app host, and the scene is the only ENC
+presentation. The `chartENCScene` setting and its panel checkbox are gone; a
+legacy saved value has no effect. The standalone viewport keeps
+`--enc-chart-layer` as an independent raster reference, and
+`ViewportChartLayer`'s Cairo ENC source remains for it and for unrelated
+Cairo work (basemap, MBTiles, marine, overlays).
+
+Preserved: ENC display still follows `chartENCVisible`, chart selection and
+scale limits are unchanged, the above-ENC environment/background composition
+is unchanged, and one host draws a cell exactly once (the raster composition
+is constructed with its ENC source disabled whenever the scene is on). This
+decision makes no new fidelity or performance claim; validation belongs to the
+issue/PR that carries the change.
