@@ -921,9 +921,22 @@ class TestGribSampling(unittest.TestCase):
 
     def test_decoded_cache_is_bounded(self):
         source = self.file(sum((self.field(hour) for hour in range(12)), []), end=11)
+        index = source.sampling
         for hour in range(12):
             source.get_wind_at(START + timedelta(hours=hour), 0.5, 0.5)
-        self.assertLessEqual(len(source.sampling.arrays), 6)
+        stats = index.arrays.statistics()
+        self.assertLessEqual(stats["current_bytes"], stats["limit_bytes"])
+
+        index.arrays.byte_limit = 0
+        index.arrays.clear()
+        for record in index.records:
+            index.array(record)
+        self.assertLessEqual(len(index.arrays), index.arrays.min_entries)
+        self.assertGreater(index.arrays.statistics()["evictions"], 0)
+        self.assertEqual(
+            index.arrays.current_bytes,
+            sum(array.nbytes for array in index.arrays.values()),
+        )
 
     def test_scalar_flat_cache_matches_numpy_and_stays_bounded(self):
         source = self.file(self.field(0))
