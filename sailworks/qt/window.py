@@ -2569,6 +2569,7 @@ class PreviewWindow(QMainWindow):
         return panel
 
     def refresh(self):
+        self._refresh_connection_status()
         self.syncing = True
         session = self.session
         if session.source == "live":
@@ -2684,12 +2685,29 @@ class PreviewWindow(QMainWindow):
             self.connection_status.setText(text)
 
     def _refresh_data(self):
-        self._refresh_connection_status()
         session = self.session
         log = session.log if session.source == "log" else None
         tracks = log.source_tracks if log else {}
+        # Cheap control state depends on the session rather than the data key,
+        # so it still updates on a tick that plots nothing new.
         self.track_source_group.setVisible(session.source != "none" and bool(tracks))
         self.track_source.setEnabled(bool(tracks) and not session.loading)
+        # The key must be knowable before any work runs. A log switch repopulates
+        # the dropdown, which resets it to "Auto", so only read the current
+        # selection when the dropdown is not about to be rebuilt.
+        selected_source = (
+            self.track_source.currentData()
+            if tracks and log is self._track_source_log
+            else None
+        )
+        key = (
+            (session.source, id(session.log), selected_source)
+            if session.source == "log"
+            else ("live", self.controller.point_revision)
+        )
+        if key == self.data_key:
+            return
+        self._refresh_connection_status()
         if log is not self._track_source_log:
             self._track_source_log = log
             with QSignalBlocker(self.track_source):
@@ -2700,14 +2718,6 @@ class PreviewWindow(QMainWindow):
                         f"{source_label(log.devices, source)} ({len(track.points):,} fixes)",
                         source,
                     )
-        selected_source = self.track_source.currentData() if tracks else None
-        key = (
-            (session.source, id(session.log), selected_source)
-            if session.source == "log"
-            else ("live", self.controller.point_revision)
-        )
-        if key == self.data_key:
-            return
         previous = self.data_key
         self.data_key = key
         points = self.controller.points

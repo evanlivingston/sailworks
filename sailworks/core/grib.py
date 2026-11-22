@@ -39,7 +39,6 @@ _SUPPORTED_ELEMENTS = (
 )
 
 import weatherrouting
-from osgeo import gdal
 
 logger = logging.getLogger("sailworks")
 
@@ -57,6 +56,27 @@ def _weather_sampler_class():
 
         _WEATHER_SAMPLER_CLASS = WeatherSampler
     return _WEATHER_SAMPLER_CLASS
+
+
+def _gdal_open(path):
+    """Open a chart dataset, importing GDAL only when a chart is read."""
+    try:
+        from osgeo import gdal
+    except ImportError as exc:
+        raise ImportError(
+            "Reading forecast charts requires GDAL (osgeo). "
+            "Install the gdal Python package to open GRIB charts."
+        ) from exc
+    return gdal.Open(path)
+
+
+def __getattr__(name):
+    """Resolve ``grib.gdal`` on demand so callers that patch it keep working."""
+    if name == "gdal":
+        from osgeo import gdal
+
+        return gdal
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 PRESSURE_ELEMENTS = _PRESSURE_ELEMENTS
@@ -120,7 +140,7 @@ class Grib(weatherrouting.Grib):
         self.last_forecast = last_forecast
         self.end_time = self.start_time + datetime.timedelta(hours=self.last_forecast)
         self.path = path
-        self.dataset = gdal.Open(path)
+        self.dataset = _gdal_open(path)
 
     def _find_bands_for_time(self, t):
         """Find bands for U and V wind components at a given time."""
@@ -292,7 +312,7 @@ class Grib(weatherrouting.Grib):
     def parse_metadata(path):
         from .gribsampling import number
 
-        dataset = gdal.Open(path)
+        dataset = _gdal_open(path)
         if dataset is None:
             raise ValueError("Unable to open forecast: " + path)
         centre = ""

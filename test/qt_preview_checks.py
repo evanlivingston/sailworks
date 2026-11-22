@@ -3237,7 +3237,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.window.workspace_toolbar.show()
         self.assertFalse(self.window.timeline.isHidden())
 
-    def test_forecast_timeline_close_cancels_drag_poll_and_clock_callbacks(self):
+    def test_forecast_timeline_close_cancels_drag_and_clock_callbacks(self):
         start = self.timeline_range()
         timeline = self.window.timeline
         clock, marine = timeline.clock, timeline.marine
@@ -3247,7 +3247,6 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(timeline.closed)
         self.assertFalse(timeline.commit_timer.isActive())
         self.assertFalse(timeline.play_timer.isActive())
-        self.assertFalse(timeline.poll_timer.isActive())
         # The timeline owns only its own clock callback; the window keeps its
         # race-overlay handler while merely closed.
         self.assertNotIn(timeline._time_changed, clock.handlers["time_change"])
