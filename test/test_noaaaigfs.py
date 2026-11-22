@@ -182,7 +182,7 @@ def test_download_concatenates_only_requested_bands_byte_for_byte(
     tmp_path, monkeypatch
 ):
     source = NOAAAIGFSSource(session=object())
-    indexes = index_for_hours((0, 6), date="20261025", cycle="12", apcp_hours=(6,))
+    indexes = index_for_hours((0, 6), date="20261025", cycle="12", apcp_hours=(0, 6))
     files = {}
     expected = bytearray()
     for hour, (index, data, bands) in indexes.items():
@@ -203,24 +203,35 @@ def test_download_concatenates_only_requested_bands_byte_for_byte(
         index_fetch(indexes),
     )
 
+    length_calls = []
+
     def length(_session, url, offset, *, cancel=None, max_bytes=None):
+        length_calls.append((url, offset))
         hour = int(Path(url).name.rsplit("f", 1)[1].split(".")[0])
         payload = files[hour]
         assert payload[offset : offset + 4] == b"GRIB"
         return int.from_bytes(payload[offset + 8 : offset + 16], "big")
 
-    def append(
-        _session, url, offset, message_size, output, *, cancel=None, progress=None
+    def fetch(
+        _session,
+        url,
+        offset,
+        output,
+        *,
+        cancel=None,
+        progress=None,
+        expected_length=None,
+        max_bytes=None,
     ):
         hour = int(Path(url).name.rsplit("f", 1)[1].split(".")[0])
-        payload = files[hour][offset : offset + message_size]
+        payload = files[hour][offset : offset + expected_length]
         output.write(payload)
         if progress is not None:
             progress(len(payload))
         return len(payload)
 
     monkeypatch.setattr("sailworks.core.gribsources.noaaaigfs.message_length", length)
-    monkeypatch.setattr("sailworks.core.gribsources.noaaaigfs.append_message", append)
+    monkeypatch.setattr("sailworks.core.gribsources.noaaaigfs.fetch_message", fetch)
     identifier = json.dumps(
         {
             "source": AIGFS_NAME,
@@ -235,19 +246,23 @@ def test_download_concatenates_only_requested_bands_byte_for_byte(
     output = Path(source.download(identifier, str(tmp_path), progress.append))
     assert output.read_bytes() == bytes(expected)
     assert progress[-1] == 100
+    assert length_calls == []
     assert output.name.startswith("aigfs_20261025_12z_6h_")
 
 
 def test_indexed_steps_complete_out_of_order_but_stage_in_order(tmp_path, monkeypatch):
     source = NOAAAIGFSSource()
-    indexes = index_for_hours((0, 6), date="20261025", cycle="12")
+    indexes = index_for_hours((0, 6), date="20261025", cycle="12", apcp_hours=(0, 6))
     monkeypatch.setattr(noaaaigfs, "fetch_text", index_fetch(indexes))
     later_finished = threading.Event()
     first_entered = threading.Event()
     requested = []
     staged = []
 
+    length_calls = []
+
     def length(_session, url, offset, *, cancel=None, max_bytes=None):
+        length_calls.append((url, offset))
         return int.from_bytes(
             indexes[int(Path(url).name.rsplit("f", 1)[1].split(".")[0])][1][
                 offset + 8 : offset + 16
@@ -255,24 +270,32 @@ def test_indexed_steps_complete_out_of_order_but_stage_in_order(tmp_path, monkey
             "big",
         )
 
-    def append(
-        _session, url, offset, message_size, output, *, cancel=None, progress=None
+    def fetch(
+        _session,
+        url,
+        offset,
+        output,
+        *,
+        cancel=None,
+        progress=None,
+        expected_length=None,
+        max_bytes=None,
     ):
         hour = int(Path(url).name.rsplit("f", 1)[1].split(".")[0])
-        requested.append((hour, offset, message_size))
+        requested.append((hour, offset, expected_length))
         if hour == 0:
             first_entered.set()
             assert later_finished.wait(3)
         else:
             assert first_entered.wait(3)
             later_finished.set()
-        payload = indexes[hour][1][offset : offset + message_size]
+        payload = indexes[hour][1][offset : offset + expected_length]
         output.write(payload)
         staged.append(hour)
-        return message_size
+        return expected_length
 
     monkeypatch.setattr(noaaaigfs, "message_length", length)
-    monkeypatch.setattr(noaaaigfs, "append_message", append)
+    monkeypatch.setattr(noaaaigfs, "fetch_message", fetch)
     identifier = json.dumps(
         {
             "source": AIGFS_NAME,
@@ -293,6 +316,7 @@ def test_indexed_steps_complete_out_of_order_but_stage_in_order(tmp_path, monkey
     assert {hour for hour, _, _ in requested} == {0, 6}
     assert len(requested) == len(set(requested))
     assert staged.index(6) < staged.index(0)
+    assert length_calls == []
 
 
 def test_pinned_download_fails_on_missing_index_without_fallback_or_final_file(
@@ -392,15 +416,23 @@ def test_cancel_during_append_removes_stage_and_preserves_existing_file(
 
     cancel = threading.Event()
 
-    def append(
-        _session, _url, offset, message_size, output, *, cancel=None, progress=None
+    def fetch(
+        _session,
+        _url,
+        offset,
+        output,
+        *,
+        cancel=None,
+        progress=None,
+        expected_length=None,
+        max_bytes=None,
     ):
-        output.write(payload[offset : offset + message_size])
+        output.write(payload[offset : offset + expected_length])
         if progress:
-            progress(message_size)
-        return message_size
+            progress(expected_length)
+        return expected_length
 
-    monkeypatch.setattr("sailworks.core.gribsources.noaaaigfs.append_message", append)
+    monkeypatch.setattr("sailworks.core.gribsources.noaaaigfs.fetch_message", fetch)
     identifier = json.dumps(
         {
             "source": AIGFS_NAME,

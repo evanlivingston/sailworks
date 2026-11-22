@@ -208,16 +208,22 @@ def test_gfswave_download_writes_selected_messages_atomically(tmp_path, monkeypa
     monkeypatch.setattr(
         source, "_selected_index", lambda *_args: ((100, 25), (125, 25))
     )
-    monkeypatch.setattr(
-        "sailworks.core.gribsources.noaagfswave.message_length",
-        lambda *_args, **_kwargs: 25,
-    )
 
-    def append(_session, _url, _offset, length, output, **_kwargs):
-        output.write(b"x" * length)
-        return length
+    def fetch(
+        _session,
+        _url,
+        _offset,
+        output,
+        *,
+        cancel=None,
+        progress=None,
+        expected_length=None,
+        max_bytes=None,
+    ):
+        output.write(b"x" * expected_length)
+        return expected_length
 
-    monkeypatch.setattr("sailworks.core.gribsources.noaagfswave.append_message", append)
+    monkeypatch.setattr("sailworks.core.gribsources.noaagfswave.fetch_message", fetch)
     progress = []
     result = Path(source.download(identifier, str(tmp_path), progress.append))
 
@@ -468,18 +474,13 @@ def test_gfswave_pinned_download_keeps_its_identifier_transport(
         loaded.append(run_url)
         return ((100, 25),)
 
-    def length(_session, url, *_args, **_kwargs):
+    def fetch(_session, url, _offset, output, *, expected_length=None, **_kwargs):
         download_urls.append(url)
-        return 25
-
-    def append(_session, url, _offset, length, output, **_kwargs):
-        download_urls.append(url)
-        output.write(b"x" * length)
-        return length
+        output.write(b"x" * expected_length)
+        return expected_length
 
     monkeypatch.setattr(source, "_selected_index", selected)
-    monkeypatch.setattr("sailworks.core.gribsources.noaagfswave.message_length", length)
-    monkeypatch.setattr("sailworks.core.gribsources.noaagfswave.append_message", append)
+    monkeypatch.setattr("sailworks.core.gribsources.noaagfswave.fetch_message", fetch)
 
     Path(source.download(identifier, str(tmp_path), lambda _value: None))
 

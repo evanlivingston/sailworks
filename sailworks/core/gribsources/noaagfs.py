@@ -27,6 +27,7 @@ import requests
 from sailworks.core.gribsources.base import GribSource
 from .parallel import write_ordered_forecasts
 from .options import DEFAULT_FIELDS, custom_rows, filtered_parameters, selection
+from .retry import ThreadLocalSessions, get_with_retry
 
 logger = logging.getLogger("sailworks")
 
@@ -318,18 +319,25 @@ class NOAAGFSSource(GribSource):
         check_cancel,
         fields=DEFAULT_FIELDS,
     ):
-        def request(fhour):
-            params = self._build_filter_url(date_str, cycle, fhour, fields)
-            logger.debug("Downloading forecast hour %d", fhour)
-            return requests.get(
-                GFS_FILTER_URL, params=params, stream=True, timeout=(10, 60)
-            )
+        with ThreadLocalSessions() as sessions:
 
-        return write_ordered_forecasts(
-            outfile,
-            forecast_steps,
-            request,
-            check_cancel,
-            percentage_callback,
-            model="GFS",
-        )
+            def request(fhour):
+                params = self._build_filter_url(date_str, cycle, fhour, fields)
+                logger.debug("Downloading forecast hour %d", fhour)
+                return get_with_retry(
+                    sessions.get(),
+                    GFS_FILTER_URL,
+                    params=params,
+                    stream=True,
+                    timeout=(10, 60),
+                    allow_redirects=False,
+                )
+
+            return write_ordered_forecasts(
+                outfile,
+                forecast_steps,
+                request,
+                check_cancel,
+                percentage_callback,
+                model="GFS",
+            )

@@ -38,10 +38,11 @@ class DownloadSelectionTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch(
-                "sailworks.core.gribsources.noaagfs.requests.get",
-                side_effect=lambda *_args, **_kwargs: response_with(),
-            ) as get,
+                "sailworks.core.gribsources.noaagfs.requests.Session"
+            ) as session_class,
         ):
+            get = session_class.return_value.get
+            get.side_effect = lambda *_args, **_kwargs: response_with()
             source.download(row[4], directory, lambda _: None)
             self.assertEqual(get.call_count, 3)
             for call in get.call_args_list:
@@ -62,10 +63,11 @@ class DownloadSelectionTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch(
-                "sailworks.core.gribsources.noaahrrr.requests.get",
-                side_effect=lambda *_args, **_kwargs: response_with(),
-            ) as get,
+                "sailworks.core.gribsources.noaahrrr.requests.Session"
+            ) as session_class,
         ):
+            get = session_class.return_value.get
+            get.side_effect = lambda *_args, **_kwargs: response_with()
             source.download(row[4], directory, lambda _: None)
             self.assertEqual(get.call_count, 2)
             for call in get.call_args_list:
@@ -92,12 +94,13 @@ class DownloadSelectionTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch(
-                "sailworks.core.gribsources.noaagfs.requests.get",
-                side_effect=lambda *_args, **kwargs: response_with(
-                    b"GRIB" + kwargs["params"]["file"][-3:].encode()
-                ),
-            ) as get,
+                "sailworks.core.gribsources.noaagfs.requests.Session"
+            ) as session_class,
         ):
+            get = session_class.return_value.get
+            get.side_effect = lambda *_args, **kwargs: response_with(
+                b"GRIB" + kwargs["params"]["file"][-3:].encode()
+            )
             output = source.download(row[4], directory, lambda _: None)
             self.assertTrue(Path(output).is_file())
             self.assertEqual(get.call_count, 3)
@@ -129,10 +132,11 @@ class DownloadSelectionTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch(
-                "sailworks.core.gribsources.noaahrrr.requests.get",
-                side_effect=lambda *_args, **_kwargs: response_with(),
-            ) as get,
+                "sailworks.core.gribsources.noaahrrr.requests.Session"
+            ) as session_class,
         ):
+            get = session_class.return_value.get
+            get.side_effect = lambda *_args, **_kwargs: response_with()
             source.download(rows[0][4], directory, lambda _: None)
             self.assertEqual(get.call_count, 4)
             for call in get.call_args_list:
@@ -298,9 +302,13 @@ class DownloadSelectionTests(unittest.TestCase):
             return response_with(b"GRIB-step")
 
         with tempfile.TemporaryDirectory() as directory:
-            with patch(
-                "sailworks.core.gribsources.noaahrrr.requests.get", side_effect=get
+            with (
+                patch(
+                    "sailworks.core.gribsources.noaahrrr.requests.Session"
+                ) as session_class,
+                patch("sailworks.core.gribsources.retry._sleep"),
             ):
+                session_class.return_value.get.side_effect = get
                 with self.assertRaisesRegex(
                     NonGribStepResponseError,
                     r"HRRR f003 returned HTTP 302",

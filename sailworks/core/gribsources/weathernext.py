@@ -21,6 +21,7 @@ from sailworks.core.weathernext import (
     statistics_store_url,
 )
 from sailworks.core.weathernextcredentials import WeatherNextCredentials
+from .parallel import MAX_CONCURRENT_FORECAST_REQUESTS
 
 PRESSURE = "mean_sea_level_pressure_mean"
 _RUN = re.compile(r"^(\d{8})_(\d{2})hr_(\d{2})_preds$")
@@ -97,8 +98,9 @@ class WeatherNextSource(GribSource):
                 f"{store}/.zgroup"
             )
 
-        # ~190 HEAD requests: run them concurrently or the first plan stalls a minute.
-        with ThreadPoolExecutor(max_workers=16) as pool:
+        # ~190 HEAD probes: run them concurrently under the shared
+        # MAX_CONCURRENT_FORECAST_REQUESTS limit or the first plan stalls a minute.
+        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_FORECAST_REQUESTS) as pool:
             ready = {
                 name
                 for name, complete in zip(stores, pool.map(complete, stores))
