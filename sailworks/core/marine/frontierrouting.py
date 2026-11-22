@@ -53,54 +53,79 @@ def array_clock_compatible(instants, seconds):
     )
 
 
-def polar_many(polar, ws, angles):
-    """Match the scalar table's interpolation order, including extrapolation."""
-    if type(polar) is PolarWrapper:
-        return polar_many(polar._polar, ws, angles) * polar._efficiency
+def _prepare_polar(polar):
+    """Resolve a polar's wrapper chain and tables once per route."""
     from sailworks.core.safetypolicy import SafetyPolar
 
-    if type(polar) is SafetyPolar:
-        base = polar_many(polar._polar, ws, angles)
-        adjusted, _ = polar.apply_array(ws, angles, base)
-        return adjusted
+    operations = []
+    while True:
+        if type(polar) is PolarWrapper:
+            operations.append(("scale", polar._efficiency))
+            polar = polar._polar
+        elif type(polar) is SafetyPolar:
+            operations.append(("safety", polar))
+            polar = polar._polar
+        else:
+            break
     if type(polar) is not Polar:
-        return np.array(
-            [polar.get_speed(w, a) for w, a in zip(ws, angles)], dtype=float
-        )
-    w = np.asarray(polar.tws)
-    a = np.asarray(polar.twa)
-    table = np.asarray(polar.speed_table)
-    w0 = np.maximum(0, np.searchsorted(w, ws, side="right") - 1)
-    w1 = np.minimum(len(w) - 1, np.searchsorted(w, ws, side="left"))
-    a0 = np.maximum(0, np.searchsorted(a, angles, side="right") - 1)
-    a1 = np.searchsorted(a, angles, side="left")
-    a1 = np.where(a1 >= len(a), 0, a1)
-    # The scalar scans upper indices from n-1 through 1, never index zero.
-    w1 = np.where(ws <= w[1], 1, w1) if len(w) > 1 else w1
-    a1 = np.where(angles <= a[1], 1, a1) if len(a) > 1 else a1
-    w1 = np.where(w0 > w1, len(w) - 1, w1)
-    s1 = table[a0, w0]
-    s2 = table[a1, w0]
-    s3 = table[a0, w1]
-    s4 = table[a1, w1]
-    da = a[a1] - a[a0]
-    # Keep multiply, then divide ordering used by Polar.get_speed.
-    p = (
-        np.divide(
-            (s2 - s1) * (angles - a[a0]), da, out=np.zeros(len(ws)), where=da != 0
-        )
-        + s1
+        return polar, None, None, None, operations
+    return (
+        polar,
+        np.asarray(polar.tws),
+        np.asarray(polar.twa),
+        np.asarray(polar.speed_table),
+        operations,
     )
-    q = (
-        np.divide(
-            (s4 - s3) * (angles - a[a0]), da, out=np.zeros(len(ws)), where=da != 0
+
+
+def polar_many(polar, ws, angles):
+    """Match the scalar table's interpolation order, including extrapolation."""
+    return polar_many_prepared(_prepare_polar(polar), ws, angles)
+
+
+def polar_many_prepared(prepared, ws, angles):
+    polar, w, a, table, operations = prepared
+    if w is None:
+        result = np.array(
+            [polar.get_speed(w_, a_) for w_, a_ in zip(ws, angles)], dtype=float
         )
-        + s3
-    )
-    dw = w[w1] - w[w0]
-    result = p + np.divide(
-        (q - p) * (ws - w[w0]), dw, out=np.zeros(len(ws)), where=dw != 0
-    )
+    else:
+        w0 = np.maximum(0, np.searchsorted(w, ws, side="right") - 1)
+        w1 = np.minimum(len(w) - 1, np.searchsorted(w, ws, side="left"))
+        a0 = np.maximum(0, np.searchsorted(a, angles, side="right") - 1)
+        a1 = np.searchsorted(a, angles, side="left")
+        a1 = np.where(a1 >= len(a), 0, a1)
+        # The scalar scans upper indices from n-1 through 1, never index zero.
+        w1 = np.where(ws <= w[1], 1, w1) if len(w) > 1 else w1
+        a1 = np.where(angles <= a[1], 1, a1) if len(a) > 1 else a1
+        w1 = np.where(w0 > w1, len(w) - 1, w1)
+        s1 = table[a0, w0]
+        s2 = table[a1, w0]
+        s3 = table[a0, w1]
+        s4 = table[a1, w1]
+        da = a[a1] - a[a0]
+        # Keep multiply, then divide ordering used by Polar.get_speed.
+        p = (
+            np.divide(
+                (s2 - s1) * (angles - a[a0]), da, out=np.zeros(len(ws)), where=da != 0
+            )
+            + s1
+        )
+        q = (
+            np.divide(
+                (s4 - s3) * (angles - a[a0]), da, out=np.zeros(len(ws)), where=da != 0
+            )
+            + s3
+        )
+        dw = w[w1] - w[w0]
+        result = p + np.divide(
+            (q - p) * (ws - w[w0]), dw, out=np.zeros(len(ws)), where=dw != 0
+        )
+    for kind, value in reversed(operations):
+        if kind == "scale":
+            result = result * value
+        else:
+            result, _ = value.apply_array(ws, angles, result)
     return result
 
 
@@ -210,9 +235,12 @@ def propagate(self, frontier, seconds, end, gaps, numeric):  # noqa: C901
     last = np.zeros((count, 7))
     logs = []
 
-    def velocities(ids, positions, times):
-        from sailworks.core.safetypolicy import policy_of
+    from sailworks.core.safetypolicy import policy_of
 
+    prepared_polar = _prepare_polar(self.polar)
+    policy = policy_of(self.polar)
+
+    def velocities(ids, positions, times):
         samples = numeric.sample(ids, positions[ids], times[ids], gaps)
         kept = ids[samples.valid]
         data = samples.values[samples.valid]
@@ -221,7 +249,6 @@ def propagate(self, frontier, seconds, end, gaps, numeric):  # noqa: C901
             (headings[kept] - data[:, 0] + math.pi) % (2 * math.pi) - math.pi
         )
         ws_kn = data[:, 1] / KNOT
-        policy = policy_of(self.polar)
         limit = policy.tws_max_kn
         nogo = ws_kn > limit if limit is not None else np.zeros(len(ws_kn), dtype=bool)
         if nogo.any():
@@ -233,7 +260,7 @@ def propagate(self, frontier, seconds, end, gaps, numeric):  # noqa: C901
             ws_kn = ws_kn[keep]
         if not len(kept):
             return kept, result, samples
-        speed = polar_many(self.polar, ws_kn, angle) * KNOT
+        speed = polar_many_prepared(prepared_polar, ws_kn, angle) * KNOT
         if (~np.isfinite(speed) | (speed < 0)).any():
             raise ValueError("Invalid polar speed")
         result[kept, 2:] = np.column_stack(
