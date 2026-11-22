@@ -28,7 +28,6 @@ from pathlib import Path
 from threading import Condition, Event, Thread
 
 import numpy as np
-import shapely
 
 from sailworks.core.enccharts import chart_scale_rank, display_scale_denominator
 from sailworks.qt import enc_trace
@@ -233,15 +232,41 @@ def _cache_counters(mesh_cache, scene_cache, scene_store):
     }
 
 
-def display_scale_for(viewport):
-    """The camera's scale denominator, or ``None`` when it cannot state one."""
+def metres_per_pixel_for(viewport):
+    """The camera's metres per pixel, or ``None`` when it cannot state one.
+
+    This is the quantity ``MapViewport.get_scale`` returns and the one the
+    drawers' per-camera gates compare against: ``encmarkers.DOT_MAX_SCALE``
+    and ``encsounding.SCALE_LIMIT`` are both 100 m/px.  It is *not* the 1:N
+    display-scale denominator; use :func:`display_scale_for` for SCAMIN.
+
+    A ``ViewportCamera`` carries the view rather than the map viewport, so its
+    ``view()`` is asked for the scale.
+    """
     get_scale = getattr(viewport, "get_scale", None)
-    try:
-        # ``None`` for a viewport that cannot state its scale: the SCAMIN gate
-        # is then off rather than wrong.
-        return display_scale_denominator(get_scale()) if callable(get_scale) else None
-    except (TypeError, ValueError):
+    if callable(get_scale):
+        try:
+            return float(get_scale())
+        except (TypeError, ValueError):
+            return None
+    view = getattr(viewport, "view", None)
+    if callable(view):
+        return metres_per_pixel_for(view())
+    return None
+
+
+def display_scale_for(viewport):
+    """The camera's nominal 1:N scale denominator, or ``None``.
+
+    The SCAMIN gate's quantity, from
+    :func:`sailworks.core.encharts.display_scale_denominator`.  ``None`` when
+    the viewport cannot state a metres-per-pixel scale: the gate is then off
+    rather than wrong.
+    """
+    metres_per_pixel = metres_per_pixel_for(viewport)
+    if metres_per_pixel is None:
         return None
+    return display_scale_denominator(metres_per_pixel)
 
 
 def _view_granule(plan, viewport):
@@ -369,57 +394,6 @@ def plan_unavailable(metadata):
     if not metadata:
         return ()
     return tuple(tuple(entry) for entry in metadata.get("unavailable", ()))
-
-
-def unavailable_clips(plan, scene):
-    """The clip of each planned cell the assembly refused to draw.
-
-    A cell the cache refused (``oversized``) was still planned, so its
-    :class:`encplan.CellPlan` holds the ground no better-ranked drawn cell
-    claims.  Publishing that already-trimmed clip lets a caller paint a
-    fallback for exactly that ground instead of the cell's whole coverage.
-    A cell the plan itself could not read has no ``CellPlan`` and so is not
-    listed here; it stays in ``metadata["unavailable"]`` alone.
-
-    The clip travels as WKB bytes: the module hands the GUI thread no shapely
-    or OGR object (see the module docstring), and a Cairo caller converts it
-    with ``ogr.CreateGeometryFromWkb``.
-    """
-    if scene is None or not plan:
-        return ()
-    planned = {}
-    for cell in plan:
-        key = _clip_path_key(cell.path)
-        if key is not None:
-            planned[key] = cell
-    entries = []
-    for skipped in scene.skipped:
-        cell = planned.get(_clip_path_key(skipped.path))
-        if cell is None or cell.clip is None:
-            continue
-        try:
-            clip_wkb = shapely.to_wkb(cell.clip)
-        except Exception:
-            # One unencodable clip must not cost the other refused cells theirs.
-            continue
-        path = os.fspath(cell.path)
-        entries.append(
-            {
-                "path": path,
-                "name": os.path.basename(path),
-                "reason": skipped.reason,
-                "clip_wkb": clip_wkb,
-            }
-        )
-    return tuple(entries)
-
-
-def _clip_path_key(value):
-    """A path usable as a plan/skip match key, or ``None`` when malformed."""
-    try:
-        return os.path.abspath(os.fspath(value))
-    except TypeError:
-        return None
 
 
 def _scene_fields(scene):
@@ -588,7 +562,6 @@ class EncSceneLayer:
             prefetch_runs=0,
             prefetch_cancelled=0,
             failures=0,
-            clip_failures=0,
             yielded=0,
             cells=0,
             skipped=0,
@@ -1250,16 +1223,6 @@ class EncSceneLayer:
             self._on_publish(payload)
 
     # -------------------------------------------------------- publication
-    def _unavailable_clips(self, plan, scene):
-        """``unavailable_clips`` that never fails an already-assembled scene."""
-        try:
-            return unavailable_clips(plan, scene)
-        except Exception:
-            # A malformed plan or geometry is metadata-only damage: record it
-            # and publish the scene without clips rather than withdrawing it.
-            self.counters["clip_failures"] += 1
-            return ()
-
     def _publish_partial(
         self, generation, scene, done, total, cancel, metadata=None, plan=None
     ):
@@ -1298,9 +1261,6 @@ class EncSceneLayer:
                 published["cache_counters"] = _cache_counters(
                     self._mesh_cache, self._scene_cache, self._scene_store
                 )
-            # This snapshot's own refused cells, not the finished scene's:
-            # a partial frame must not show a hole it cannot fill.
-            published["unavailable_clips"] = self._unavailable_clips(plan, scene)
             # A cell the plan itself could not read never reaches assembly, so
             # its explicit state comes from the plan record, not the scene.
             published["skipped"] = tuple(
@@ -1592,9 +1552,6 @@ class EncSceneLayer:
             # The ring the item must keep attached: culling against anything
             # narrower detaches cells a pan is about to bring into view.
             "compose_margin": margin,
-            # Refused-but-planned cells publish their trimmed ground here once
-            # assembly has run; absent or empty means nothing needs a fallback.
-            "unavailable_clips": (),
         }
         # The generation this composition belongs to: a newer request bumps the
         # layer's generation and the progress callback then refuses to publish.
@@ -1733,9 +1690,6 @@ class EncSceneLayer:
         )
         if scene is None:
             return None, metadata
-        # A planned cell the cache refused still owns the ground its plan entry
-        # was trimmed to, so carry that clip beside the reason-only records.
-        metadata["unavailable_clips"] = self._unavailable_clips(plan, scene)
         return scene, metadata
 
     def _release(self):

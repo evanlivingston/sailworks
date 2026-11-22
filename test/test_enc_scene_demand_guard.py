@@ -114,7 +114,6 @@ def _widget(layer=None, camera=None):
         _camera=_camera() if camera is None else camera,
         _camera_dpr=1.0,
         _enc_scene_item=_Item(),
-        _enc_fallback=None,
         _enc_scene_pending_generation=None,
         _enc_scene_retry_camera=None,
         _enc_scene_retry_attempt=0,
@@ -785,7 +784,6 @@ def _publication_widget():
     widget = SimpleNamespace(
         _disposed=False,
         _enc_scene_item=_SceneItem(),
-        _enc_fallback=None,
         _enc_scene_model=_Layer(),
         _camera=_camera(),
         _enc_scene_generation=None,
@@ -913,8 +911,8 @@ def test_a_partial_that_accounts_for_every_cell_still_publishes():
         )
     )
 
-    # No planned cell is still assembling, so the snapshot leaves no hole; the
-    # refused cell's ground is the fallback's, published from this frame.
+    # No planned cell is still assembling, so the snapshot leaves no cell
+    # waiting; a refused cell's ground is whatever lies beneath the scene.
     assert widget._enc_scene_item.scene == "scene-8"
     assert widget._enc_scene_partial_generation == 8
     assert widget._enc_scene_ready_generation == 7

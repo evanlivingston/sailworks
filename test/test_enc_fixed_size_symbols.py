@@ -105,6 +105,28 @@ def _marker_mesh(kind=encmarkers.BEACON, anchors=_ANCHORS):
     )
 
 
+def _dot_mesh(anchors=((0.5, 0.5),)):
+    """One cell holding generic-dot markers (an unknown point class)."""
+    staged = _staged(encmarkers.DOT, anchors, _MARKER_SCALE)
+    return SceneMesh(
+        positions=staged,
+        parts=(
+            MeshPart(
+                0,
+                "SEAARE",
+                0,
+                1,
+                MARKER,
+                0,
+                int(staged.shape[0]),
+                (10, 20, 30, 255),
+            ),
+        ),
+        unsupported=(),
+        bounds=None,
+    )
+
+
 def _frame(mesh):
     frame = encgpu.build_static_frame(mesh, _project)
     assert frame is not None
@@ -135,8 +157,9 @@ def _reference_base(mesh):
 def test_the_plan_recovers_the_exact_feature_anchors_not_centroids():
     mesh = _marker_mesh()
     frame, entry = _marker_entry(mesh)
-    assert entry.count == 6  # two beacons: one filled triangle each
-    assert entry.block == 3
+    # Two beacons, six triangles each (the hollow 1.5 px stroke ring).
+    assert entry.count == 36
+    assert entry.block == 18
     assert frame.marker_groups == ((0, 0, 0),)
     projected, base = _reference_base(mesh)
     expected = _project(np.asarray(_ANCHORS)) - base
@@ -148,6 +171,31 @@ def test_the_plan_recovers_the_exact_feature_anchors_not_centroids():
     centroids = blocks.mean(axis=1)
     drift = np.hypot(*(entry.anchors - centroids).T)
     assert np.all(drift > 1.0)
+
+
+def test_a_dot_disc_is_not_mistaken_for_a_scaled_buoy():
+    """A DOT disc matches the BUOY fan at half the scale; the class decides."""
+    frame, entry = _marker_entry(_dot_mesh())
+    assert entry.kind == encmarkers.DOT
+    assert entry.block == len(encmarkers.triangles(encmarkers.DOT)) * 3
+
+
+def test_metres_per_pixel_for_reads_the_camera_view_scale():
+    """The gate quantity is m/px, not the 1:N SCAMIN denominator."""
+    from sailworks.core.enccharts import display_scale_denominator
+    from sailworks.qt.encscenelayer import display_scale_for, metres_per_pixel_for
+
+    class _View:
+        def get_scale(self):
+            return 2.5
+
+    class _Camera:
+        def view(self):
+            return _View()
+
+    assert metres_per_pixel_for(_Camera()) == pytest.approx(2.5)
+    assert metres_per_pixel_for(_View()) == pytest.approx(2.5)
+    assert display_scale_for(_Camera()) == pytest.approx(display_scale_denominator(2.5))
 
 
 def test_a_foreign_marker_layout_falls_back_to_the_baked_rendering():
@@ -316,6 +364,77 @@ def test_a_retained_zoom_rewrites_the_marker_vertices_in_their_cells(qt_app):
     assert np.array_equal(
         np.stack((patched["x"], patched["y"]), axis=-1)[entry.count :],
         np.stack((baked["x"], baked["y"]), axis=-1)[entry.count :],
+    )
+
+
+def test_an_initial_scale_gate_collapses_dots_on_the_first_frame(qt_app):
+    """``set_scale`` before the scene is adopted must reach the first paint."""
+    item = _item(lambda image: None)
+    item.set_scale(encmarkers.DOT_MAX_SCALE + 1.0)
+    item.set_view_scene(_view_scene(_dot_mesh()))
+    item.updatePaintNode(None, None)
+
+    entry = item._static.markers.entries[0]
+    assert entry.kind == encmarkers.DOT
+    vertices = _read_cell(item._cell_nodes[0])
+    positions = np.stack((vertices["x"], vertices["y"]), axis=-1)[: entry.count]
+    assert np.allclose(positions, encgpu._hidden_marker_rows(entry), atol=1e-3)
+
+
+def test_releasing_the_scale_gate_restores_the_dot_vertices(qt_app):
+    item = _item(lambda image: None)
+    item.set_scale(encmarkers.DOT_MAX_SCALE + 1.0)
+    item.set_view_scene(_view_scene(_dot_mesh()))
+    node = item.updatePaintNode(None, None)
+
+    entry = item._static.markers.entries[0]
+    collapsed = _read_cell(item._cell_nodes[0])[: entry.count]
+    assert np.allclose(
+        np.stack((collapsed["x"], collapsed["y"]), axis=-1),
+        encgpu._hidden_marker_rows(entry),
+        atol=1e-3,
+    )
+
+    # 100 m/px is the gate's inclusive visible side; the retained offsets are
+    # rewritten back from the parsed block, not reconstructed from the anchors.
+    item.set_scale(encmarkers.DOT_MAX_SCALE)
+    assert item.updatePaintNode(node, None) is node
+    restored = _read_cell(item._cell_nodes[0])[: entry.count]
+    assert np.allclose(
+        np.stack((restored["x"], restored["y"]), axis=-1),
+        encgpu._marker_rows(entry, None),
+        atol=1e-3,
+    )
+
+
+def test_a_retained_restore_reapplies_the_scale_gate(qt_app):
+    """Returning to a parked frame reconciles its buffers with the gate."""
+    first = _view_scene(_dot_mesh(anchors=((0.5, 0.5),)))
+    second = _view_scene(_dot_mesh(anchors=((1.5, 0.8),)))
+
+    item = _item(lambda image: None)
+    item.set_scale(encmarkers.DOT_MAX_SCALE)
+    item.set_view_scene(first)
+    node = item.updatePaintNode(None, None)
+
+    # Adopt another scene while the gate hides dots: the first frame's nodes
+    # are parked with their (still visible) buffers.
+    item.set_scale(encmarkers.DOT_MAX_SCALE + 1.0)
+    item.set_view_scene(second)
+    assert item.updatePaintNode(node, None) is node
+
+    # Return to the retained scene.  Its nodes come back without a rebuild,
+    # so the collapse has to be re-applied from the current gate.
+    item.set_view_scene(first)
+    assert item.updatePaintNode(node, None) is node
+    assert item._static.markers is not None
+    entry = item._static.markers.entries[0]
+    assert entry.kind == encmarkers.DOT
+    vertices = _read_cell(item._cell_nodes[0])[: entry.count]
+    assert np.allclose(
+        np.stack((vertices["x"], vertices["y"]), axis=-1),
+        encgpu._hidden_marker_rows(entry),
+        atol=1e-3,
     )
 
 

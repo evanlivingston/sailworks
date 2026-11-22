@@ -7,12 +7,20 @@ square) as flat triangle lists a backend can upload with the area/line parts.
 
 Coordinates are local *pixels* with the origin at the feature anchor, ``+x`` to
 the right and ``+y`` down, matching the Cairo path.  A template is a tuple of
-triangles, each a tuple of three ``(x, y)`` pairs.  Circles (lights, buoys and
-the generic dot) are fixed fans of :data:`DISC_SEGMENTS` triangles, not curves
-flattened to a tolerance, because this slice carries no textures and no
-screen-constant line width.  Stroked Cairo shapes become filled ones: a beacon
-is one filled triangle, the wreck X is two thin bars, and the landmark is a
-filled 4x4 square.
+triangles, each a tuple of three ``(x, y)`` pairs.  Circles (lights, buoys,
+lateral buoys and the generic dot) are fixed fans of :data:`DISC_SEGMENTS`
+triangles, not curves flattened to a tolerance, because this slice carries no
+textures and no screen-constant line width.  That is an inscribed-polygon
+approximation of a circle: the extremes of the Cairo arc are kept and the
+mid-chord sits at ``radius * cos(pi / DISC_SEGMENTS)``.
+
+Stroked Cairo shapes become filled ones, but the *ink* they cover is kept: a
+closed stroke spreads half its width either side of the path and leaves the
+interior unpainted, so the beacon is the hollow 1.5 px band between those two
+boundaries, the wreck X is two 1 px bars, and the landmark is the 4x4 stroked
+square's 1 px ring.  Buoyage colour is per kind (:func:`encpalette.marker_colour`); a lateral
+buoy is the same r=3 disc as the generic buoy, red for port and green for
+starboard, exactly as ``_draw_buoy_lateral`` fills it.
 
 Kind names are also the keys for :func:`encpalette.marker_colour`.  Nothing
 here is wired into the default renderer or the viewport.
@@ -82,12 +90,82 @@ def _rays(inner, outer, half_width):
     return tuple(triangles)
 
 
-#: A V band: apex near (0, -3), arms down to (+/-3, 2), 1.6 px thick vertically.
-_CHEVRON = (
-    ((-3.0, 2.0), (0.0, -3.0), (0.0, -1.4)),
-    ((-3.0, 2.0), (0.0, -1.4), (-3.0, 3.6)),
-    ((3.0, 2.0), (0.0, -1.4), (0.0, -3.0)),
-    ((3.0, 2.0), (3.0, 3.6), (0.0, -1.4)),
+def _scaled_about_incenter(path, factor):
+    """``path`` scaled about its incenter by ``factor``, as a tuple.
+
+    Dilating or eroding a triangle edge by edge keeps its angles, so both
+    boundaries of a stroke are the same triangle scaled about its incenter.
+    The miter limit is not modelled; at the drawers' 1.5 px stroke on an 8 px
+    triangle the joins are far inside it.
+    """
+    (ax, ay), (bx, by), (cx, cy) = path
+    opposite_a = math.hypot(bx - cx, by - cy)
+    opposite_b = math.hypot(ax - cx, ay - cy)
+    opposite_c = math.hypot(ax - bx, ay - by)
+    perimeter = opposite_a + opposite_b + opposite_c
+    center_x = (opposite_a * ax + opposite_b * bx + opposite_c * cx) / perimeter
+    center_y = (opposite_a * ay + opposite_b * by + opposite_c * cy) / perimeter
+    return tuple(
+        (
+            center_x + (x - center_x) * factor,
+            center_y + (y - center_y) * factor,
+        )
+        for x, y in path
+    )
+
+
+def _inradius(path):
+    """The inradius of a triangle ``path``."""
+    (ax, ay), (bx, by), (cx, cy) = path
+    opposite_a = math.hypot(bx - cx, by - cy)
+    opposite_b = math.hypot(ax - cx, ay - cy)
+    opposite_c = math.hypot(ax - bx, ay - by)
+    perimeter = opposite_a + opposite_b + opposite_c
+    area = abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) / 2.0
+    return 2.0 * area / perimeter
+
+
+def _stroke_ring(path, half_width):
+    """The ink a closed Cairo ``stroke()`` covers, as a ring of triangles.
+
+    A closed stroke is hollow: it spreads ``half_width`` either side of the
+    path and leaves the interior unpainted.  The outer and inner boundaries
+    are the path scaled about its incenter, and the band between them is one
+    quad per edge, split into two triangles.
+    """
+    inradius = _inradius(path)
+    outer = _scaled_about_incenter(path, 1.0 + half_width / inradius)
+    inner = _scaled_about_incenter(path, 1.0 - half_width / inradius)
+    triangles = []
+    for index in range(len(path)):
+        following = (index + 1) % len(path)
+        o0, o1 = outer[index], outer[following]
+        i0, i1 = inner[index], inner[following]
+        triangles.append((o0, o1, i0))
+        triangles.append((o1, i1, i0))
+    return tuple(triangles)
+
+
+#: The Cairo beacon path: apex (0, -5), base corners (+/-4, 3).
+_BEACON_PATH = ((0.0, -5.0), (-4.0, 3.0), (4.0, 3.0))
+#: The Cairo beacon stroke width; the ink reaches 0.75 px beyond the path.
+_BEACON_STROKE = 1.5
+
+#: The Cairo landmark is a 4x4 stroked square, 1 px wide: a 1 px ring whose
+#: outer edge is the path plus the stroke's half width, so 2.5 px from centre.
+_LANDMARK = (
+    # Top bar.
+    ((-2.5, -2.5), (2.5, -2.5), (2.5, -1.5)),
+    ((-2.5, -2.5), (2.5, -1.5), (-2.5, -1.5)),
+    # Bottom bar.
+    ((-2.5, 1.5), (2.5, 1.5), (2.5, 2.5)),
+    ((-2.5, 1.5), (2.5, 2.5), (-2.5, 2.5)),
+    # Left bar, between the horizontal ones so the corners are covered once.
+    ((-2.5, -1.5), (-1.5, -1.5), (-1.5, 1.5)),
+    ((-2.5, -1.5), (-1.5, 1.5), (-2.5, 1.5)),
+    # Right bar.
+    ((1.5, -1.5), (2.5, -1.5), (2.5, 1.5)),
+    ((1.5, -1.5), (2.5, 1.5), (1.5, 1.5)),
 )
 
 #: The Cairo X is stroked 1 px wide from (+/-3, +/-3); these bars are 1 px wide.
@@ -100,18 +178,14 @@ _CROSS = (
     ((-3.0 - _O, 3.0 - _O), (3.0 + _O, -3.0 + _O), (-3.0 + _O, 3.0 + _O)),
 )
 
-#: Filled 4x4 squares replacing the Cairo 4x4 stroke.
-_LANDMARK = (
-    ((-2.0, -2.0), (2.0, -2.0), (2.0, 2.0)),
-    ((-2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)),
-)
-
 _TEMPLATES = {
-    LIGHT: _disc(4.0) + _rays(4.0, 7.0, 0.35),
-    BEACON: (((0.0, -5.0), (-4.0, 3.0), (4.0, 3.0)),),
+    LIGHT: _disc(4.0) + _rays(4.0, 7.0, 0.25),
+    BEACON: _stroke_ring(_BEACON_PATH, _BEACON_STROKE / 2.0),
     BUOY: _disc(3.0),
-    BUOY_PORT: _CHEVRON,
-    BUOY_STARBOARD: _CHEVRON,
+    # The Cairo lateral buoy is the generic r=3 disc in the port or starboard
+    # colour; only ``encpalette.marker_colour`` tells the three apart.
+    BUOY_PORT: _disc(3.0),
+    BUOY_STARBOARD: _disc(3.0),
     WRECK: _CROSS,
     LANDMARK: _LANDMARK,
     DOT: _disc(1.5),

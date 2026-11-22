@@ -3184,14 +3184,6 @@ class _SceneItem:
         self.y = y
 
 
-class _SceneFallback:
-    def __init__(self):
-        self.placed = None
-
-    def place(self, x, y):
-        self.placed = (x, y)
-
-
 def test_the_container_carries_a_camera_change_by_default():
     # Flip this expectation with CONTAINER_CARRIES_PAN.
     assert gribviewport.CONTAINER_CARRIES_PAN is True
@@ -3240,35 +3232,29 @@ def test_flipping_the_constant_restores_the_retained_chart_placement():
 
 def test_a_camera_change_leaves_the_enc_offset_to_the_container():
     item = _SceneItem()
-    fallback = _SceneFallback()
     reason = gribviewport.place_enc_scene_item(
-        item, fallback, 7.0, 11.0, cause="camera", rescaled=False, carries=True
+        item, 7.0, 11.0, cause="camera", rescaled=False, carries=True
     )
     assert reason == "container_carries"
     assert item.offset is None
-    assert fallback.placed is None
 
 
 def test_a_rescaled_enc_scene_is_still_placed():
     item = _SceneItem()
-    fallback = _SceneFallback()
     reason = gribviewport.place_enc_scene_item(
-        item, fallback, 7.0, 11.0, cause="camera", rescaled=True, carries=True
+        item, 7.0, 11.0, cause="camera", rescaled=True, carries=True
     )
     assert reason is None
     assert item.offset == (7.0, 11.0)
-    assert fallback.placed == (7.0, 11.0)
 
 
 def test_a_publication_reanchors_the_enc_scene():
     item = _SceneItem()
-    fallback = _SceneFallback()
     reason = gribviewport.place_enc_scene_item(
-        item, fallback, 7.0, 11.0, cause="publication", rescaled=False, carries=True
+        item, 7.0, 11.0, cause="publication", rescaled=False, carries=True
     )
     assert reason is None
     assert item.offset == (7.0, 11.0)
-    assert fallback.placed == (7.0, 11.0)
 
 
 @pytest.mark.parametrize(
@@ -3301,7 +3287,6 @@ def test_a_carried_placement_is_traced(monkeypatch, placer, reason_kind):
     else:
         gribviewport.place_enc_scene_item(
             _SceneItem(),
-            None,
             1.0,
             2.0,
             cause="camera",

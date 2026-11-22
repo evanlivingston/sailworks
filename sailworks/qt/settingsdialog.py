@@ -330,13 +330,6 @@ class SettingsDialog(QDialog):
             )
         )
         form.addRow(self.developer_mode)
-        self.gpu_rendering = QCheckBox("GPU rendering (experimental)")
-        self.gpu_rendering.setChecked(
-            controller.settings.get("mapRenderer", "cpu") == "gpu"
-        )
-        self.gpu_rendering.setToolTip("Restart required.")
-        self.gpu_rendering.toggled.connect(self.set_gpu_rendering)
-        form.addRow(self.gpu_rendering)
         self.keep_ebl_originals = QCheckBox("Keep original bearing-line (EBL) files")
         self.keep_ebl_originals.setChecked(
             bool(controller.settings.get("keepEblOriginals", True))
@@ -522,8 +515,7 @@ class SettingsDialog(QDialog):
                 f"Could not save this setting. The previous value was restored.\n{exc}",
             )
             return
-        if key != "mapRenderer":
-            self.controller.data.redraw()
+        self.controller.data.redraw()
         if key == "keepEblOriginals":
             self.controller.log_library.keep_ebl_originals = bool(value)
         if key == "developerMode":
@@ -585,25 +577,8 @@ class SettingsDialog(QDialog):
         finally:
             self.weathernext_test.setEnabled(True)
 
-    def set_gpu_rendering(self, enabled):
-        self.set_preference(
-            "mapRenderer", "gpu" if enabled else "cpu", self.gpu_rendering
-        )
-        self.gpu_rendering.blockSignals(True)
-        self.gpu_rendering.setChecked(
-            self.controller.settings.get("mapRenderer", "cpu") == "gpu"
-        )
-        self.gpu_rendering.blockSignals(False)
-        self.refresh_renderer_status()
-
     def refresh_renderer_status(self):
-        pending = (self.controller.settings.get("mapRenderer", "cpu") == "gpu") != (
-            self.controller.map_renderer == "gpu"
-        )
-        fallback = self.controller.renderer_status().startswith("CPU fallback:")
-        self.renderer_status.setText(
-            "Restart to apply."
-            if pending
-            else "GPU unavailable; using CPU." if fallback else ""
-        )
-        self.renderer_status.setVisible(pending or fallback)
+        # Report the backend the viewport actually presented on.  There is no
+        # renderer selection to apply, so there is no restart prompt either;
+        # a runtime CPU fallback stays explicit here.
+        self.renderer_status.setText(self.controller.renderer_status())

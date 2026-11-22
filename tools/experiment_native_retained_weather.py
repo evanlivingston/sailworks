@@ -146,7 +146,9 @@ def worker(config):
 
     def metadata(canvas):
         result = production_tool.numerical_weather_status(canvas)
-        item = getattr(getattr(canvas._gpu, "scene", None), "weather", None)
+        item = getattr(
+            getattr(getattr(canvas, "_gpu", None), "scene", None), "weather", None
+        )
         result["opacity"] = item.opacity() if item is not None else 0
         result["active"] = result["active"] and result["opacity"] > 0
         return result

@@ -3860,8 +3860,6 @@ def run(
         sandbox_settings = json.loads(settings_path.read_text())
         sandbox_settings["chartENCVisible"] = True
         sandbox_settings["gribBarbDensity"] = "very_dense"
-        if enc_scene:
-            sandbox_settings["chartENCScene"] = True
         settings_path.write_text(json.dumps(sandbox_settings))
         report["notes"].append(
             "Sandbox copy: chartENCVisible and gribBarbDensity set for the "
@@ -3878,11 +3876,13 @@ def run(
                 "so a blank OS capture is never compared."
             )
         report["notes"].append(
-            "ENC scene layer enabled (chartENCScene=True, enc_scene_layer=True): "
-            "per-step enc_scene_counters record residency.  With it off the "
-            "raster ENC path runs exactly as in the Phase 1 baseline."
+            "ENC scene layer enabled (the application's only ENC presenter, "
+            "enc_scene_layer=True): per-step enc_scene_counters record "
+            "residency.  With it off this tool exercises the standalone "
+            "raster reference path."
             if enc_scene
-            else "ENC scene layer disabled: Phase 1 raster ENC path unchanged."
+            else "ENC scene layer disabled: the standalone raster reference "
+            "path is measured, not the application presentation."
         )
         _measure(
             report,
@@ -3951,9 +3951,10 @@ def main(argv=None):
     parser.add_argument(
         "--enc-scene",
         action="store_true",
-        help="Measure the re-landed ENC scene layer (chartENCScene) instead of "
-        "the raster ENC path: sets the sandbox flag, builds the viewport with "
-        "enc_scene_layer=True and records residency counters per step.",
+        help="Measure the GPU ENC scene layer (the application's only ENC "
+        "presentation) instead of the standalone raster reference path: "
+        "builds the viewport with enc_scene_layer=True and records residency "
+        "counters per step.",
     )
     parser.add_argument(
         "--counters-only",

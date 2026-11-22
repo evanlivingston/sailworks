@@ -17,7 +17,6 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-import shapely
 
 from sailworks.qt import encscenelayer
 from sailworks.qt.viewportenc import EncSource
@@ -1276,46 +1275,6 @@ def test_partial_publication_names_an_unreadable_cell_before_it_resolves(
         layer.close()
 
 
-def test_partial_publication_carries_the_clip_of_a_refused_cell(tmp_path, cell):
-    published = []
-    layer = _layer(tmp_path, on_publish=published.append)
-    planned = _planned_cell(cell)
-    assert planned.clip is not None
-    scene = encscenelayer.assemble_scene(
-        (planned,), _FakeViewport(), encscene.SceneCache(1), None
-    )
-    assert scene is not None and scene.is_empty
-    assert [(entry.path, entry.reason) for entry in scene.skipped] == [
-        (str(cell), "oversized")
-    ]
-    metadata = _metadata(_Camera())
-    metadata["cells_order"] = (encscenelayer.cell_identity(planned),)
-    try:
-        with layer._condition:
-            generation = layer._generation
-        assert layer._publish_partial(
-            generation,
-            scene,
-            1,
-            2,
-            threading.Event(),
-            metadata,
-            (planned,),
-        )
-
-        _, _, payload = layer.published
-        # This partial frame already knows the cell is refused, so its own
-        # snapshot must carry the ground that cell still owns.
-        (entry,) = payload["unavailable_clips"]
-        assert entry["path"] == str(cell)
-        assert entry["name"] == Path(cell).name
-        assert entry["reason"] == "oversized"
-        assert shapely.from_wkb(entry["clip_wkb"]).equals(planned.clip)
-        assert published and published[0] is layer.published
-    finally:
-        layer.close()
-
-
 def test_compose_keeps_drawing_when_one_planned_cell_is_missing(
     tmp_path, cell, monkeypatch
 ):
@@ -1371,121 +1330,6 @@ def test_compose_reports_a_catalog_error_as_unavailable(tmp_path, cell, monkeypa
         assert states[1]["name"] == "US4WA1IB.000"
         # An unreadable catalog entry claims no coverage of its own.
         assert [entry["path"] for entry in metadata["cells_order"]][0] == str(cell)
-    finally:
-        layer._release()
-
-
-def _planned_cell(cell, native_scale=2000):
-    """The plan entry ``compose`` builds for one cell under ``_ComposeViewport``."""
-    plan = encplan.plan_cells(
-        _ComposeViewport(_Camera(), 0, threading.Event()),
-        ((str(cell), native_scale, None),),
-    )
-    assert plan is not None and len(plan) == 1
-    return plan[0]
-
-
-def test_compose_carries_the_trimmed_clip_of_a_refused_cell(
-    tmp_path, cell, monkeypatch
-):
-    _compose_patch(monkeypatch)
-    expected = _planned_cell(cell)
-    assert expected.clip is not None
-    catalog = _StubCatalog(
-        sources=(SimpleNamespace(descriptor=(str(cell), 2000, None), error=None),)
-    )
-    layer = _layer(tmp_path, catalog=catalog)
-    # Too small to hold the cell, so the cache refuses it during assembly -
-    # after the plan has already given it its trimmed ground.
-    layer._scene_cache = encscene.SceneCache(1)
-    try:
-        scene, metadata = layer._compose(_Camera(), threading.Event())
-
-        assert scene is not None and scene.is_empty
-        assert [entry.path for entry in scene.skipped] == [str(cell)]
-        # The reason-only shape is untouched.
-        assert metadata["unavailable"] == ()
-        (entry,) = metadata["unavailable_clips"]
-        assert entry["path"] == str(cell)
-        assert entry["name"] == Path(cell).name
-        assert entry["reason"] == "oversized"
-        # Exactly the plan's trimmed clip, not the cell's raw coverage.
-        assert shapely.from_wkb(entry["clip_wkb"]).equals(expected.clip)
-    finally:
-        layer._release()
-
-
-def test_unreadable_at_plan_time_cells_carry_no_clip(tmp_path, cell, monkeypatch):
-    _compose_patch(monkeypatch)
-    missing = str(tmp_path / "missing" / "US4WA1IB.000")
-    catalog = _StubCatalog(
-        sources=(
-            SimpleNamespace(descriptor=(missing, 2500, None), error=None),
-            SimpleNamespace(descriptor=(str(cell), 2000, None), error=None),
-        )
-    )
-    layer = _layer(tmp_path, catalog=catalog)
-    try:
-        scene, metadata = layer._compose(_Camera(), threading.Event())
-
-        assert scene is not None and not scene.is_empty
-        assert [path for path, _ in metadata["unavailable"]] == [missing]
-        # It never had a CellPlan, so there is no clip to publish for it.
-        assert metadata["unavailable_clips"] == ()
-    finally:
-        layer._release()
-
-
-def test_compose_publishes_no_clips_when_every_planned_cell_is_drawn(
-    tmp_path, cell, monkeypatch
-):
-    _compose_patch(monkeypatch)
-    real_clips = encscenelayer.unavailable_clips
-    calls = []
-
-    def spy(plan, scene):
-        calls.append((plan, scene))
-        return real_clips(plan, scene)
-
-    # A spy proves the clip pass ran; an empty tuple alone is also the default.
-    monkeypatch.setattr(encscenelayer, "unavailable_clips", spy)
-    catalog = _StubCatalog(
-        sources=(SimpleNamespace(descriptor=(str(cell), 2000, None), error=None),)
-    )
-    layer = _layer(tmp_path, catalog=catalog)
-    try:
-        scene, metadata = layer._compose(_Camera(), threading.Event())
-
-        assert scene is not None and not scene.is_empty
-        assert metadata["unavailable_clips"] == ()
-        assert len(calls) == 1
-        plan, seen = calls[0]
-        assert seen is scene
-        assert [entry.path for entry in plan] == [str(cell)]
-    finally:
-        layer._release()
-
-
-def test_clip_failure_does_not_withdraw_an_assembled_scene(tmp_path, cell, monkeypatch):
-    _compose_patch(monkeypatch)
-
-    def boom(plan, scene):
-        raise RuntimeError("clip metadata failed")
-
-    monkeypatch.setattr(encscenelayer, "unavailable_clips", boom)
-    catalog = _StubCatalog(
-        sources=(SimpleNamespace(descriptor=(str(cell), 2000, None), error=None),)
-    )
-    layer = _layer(tmp_path, catalog=catalog)
-    try:
-        scene, metadata = layer._compose(_Camera(), threading.Event())
-
-        # Metadata-only damage: the assembled chart still publishes.
-        assert scene is not None and not scene.is_empty
-        assert encscenelayer.scene_report(scene)[0] == encscenelayer.STATE_READY
-        assert metadata["unavailable_clips"] == ()
-        assert layer.counters["clip_failures"] == 1
-        assert layer.counters["failures"] == 0
     finally:
         layer._release()
 

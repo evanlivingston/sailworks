@@ -17,7 +17,9 @@ def test_factory_gets_both_enc_and_native_options(presenter, monkeypatch):
     monkeypatch.setattr(presenter, "_model", lambda source, *, grid: Mock())
     presenter._create(None)
     kwargs = factory.call_args.kwargs
-    assert kwargs["chart_layer"] and kwargs["enc_chart_layer"] and kwargs["enc_only"]
+    assert kwargs["chart_layer"] and kwargs["enc_only"]
+    assert not kwargs.get("enc_chart_layer")
+    assert kwargs["enc_scene_layer"] is True
     assert kwargs["chart_palette"] == "dark"
     assert kwargs["native_weather_fields"] is True
     assert (

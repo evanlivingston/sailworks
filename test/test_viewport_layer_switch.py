@@ -945,23 +945,13 @@ class TestChartLayersPanel(unittest.TestCase):
         self.assertNotIn("chartWorldVisible", panel.checkboxes)
         self.assertNotIn("chartENCVisible", panel.radios)
 
-    def test_the_gpu_scene_is_an_experimental_toggle_that_follows_enc(self):
+    def test_there_is_no_gpu_scene_selector(self):
         panel = self.panel({"chartENCVisible": True})
-        checkbox = panel.enc_scene_checkbox
-        self.assertIn("experimental", checkbox.text())
-        # It is not a chart class row: it selects how the ENC overlay is drawn.
+        # The GPU scene is the product's ENC presentation, not a choice: the
+        # panel offers no experimental toggle and writes no scene key.
+        self.assertFalse(hasattr(panel, "enc_scene_checkbox"))
         self.assertNotIn("chartENCScene", panel.checkboxes)
-        self.assertFalse(checkbox.isChecked())
-        self.assertTrue(checkbox.isEnabled())
-
-        checkbox.setChecked(True)
-        self.assertTrue(self.settings["chartENCScene"])
-
-        self.settings["chartENCVisible"] = False
-        self.assertFalse(checkbox.isEnabled())
-        # The stored opt-in is kept; only the offer is withdrawn with ENC.
-        self.assertTrue(checkbox.isChecked())
-        self.assertTrue(self.settings["chartENCScene"])
+        self.assertNotIn("chartENCScene", self.settings)
 
 
 class _NotifyingSettings(dict):

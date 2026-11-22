@@ -1,5 +1,6 @@
-"""Isolated Qt application checks for the experimental embedded GPU map."""
+"""Isolated Qt application checks for the embedded GPU map."""
 
+import json
 import time
 import unittest
 from unittest.mock import patch
@@ -14,8 +15,6 @@ from test.qt_preview_checks import (
 
 
 class Fixture(unittest.TestCase):
-    renderer = None
-
     @classmethod
     def setUpClass(cls):
         QtPreviewChecks.setUpClass.__func__(cls)
@@ -26,13 +25,7 @@ class Fixture(unittest.TestCase):
         guard = patch.object(SystemCredentialStore, "load", return_value=None)
         guard.start()
         self.addCleanup(guard.stop)
-        with patch(
-            "test.qt_preview_checks.SessionController",
-            side_effect=lambda *a, **kw: SessionController(
-                *a, **kw, map_renderer=self.renderer
-            ),
-        ):
-            QtPreviewChecks.setUp(self)
+        QtPreviewChecks.setUp(self)
 
     drain = QtPreviewChecks.drain
     # The shared setUp settles the display forecast; these fixtures reuse the
@@ -53,65 +46,68 @@ class Fixture(unittest.TestCase):
 
 
 class PreferenceChecks(Fixture):
-    def test_default_cpu_and_saved_gpu_requires_restart(self):
+    def test_gpu_is_the_only_map_renderer(self):
         from sailworks.core.settings import SettingsManager
 
-        self.assertEqual(self.controller.map_renderer, "cpu")
-        self.assertIsNone(self.window.map._gpu)
+        self.assertEqual(self.controller.map_renderer, "gpu")
         self.window.show_settings()
         dialog = self.window.settings_dialog
+        self.assertFalse(hasattr(dialog, "gpu_rendering"))
+        dialog.refresh_renderer_status()
+        self.assertEqual(
+            dialog.renderer_status.text(), self.controller.renderer_status()
+        )
+        self.assertNotIn("Restart to apply.", dialog.renderer_status.text())
         with (
             patch("sailworks.core.storage.DATA_DIR", str(self.path)),
             patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
         ):
-            ORIGINAL_STORAGE_LOAD(self.controller.settings)
-            with patch.object(self.controller.data, "redraw") as redraw:
-                dialog.gpu_rendering.setChecked(True)
-                redraw.assert_not_called()
-            self.assertEqual(self.controller.settings.mapRenderer, "gpu")
-            self.assertEqual(self.controller.map_renderer, "cpu")
-            self.assertEqual(dialog.renderer_status.text(), "Restart to apply.")
-            with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
-                loaded = SettingsManager()
-                self.assertEqual(loaded.mapRenderer, "gpu")
-                saved = SessionController(
-                    load_charts=False,
-                    recording_directory=self.path / "saved-recordings",
-                )
-                self.addCleanup(saved.close)
-                self.assertEqual(saved.map_renderer, "gpu")
-                override = SessionController(
-                    load_charts=False,
-                    map_renderer="cpu",
-                    recording_directory=self.path / "override-recordings",
-                )
-                self.addCleanup(override.close)
-                self.assertEqual(override.map_renderer, "cpu")
-                self.assertEqual(override.settings.mapRenderer, "gpu")
-            dialog.gpu_rendering.setChecked(False)
-            self.assertEqual(self.controller.settings.mapRenderer, "cpu")
+            self.assertEqual(SettingsManager().mapRenderer, "gpu")
+            override = SessionController(
+                load_charts=False,
+                map_renderer="cpu",
+                recording_directory=self.path / "override-recordings",
+            )
+            self.addCleanup(override.close)
+            self.assertEqual(override.map_renderer, "gpu")
 
-    def test_save_error_restores_toggle_without_changing_renderer(self):
-        self.window.show_settings()
-        dialog = self.window.settings_dialog
+    def test_saved_cpu_choice_cannot_select_cpu(self):
+        from sailworks.core.settings import SettingsManager
+
+        # Seed the settings file a pre-GPU install leaves behind. The shared
+        # setUp mocks load_or_save_default (which also leaves save() a no-op
+        # because the storage instance is never marked initialized), so
+        # restore it on SettingsManager only. Other storage fixtures in this
+        # test stay mocked; the seeded value must be read back here.
+        saved = self.path / "settings.json"
+        saved.write_text(json.dumps({"mapRenderer": "cpu"}))
+
         with (
-            patch.object(Storage, "save", side_effect=OSError("disk full")),
-            patch("sailworks.qt.settingsdialog.QMessageBox.warning") as warning,
+            patch("sailworks.core.storage.DATA_DIR", str(self.path)),
+            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
+            patch.object(
+                SettingsManager, "load_or_save_default", ORIGINAL_STORAGE_LOAD
+            ),
         ):
-            dialog.gpu_rendering.setChecked(True)
-        warning.assert_called_once()
-        self.assertFalse(dialog.gpu_rendering.isChecked())
-        self.assertEqual(self.controller.settings.mapRenderer, "cpu")
-        self.assertEqual(self.controller.map_renderer, "cpu")
+            self.assertEqual(SettingsManager().mapRenderer, "cpu")
+            legacy = SessionController(
+                load_charts=False,
+                recording_directory=self.path / "legacy-cpu-recordings",
+            )
+            self.addCleanup(legacy.close)
+            self.assertEqual(legacy.map_renderer, "gpu")
+            self.assertEqual(legacy.settings.mapRenderer, "cpu")
+
+        # Loading and choosing the renderer must not normalize the saved value.
+        self.assertEqual(json.loads(saved.read_text())["mapRenderer"], "cpu")
 
     def test_unsupported_gpu_does_not_rewrite_renderer_choice(self):
         from sailworks.qt.viewportmap import ViewportMap
 
-        self.controller.map_renderer = "gpu"
         self.controller.settings.mapRenderer = "gpu"
         canvas = ViewportMap(self.controller)
         self.addCleanup(canvas.dispose)
-        self.assertIsNone(canvas._gpu)
+        self.assertFalse(hasattr(canvas, "_gpu"))
         self.assertNotIn("CPU fallback", self.controller.renderer_status())
         self.assertEqual(self.controller.settings.mapRenderer, "gpu")
 

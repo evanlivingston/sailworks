@@ -106,26 +106,6 @@ class ChartLayersPanel(QWidget):
             self.checkboxes[key] = checkbox
             self._sync(key, self.settings.get(key, True))
             layout.addWidget(checkbox)
-        # Experimental, and deliberately not a chart class: it selects how the
-        # ENC overlay is drawn, so it follows the ENC switch instead of being
-        # one of the CHART_CLASSES rows.
-        scene = QCheckBox("GPU ENC scene (experimental)")
-        scene.setToolTip(
-            "Draw the ENC cells as one GPU scene instead of the raster "
-            "overlay. Needs the ENC charts above; if the scene cannot be "
-            "built the viewport says so rather than showing a blank chart."
-        )
-        scene.setChecked(bool(self.settings.get("chartENCScene", False)))
-        scene.setEnabled(bool(self.settings.get("chartENCVisible", True)))
-        scene.toggled.connect(lambda checked: self._set("chartENCScene", checked))
-        self.settings.register_on_change(
-            "chartENCScene", lambda value: self._sync_enc_scene(value)
-        )
-        self.settings.register_on_change(
-            "chartENCVisible", lambda value: self._sync_enc_scene_enabled(value)
-        )
-        self.enc_scene_checkbox = scene
-        layout.addWidget(scene)
         note = QLabel(
             "Choose individual charts in Local files."
             " With all sources off, only the map background remains."
@@ -178,17 +158,3 @@ class ChartLayersPanel(QWidget):
             # A background is always selected: clearing the last one restores
             # the basemap instead of leaving a blank map.
             self.radios["chartWorldVisible"].setChecked(True)
-
-    def _sync_enc_scene(self, value):
-        """Follow the stored scene switch, without echoing a write back."""
-        widget = getattr(self, "enc_scene_checkbox", None)
-        if widget is not None:
-            blocked = widget.blockSignals(True)
-            widget.setChecked(bool(value))
-            widget.blockSignals(blocked)
-
-    def _sync_enc_scene_enabled(self, enc_visible):
-        """The GPU scene draws the ENC overlay, so it is only offered with it."""
-        widget = getattr(self, "enc_scene_checkbox", None)
-        if widget is not None:
-            widget.setEnabled(bool(enc_visible))

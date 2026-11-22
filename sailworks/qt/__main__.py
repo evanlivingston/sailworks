@@ -40,10 +40,12 @@ def main(argv=None):
         action="store_true",
         help="Experimental: defer unused plots and initialize charts after weather preparation",
     )
+    # GPU is the only map renderer.  The flag is hidden and inert but still
+    # parsed so existing scripts that pass ``--map-renderer {cpu,gpu}`` run.
     parser.add_argument(
         "--map-renderer",
         choices=("cpu", "gpu"),
-        help="Override the saved map renderer for this session (GPU is experimental)",
+        help=argparse.SUPPRESS,
     )
 
     parser.add_argument(

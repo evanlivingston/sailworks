@@ -32,8 +32,6 @@ class MapLifecycleMixin:
             self._layout_timeline()
         if self._weather_presenter is not None:
             self._weather_presenter.request()
-        if self._gpu is not None and self._gpu.active:
-            self._gpu.request()
 
     def resizeEvent(self, event):  # noqa: N802 - Qt virtual method name
         self._cancel_cursor()
@@ -51,8 +49,6 @@ class MapLifecycleMixin:
             self._layout_timeline()
         if self._weather_presenter is not None:
             self._weather_presenter.request()
-        if self._gpu is not None and self._gpu.active:
-            self._gpu.request()
 
     def dispose(self):
         if self.disposed:
@@ -63,8 +59,6 @@ class MapLifecycleMixin:
                 self._display_forecast_changed
             )
             self._weather_presenter.close()
-        if self._gpu is not None:
-            self._gpu.close()
         if hasattr(self.controller, "forget_renderer"):
             self.controller.forget_renderer(self)
         if getattr(self, "timeline", None) is not None:
@@ -90,12 +84,6 @@ class MapLifecycleMixin:
     def hideEvent(self, event):  # noqa: N802 - Qt virtual method name
         if self._weather_presenter is not None:
             self._weather_presenter.suspend()
-        if self._gpu is not None:
-            self._gpu.suspend()
-        self._gpu_geometry = None
-        self._gpu_batches = ()
-        self._gpu_wind_raster = None
-        self._gpu_raster_key = None
         self._cancel_cursor()
         self._cancel_inertia(settle=False)
         self._finish_zoom_silent()

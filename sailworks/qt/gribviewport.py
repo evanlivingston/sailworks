@@ -261,7 +261,6 @@ def place_retained_chart(
 
 def place_enc_scene_item(
     item,
-    fallback,
     x,
     y,
     *,
@@ -285,10 +284,6 @@ def place_enc_scene_item(
         return "container_carries"
     item.setX(x)
     item.setY(y)
-    if fallback is not None:
-        # The image layer shares this item's parent and translation: the same
-        # placement keeps its ground under the same cells.
-        fallback.place(x, y)
     return None
 
 
@@ -2928,11 +2923,6 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._enc_scene_item: Any = None
             self._enc_scene_model = None
             self._enc_scene_state = "idle"
-            #: The image layer beneath the mesh that paints the ground of the
-            #: cells the scene refused.  Absent unless the scene layer is on,
-            #: so the default path constructs neither it nor its worker.
-            self._enc_fallback_container = None
-            self._enc_fallback = None
             #: The camera the presented ENC scene was composed for; its
             #: projection is already in that camera's pixels.
             self._enc_scene_camera = None
@@ -3322,22 +3312,6 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     # The item is the GUI thread's only handle on the scene:
                     # the layer's worker never touches it.
                     self._enc_scene_item = enc_scene_item(container)
-                    # The refused cells' ground sits between the raster and
-                    # the mesh: a cell the scene could not draw is still
-                    # chart content, in the camera's own projection.
-                    fallback_container = self._weather.findChild(
-                        QQuickItem, "encFallbackLayer"
-                    )
-                    if fallback_container is None:
-                        raise RuntimeError(
-                            "The GRIB viewport could not load its ENC fallback"
-                        )
-                    from .encfallback import ENCFallbackOverlay
-
-                    self._enc_fallback_container = fallback_container
-                    self._enc_fallback = ENCFallbackOverlay(
-                        fallback_container, dpr=self.devicePixelRatio()
-                    )
                     self._enc_scene_model = EncSceneLayer(
                         data_dir=chart_data_dir,
                         palette=self._chart_palette,
@@ -4235,14 +4209,6 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 # A closed layer minted nothing: recording a key with no
                 # terminal state would re-ask on every settle tick forever.
                 return None
-            # A moved camera makes the painted ground describe the old view.
-            # It is dropped now and re-requested once the new scene publishes
-            # the projection that belongs to this camera.  The ratio is the
-            # one ``set_camera`` recorded for this camera, which is also the
-            # one ``enc_scene_placement`` places the mesh with.
-            fallback = getattr(self, "_enc_fallback", None)
-            if fallback is not None:
-                fallback.camera_changed(camera, dpr=getattr(self, "_camera_dpr", None))
             # The newest request owns the next publication; anything older is
             # stale the moment it asks.  A newer generation also ends any hold
             # on the previous picture's progress: the frame it described is no
@@ -4360,11 +4326,6 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             item = getattr(self, "_enc_scene_item", None)
             if item is not None:
                 item.setVisible(False)
-            # The refused cells' ground described the withdrawn scene, so it
-            # leaves with it.
-            fallback = getattr(self, "_enc_fallback", None)
-            if fallback is not None:
-                fallback.clear("withdrawn")
             trace_raster_visibility(self, "scene_withdrawn")
             # Nothing draws chart content any more: the raster must, now.
             ensure_chart_content(self, "scene_withdrawn", generation=withdrawn)
@@ -4545,18 +4506,6 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         getattr(self, "_enc_trace_demand_at", None)
                     ),
                 )
-            # The refused cells' ground depends only on this publication's
-            # clips, projection and camera -- not on whether the mesh adopts
-            # the frame.  Notify the overlay before the hold and partial-keep
-            # gates below, so a held or kept complete scene still paints the
-            # cells it refused.
-            fallback = getattr(self, "_enc_fallback", None)
-            if fallback is not None:
-                fallback.publish(
-                    metadata,
-                    generation=generation,
-                    dpr=getattr(self, "_camera_dpr", None),
-                )
             partial = metadata is not None and bool(metadata.get("partial"))
             # A frame is placed for the camera it was composed at, so adopting
             # one while the camera is still moving re-anchors the picture under
@@ -4711,11 +4660,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             """Whether a partial leaves no planned cell still assembling.
 
             Every planned cell is either drawn (``ready``) or explicitly
-            refused with a reason (``unavailable``/``oversized``/``error``),
-            and the fallback paints the refused ground from this publication's
-            own clips.  Such a snapshot has no hole to show, so it may replace
-            the frame.  A ``loading`` cell - and metadata that reports no cell
-            states at all - means the picture is still filling in: hold it.
+            refused with a reason (``unavailable``/``oversized``/``error``).
+            A refused cell leaves the ground beneath the scene -- the raster
+            or the background -- visible in its own clip, so such a snapshot
+            has no cell still assembling and may replace the frame.  A
+            ``loading`` cell - and metadata that reports no cell states at all
+            - means the picture is still filling in: hold it.
             """
             if not cell_states:
                 return False
@@ -6125,10 +6075,6 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             scene = getattr(self, "_enc_scene_item", None)
             enc_before = _item_offset(scene, "x", "y")
             enc_after = _shift_item_offset(scene, "x", "y", dx, dy)
-            # The fallback paints the scene's refused cells into the item
-            # beneath it, which shares this item's parent and translation.
-            fallback = getattr(self, "_enc_fallback", None)
-            _shift_item_offset(getattr(fallback, "item", None), "x", "y", dx, dy)
             _trace_rebase(
                 dx,
                 dy,
@@ -8512,11 +8458,6 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._disposed = True
             self._detach_data_controller()
             self._enc_trace_disconnect()
-            fallback = getattr(self, "_enc_fallback", None)
-            if fallback is not None:
-                # The worker is a daemon: stopping it only drops the demand,
-                # a paint already running finishes into nothing.
-                fallback.stop()
             for name in ("_enc_trace_timeout_timer", "_enc_trace_counter_timer"):
                 timer = getattr(self, name, None)
                 if timer is not None:
@@ -9263,6 +9204,17 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 return
             reference = getattr(self, "_map_pan_reference", None)
             camera = getattr(self, "_camera", None)
+            set_scale = getattr(item, "set_scale", None)
+            if camera is not None and callable(set_scale):
+                # The per-camera gates (generic dots, sounding text) compare
+                # metres per pixel, exactly as the Cairo drawer compares
+                # ``MapViewport.get_scale()``.  That is *not* the 1:N SCAMIN
+                # denominator the cell plan uses.  The buffers are retained
+                # across pans and zooms; the item only re-emits when the
+                # quantity changes, so a pan is free.
+                from sailworks.qt.encscenelayer import metres_per_pixel_for
+
+                set_scale(metres_per_pixel_for(camera))
             frame = getattr(self, "_enc_scene_frame_camera", None)
             if frame is None:
                 frame = getattr(self, "_enc_scene_camera", None)
@@ -9293,7 +9245,6 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             x, y = enc_scene_placement(reference, frame, self._camera_dpr)
             place_enc_scene_item(
                 item,
-                getattr(self, "_enc_fallback", None),
                 x,
                 y,
                 cause=cause,

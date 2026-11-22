@@ -2402,32 +2402,73 @@ GATES["enc-app-rollout"] = {
         "{tool_output}",
     ],
     "defaults": {"scenarios": ["app-rollout"], "frames": 1, "repeats": 1},
+    # The raster ENC application is gone, and its chart/forecast switching,
+    # layer-order, resize and time-change checks went with it.  The tool now
+    # records the scene's own facts, so those are the enforced checks: the
+    # scene is constructed, published, adopted and drawn against the
+    # application camera, survives a pan and zoom, and surfaces a failure.
     "checks": [
         {
             "label": name.replace("_", " "),
             "metric": "checks." + name,
             "aggregate": "all",
             "op": "is_true",
-            "source": "docs/enc-default-rollout.md; user-authorized default application rollout",
+            "source": "docs/enc-default-rollout.md; GPU ENC scene in the default application path",
         }
         for name in (
-            "charts_without_forecast",
-            "no_implicit_forecast",
-            "selected_forecast_with_enc",
-            "viewport_enc_layer_no_legacy_duplicate",
-            "app_layer_order_preserved",
-            "app_pan_zoom",
-            "app_resize",
-            "app_time_change",
-            "charts_with_wind_hidden",
-            "chart_switch_off",
-            "chart_switch_on",
-            "source_clear_keeps_charts",
-            "renderer_failure_visible",
+            "scene_layer_constructed",
+            "scene_published",
+            "scene_adopted",
+            "scene_drawn",
+            "scene_matches_application_camera",
+            "scene_pan_republishes",
+            "scene_zoom_republishes",
+            "scene_failure_visible",
         )
     ],
     "open_requirements": [
         "No full #70 soak/platform/presentation or RSS/VRAM acceptance."
+    ],
+}
+
+# The GPU ENC scene is the application's only ENC presentation and draws shapes
+# plus sounding labels only; the tool records the layer's own incompleteness
+# marker and asserts the published, adopted and drawn scene, never a parity
+# claim and never the raster chart.
+GATES["enc-app-scene"] = {
+    **GATES["enc-app-rollout"],
+    "title": "GPU ENC scene through the application viewport",
+    "tool": "tools/check_enc_app_rollout.py",
+    "command": [
+        "{python}",
+        "{tool}",
+        "--snapshot",
+        "{snapshot}",
+        "--output",
+        "{tool_output}",
+    ],
+    "checks": [
+        {
+            "label": name.replace("_", " "),
+            "metric": "checks." + name,
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "docs/enc-default-rollout.md; GPU ENC scene diagnostic gate",
+        }
+        for name in (
+            "scene_layer_constructed",
+            "scene_published",
+            "scene_adopted",
+            "scene_drawn",
+            "scene_matches_application_camera",
+            "scene_pan_republishes",
+            "scene_zoom_republishes",
+            "scene_failure_visible",
+        )
+    ],
+    "open_requirements": [
+        "No non-sounding text or textured S52; the scene is not raster parity.",
+        "No #70 soak/platform/presentation or RSS/VRAM acceptance.",
     ],
 }
 

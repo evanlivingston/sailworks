@@ -135,7 +135,21 @@ class WeatherPresenter(QObject):
 
     @property
     def enc_active(self):
-        return self.active and self.widget is not None and self.widget._enc_chart_layer
+        """Whether this host presents ENC.
+
+        Production presents ENC as the GPU scene; the raster flag remains for
+        the independent viewport reference.  Both are the same overlay, so the
+        retained above-ENC environment keys on either one.
+        """
+        widget = self.widget
+        return bool(
+            self.active
+            and widget is not None
+            and (
+                getattr(widget, "_enc_scene_layer", False)
+                or getattr(widget, "_enc_chart_layer", False)
+            )
+        )
 
     def _marine_state_changed(self, generation, _state):
         if generation != self._host_generation:
@@ -212,7 +226,6 @@ class WeatherPresenter(QObject):
                 chart_layer=True,
                 # The desktop map uses the viewport's world chart composition.
                 # Non-desktop map hosts retain their existing ENC-only host.
-                enc_chart_layer=True,
                 chart_without_weather=desktop_map,
                 gpu_weather_fill=desktop_map,
                 enc_only=not desktop_map,
@@ -237,12 +250,11 @@ class WeatherPresenter(QObject):
                 enc_visible=bool(
                     getattr(self.canvas.controller.settings, "chartENCVisible", True)
                 ),
-                # Experimental and off by default: the viewport supersedes the
-                # raster ENC source only when the user asks for the GPU scene,
-                # so the default construction is the existing raster path.
-                enc_scene_layer=bool(
-                    getattr(self.canvas.controller.settings, "chartENCScene", False)
-                ),
+                # The GPU scene is the application's ENC presentation: it
+                # supersedes the raster ENC source, so the app never draws a
+                # cell twice.  The standalone viewport keeps the raster
+                # reference; the product does not offer it.
+                enc_scene_layer=True,
             )
             if self.native_fields:
                 kwargs["native_weather_fields"] = True

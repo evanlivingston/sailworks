@@ -1,10 +1,15 @@
-# Experimental embedded GPU rendering
+# Embedded GPU rendering
 
-The Qt app now has a persistent **GPU rendering (experimental)** setting,
-default off, applied on restart. `--map-renderer cpu` overrides it without changing
-the saved choice. Unsupported initialization, scene-graph errors, and explicit
-resource-budget failures return the affected map to CPU rendering. The settings
-UI shows only the toggle, a pending restart note, or a fallback message.
+The GPU presenter is the only production map renderer in the Qt app. There is no
+renderer picker and no restart prompt; `--map-renderer` is accepted and ignored
+for script compatibility. Unsupported initialization, scene-graph errors, and
+explicit resource-budget failures return the affected map to CPU rendering and
+report that fallback explicitly. A saved legacy `mapRenderer: "cpu"` value is
+not an effective choice.
+
+The measurements below were recorded while CPU was still selectable and remain
+historical evidence for the comparison; there is no CPU map renderer to
+reproduce them against now.
 
 ## Implementation boundary
 
@@ -61,13 +66,14 @@ Raw matched reports remain private in the approved OpenCode temporary directory:
 
 ## Validation and remaining gates
 
-Tests cover preference persistence, save-error rollback, CLI-equivalent controller
-override, unsupported-platform fallback, embedded hardware selection, coalescing,
+Tests cover GPU-only controller selection, legacy saved CPU choice, unsupported
+platform fallback, embedded hardware selection, coalescing,
 gesture forwarding, control stacking, parent captures with dynamic overlays,
 wind parity, retained uploads, both maps, resize/hide/show/close, resource failure,
 and simulated scene-graph errors. Native runs cover 1x and 2x on Metal only.
 
 Other GPU backends, real device/context-loss recovery, physical screen-to-screen
 DPR changes, long-session memory/driver behavior, and marine-heavy embedded replay
-remain unverified. CPU remains default. Prefetch, cancellation churn, and worker
-pipeline restructuring are separate unimplemented milestones.
+remain unverified; automatic runtime recovery to CPU stays in place. Prefetch,
+cancellation churn, and worker pipeline restructuring are separate unimplemented
+milestones.
