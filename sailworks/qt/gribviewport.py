@@ -36,6 +36,7 @@ from sailworks.qt.gpuweatherfields import (
     GeographicField,
     validate_binding,
 )
+from sailworks.rendering.vectordrawer import encmesh
 from sailworks.rendering.weatherbarbs import (
     BarbView,
     FIELD_LATTICE_PX,
@@ -2921,6 +2922,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             # the flag resolved on: the default path constructs none of them.
             self._enc_scene_container = None
             self._enc_scene_item: Any = None
+            #: Native GPU line layer (``encGpuLineLayer``), built only once
+            #: the viewport has successfully created its ``GpuLineItem``.
+            self._enc_gpu_line_item: Any = None
             self._enc_scene_model = None
             self._enc_scene_state = "idle"
             #: The camera the presented ENC scene was composed for; its
@@ -3309,9 +3313,26 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                             "The GRIB viewport could not load its ENC scene"
                         )
                     self._enc_scene_container = container
+                    # The native line item must exist before the scene item is
+                    # split: the pair is only safe (and only layered) when the
+                    # GPU layer actually draws the extracted classes.  Env
+                    # opt-out, module missing or creation failed all leave
+                    # ``line_item`` None and get the single all-kinds item.
+                    # The availability gate is recorded here, before the scene
+                    # layer exists and long before any worker build, so the
+                    # mesh side and the drawing side cannot disagree.
+                    line_item = (
+                        create_enc_gpu_line_item(self, container)
+                        if enc_gpu_lines_requested()
+                        else None
+                    )
+                    encmesh.set_gpu_lines_available(line_item is not None)
+                    self._enc_gpu_line_item = line_item
                     # The item is the GUI thread's only handle on the scene:
                     # the layer's worker never touches it.
-                    self._enc_scene_item = enc_scene_item(container)
+                    self._enc_scene_item = enc_scene_item(
+                        container, gpu_lines=line_item is not None, lines=line_item
+                    )
                     self._enc_scene_model = EncSceneLayer(
                         data_dir=chart_data_dir,
                         palette=self._chart_palette,
@@ -4326,6 +4347,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             item = getattr(self, "_enc_scene_item", None)
             if item is not None:
                 item.setVisible(False)
+            # The trial layer never outlives the scene it was drawn for.
+            clear_enc_gpu_lines(self)
             trace_raster_visibility(self, "scene_withdrawn")
             # Nothing draws chart content any more: the raster must, now.
             ensure_chart_content(self, "scene_withdrawn", generation=withdrawn)
@@ -4343,6 +4366,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             """
             if getattr(self, "_enc_scene_item", None) is None:
                 return
+            # The trial GPU line layer projects degrees from the live camera,
+            # so a pan or zoom moves it with the view immediately instead of
+            # waiting for the next publication.  No-op when it is unbuilt.
+            apply_enc_gpu_line_camera(enc_gpu_line_item(self), self._camera)
             self._enc_scene_provisional = True
             self._update_enc_status()
 
@@ -4596,6 +4623,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             # includes the camera that composed it.
             self._place_enc_scene(cause="publication")
             item.setVisible(True)
+            # Trial GPU ENC lines: upload the payload of the very frame that
+            # just became visible, with the camera it is presented for, so
+            # both layers always describe the same publication.
+            set_enc_gpu_lines(self, scene, self._camera)
             # The adopted frame is now what the user sees.  If it does not
             # draw this viewport, the raster must cover the gap at once: a
             # held or deferred composition would leave the viewport blank
@@ -10993,24 +11024,277 @@ def enc_scene_catalog(data_dir, palette=None):
     return EncCatalog(data_dir)
 
 
-def enc_scene_item(container):
+#: Switch for the packed ENC line payload drawn by ``GpuLineItem``.  It is the
+#: mesh-side flag, reused so the payload and the drawing cannot disagree: with
+#: it off no scene publishes ``line_segments`` and this layer is never even
+#: looked up.  It is on only once a native line item was created: the default
+#: install has no built module, so the CPU stroke stays the default.
+ENV_ENC_GPU_LINES = encmesh.GPU_LINES_ENV
+
+
+def enc_gpu_lines_enabled():
+    """Whether the GPU line layer may be built, drawn and written to.
+
+    Availability is reported by the viewport after it creates the item, so a
+    process that never built one (or failed to) keeps the CPU path even with
+    ``SAILWORKS_ENC_GPU_LINES=1`` set.
+    """
+    return encmesh.gpu_lines_enabled()
+
+
+def enc_gpu_lines_requested():
+    """Whether construction should try to create the native line item.
+
+    The attempt cannot be gated on :func:`enc_gpu_lines_enabled`: that reads
+    the availability flag the attempt itself is about to set.  Only an
+    explicit environment opt-out is honoured here, and it returns ``False``
+    before any module lookup; an unset variable still attempts creation so a
+    machine with the built module gets the native layer by default.
+    """
+    if encmesh.gpu_lines_forced_off():
+        return False
+    return True
+
+
+def _qbytearray(payload):
+    """Wrap packed bytes for the item's ``QByteArray`` property.
+
+    Imported here for the same reason the ENC items are: this module's Qt Core
+    imports stay at the top, and the trial path may never run at all.
+    """
+    from PySide6.QtCore import QByteArray
+
+    return QByteArray(payload)
+
+
+def enc_gpu_lines_qml_dir():
+    """The built ``SailworksRouting`` module's import parent, or ``None``.
+
+    Mirrors the retained overlay's lookup: an explicit override first, then
+    the build outputs.  The directory must actually hold the module's
+    ``qmldir``, so the trial never adds an import path that cannot resolve.
+    """
+    configured = os.environ.get("SAILWORKS_ROUTING_QML_PATH")
+    if configured:
+        path = Path(configured)
+        if (path / "SailworksRouting" / "qmldir").is_file():
+            return path
+        return None
+    build = Path(__file__).resolve().parents[2] / "build"
+    for candidate in (build / "routing-qsg-module", build / "routing-qt" / "qml"):
+        if (candidate / "SailworksRouting" / "qmldir").is_file():
+            return candidate
+    return None
+
+
+def compensate_enc_gpu_line_pan(item, map_content):
+    """Cancel the shared ``mapContent`` pan on the trial layer.
+
+    The item is parented to ``encSceneLayer``, which lives inside the panned
+    ``mapContent``.  Its matrix already projects degrees through the camera, so
+    the inherited translation is a double pan: mirror ``mapContent``'s x/y and
+    keep following it, exactly as ``streamlineBand`` does in QML.
+    """
+    if item is None or map_content is None:
+        return False
+
+    def sync():
+        item.setX(-float(map_content.x()))
+        item.setY(-float(map_content.y()))
+
+    sync()
+    map_content.xChanged.connect(sync)
+    map_content.yChanged.connect(sync)
+    return True
+
+
+def create_enc_gpu_line_item(host, container):
+    """Build the trial GPU line item from QML, or ``None``.
+
+    The item is deliberately not declared in ``ViewportChartScene.qml``: an
+    unconditional ``import SailworksRouting`` makes every start depend on a
+    built C++ module, and the default install has none.  It is created here
+    only when the environment has not opted out *and* the module is on disk;
+    every failure path returns ``None`` so the viewport runs normally without
+    it.
+    """
+    if container is None or not enc_gpu_lines_requested():
+        return None
+    # Local, like the QML imports below: the default path never loads this.
+    from PySide6.QtQuick import QQuickItem
+
+    qml_dir = enc_gpu_lines_qml_dir()
+    if qml_dir is None:
+        return None
+    engine = host.engine() if hasattr(host, "engine") else None
+    if engine is None:
+        # A host that is only the root item cannot name the engine; the item's
+        # own QML context can, and that is the engine that must load the type.
+        try:
+            from PySide6.QtQml import QQmlEngine
+
+            context = QQmlEngine.contextForObject(container)
+            engine = None if context is None else context.engine()
+        except Exception:
+            engine = None
+    if engine is None:
+        return None
+    try:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtQml import QQmlComponent
+
+        engine.addImportPath(str(qml_dir))
+        component = QQmlComponent(engine)
+        component.setData(
+            b"import QtQuick\nimport SailworksRouting 1.0\nGpuLineItem {}\n",
+            QUrl.fromLocalFile(str(qml_dir / "SailworksRouting") + "/"),
+        )
+        if component.isError():
+            return None
+        item = component.create()
+    except Exception:
+        # A missing module, a plugin built for another Qt, a QML error: the
+        # trial is optional, so the default drawing path simply continues.
+        return None
+    if not isinstance(item, QQuickItem):
+        return None
+    # PySide6 ties the created object to this component: dropping it deletes
+    # the item.  The viewport owns the item, so it must own the component too.
+    try:
+        host._enc_gpu_line_component = component
+    except Exception:
+        pass
+    item.setParentItem(container)
+    item.setWidth(container.width())
+    item.setHeight(container.height())
+    container.widthChanged.connect(lambda: item.setWidth(container.width()))
+    container.heightChanged.connect(lambda: item.setHeight(container.height()))
+    compensate_enc_gpu_line_pan(item, container.parentItem())
+    item.setVisible(False)
+    return item
+
+
+def enc_gpu_line_item(widget):
+    """The trial's GPU line item, or ``None`` when the flag left it unbuilt."""
+    return getattr(widget, "_enc_gpu_line_item", None)
+
+
+def enc_gpu_line_payload(scene):
+    """The packed payload bytes for ``scene``, or ``b""`` when it has none.
+
+    ``LineSegments.to_bytes()`` is the exact layout ``GpuLineItem.segmentData``
+    documents: ``N`` float32 records of ``lon0, lat0, lon1, lat1, width,
+    r, g, b, a, dash_on, dash_off, phase``.  A scene without the payload keeps
+    the CPU stroke, which is drawn by the scene item itself.
+    """
+    segments = getattr(scene, "line_segments", None)
+    if segments is None or bool(getattr(segments, "is_empty", True)):
+        return b""
+    to_bytes = getattr(segments, "to_bytes", None)
+    if not callable(to_bytes):
+        return b""
+    return bytes(to_bytes())
+
+
+def apply_enc_gpu_line_camera(item, camera):
+    """Point the item's camera matrix at the live view, not a composed frame.
+
+    The payload is geographic, so pan and zoom are uniforms: the matrix follows
+    the current camera between publications, which is what lets one published
+    payload stay correct while the map moves.  The device pixel ratio is not
+    set here: the item reads its window's ratio itself and only uses it for the
+    one-pixel hairline floor.  ``lineWidthScale`` stays 1 because the published
+    widths are already screen pixels.
+    """
+    if item is None or camera is None:
+        return False
+    item.setProperty("centerLatitude", float(camera.center_lat))
+    item.setProperty("centerLongitude", float(camera.center_lon))
+    item.setProperty("zoom", float(camera.zoom))
+    return True
+
+
+def clear_enc_gpu_lines(widget):
+    """Drop the trial payload and hide the layer; a no-op when it is unbuilt.
+
+    Called on every withdrawal, so a layer never outlives the scene it was
+    drawn for.  An empty ``segmentData`` is what makes the item allocate no
+    geometry at all.
+    """
+    item = enc_gpu_line_item(widget)
+    if item is None:
+        return False
+    item.setProperty("segmentData", _qbytearray(b""))
+    item.setVisible(False)
+    return True
+
+
+def set_enc_gpu_lines(widget, scene, camera=None):
+    """Upload ``scene``'s packed lines to the trial layer.
+
+    Returns whether the layer now draws.  The flag gates *every* write, so the
+    default process never touches the item; a scene without a payload clears
+    the layer instead of leaving a stale one on screen, and the scene item's
+    own CPU stroke keeps drawing those classes.
+    """
+    item = enc_gpu_line_item(widget)
+    if item is None or not enc_gpu_lines_enabled():
+        return False
+    payload = enc_gpu_line_payload(scene)
+    if not payload:
+        clear_enc_gpu_lines(widget)
+        return False
+    item.setProperty("segmentData", _qbytearray(payload))
+    apply_enc_gpu_line_camera(item, camera)
+    item.setVisible(True)
+    return True
+
+
+def _size_enc_scene_item(item, container):
+    """Cover ``container`` with one ENC item and keep it covering it.
+
+    ``widthChanged``/``heightChanged`` carry no argument, so the slot has to
+    read the container's current size: connecting ``item.setWidth`` directly
+    would call it with zero arguments and raise.
+    """
+    item.setWidth(container.width())
+    item.setHeight(container.height())
+    container.widthChanged.connect(lambda: item.setWidth(container.width()))
+    container.heightChanged.connect(lambda: item.setHeight(container.height()))
+    return item
+
+
+def enc_scene_item(container, *, gpu_lines=False, lines=None):
     """Parent the GPU ENC item on its QML container and size it to it.
 
     The scene's coordinates are viewport logical pixels, so the item covers
-    the container rather than a zero-sized rect.  The two connections keep it
-    covering the container across a resize.  The item starts hidden: it is
+    the container rather than a zero-sized rect.  The item starts hidden: it is
     shown only when a ready scene is published, never as an empty overlay.
-    """
-    from .encgpu import EncMeshItem
 
-    item = EncMeshItem(container)
-    item.setWidth(container.width())
-    item.setHeight(container.height())
-    # ``widthChanged``/``heightChanged`` carry no argument, so the slot has to
-    # read the container's current size: connecting ``item.setWidth`` directly
-    # would call it with zero arguments and raise.
-    container.widthChanged.connect(lambda: item.setWidth(container.width()))
-    container.heightChanged.connect(lambda: item.setHeight(container.height()))
+    When ``gpu_lines`` is true and the native line item exists, the returned
+    object is an :class:`~sailworks.qt.encgpu.EncScenePair` holding two mesh
+    items and the line item in a fixed sibling order: fill ``z=0``, native
+    lines ``z=1``, markers and sounding text ``z=2``.  Every other path -- the
+    flag off, the module unavailable, creation failed -- returns exactly one
+    mesh item carrying all kinds and text, which is the current behaviour.
+    """
+    from .encgpu import FILL_KINDS, MARKER_KINDS, EncMeshItem, EncScenePair
+
+    if gpu_lines and lines is not None:
+        fill = _size_enc_scene_item(
+            EncMeshItem(container, kinds=FILL_KINDS, text_enabled=False), container
+        )
+        marker = _size_enc_scene_item(
+            EncMeshItem(container, kinds=MARKER_KINDS, text_enabled=True), container
+        )
+        fill.setZ(0.0)
+        lines.setZ(1.0)
+        marker.setZ(2.0)
+        pair = EncScenePair(fill, marker, lines)
+        pair.setVisible(False)
+        return pair
+
+    item = _size_enc_scene_item(EncMeshItem(container), container)
     item.setVisible(False)
     return item
 

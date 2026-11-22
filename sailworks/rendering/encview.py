@@ -273,6 +273,10 @@ class CellMesh:
     #: Honest byte estimate: vertex, sounding and colour buffers plus part
     #: overhead.
     nbytes: int
+    #: Packed screen-constant GPU line payload (COALNE/DEPCNT), clipped to the
+    #: same coverage and cached with the mesh.  Empty when the slice was off
+    #: at build time.  Counted in :attr:`nbytes`.
+    line_segments: object = encmesh.EMPTY_LINE_SEGMENTS
 
 
 #: Estimated Python overhead of one ``MeshPart``/``UnsupportedPart`` entry.
@@ -570,6 +574,12 @@ class ViewScene:
     colours: np.ndarray = dataclasses.field(
         default_factory=lambda: np.empty((0, 4), dtype=np.uint8)
     )
+    #: Packed screen-constant GPU line payload for every contributing cell, in
+    #: the same composite order the vertex buffer uses.  Each segment already
+    #: carries its own width and colour, so no part offset applies.
+    line_segments: object = dataclasses.field(
+        default_factory=lambda: encmesh.EMPTY_LINE_SEGMENTS
+    )
 
     @property
     def is_empty(self) -> bool:
@@ -659,12 +669,15 @@ def _oversized(scene_cache, path, version) -> bool:
     return bool(is_oversized(path, version)) if is_oversized is not None else False
 
 
-def _mesh_nbytes(positions, soundings, parts, unsupported, colours) -> int:
+def _mesh_nbytes(
+    positions, soundings, parts, unsupported, colours, line_segments=None
+) -> int:
     """Account a mesh honestly: exact buffers plus per-part Python overhead."""
     return (
         int(positions.nbytes)
         + int(soundings.nbytes)
         + int(colours.nbytes)
+        + (0 if line_segments is None else int(line_segments.nbytes))
         + (len(parts) + len(unsupported)) * PART_OVERHEAD_BYTES
     )
 
@@ -839,6 +852,7 @@ class _CellContribution:
     soundings: np.ndarray
     unsupported: tuple
     coverage_state: str
+    line_segments: object = encmesh.EMPTY_LINE_SEGMENTS
 
 
 def _assemble(
@@ -855,6 +869,7 @@ def _assemble(
     """
     chunks: list[np.ndarray] = []
     colour_chunks: list[np.ndarray] = []
+    segment_chunks: list = []
     parts: list[encmesh.MeshPart] = []
     cells: list[CellSpan] = []
     unsupported: list[CellUnsupported] = []
@@ -876,6 +891,8 @@ def _assemble(
             colour_chunks.append(contribution.colours)
         if contribution.soundings.shape[0]:
             sounding_chunks.append(contribution.soundings)
+        if not contribution.line_segments.is_empty:
+            segment_chunks.append(contribution.line_segments)
         cells.append(
             CellSpan(
                 path=contribution.cell.path,
@@ -919,6 +936,7 @@ def _assemble(
         mesh_built=(owner.triangulations - built_before if owner is not None else 0),
         soundings=soundings,
         colours=colours,
+        line_segments=encmesh.concat_line_segments(segment_chunks),
     )
 
 
@@ -951,6 +969,8 @@ class _CellTask:
     display_scale: float | None = None
     #: The quantised rectangle this mesh was clipped to, when it is cacheable.
     granule: tuple | None = None
+    #: ``None`` follows :func:`encmesh.gpu_lines_enabled`; resolved per build.
+    gpu_lines: bool | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1487,6 +1507,7 @@ def _mesh_cell(
             marker_scale=marker_scale,
             simplify=task.tolerance,
             timings=timings,
+            gpu_lines=getattr(task, "gpu_lines", None),
         )
         started = time.perf_counter()
         soundings = encsounding.soundings_from_records(
@@ -1505,6 +1526,7 @@ def _mesh_cell(
             mesh.parts,
             mesh.unsupported,
             colours,
+            mesh.line_segments,
         )
         _stage(timings, "account", started)
         entry = CellMesh(
@@ -1514,6 +1536,7 @@ def _mesh_cell(
             coverage_state=mesh.coverage_state,
             soundings=soundings,
             colours=colours,
+            line_segments=mesh.line_segments,
             nbytes=nbytes,
         )
         if owner is not None:
@@ -1542,6 +1565,7 @@ def _mesh_cell(
             soundings=entry.soundings,
             unsupported=tuple(entry.unsupported),
             coverage_state=entry.coverage_state,
+            line_segments=entry.line_segments,
         ),
     )
 

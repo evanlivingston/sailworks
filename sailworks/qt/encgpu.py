@@ -145,7 +145,9 @@ does not use it.
 from __future__ import annotations
 
 import ctypes
+import dataclasses
 import os
+import weakref
 
 import numpy as np
 from PySide6.QtGui import QColor, QMatrix4x4
@@ -163,6 +165,8 @@ from PySide6.QtQuick import (
 
 from sailworks.rendering.vectordrawer import encmarkers, encsounding
 from sailworks.rendering.vectordrawer.encmesh import (
+    AREA_FILL,
+    AREA_OUTLINE,
     EMPTY_MESH,
     LINE,
     MARKER,
@@ -1352,6 +1356,256 @@ def build_static_frame(
     )
 
 
+#: Part kinds the fill mesh keeps when the scene is split for GPU lines.
+#: Markers move to their own item so sounding text (which only the marker item
+#: carries) paints above the line payload; every other kind, including the
+#: line classes that are not on the GPU payload, stays here.
+FILL_KINDS = frozenset({AREA_FILL, AREA_OUTLINE, LINE})
+
+#: Part kinds the marker mesh keeps.  The split never duplicates a marker: it
+#: exists only in this item.
+MARKER_KINDS = frozenset({MARKER})
+
+
+def filter_view_scene(scene, kinds, *, keep_soundings=True):
+    """Restrict ``scene`` to the parts whose kind is in ``kinds``.
+
+    The fill and marker items must not draw each other's geometry, so each one
+    uploads a filtered copy of the same assembled scene.  Vertex ranges are
+    packed down to the kept parts and every cell span is recomputed, keeping
+    the scene's composite order.  ``unsupported``/``skipped`` metadata and the
+    cache counters are carried through unchanged; they describe the assembly,
+    not the item's slice of it.
+
+    A scene that already contains only the requested kinds is returned as-is,
+    so the item's identity-based no-op and retained-frame bookkeeping keep
+    working for the unsplit path.  ``keep_soundings=False`` drops the SOUNDG
+    array: only the marker item lays out labels, so the fill copy must not
+    retain a second reference to it.
+    """
+    parts = tuple(getattr(scene, "parts", ()) or ())
+    if not parts:
+        filtered = scene
+    else:
+        kept = tuple(part for part in parts if part.kind in kinds)
+        if len(kept) == len(parts):
+            filtered = scene
+        else:
+            positions = np.asarray(scene.positions)
+            count = int(positions.shape[0])
+            mask = np.zeros(count, dtype=bool)
+            for part in kept:
+                first = int(part.first_vertex)
+                mask[first : first + int(part.vertex_count)] = True
+
+            new_parts = []
+            offset = 0
+            for part in parts:
+                if part.kind not in kinds:
+                    continue
+                new_parts.append(dataclasses.replace(part, first_vertex=offset))
+                offset += int(part.vertex_count)
+
+            cells = []
+            first_part = 0
+            first_vertex = 0
+            for span in tuple(getattr(scene, "cells", ()) or ()):
+                start = int(span.first_part)
+                selected = [
+                    part
+                    for part in parts[start : start + int(span.part_count)]
+                    if part.kind in kinds
+                ]
+                vertex_count = sum(int(part.vertex_count) for part in selected)
+                cells.append(
+                    dataclasses.replace(
+                        span,
+                        first_part=first_part,
+                        part_count=len(selected),
+                        first_vertex=first_vertex,
+                        vertex_count=vertex_count,
+                    )
+                )
+                first_part += len(selected)
+                first_vertex += vertex_count
+
+            colours = getattr(scene, "colours", None)
+            new_colours = colours
+            if colours is not None:
+                colours = np.asarray(colours)
+                if colours.shape[:1] == (count,):
+                    new_colours = colours[mask]
+
+            filtered = dataclasses.replace(
+                scene,
+                positions=positions[mask],
+                parts=tuple(new_parts),
+                cells=tuple(cells),
+                colours=new_colours,
+            )
+
+    if keep_soundings:
+        return filtered
+    soundings = getattr(filtered, "soundings", None)
+    if soundings is not None and int(np.asarray(soundings).shape[0]):
+        return dataclasses.replace(filtered, soundings=encsounding.EMPTY_SOUNDINGS)
+    return filtered
+
+
+class EncScenePair:
+    """Two :class:`EncMeshItem` siblings presenting one assembled scene.
+
+    The fill item draws areas, area outlines and the CPU line classes at
+    ``z=0``; the GPU line item sits at ``z=1`` and the marker item draws point
+    symbols and sounding text at ``z=2``.  Keeping the split to the three
+    sibling items is what makes the GPU lines land above the filled chart but
+    below the symbols and labels, without a second scene graph or a per-frame
+    reorder.
+
+    The viewport's setters are written for one item, so this forwards them:
+    view scene and camera state go to both meshes, placement and size go to
+    both meshes, and coverage/visibility are answered by the fill item, which
+    owns the chart geometry.  The line item is deliberately *not* moved by
+    :meth:`setX`/:meth:`setY`: it compensates the shared ``mapContent`` pan
+    itself (see ``compensate_enc_gpu_line_pan``), so writing the scene's
+    publication offset to it would double that pan.
+    """
+
+    def __init__(self, fill, marker, lines=None):
+        self._fill = fill
+        self._marker = marker
+        self._lines = lines
+        self._members = (fill, marker)
+
+    @property
+    def fill(self):
+        return self._fill
+
+    @property
+    def marker(self):
+        return self._marker
+
+    @property
+    def lines(self):
+        return self._lines
+
+    def set_view_scene(self, scene):
+        changed = False
+        for item in self._members:
+            changed = bool(item.set_view_scene(scene)) or changed
+        return changed
+
+    def set_projection(self, projection):
+        for item in self._members:
+            item.set_projection(projection)
+
+    def set_compose_margin(self, margin):
+        for item in self._members:
+            item.set_compose_margin(margin)
+
+    def set_scale(self, scale):
+        for item in self._members:
+            item.set_scale(scale)
+
+    def setVisible(self, visible):  # noqa: N802 - Qt name
+        visible = bool(visible)
+        for item in self._members:
+            item.setVisible(visible)
+        if not visible and self._lines is not None:
+            # A hidden scene never leaves its line layer on screen.  Showing
+            # leaves the lines alone: the payload write that follows a
+            # publication is what makes them visible again.
+            self._lines.setVisible(False)
+
+    def isVisible(self):  # noqa: N802 - Qt name
+        return bool(self._fill.isVisible())
+
+    def setWidth(self, width):  # noqa: N802 - Qt name
+        for item in self._members:
+            item.setWidth(width)
+
+    def setHeight(self, height):  # noqa: N802 - Qt name
+        for item in self._members:
+            item.setHeight(height)
+
+    def setX(self, x):  # noqa: N802 - Qt name
+        for item in self._members:
+            item.setX(x)
+
+    def setY(self, y):  # noqa: N802 - Qt name
+        for item in self._members:
+            item.setY(y)
+
+    def item_property(self, name):
+        """Read a Qt property from the fill item without shadowing the builtin.
+
+        ``_item_offset``/``_shift_item_offset`` in the viewport use
+        ``property("x")`` and ``setProperty("x", value)`` for the retained
+        scene's placement.  ``property`` is Python's builtin and must stay
+        reachable: a method with that name in the class body would capture the
+        later ``@property`` decorators and break class definition.
+        ``__getattr__`` still forwards ``property(...)`` to the fill item.
+        """
+        return self._fill.property(name)
+
+    def setProperty(self, name, value):  # noqa: N802 - Qt name
+        if name in ("x", "y"):
+            for item in self._members:
+                item.setProperty(name, value)
+            return
+        if name in ("width", "height"):
+            for item in self._members:
+                item.setProperty(name, value)
+            return
+        if name == "visible":
+            self.setVisible(value)
+            return
+        self._fill.setProperty(name, value)
+
+    @property
+    def text_labels(self):
+        """Sounding labels laid out by the members, in draw order.
+
+        The marker item owns text drawing (the fill item is built with
+        ``text_enabled=False``), so a pair that only forwarded to the fill
+        item would report zero labels to diagnostics.
+        """
+        labels = []
+        for item in self._members:
+            labels.extend(getattr(item, "labels", ()) or ())
+        return tuple(labels)
+
+    @property
+    def _text_labels(self):
+        """The private form ``check_enc_app_rollout`` reads from one item."""
+        return self.text_labels
+
+    def shown_vertex_count(self):
+        """Vertices drawn by the pair, summed over the mesh members.
+
+        The marker item draws its own buffers, so the fill item's count alone
+        would under-report a presented frame as empty.
+        """
+        return sum(int(item.shown_vertex_count()) for item in self._members)
+
+    def scene_covers_view(self):
+        """Only the fill item owns the cells that can cover the viewport."""
+        return bool(self._fill.scene_covers_view())
+
+    def scene_reaches_view(self):
+        return bool(
+            self._fill.scene_reaches_view() or self._marker.scene_reaches_view()
+        )
+
+    def __getattr__(self, name):
+        # Diagnostics and less common Qt surface (``cell_nodes``, ``generation``,
+        # ``parentItem``) belong to the fill item; forwarding keeps the pair a
+        # drop-in for the single item at those call sites.
+        if name in ("_fill", "_marker", "_lines", "_members"):
+            raise AttributeError(name)
+        return getattr(self._fill, name)
+
+
 class EncMeshItem(QQuickItem):
     """A QQuickItem that presents one SceneMesh as a single DrawTriangles node.
 
@@ -1373,6 +1627,12 @@ class EncMeshItem(QQuickItem):
     from the view scene's source soundings with the current projection and
     scale, so the 32x16 dedupe stays per camera instead of in cached geometry.
     The child is appended after the triangle node, so labels paint on top.
+
+    ``kinds`` optionally restricts the presented scene to an allowlist of part
+    kinds (``None`` draws every part).  The GPU-line split uses two items: a
+    fill item with the area/CPU-line kinds and ``text_enabled=False``, and a
+    marker item with :data:`MARKER_KINDS`.  Filtering packs the scene's
+    vertices and cell spans; it never touches the shared mesh cache.
     """
 
     _DEFAULT_COLOR = QColor(120, 155, 190, 255)
@@ -1385,6 +1645,7 @@ class EncMeshItem(QQuickItem):
         glyph_pixel_size=11.0,
         texture_factory=None,
         text_enabled=True,
+        kinds=None,
         legacy_project=None,
     ):
         super().__init__(parent)
@@ -1510,6 +1771,17 @@ class EncMeshItem(QQuickItem):
         #: earlier teardown crash needed (see ``_detach_text_node``).  Turning
         #: it off draws triangles and markers only.
         self._text_enabled = bool(text_enabled)
+        #: Optional part-kind allowlist.  ``None`` presents the scene whole
+        #: (the current default).  The GPU-line split sets one allowlist per
+        #: item so a marker never appears in the fill mesh, and the fill mesh
+        #: never carries sounding text.
+        self._kinds = None if kinds is None else frozenset(kinds)
+        #: Bounded source->filtered mapping so re-presenting a scene the item
+        #: already filtered (the retained return pan) keeps the same filtered
+        #: identity and can restore its nodes instead of rebuilding.  Two
+        #: entries cover the presented and retained scenes; the source is a
+        #: weak reference so the cache never pins a published scene.
+        self._filter_cache = ()
 
     @property
     def mesh(self) -> SceneMesh:
@@ -1523,6 +1795,11 @@ class EncMeshItem(QQuickItem):
     def view_scene(self):
         """The presented ``ViewScene``, or ``None`` on the flat mesh path."""
         return self._view_scene
+
+    @property
+    def kinds(self):
+        """The part-kind allowlist, or ``None`` when the scene is drawn whole."""
+        return self._kinds
 
     def _default_rgba(self) -> tuple[int, int, int, int]:
         return tuple(getattr(self._color, channel)() for channel in _QCOLOR_TO_RGBA)
@@ -1741,13 +2018,44 @@ class EncMeshItem(QQuickItem):
         """
         self._retained_dead.clear()
 
+    def _filtered_view_scene(self, view_scene):
+        """The presented copy of ``view_scene`` after this item's kind filter.
+
+        With no allowlist the scene is presented whole.  Otherwise the
+        filtered copy is memoised by source identity, bounded to the presented
+        and retained scenes, so a return pan re-presents the exact object its
+        retained nodes were built from.  The source reference is weak: the
+        item never keeps a published scene alive just to remember the filter.
+        """
+        if view_scene is None or self._kinds is None:
+            return view_scene
+        for reference, filtered in self._filter_cache:
+            try:
+                source = reference()
+            except TypeError:  # pragma: no cover - defensive
+                source = None
+            if source is view_scene:
+                return filtered
+        filtered = filter_view_scene(
+            view_scene, self._kinds, keep_soundings=self._text_enabled
+        )
+        try:
+            entry = (weakref.ref(view_scene), filtered)
+        except TypeError:  # pragma: no cover - non-weakrefable fake scene
+            return filtered
+        self._filter_cache = (entry,) + tuple(self._filter_cache[:1])
+        return filtered
+
     def set_view_scene(self, view_scene) -> bool:
         """Present one assembled multi-cell :class:`encview.ViewScene`.
 
         The scene's contiguous float64 ``positions`` and ordered ``parts`` are
         uploaded through the existing single batched coloured geometry node, so
         part order is preserved exactly as assembled and per-part colours
-        travel in the vertex buffer.  Presenting a view scene enables the
+        travel in the vertex buffer.  An item with a ``kinds`` allowlist
+        presents a packed copy containing only those parts (see
+        :func:`filter_view_scene`); the default item presents the scene whole.
+        Presenting a view scene enables the
         coloured layout; the flat ``set_mesh``/``set_color`` path is unaffected.
         ``None`` clears to empty geometry.  Re-presenting the scene already on
         display is a no-op, so an unchanged frame does not re-upload.
@@ -1765,13 +2073,16 @@ class EncMeshItem(QQuickItem):
         inspectable after upload.
         """
         mesh = EMPTY_MESH if view_scene is None else view_scene
-        if view_scene is self._view_scene and mesh is self._mesh:
+        presented = self._filtered_view_scene(view_scene)
+        if presented is not None:
+            mesh = presented
+        if presented is self._view_scene and mesh is self._mesh:
             return False
         outgoing = (self._view_scene, self._static)
         restore = (
-            view_scene is not None
+            presented is not None
             and self._retained is not None
-            and view_scene is self._retained[0]
+            and presented is self._retained[0]
         )
         self._retained_restore = restore
         if restore:
@@ -1793,7 +2104,7 @@ class EncMeshItem(QQuickItem):
             self._retention_wanted = True
         else:
             self._invalidate_retention()
-        self._view_scene = view_scene
+        self._view_scene = presented
         self._mesh = mesh
         self._colored = True
         # A replacement scene is what the viewport asked for.  A scene with no
@@ -2038,6 +2349,9 @@ class EncMeshItem(QQuickItem):
         consumed by ``updatePaintNode``.  A widget without a window yet has no
         device pixel ratio; the atlas is then built on the next setter.
         """
+        if not self._text_enabled:
+            # A fill/marker split item without text never builds an atlas.
+            return
         try:
             self._ensure_atlas()
         except Exception:  # noqa: BLE001 - labels are optional; never break a frame

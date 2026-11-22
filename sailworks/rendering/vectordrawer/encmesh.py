@@ -315,6 +315,67 @@ LINE_STYLES = {
 #: Cairo's ``DEFAULT_LINE``: every unlisted line class is a 0.5 px hairline.
 DEFAULT_LINE_STYLE = (0.5, None)
 
+#: Line classes whose stroke may be handed to the Qt GPU line item as a packed
+#: segment payload instead of a CPU-tessellated quad strip.  Deliberately just
+#: the two heaviest screen-constant classes.  Unlisted line classes, markers and
+#: soundings keep the existing CPU path unchanged; area outlines join the
+#: payload through :data:`AREA_OUTLINE_STYLES` (see the outline block in
+#: :func:`build_scene_mesh`), carrying their dash pair so a dashed
+#: ``RESARE``/``CTNARE`` boundary does not fall back to the CPU stroke.
+GPU_LINE_CLASSES = frozenset({"COALNE", "DEPCNT"})
+
+#: Process-wide switch for the GPU line slice.  The slice is safe to turn on
+#: only when a native :class:`GpuLineItem` actually draws
+#: :attr:`SceneMesh.line_segments`; without it, skipping the CPU stroke would
+#: visibly remove every coastline and depth contour.  The Qt viewport reports
+#: creation success with :func:`set_gpu_lines_available`, so the default is
+#: off until that happens.  ``SAILWORKS_ENC_GPU_LINES=0/false/no/off`` forces
+#: the CPU path regardless of availability; ``=1`` is a legacy force-on that
+#: cannot bypass a missing item.  It is process wide and must be set before the
+#: first mesh is built: the mesh-cache key does not carry it, so a mid-process
+#: flip would mix entries with and without a payload.
+GPU_LINES_ENV = "SAILWORKS_ENC_GPU_LINES"
+
+#: Environment values that explicitly keep the CPU line stroke.
+GPU_LINES_OFF_VALUES = frozenset({"0", "false", "no", "off"})
+
+#: Whether this process has a working native line item.  False until the
+#: viewport successfully creates one, which is what makes the default safe.
+_GPU_LINES_AVAILABLE = False
+
+
+def set_gpu_lines_available(available) -> None:
+    """Record whether the native GPU line item exists in this process.
+
+    The viewport calls this once per construction attempt, before any scene
+    build can run.  A creation failure or a missing plugin must pass
+    ``False`` so the CPU stroke is kept.
+    """
+    global _GPU_LINES_AVAILABLE
+    _GPU_LINES_AVAILABLE = bool(available)
+
+
+def gpu_lines_available() -> bool:
+    """Whether a native line item was successfully created in this process."""
+    return _GPU_LINES_AVAILABLE
+
+
+def gpu_lines_forced_off() -> bool:
+    """Whether the environment explicitly asks for the CPU line stroke."""
+    raw = os.environ.get(GPU_LINES_ENV, "").strip().lower()
+    return raw in GPU_LINES_OFF_VALUES
+
+
+def gpu_lines_enabled() -> bool:
+    """Whether this process builds the payload and skips the CPU line stroke.
+
+    True only when the native item is available *and* the environment has not
+    opted out.  ``SAILWORKS_ENC_GPU_LINES=1`` cannot turn it on without an
+    item: the payload would be built for a layer that never draws it.
+    """
+    return _GPU_LINES_AVAILABLE and not gpu_lines_forced_off()
+
+
 #: Per-class area outline style: ``(width, dash)`` in logical pixels,
 #: mirroring ``CM93ChartDrawer._get_area_styles``.  ``land_stroke`` carries no
 #: Cairo ``line_width``, so ``LNDARE``/``BUAARE``/``BUISGL`` inherit whatever
@@ -351,6 +412,221 @@ AREA_LAYERS = {
     "RESARE",
     "CTNARE",
 }
+
+
+@dataclass(frozen=True)
+class LineSegments:
+    """Packed screen-constant line payload for :data:`GPU_LINE_CLASSES` and the
+    area outlines.
+
+    One record per drawable segment, in source order:
+
+    * ``endpoints`` - ``(N, 4)`` float32 ``x0, y0, x1, y1`` in the mesh's own
+      source units (geographic degrees), already clipped to the cell region.
+    * ``widths`` - ``(N,)`` float32 stroke width in *screen* pixels, from
+      :data:`LINE_STYLES` (never the source-unit approximation).
+    * ``colours`` - ``(N, 4)`` uint8 straight RGBA, the feature's resolved
+      palette colour; white when the mesh was built without a palette.
+    * ``dash_on``/``dash_off`` - ``(N,)`` float32 dash pattern in *screen*
+      pixels, the "on" and "off" lengths the CPU stroke was handed from
+      :data:`AREA_OUTLINE_STYLES`.  A solid segment carries ``0.0`` in both,
+      which the item reads as "no dash".
+    * ``phase`` - ``(N,)`` float32 dash phase at the segment start: the
+      cumulative *normalised Web-Mercator world* length from the first vertex
+      of the line or ring the segment belongs to.  Adding it to the segment's
+      own along distance makes one dash pattern run across consecutive
+      segments instead of restarting at every joint.  It is world units, not
+      source degrees, because the item's along distance and its world-to-pixel
+      ``u_scale`` are world units: a degree of latitude and a degree of
+      longitude are different screen distances, so a degree phase would put a
+      seam back at every heading change.  The phase resets at every
+      independent part, so a clipped piece starts its own chain at ``0.0``.
+
+    Each array is C-contiguous and fixed-width, so a backend upload is
+    :meth:`to_bytes` into one ``QByteArray`` with no per-segment Python object.
+    The packed record is 12 float32 values (48 bytes) laid out as
+    ``x0, y0, x1, y1, width, r, g, b, a, dash_on, dash_off, phase``: the three
+    original field groups keep their order, the dash pair follows them, and the
+    phase is appended last, so a reader that ignores dashes or phase can use
+    the original 9-float prefix.
+    No joins or caps are produced: the GPU item expands the width at draw
+    time, which is exactly the expansion the CPU stroke was doing, and applies
+    the dash pattern itself.
+    """
+
+    endpoints: np.ndarray
+    widths: np.ndarray
+    colours: np.ndarray
+    dash_on: np.ndarray
+    dash_off: np.ndarray
+    phase: np.ndarray
+
+    @property
+    def segment_count(self) -> int:
+        return int(self.endpoints.shape[0])
+
+    @property
+    def is_empty(self) -> bool:
+        return self.segment_count == 0
+
+    @property
+    def nbytes(self) -> int:
+        return int(
+            self.endpoints.nbytes
+            + self.widths.nbytes
+            + self.colours.nbytes
+            + self.dash_on.nbytes
+            + self.dash_off.nbytes
+            + self.phase.nbytes
+        )
+
+    def packed(self) -> np.ndarray:
+        """One ``(N, 12)`` float32 buffer: endpoints, width, RGBA, dash, phase.
+
+        RGBA is scaled to 0..1 in place of the uint8 source; the dash lengths
+        stay in screen pixels and the phase stays in world units on both sides
+        of the upload.
+        """
+        if self.is_empty:
+            return np.empty((0, 12), dtype=np.float32)
+        return np.column_stack(
+            (
+                np.asarray(self.endpoints, dtype=np.float32),
+                np.asarray(self.widths, dtype=np.float32).reshape(-1, 1),
+                np.asarray(self.colours, dtype=np.float32) / 255.0,
+                np.asarray(self.dash_on, dtype=np.float32).reshape(-1, 1),
+                np.asarray(self.dash_off, dtype=np.float32).reshape(-1, 1),
+                np.asarray(self.phase, dtype=np.float32).reshape(-1, 1),
+            )
+        ).astype(np.float32, copy=False)
+
+    def to_bytes(self) -> bytes:
+        """Interleaved float32 records, ready to wrap in a ``QByteArray``."""
+        return self.packed().tobytes(order="C")
+
+
+EMPTY_LINE_SEGMENTS = LineSegments(
+    endpoints=np.empty((0, 4), dtype=np.float32),
+    widths=np.empty((0,), dtype=np.float32),
+    colours=np.empty((0, 4), dtype=np.uint8),
+    dash_on=np.empty((0,), dtype=np.float32),
+    dash_off=np.empty((0,), dtype=np.float32),
+    phase=np.empty((0,), dtype=np.float32),
+)
+
+#: Colour used when a GPU line payload is built without a palette, matching the
+#: mesh's uncoloured default rather than inventing a chart style.
+DEFAULT_LINE_COLOUR = (255, 255, 255, 255)
+
+
+def concat_line_segments(chunks) -> LineSegments:
+    """Concatenate per-feature payloads, worst metadata cost first.
+
+    Returns :data:`EMPTY_LINE_SEGMENTS` when nothing was collected, and the
+    single chunk unchanged when only one feature contributed, so the common
+    one-contributor cell allocates no extra buffers.
+    """
+    kept = [chunk for chunk in chunks if chunk is not None and not chunk.is_empty]
+    if not kept:
+        return EMPTY_LINE_SEGMENTS
+    if len(kept) == 1:
+        return kept[0]
+    return LineSegments(
+        endpoints=np.concatenate([chunk.endpoints for chunk in kept]),
+        widths=np.concatenate([chunk.widths for chunk in kept]),
+        colours=np.concatenate([chunk.colours for chunk in kept]),
+        dash_on=np.concatenate([chunk.dash_on for chunk in kept]),
+        dash_off=np.concatenate([chunk.dash_off for chunk in kept]),
+        phase=np.concatenate([chunk.phase for chunk in kept]),
+    )
+
+
+def _world_chain(coords: np.ndarray) -> np.ndarray:
+    """Cumulative normalised Web-Mercator length at every vertex of ``coords``.
+
+    The payload endpoints stay in source degrees, but the item measures a
+    segment's along distance in normalised Web-Mercator world units and scales
+    it to pixels with one uniform, so the dash phase has to be accumulated in
+    that same unit.  The projection matches ``mercatorX``/``mercatorY`` in
+    ``native/routing/qt/gpulineitem.cpp`` exactly, latitude clamp included.
+    """
+    lat = np.clip(coords[:, 1], -85.05112878, 85.05112878)
+    x = (coords[:, 0] + 180.0) / 360.0
+    y = 0.5 - np.arcsinh(np.tan(np.radians(lat))) / (2.0 * np.pi)
+    steps = np.hypot(np.diff(x), np.diff(y))
+    return np.concatenate((np.zeros(1, dtype=np.float64), np.cumsum(steps)))
+
+
+def gpu_line_segments(geometry, colour, pixels, region=None, dash=None) -> LineSegments:
+    """Clip ``geometry`` and return its drawable segments as a packed payload.
+
+    This is the CPU stroke cost replaced, not moved: the only GEOS work is the
+    cheap *line-level* intersection with ``region`` (no width expansion, no
+    union, no per-segment dash geometry), so ``COALNE``/``DEPCNT`` stop paying
+    for quad generation while every other class keeps :func:`stroke_lines`
+    unchanged.
+
+    ``region`` of ``None`` draws the whole feature.  Segments whose endpoints
+    are equal after the float32 cast are dropped, because the GPU would expand
+    them to nothing but they would still grow the buffer.  An empty or
+    entirely clipped result is :data:`EMPTY_LINE_SEGMENTS`.
+
+    ``dash`` is the ``(on, off)`` screen-pixel pair the CPU stroke would have
+    received, or ``None`` for a solid stroke; the pair is emitted on every
+    segment so a dashed boundary rides the same buffer as a solid one.
+
+    Each segment also carries a ``phase``: the cumulative world length along
+    the part it belongs to, measured before clipping.  Clipping returns new
+    parts, so each clipped piece restarts its chain at ``0.0`` rather than
+    pretending to continue an edge the cell does not draw.
+    """
+    if geometry is None or geometry.is_empty:
+        return EMPTY_LINE_SEGMENTS
+    if region is not None:
+        geometry = geometry.intersection(region)
+        if geometry is None or geometry.is_empty:
+            return EMPTY_LINE_SEGMENTS
+    parts = tuple(part for kind, part in _ordered_parts(geometry) if kind == "line")
+    if not parts:
+        return EMPTY_LINE_SEGMENTS
+
+    blocks = []
+    chains = []
+    for part in parts:
+        coords = np.asarray(part.coords, dtype=np.float64)
+        if coords.shape[0] < 2:
+            continue
+        block = np.empty((coords.shape[0] - 1, 4), dtype=np.float32)
+        block[:, 0:2] = coords[:-1]
+        block[:, 2:4] = coords[1:]
+        blocks.append(block)
+        # One phase per segment: the distance to its own start, never to its
+        # end, so the shader adds the end offset itself.
+        chains.append(_world_chain(coords)[:-1])
+    if not blocks:
+        return EMPTY_LINE_SEGMENTS
+
+    endpoints = blocks[0] if len(blocks) == 1 else np.concatenate(blocks)
+    phase = chains[0] if len(chains) == 1 else np.concatenate(chains)
+    keep = (endpoints[:, 0] != endpoints[:, 2]) | (endpoints[:, 1] != endpoints[:, 3])
+    endpoints = endpoints[keep]
+    phase = phase[keep]
+    count = int(endpoints.shape[0])
+    if count == 0:
+        return EMPTY_LINE_SEGMENTS
+    width = np.float32(pixels if pixels is not None else DEFAULT_LINE_STYLE[0])
+    rgba = np.asarray(
+        DEFAULT_LINE_COLOUR if colour is None else colour, dtype=np.uint8
+    ).reshape(1, 4)
+    dash_on, dash_off = (0.0, 0.0) if dash is None else (float(dash[0]), float(dash[1]))
+    return LineSegments(
+        endpoints=np.ascontiguousarray(endpoints, dtype=np.float32),
+        widths=np.full((count,), width, dtype=np.float32),
+        colours=np.repeat(rgba, count, axis=0),
+        dash_on=np.full((count,), dash_on, dtype=np.float32),
+        dash_off=np.full((count,), dash_off, dtype=np.float32),
+        phase=np.ascontiguousarray(phase, dtype=np.float32),
+    )
 
 
 def _geometry_group(geometry) -> int:
@@ -620,6 +896,11 @@ class SceneMesh:
     #: "applied" (authoritative M_COVR clipped), "unknown" (no authoritative
     #: region) or "none" (clipping not requested / explicitly disabled).
     coverage_state: str = "none"
+    #: Packed screen-constant segments for :data:`GPU_LINE_CLASSES` and solid
+    #: area outlines, clipped to the same region as the fill and cached beside
+    #: it.  Empty unless :func:`gpu_lines_enabled` was on at build time; those
+    #: strokes then carry no CPU vertices at all.
+    line_segments: LineSegments = EMPTY_LINE_SEGMENTS
 
     @property
     def is_empty(self) -> bool:
@@ -649,6 +930,7 @@ EMPTY_MESH = SceneMesh(
     bounds=None,
     coverage_applied=False,
     coverage_state="none",
+    line_segments=EMPTY_LINE_SEGMENTS,
 )
 
 
@@ -711,6 +993,7 @@ def build_scene_mesh(
     marker_scale=1.0,
     simplify=None,
     timings=None,
+    gpu_lines=None,
 ) -> SceneMesh:
     """Mesh a :class:`encscene.CellScene` in source/feature order.
 
@@ -772,6 +1055,22 @@ def build_scene_mesh(
     ``"wkb"``, ``"simplify"``, ``"clip"`` and ``"triangulate"`` keys receive
     the seconds spent in each stage, summed over this call.  ``None`` (the
     default) records nothing and keeps the build path unchanged.
+
+    ``gpu_lines`` selects the GPU line slice for :data:`GPU_LINE_CLASSES` and
+    for area outlines.  ``None`` (default) follows
+    :func:`gpu_lines_enabled`, which is on only while the native line item is
+    available and the environment has not opted out.  When
+    on - and only with ``stroke_pixels``, since the payload width is in screen
+    pixels - those strokes append to :attr:`SceneMesh.line_segments` and skip
+    the CPU ``stroke()`` call, so their quad-generation cost is actually
+    removed rather than duplicated.  Area outlines keep their
+    :data:`AREA_OUTLINE_STYLES` width, dash pair and the ``ROLE_OUTLINE``
+    colour per segment, in the same source order the parts used to be emitted
+    in; a dashed ``RESARE``/``CTNARE`` outline carries its ``(on, off)`` pair
+    on the same payload and no longer needs a CPU stroke either.  Every other
+    class, fill, marker, sounding, clip and order is unchanged, and with the
+    flag off the CPU parts and strokes are exactly the ones built before this
+    slice existed.
     """
     if (stroke_width is None) == (stroke_pixels is None):
         raise ValueError("supply exactly one of stroke_width or stroke_pixels")
@@ -784,6 +1083,13 @@ def build_scene_mesh(
         raise ValueError("stroke_width must be positive source units")
     if not float(marker_scale) > 0.0:
         raise ValueError("marker_scale must be positive source units per pixel")
+
+    # The payload carries LINE_STYLES widths in screen pixels, so a source-unit
+    # ``stroke_width`` caller has no pixel contract to convert them with and
+    # keeps the CPU stroke unchanged.
+    if gpu_lines is None:
+        gpu_lines = gpu_lines_enabled()
+    gpu_lines = bool(gpu_lines) and stroke_pixels is not None
 
     if clip is True and coverage is None:
         raise UnsupportedGeometry(
@@ -808,6 +1114,7 @@ def build_scene_mesh(
 
     records = tuple(getattr(scene, "records", ()))
     chunks: list[np.ndarray] = []
+    segment_chunks: list[LineSegments] = []
     parts: list[MeshPart] = []
     unsupported: list[UnsupportedPart] = []
     offset = 0
@@ -959,21 +1266,48 @@ def build_scene_mesh(
                     _stage(timings, "triangulate", started)
 
         line_vertices = None
+        line_colour = None
+        if lineal and palette is not None:
+            # Resolved here so the GPU payload and the CPU part share exactly
+            # one palette lookup and cannot disagree on colour.
+            line_colour = part_colour(
+                record.source_class,
+                ROLE_LINE,
+                _record_field(record, "DRVAL1"),
+                _record_field(record, "DRVAL2"),
+                palette,
+            )
+        gpu_line = gpu_lines and record.source_class in GPU_LINE_CLASSES
         if lineal:
             line_geometry = GeometryCollection(lineal) if len(lineal) > 1 else lineal[0]
-            if clip_geometry is not None:
+            if gpu_line:
+                # The extractor clips at line level, so the quad expansion this
+                # class used to pay for never runs and earns the saving above.
                 started = time.perf_counter()
-                line_geometry = line_geometry.intersection(clip_geometry)
-                _stage(timings, "clip", started)
-            if not line_geometry.is_empty:
-                started = time.perf_counter()
-                line_vertices = stroke(
-                    line_geometry,
-                    region=clip_geometry,
-                    pixels=line_pixels,
-                    dash=line_dash,
+                segment_chunks.append(
+                    gpu_line_segments(
+                        line_geometry,
+                        line_colour,
+                        line_pixels,
+                        region=clip_geometry,
+                        dash=line_dash,
+                    )
                 )
-                _stage(timings, "stroke_line", started)
+                _stage(timings, "gpu_lines", started)
+            else:
+                if clip_geometry is not None:
+                    started = time.perf_counter()
+                    line_geometry = line_geometry.intersection(clip_geometry)
+                    _stage(timings, "clip", started)
+                if not line_geometry.is_empty:
+                    started = time.perf_counter()
+                    line_vertices = stroke(
+                        line_geometry,
+                        region=clip_geometry,
+                        pixels=line_pixels,
+                        dash=line_dash,
+                    )
+                    _stage(timings, "stroke_line", started)
 
         outline_vertices = None
         if area_outlines and fill_polygons:
@@ -986,13 +1320,43 @@ def build_scene_mesh(
                     outline_pixels, outline_dash = AREA_OUTLINE_STYLES.get(
                         record.source_class, (stroke_pixels, None)
                     )
-                outline_vertices = stroke(
-                    MultiLineString(rings),
-                    region=clip_geometry,
-                    pixels=outline_pixels,
-                    dash=outline_dash,
-                )
-            _stage(timings, "stroke_outline", started)
+                if gpu_lines:
+                    # Area outlines are the dominant stroke cost of a cell, so
+                    # with the GPU slice on they ride the same packed payload
+                    # the line classes use: the boundary is clipped at line
+                    # level only and the quad expansion never runs.  One
+                    # palette lookup feeds every segment, and it is the
+                    # outline role the CPU part would have resolved.  A dashed
+                    # RESARE/CTNARE outline keeps its (on, off) pair on the
+                    # payload instead of falling back to the CPU stroke.
+                    started = time.perf_counter()
+                    outline_colour = None
+                    if palette is not None:
+                        outline_colour = part_colour(
+                            record.source_class,
+                            ROLE_OUTLINE,
+                            _record_field(record, "DRVAL1"),
+                            _record_field(record, "DRVAL2"),
+                            palette,
+                        )
+                    segment_chunks.append(
+                        gpu_line_segments(
+                            MultiLineString(rings),
+                            outline_colour,
+                            outline_pixels,
+                            region=clip_geometry,
+                            dash=outline_dash,
+                        )
+                    )
+                    _stage(timings, "gpu_lines", started)
+                else:
+                    outline_vertices = stroke(
+                        MultiLineString(rings),
+                        region=clip_geometry,
+                        pixels=outline_pixels,
+                        dash=outline_dash,
+                    )
+                    _stage(timings, "stroke_outline", started)
 
         marker_kind = None
         marker_run = None
@@ -1015,7 +1379,7 @@ def build_scene_mesh(
         # feature, whatever order the source geometry lists them in.
         emit(record, AREA_FILL, fill_vertices)
         emit(record, AREA_OUTLINE, outline_vertices)
-        emit(record, LINE, line_vertices)
+        emit(record, LINE, line_vertices, line_colour)
         emit(record, MARKER, marker_run, marker_colour_value)
 
         if points and marker_kind is None:
@@ -1054,4 +1418,5 @@ def build_scene_mesh(
         bounds=bounds,
         coverage_applied=clip_geometry is not None,
         coverage_state="applied" if clip_geometry is not None else "none",
+        line_segments=concat_line_segments(segment_chunks),
     )

@@ -169,6 +169,18 @@ Item {
                 anchors.fill: parent
                 visible: root.encVisible && children.length > 0
             }
+            // GPU ENC lines are deliberately *not* declared here.
+            // `SAILWORKS_ENC_GPU_LINES` makes the viewport build a
+            // `GpuLineItem` from `SailworksRouting` and parent it to
+            // `encSceneLayer` itself, so a process without the built module
+            // (the default) never imports it and always starts normally.
+            //
+            // When the native item exists, the viewport parents three
+            // siblings here: the area/CPU-line mesh at z=0, the GPU lines at
+            // z=1 and the marker/sounding-text mesh at z=2, so the line
+            // payload paints over the fills and under the symbols and labels.
+            // When the module is unavailable one mesh item carries every kind
+            // and the CPU stroke, exactly as before the split.
             // Images and numerical fill are reference-local.
             Item {
                 objectName: "environmentFillBand"
