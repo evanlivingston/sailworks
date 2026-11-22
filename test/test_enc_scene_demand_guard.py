@@ -85,6 +85,19 @@ class _Item:
     def setY(self, value):
         pass
 
+    def set_position(self, x, y):
+        self.setX(x)
+        self.setY(y)
+
+    def set_visible(self, visible):
+        pass
+
+    def set_width(self, value):
+        self.setWidth(value)
+
+    def set_height(self, value):
+        self.setHeight(value)
+
 
 class _Timer:
     def __init__(self):
@@ -110,6 +123,13 @@ def _widget(layer=None, camera=None):
     widget_class = _viewport_widget_class()
     widget = SimpleNamespace(
         _disposed=False,
+        # The real widget always holds the trial line layer; these stubs
+        # only need the calls scene adoption and withdrawal make on it.
+        _enc_gpu_line_layer=SimpleNamespace(
+            update=lambda *args, **kwargs: None,
+            clear=lambda: None,
+            set_camera=lambda *args, **kwargs: None,
+        ),
         _enc_scene_model=_Layer() if layer is None else layer,
         _camera=_camera() if camera is None else camera,
         _camera_dpr=1.0,
@@ -718,6 +738,25 @@ class _SceneItem:
     def scene_covers_view(self):
         return self.covers
 
+    def scene_reaches_view(self):
+        return bool(self.covers)
+
+    def set_visible(self, value):
+        self.setVisible(value)
+
+    def is_visible(self):
+        return self.isVisible()
+
+    def set_position(self, x, y):
+        self.x = x
+        self.y = y
+
+    def set_width(self, value):
+        self.setWidth(value)
+
+    def set_height(self, value):
+        self.setHeight(value)
+
 
 class _Trace:
     """A recording stand-in for ``enc_trace`` with the trace gate open."""
@@ -783,6 +822,11 @@ def _publication_widget():
     widget_class = _viewport_widget_class()
     widget = SimpleNamespace(
         _disposed=False,
+        _enc_gpu_line_layer=SimpleNamespace(
+            update=lambda *args, **kwargs: None,
+            clear=lambda: None,
+            set_camera=lambda *args, **kwargs: None,
+        ),
         _enc_scene_item=_SceneItem(),
         _enc_scene_model=_Layer(),
         _camera=_camera(),

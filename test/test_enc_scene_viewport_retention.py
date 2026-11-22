@@ -62,6 +62,30 @@ class _Item:
     def setY(self, value):
         self.y = float(value)
 
+    def set_visible(self, visible):
+        self.setVisible(visible)
+
+    def is_visible(self):
+        return self.visible
+
+    def set_position(self, x, y):
+        self.setX(x)
+        self.setY(y)
+
+    def read_offset(self):
+        return (self.x, self.y)
+
+    def write_offset(self, x, y):
+        self.setX(x)
+        self.setY(y)
+        return (x, y)
+
+    def set_width(self, width):
+        self.width = width
+
+    def set_height(self, height):
+        self.height = height
+
 
 class _Weather:
     def __init__(self):
@@ -76,6 +100,13 @@ def _widget(layer_state="ready", error="", covers_view=True, reaches_view=None):
     widget = SimpleNamespace(
         _disposed=False,
         _enc_scene_item=_Item(covers_view, reaches_view),
+        # The real widget always holds the trial line layer; these stubs
+        # only need the calls scene adoption and withdrawal make on it.
+        _enc_gpu_line_layer=SimpleNamespace(
+            update=lambda *args, **kwargs: None,
+            clear=lambda: None,
+            set_camera=lambda *args, **kwargs: None,
+        ),
         _enc_scene_generation=0,
         _enc_scene_ready_generation=None,
         _enc_scene_partial_generation=None,

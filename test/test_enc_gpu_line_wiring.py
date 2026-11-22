@@ -6,6 +6,9 @@ an item that does not exist.  These tests pin both: the scene QML carries no
 ``SailworksRouting`` import, creation is a no-op when the module is absent, and
 the payload/camera/pan writes are gated by the flag and match the packed
 ``LineSegments`` bytes exactly.
+
+The layer itself lives in :mod:`sailworks.qt.encgpu_lines`; the viewport only
+owns one instance of it.
 """
 
 from types import SimpleNamespace
@@ -13,10 +16,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from sailworks.qt import gribviewport
+from sailworks.qt import encgpu_lines
 from sailworks.rendering.vectordrawer import encmesh
 
-FLAG = encmesh.GPU_LINES_ENV
+FLAG = encgpu_lines.ENV_ENC_GPU_LINES
 
 
 @pytest.fixture
@@ -127,8 +130,9 @@ def _segments():
     )
 
 
-def _widget(item):
-    return SimpleNamespace(_enc_gpu_line_item=item)
+def _layer(item=None):
+    """A layer around an already-built item, as the viewport would hold it."""
+    return encgpu_lines.EncGpuLineLayer(item)
 
 
 def _camera():
@@ -159,9 +163,7 @@ def test_flag_off_is_a_no_op(monkeypatch):
     encmesh.set_gpu_lines_available(False)
     item = FakeItem()
 
-    drawn = gribviewport.set_enc_gpu_lines(
-        _widget(item), SimpleNamespace(line_segments=_segments()), _camera()
-    )
+    drawn = _layer(item).update(SimpleNamespace(line_segments=_segments()), _camera())
 
     assert drawn is False
     assert item.writes == []
@@ -174,9 +176,7 @@ def test_env_force_on_cannot_upload_without_a_native_item(monkeypatch):
     encmesh.set_gpu_lines_available(False)
     item = FakeItem()
 
-    drawn = gribviewport.set_enc_gpu_lines(
-        _widget(item), SimpleNamespace(line_segments=_segments()), _camera()
-    )
+    drawn = _layer(item).update(SimpleNamespace(line_segments=_segments()), _camera())
 
     assert encmesh.gpu_lines_enabled() is False
     assert drawn is False
@@ -186,15 +186,14 @@ def test_env_force_on_cannot_upload_without_a_native_item(monkeypatch):
 def test_missing_native_item_keeps_the_cpu_path(monkeypatch):
     """Creation failure records no availability, so the CPU stroke stays."""
     monkeypatch.delenv(FLAG, raising=False)
-    monkeypatch.setattr(gribviewport, "enc_gpu_lines_qml_dir", lambda: None)
+    monkeypatch.setattr(encgpu_lines, "qml_dir", lambda: None)
     encmesh.set_gpu_lines_available(False)
 
-    item = gribviewport.create_enc_gpu_line_item(
-        SimpleNamespace(engine=lambda: None), object()
-    )
-    encmesh.set_gpu_lines_available(item is not None)
+    layer = encgpu_lines.EncGpuLineLayer()
+    item = layer.create(SimpleNamespace(engine=lambda: None), object())
 
     assert item is None
+    assert layer.available is False
     assert encmesh.gpu_lines_available() is False
     assert encmesh.gpu_lines_enabled() is False
     # Even the historical force-on value cannot skip the CPU stroke now.
@@ -207,10 +206,10 @@ def test_clear_always_cleans_a_built_item():
     item.setProperty("segmentData", b"stale")
     item.setVisible(True)
 
-    assert gribviewport.clear_enc_gpu_lines(_widget(item)) is True
+    assert _layer(item).clear() is True
     assert bytes(item.property("segmentData")) == b""
     assert item.isVisible() is False
-    assert gribviewport.clear_enc_gpu_lines(_widget(None)) is False
+    assert _layer().clear() is False
 
 
 def test_flag_on_uploads_the_packed_payload(monkeypatch, gpu_lines_available):
@@ -218,9 +217,7 @@ def test_flag_on_uploads_the_packed_payload(monkeypatch, gpu_lines_available):
     item = FakeItem()
     segments = _segments()
 
-    drawn = gribviewport.set_enc_gpu_lines(
-        _widget(item), SimpleNamespace(line_segments=segments), _camera()
-    )
+    drawn = _layer(item).update(SimpleNamespace(line_segments=segments), _camera())
 
     assert drawn is True
     payload = bytes(item.property("segmentData"))
@@ -232,12 +229,11 @@ def test_flag_on_uploads_the_packed_payload(monkeypatch, gpu_lines_available):
     assert item.isVisible() is True
 
 
-def test_camera_is_written_as_floats(monkeypatch, gpu_lines_available):
-    monkeypatch.setenv(FLAG, "1")
+def test_camera_is_written_as_floats(gpu_lines_available):
     item = FakeItem()
     camera = _camera()
 
-    assert gribviewport.apply_enc_gpu_line_camera(item, camera) is True
+    assert _layer(item).set_camera(camera) is True
 
     assert item.property("centerLatitude") == 37.5
     assert item.property("centerLongitude") == -122.25
@@ -249,26 +245,23 @@ def test_pan_compensation_mirrors_and_follows_map_content():
     map_content = FakeMapContent()
     map_content.move(120.0, -40.0)
 
-    assert gribviewport.compensate_enc_gpu_line_pan(item, map_content) is True
+    assert encgpu_lines.compensate_pan(item, map_content) is True
     assert (item.x, item.y) == (-120.0, 40.0)
 
     map_content.move(-15.5, 7.25)
     assert (item.x, item.y) == (15.5, -7.25)
 
-    assert gribviewport.compensate_enc_gpu_line_pan(None, map_content) is False
-    assert gribviewport.compensate_enc_gpu_line_pan(item, None) is False
+    assert encgpu_lines.compensate_pan(None, map_content) is False
+    assert encgpu_lines.compensate_pan(item, None) is False
 
 
 def test_empty_payload_clears_a_presented_layer(monkeypatch, gpu_lines_available):
     monkeypatch.setenv(FLAG, "1")
     item = FakeItem()
-    widget = _widget(item)
-    assert gribviewport.set_enc_gpu_lines(
-        widget, SimpleNamespace(line_segments=_segments()), _camera()
-    )
+    layer = _layer(item)
+    assert layer.update(SimpleNamespace(line_segments=_segments()), _camera())
 
-    drawn = gribviewport.set_enc_gpu_lines(
-        widget,
+    drawn = layer.update(
         SimpleNamespace(line_segments=encmesh.EMPTY_LINE_SEGMENTS),
         _camera(),
     )
@@ -280,11 +273,11 @@ def test_empty_payload_clears_a_presented_layer(monkeypatch, gpu_lines_available
 
 def test_missing_module_directory_is_a_no_op(monkeypatch):
     monkeypatch.setenv(FLAG, "1")
-    monkeypatch.setattr(gribviewport, "enc_gpu_lines_qml_dir", lambda: None)
+    monkeypatch.setattr(encgpu_lines, "qml_dir", lambda: None)
     container = FakeContainer()
 
-    assert gribviewport.create_enc_gpu_line_item(object(), container) is None
-    assert gribviewport.create_enc_gpu_line_item(object(), None) is None
+    assert encgpu_lines.EncGpuLineLayer().create(object(), container) is None
+    assert encgpu_lines.EncGpuLineLayer().create(object(), None) is None
 
 
 @pytest.mark.parametrize("value", sorted(encmesh.GPU_LINES_OFF_VALUES))
@@ -295,34 +288,36 @@ def test_flag_off_never_looks_for_the_module(monkeypatch, value):
     def fail():
         raise AssertionError("the module must not be probed with the flag off")
 
-    monkeypatch.setattr(gribviewport, "enc_gpu_lines_qml_dir", fail)
-    assert gribviewport.enc_gpu_lines_requested() is False
-    assert gribviewport.create_enc_gpu_line_item(object(), FakeContainer()) is None
+    monkeypatch.setattr(encgpu_lines, "qml_dir", fail)
+    assert encgpu_lines.requested() is False
+    assert encgpu_lines.forced_off() is True
+    assert encgpu_lines.EncGpuLineLayer().create(object(), FakeContainer()) is None
 
 
 def test_unset_flag_still_probes_for_the_module(monkeypatch, tmp_path):
     """The default process attempts creation when the module is on disk."""
     monkeypatch.delenv(FLAG, raising=False)
-    assert gribviewport.enc_gpu_lines_requested() is True
+    assert encgpu_lines.requested() is True
+    assert encgpu_lines.forced_off() is False
 
-    monkeypatch.setattr(gribviewport, "enc_gpu_lines_qml_dir", lambda: tmp_path)
-    assert gribviewport.create_enc_gpu_line_item(object(), FakeContainer()) is None
+    monkeypatch.setattr(encgpu_lines, "qml_dir", lambda: tmp_path)
+    assert encgpu_lines.EncGpuLineLayer().create(object(), FakeContainer()) is None
 
 
 def test_host_without_an_engine_is_a_no_op(monkeypatch, tmp_path):
     monkeypatch.setenv(FLAG, "1")
-    monkeypatch.setattr(gribviewport, "enc_gpu_lines_qml_dir", lambda: tmp_path)
+    monkeypatch.setattr(encgpu_lines, "qml_dir", lambda: tmp_path)
 
     # No ``engine()`` on the host: creation cannot even be attempted.
-    assert gribviewport.create_enc_gpu_line_item(object(), FakeContainer()) is None
+    assert encgpu_lines.EncGpuLineLayer().create(object(), FakeContainer()) is None
 
 
 def test_qml_dir_requires_the_module_qmldir(monkeypatch, tmp_path):
     monkeypatch.setenv("SAILWORKS_ROUTING_QML_PATH", str(tmp_path))
-    assert gribviewport.enc_gpu_lines_qml_dir() is None
+    assert encgpu_lines.qml_dir() is None
 
     (tmp_path / "SailworksRouting").mkdir()
-    assert gribviewport.enc_gpu_lines_qml_dir() is None
+    assert encgpu_lines.qml_dir() is None
 
     (tmp_path / "SailworksRouting" / "qmldir").write_text("module SailworksRouting\n")
-    assert gribviewport.enc_gpu_lines_qml_dir() == tmp_path
+    assert encgpu_lines.qml_dir() == tmp_path

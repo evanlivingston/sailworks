@@ -56,6 +56,18 @@ def scene_presenter_active(presenter, widget):
 
 def scene_item_offset(item):
     """The container-local ``x``/``y`` the item actually draws at, or ``None``."""
+    reader = getattr(item, "read_offset", None)
+    if callable(reader):
+        try:
+            offset = reader()
+        except (RuntimeError, TypeError, ValueError):
+            return None
+        if offset is None:
+            return None
+        try:
+            return (float(offset[0]), float(offset[1]))
+        except (IndexError, TypeError, ValueError):
+            return None
     offset = []
     for name in ("x", "y"):
         value = getattr(item, name, None)
@@ -216,7 +228,9 @@ def scene_presentation(widget, camera=None):
         shown = int(count()) if callable(count) else int(count or 0)
         reaches = getattr(item, "scene_covers_view", None)
         covers = bool(reaches()) if callable(reaches) else bool(reaches)
-        is_visible = getattr(item, "isVisible", None)
+        is_visible = getattr(item, "is_visible", None)
+        if not callable(is_visible):
+            is_visible = getattr(item, "isVisible", None)
         visible = bool(is_visible()) if callable(is_visible) else bool(is_visible)
         item_generation = getattr(item, "generation", None)
         uploads = getattr(item, "upload_count", None)
@@ -264,7 +278,7 @@ def scene_presentation(widget, camera=None):
         "visible": visible,
         "uploads": uploads,
         "unsupported": unsupported,
-        "text_labels": len(getattr(item, "_text_labels", ()) or ()),
+        "text_labels": len(getattr(item, "text_labels", ()) or ()),
         "drawn": drawn,
         "adopted": adopted,
         "presented": presented,

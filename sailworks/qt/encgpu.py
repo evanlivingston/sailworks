@@ -1452,30 +1452,46 @@ def filter_view_scene(scene, kinds, *, keep_soundings=True):
     return filtered
 
 
-class EncScenePair:
-    """Two :class:`EncMeshItem` siblings presenting one assembled scene.
+class EncSceneLayers:
+    """The ENC scene's drawing layers behind one explicit viewport surface.
 
-    The fill item draws areas, area outlines and the CPU line classes at
-    ``z=0``; the GPU line item sits at ``z=1`` and the marker item draws point
-    symbols and sounding text at ``z=2``.  Keeping the split to the three
-    sibling items is what makes the GPU lines land above the filled chart but
-    below the symbols and labels, without a second scene graph or a per-frame
-    reorder.
+    :meth:`single` wraps the one :class:`EncMeshItem` that carries every kind
+    and the CPU stroke.  :meth:`split` wraps the GPU line path's three
+    siblings: the fill mesh (areas, area outlines and the CPU line classes),
+    the native line item, and the marker mesh (point symbols and sounding
+    text).  The QML container declares ``encFillSlot``, ``encLineSlot`` and
+    ``encMarkerSlot`` in that order, so the fill paints under the native lines
+    and the lines under the symbols and labels without a per-frame reorder and
+    without any Python ``setZ`` write.
 
-    The viewport's setters are written for one item, so this forwards them:
-    view scene and camera state go to both meshes, placement and size go to
-    both meshes, and coverage/visibility are answered by the fill item, which
-    owns the chart geometry.  The line item is deliberately *not* moved by
-    :meth:`setX`/:meth:`setY`: it compensates the shared ``mapContent`` pan
-    itself (see ``compensate_enc_gpu_line_pan``), so writing the scene's
-    publication offset to it would double that pan.
+    The viewport treats both shapes the same: camera state goes to the mesh
+    members, placement writes the same offset to them, and coverage,
+    visibility, vertex, label and cell-node counts are answered here.  The
+    native line item is deliberately *not* moved by :meth:`set_position` or
+    :meth:`write_offset`: it compensates the shared ``mapContent`` pan itself
+    (see :func:`sailworks.qt.encgpu_lines.compensate_pan`), so writing the
+    scene's publication offset to it would double that pan.
+
+    Every member is declared here.  There is no ``__getattr__`` forwarding:
+    diagnostics and the viewport cannot silently depend on one member's
+    private surface, and no method shadows Python's ``property`` builtin.
     """
 
-    def __init__(self, fill, marker, lines=None):
+    def __init__(self, fill, marker=None, lines=None):
         self._fill = fill
         self._marker = marker
         self._lines = lines
-        self._members = (fill, marker)
+        self._meshes = (fill,) if marker is None else (fill, marker)
+
+    @classmethod
+    def single(cls, mesh):
+        """Wrap one item that draws every kind and its own CPU stroke."""
+        return cls(mesh)
+
+    @classmethod
+    def split(cls, fill, marker, lines):
+        """Wrap the GPU line split's mesh siblings, in paint order."""
+        return cls(fill, marker, lines)
 
     @property
     def fill(self):
@@ -1489,27 +1505,32 @@ class EncScenePair:
     def lines(self):
         return self._lines
 
+    @property
+    def meshes(self):
+        """The mesh members that receive camera state and placement."""
+        return self._meshes
+
     def set_view_scene(self, scene):
         changed = False
-        for item in self._members:
+        for item in self._meshes:
             changed = bool(item.set_view_scene(scene)) or changed
         return changed
 
     def set_projection(self, projection):
-        for item in self._members:
+        for item in self._meshes:
             item.set_projection(projection)
 
     def set_compose_margin(self, margin):
-        for item in self._members:
+        for item in self._meshes:
             item.set_compose_margin(margin)
 
     def set_scale(self, scale):
-        for item in self._members:
+        for item in self._meshes:
             item.set_scale(scale)
 
-    def setVisible(self, visible):  # noqa: N802 - Qt name
+    def set_visible(self, visible):
         visible = bool(visible)
-        for item in self._members:
+        for item in self._meshes:
             item.setVisible(visible)
         if not visible and self._lines is not None:
             # A hidden scene never leaves its line layer on screen.  Showing
@@ -1517,93 +1538,91 @@ class EncScenePair:
             # publication is what makes them visible again.
             self._lines.setVisible(False)
 
-    def isVisible(self):  # noqa: N802 - Qt name
+    def is_visible(self):
         return bool(self._fill.isVisible())
 
-    def setWidth(self, width):  # noqa: N802 - Qt name
-        for item in self._members:
+    def set_width(self, width):
+        for item in self._meshes:
             item.setWidth(width)
 
-    def setHeight(self, height):  # noqa: N802 - Qt name
-        for item in self._members:
+    def set_height(self, height):
+        for item in self._meshes:
             item.setHeight(height)
 
-    def setX(self, x):  # noqa: N802 - Qt name
-        for item in self._members:
+    def set_position(self, x, y):
+        """Place the meshes at the scene's container-local offset."""
+        for item in self._meshes:
             item.setX(x)
-
-    def setY(self, y):  # noqa: N802 - Qt name
-        for item in self._members:
             item.setY(y)
 
-    def item_property(self, name):
-        """Read a Qt property from the fill item without shadowing the builtin.
+    def read_offset(self):
+        """The fill mesh's ``(x, y)``, or ``None`` when it cannot be read."""
+        try:
+            return (
+                float(self._fill.property("x") or 0.0),
+                float(self._fill.property("y") or 0.0),
+            )
+        except (AttributeError, TypeError, ValueError):
+            return None
 
-        ``_item_offset``/``_shift_item_offset`` in the viewport use
-        ``property("x")`` and ``setProperty("x", value)`` for the retained
-        scene's placement.  ``property`` is Python's builtin and must stay
-        reachable: a method with that name in the class body would capture the
-        later ``@property`` decorators and break class definition.
-        ``__getattr__`` still forwards ``property(...)`` to the fill item.
-        """
-        return self._fill.property(name)
-
-    def setProperty(self, name, value):  # noqa: N802 - Qt name
-        if name in ("x", "y"):
-            for item in self._members:
-                item.setProperty(name, value)
-            return
-        if name in ("width", "height"):
-            for item in self._members:
-                item.setProperty(name, value)
-            return
-        if name == "visible":
-            self.setVisible(value)
-            return
-        self._fill.setProperty(name, value)
+    def write_offset(self, x, y):
+        """Write the same offset to every mesh; ``None`` when it cannot write."""
+        try:
+            for item in self._meshes:
+                item.setProperty("x", x)
+                item.setProperty("y", y)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        return (x, y)
 
     @property
     def text_labels(self):
-        """Sounding labels laid out by the members, in draw order.
+        """Sounding labels laid out by the meshes, in draw order.
 
-        The marker item owns text drawing (the fill item is built with
-        ``text_enabled=False``), so a pair that only forwarded to the fill
-        item would report zero labels to diagnostics.
+        The marker mesh owns text drawing (the fill mesh is built with
+        ``text_enabled=False``), so a fill-only read would report zero labels
+        to diagnostics.
         """
         labels = []
-        for item in self._members:
+        for item in self._meshes:
             labels.extend(getattr(item, "labels", ()) or ())
         return tuple(labels)
 
-    @property
-    def _text_labels(self):
-        """The private form ``check_enc_app_rollout`` reads from one item."""
-        return self.text_labels
-
     def shown_vertex_count(self):
-        """Vertices drawn by the pair, summed over the mesh members.
+        """Vertices drawn by the meshes, summed.
 
-        The marker item draws its own buffers, so the fill item's count alone
+        The marker mesh draws its own buffers, so the fill mesh's count alone
         would under-report a presented frame as empty.
         """
-        return sum(int(item.shown_vertex_count()) for item in self._members)
+        return sum(int(item.shown_vertex_count()) for item in self._meshes)
 
     def scene_covers_view(self):
-        """Only the fill item owns the cells that can cover the viewport."""
+        """Only the fill mesh owns the cells that can cover the viewport."""
         return bool(self._fill.scene_covers_view())
 
     def scene_reaches_view(self):
-        return bool(
-            self._fill.scene_reaches_view() or self._marker.scene_reaches_view()
-        )
+        return any(bool(item.scene_reaches_view()) for item in self._meshes)
 
-    def __getattr__(self, name):
-        # Diagnostics and less common Qt surface (``cell_nodes``, ``generation``,
-        # ``parentItem``) belong to the fill item; forwarding keeps the pair a
-        # drop-in for the single item at those call sites.
-        if name in ("_fill", "_marker", "_lines", "_members"):
-            raise AttributeError(name)
-        return getattr(self._fill, name)
+    @property
+    def cell_node_count(self):
+        """Cell draw nodes across the meshes, for the state-probe surface."""
+        return sum(len(getattr(item, "_cell_nodes", ()) or ()) for item in self._meshes)
+
+    @property
+    def view_scene(self):
+        return self._fill.view_scene
+
+    @property
+    def generation(self):
+        return self._fill.generation
+
+    @property
+    def upload_count(self):
+        return self._fill.upload_count
+
+    @property
+    def unsupported_count(self):
+        return self._fill.unsupported_count
 
 
 class EncMeshItem(QQuickItem):

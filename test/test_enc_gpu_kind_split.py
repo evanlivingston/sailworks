@@ -8,11 +8,14 @@ text.  These tests pin the four pieces that keep that split honest:
 * the kind filter packs vertices and cell spans without changing source order;
 * the marker item is the only one that carries markers and soundings;
 * the single-item fallback keeps every kind and text;
-* the pair forwards the viewport's item surface and keeps the line item out of
-  placement writes, with fill/line/marker at z 0/1/2.
+* ``EncSceneLayers`` exposes the viewport's whole item surface and keeps the
+  line item out of placement writes, with the QML slots deciding paint order.
 """
 
+import inspect
 import os
+from builtins import property as builtin_property
+from pathlib import Path
 
 # Must be set before PySide6 is imported so the offscreen plugin is selected.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -26,7 +29,7 @@ from sailworks.qt.encgpu import (  # noqa: E402
     FILL_KINDS,
     MARKER_KINDS,
     EncMeshItem,
-    EncScenePair,
+    EncSceneLayers,
     filter_view_scene,
 )
 from sailworks.qt.gribviewport import enc_scene_item  # noqa: E402
@@ -174,6 +177,8 @@ class _FakeItem:
         self._shown = 0
         self._covers = False
         self._reaches = False
+        self._cell_nodes = []
+        self.labels = ()
 
     def set_view_scene(self, scene):
         self.calls.append(("set_view_scene", scene))
@@ -231,7 +236,7 @@ class _FakeItem:
         return self._reaches
 
 
-def test_pair_delegates_scene_state_and_placement():
+def test_split_layers_delegate_scene_state_and_placement():
     fill = _FakeItem()
     marker = _FakeItem()
     lines = _FakeItem()
@@ -239,103 +244,263 @@ def test_pair_delegates_scene_state_and_placement():
     marker._shown = 3
     fill._covers = True
     marker._reaches = True
-    pair = EncScenePair(fill, marker, lines)
+    layers = EncSceneLayers.split(fill, marker, lines)
     scene = _scene()
 
-    assert pair.set_view_scene(scene) is True
+    assert layers.set_view_scene(scene) is True
     assert ("set_view_scene", scene) in fill.calls
     assert ("set_view_scene", scene) in marker.calls
 
-    pair.set_projection("p")
-    pair.set_compose_margin(24)
-    pair.set_scale(1.5)
+    layers.set_projection("p")
+    layers.set_compose_margin(24)
+    layers.set_scale(1.5)
     for item in (fill, marker):
         assert ("set_projection", "p") in item.calls
         assert ("set_compose_margin", 24) in item.calls
         assert ("set_scale", 1.5) in item.calls
 
-    pair.setWidth(640)
-    pair.setHeight(480)
+    layers.set_width(640)
+    layers.set_height(480)
     assert ("setWidth", 640) in marker.calls
     assert ("setHeight", 480) in marker.calls
 
     # Placement belongs to the mesh items; the line item mirrors mapContent
     # itself and must not receive the publication offset.
-    pair.setX(12.0)
-    pair.setProperty("x", 3.0)
-    assert (fill._x, marker._x) == (3.0, 3.0)
-    assert lines._x == 0.0
-    assert pair.property("x") == 3.0
+    layers.set_position(12.0, 8.0)
+    assert (fill._x, fill._y) == (12.0, 8.0)
+    assert (marker._x, marker._y) == (12.0, 8.0)
+    assert layers.read_offset() == (12.0, 8.0)
+    assert layers.write_offset(3.0, 4.0) == (3.0, 4.0)
+    assert (fill._x, fill._y) == (3.0, 4.0)
+    assert (marker._x, marker._y) == (3.0, 4.0)
+    assert (lines._x, lines._y) == (0.0, 0.0)
     assert not any(call[0] == "setX" for call in lines.calls)
 
     # Hiding takes the line layer down; showing never presents stale lines.
     lines._visible = True
-    pair.setVisible(False)
+    layers.set_visible(False)
     assert (fill._visible, marker._visible, lines._visible) == (False, False, False)
-    pair.setVisible(True)
+    layers.set_visible(True)
     assert (fill._visible, marker._visible) == (True, True)
     assert lines._visible is False
+    assert layers.is_visible() is True
 
-    assert pair.shown_vertex_count() == 12
-    assert pair.scene_covers_view() is True
-    assert pair.scene_reaches_view() is True
+    assert layers.shown_vertex_count() == 12
+    assert layers.scene_covers_view() is True
+    assert layers.scene_reaches_view() is True
 
 
-def test_pair_reports_labels_and_vertices_from_every_member():
+def test_split_layers_report_labels_vertices_and_cells():
     """Diagnostics must not read zero labels when the marker item draws them."""
     fill = _FakeItem()
     marker = _FakeItem()
     fill._shown = 4
     marker._shown = 7
+    fill._cell_nodes = [object()]
+    marker._cell_nodes = [object(), object()]
     fill.labels = ()
     marker.labels = ("S1", "S2")
-    pair = EncScenePair(fill, marker)
+    layers = EncSceneLayers.split(fill, marker, _FakeItem())
 
-    assert pair.text_labels == ("S1", "S2")
-    # ``check_enc_app_rollout`` reads the single item's private attribute.
-    assert pair._text_labels == ("S1", "S2")
-    assert pair.shown_vertex_count() == 11
+    assert layers.text_labels == ("S1", "S2")
+    assert layers.shown_vertex_count() == 11
+    assert layers.cell_node_count == 3
+    assert layers.meshes == (fill, marker)
+
+
+def test_viewport_offset_helpers_use_the_layer_surface():
+    """The rebase path reads and writes the layer, not a member's property."""
+    from sailworks.qt import gribviewport
+
+    fill = _FakeItem()
+    marker = _FakeItem()
+    lines = _FakeItem()
+    layers = EncSceneLayers.split(fill, marker, lines)
+
+    assert gribviewport._item_offset(layers, "x", "y") == (0.0, 0.0)
+    assert gribviewport._shift_item_offset(layers, "x", "y", 2.0, 3.0) == (
+        2.0,
+        3.0,
+    )
+    assert (fill._x, fill._y) == (2.0, 3.0)
+    assert (marker._x, marker._y) == (2.0, 3.0)
+    assert (lines._x, lines._y) == (0.0, 0.0)
+
+    assert (
+        gribviewport.place_enc_scene_item(
+            layers, 7.0, 11.0, cause="publication", camera=None
+        )
+        is None
+    )
+    assert layers.read_offset() == (7.0, 11.0)
+    assert (lines._x, lines._y) == (0.0, 0.0)
+
+
+def test_single_wraps_one_mesh_as_the_same_surface():
+    mesh = _FakeItem()
+    mesh._shown = 5
+    mesh._covers = True
+    mesh._reaches = True
+    mesh._cell_nodes = [object(), object()]
+    mesh.labels = ("DEPTH",)
+    mesh.view_scene = "one"
+    mesh.generation = 7
+    mesh.upload_count = 3
+    mesh.unsupported_count = 1
+    layers = EncSceneLayers.single(mesh)
+
+    assert layers.fill is mesh
+    assert layers.marker is None
+    assert layers.lines is None
+    assert layers.meshes == (mesh,)
+    assert layers.set_view_scene("scene") is True
+    layers.set_projection("p")
+    layers.set_compose_margin(4)
+    layers.set_scale(2.0)
+    layers.set_width(320)
+    layers.set_height(200)
+    layers.set_position(9.0, 11.0)
+    assert (mesh._x, mesh._y) == (9.0, 11.0)
+    assert layers.read_offset() == (9.0, 11.0)
+    assert layers.write_offset(1.0, 2.0) == (1.0, 2.0)
+    layers.set_visible(True)
+    assert layers.is_visible() is True
+    assert layers.text_labels == ("DEPTH",)
+    assert layers.shown_vertex_count() == 5
+    assert layers.scene_covers_view() is True
+    assert layers.scene_reaches_view() is True
+    assert layers.cell_node_count == 2
+    assert layers.view_scene == "one"
+    assert layers.generation == 7
+    assert layers.upload_count == 3
+    assert layers.unsupported_count == 1
+    # No attribute forwarding: the wrapper is not the mesh.
+    assert not hasattr(layers, "kinds")
+
+
+def test_the_layer_surface_is_explicit_and_never_shadows_builtins():
+    from sailworks.qt import encgpu
+
+    required = (
+        "set_view_scene",
+        "set_projection",
+        "set_compose_margin",
+        "set_scale",
+        "set_visible",
+        "is_visible",
+        "set_width",
+        "set_height",
+        "set_position",
+        "read_offset",
+        "write_offset",
+        "shown_vertex_count",
+        "scene_covers_view",
+        "scene_reaches_view",
+        "cell_node_count",
+        "text_labels",
+        "view_scene",
+    )
+    for name in required:
+        assert hasattr(EncSceneLayers, name), name
+
+    assert not hasattr(encgpu, "EncScenePair")
+    assert "__getattr__" not in vars(EncSceneLayers)
+    assert "item_property" not in vars(EncSceneLayers)
+    # A method named ``property`` would capture the later decorators in the
+    # class body and break the class definition outright.
+    assert "property" not in vars(EncSceneLayers)
+    assert isinstance(EncSceneLayers.text_labels, builtin_property)
+    assert isinstance(EncSceneLayers.cell_node_count, builtin_property)
+    assert isinstance(EncSceneLayers.view_scene, builtin_property)
+    source = inspect.getsource(EncSceneLayers)
+    assert "def __getattr__" not in source
+    assert "item_property" not in source
+
+
+def _slot_container():
+    container = QQuickItem()
+    slots = {}
+    for name in ("encFillSlot", "encLineSlot", "encMarkerSlot"):
+        slot = QQuickItem(container)
+        slot.setObjectName(name)
+        slots[name] = slot
+    return container, slots
 
 
 def test_enc_scene_item_falls_back_to_one_item(app):
     container = QQuickItem()
 
-    item = enc_scene_item(container)
+    layers = enc_scene_item(container)
 
-    assert isinstance(item, EncMeshItem)
-    assert item.kinds is None
-    assert item._text_enabled is True
-    assert item.isVisible() is False
+    assert isinstance(layers, EncSceneLayers)
+    assert isinstance(layers.fill, EncMeshItem)
+    assert layers.fill.kinds is None
+    assert layers.fill._text_enabled is True
+    assert layers.marker is None
+    assert layers.lines is None
+    assert layers.is_visible() is False
     # Requesting the split without a created native item is the fallback too:
     # a mesh pair without its line layer would still draw the CPU stroke.
     fallback = enc_scene_item(container, gpu_lines=True, lines=None)
-    assert isinstance(fallback, EncMeshItem)
-    assert fallback.kinds is None
+    assert isinstance(fallback, EncSceneLayers)
+    assert isinstance(fallback.fill, EncMeshItem)
+    assert fallback.fill.kinds is None
 
 
-def test_enc_scene_item_layers_fill_line_and_marker(app):
-    container = QQuickItem()
+def test_enc_scene_item_parents_each_layer_in_its_slot(app):
+    container, slots = _slot_container()
     lines = QQuickItem(container)
 
-    pair = enc_scene_item(container, gpu_lines=True, lines=lines)
+    layers = enc_scene_item(container, gpu_lines=True, lines=lines)
 
-    assert isinstance(pair, EncScenePair)
-    assert pair.fill.kinds == FILL_KINDS
-    assert pair.marker.kinds == MARKER_KINDS
-    assert pair.fill._text_enabled is False
-    assert pair.marker._text_enabled is True
-    assert pair.fill.z() == 0.0
-    assert lines.z() == 1.0
-    assert pair.marker.z() == 2.0
-    assert pair.isVisible() is False
+    assert isinstance(layers, EncSceneLayers)
+    assert layers.fill.parentItem() is slots["encFillSlot"]
+    assert layers.marker.parentItem() is slots["encMarkerSlot"]
+    assert lines.parentItem() is slots["encLineSlot"]
+    assert layers.fill.kinds == FILL_KINDS
+    assert layers.marker.kinds == MARKER_KINDS
+    assert layers.fill._text_enabled is False
+    assert layers.marker._text_enabled is True
+    assert layers.is_visible() is False
+    assert lines.isVisible() is False
 
     scene = _scene()
-    pair.set_view_scene(scene)
-    assert _kinds(pair.fill.view_scene) == (
+    layers.set_view_scene(scene)
+    assert _kinds(layers.fill.view_scene) == (
         encmesh.AREA_FILL,
         encmesh.LINE,
         encmesh.AREA_OUTLINE,
     )
-    assert _kinds(pair.marker.view_scene) == (encmesh.MARKER,)
-    assert pair.marker.view_scene.soundings is scene.soundings
-    assert pair.fill.view_scene.soundings is not scene.soundings
+    assert _kinds(layers.marker.view_scene) == (encmesh.MARKER,)
+    assert layers.marker.view_scene.soundings is scene.soundings
+    assert layers.fill.view_scene.soundings is not scene.soundings
+
+
+def test_the_scene_qml_declares_the_slots_in_paint_order():
+    qml = (
+        Path(__file__).resolve().parents[1]
+        / "sailworks"
+        / "qt"
+        / "shaders"
+        / "ViewportChartScene.qml"
+    ).read_text()
+    start = qml.index('objectName: "encSceneLayer"')
+    end = qml.index('objectName: "environmentFillBand"', start)
+    block = qml[start:end]
+    order = [
+        block.index('objectName: "encFillSlot"'),
+        block.index('objectName: "encLineSlot"'),
+        block.index('objectName: "encMarkerSlot"'),
+    ]
+    assert order == sorted(order), "fill, line, marker must be the paint order"
+    assert "hostedItems" in block
+    assert "visible: root.encVisible && hostedItems > 0" in block
+
+
+def test_nothing_orders_the_layers_with_python_z():
+    from sailworks.qt import gribviewport
+
+    source = inspect.getsource(gribviewport.enc_scene_item)
+    assert "fill.setZ" not in source
+    assert "lines.setZ" not in source
+    assert "marker.setZ" not in source

@@ -83,6 +83,7 @@ from .encpalette import (
     part_colour,
 )
 from .encstroke import UnsupportedGeometry, stroke_lines
+from .lineformat import COLOUR_CHANNELS, DTYPE, ENDPOINT_FLOATS, FLOATS
 
 AREA_FILL = "area-fill"
 AREA_OUTLINE = "area-outline"
@@ -444,7 +445,8 @@ class LineSegments:
 
     Each array is C-contiguous and fixed-width, so a backend upload is
     :meth:`to_bytes` into one ``QByteArray`` with no per-segment Python object.
-    The packed record is 12 float32 values (48 bytes) laid out as
+    The packed record is the :mod:`lineformat` layout: 12 float32 values
+    (48 bytes) laid out as
     ``x0, y0, x1, y1, width, r, g, b, a, dash_on, dash_off, phase``: the three
     original field groups keep their order, the dash pair follows them, and the
     phase is appended last, so a reader that ignores dashes or phase can use
@@ -488,17 +490,17 @@ class LineSegments:
         of the upload.
         """
         if self.is_empty:
-            return np.empty((0, 12), dtype=np.float32)
+            return np.empty((0, FLOATS), dtype=DTYPE)
         return np.column_stack(
             (
-                np.asarray(self.endpoints, dtype=np.float32),
-                np.asarray(self.widths, dtype=np.float32).reshape(-1, 1),
-                np.asarray(self.colours, dtype=np.float32) / 255.0,
-                np.asarray(self.dash_on, dtype=np.float32).reshape(-1, 1),
-                np.asarray(self.dash_off, dtype=np.float32).reshape(-1, 1),
-                np.asarray(self.phase, dtype=np.float32).reshape(-1, 1),
+                np.asarray(self.endpoints, dtype=DTYPE),
+                np.asarray(self.widths, dtype=DTYPE).reshape(-1, 1),
+                np.asarray(self.colours, dtype=DTYPE) / 255.0,
+                np.asarray(self.dash_on, dtype=DTYPE).reshape(-1, 1),
+                np.asarray(self.dash_off, dtype=DTYPE).reshape(-1, 1),
+                np.asarray(self.phase, dtype=DTYPE).reshape(-1, 1),
             )
-        ).astype(np.float32, copy=False)
+        ).astype(DTYPE, copy=False)
 
     def to_bytes(self) -> bytes:
         """Interleaved float32 records, ready to wrap in a ``QByteArray``."""
@@ -506,12 +508,12 @@ class LineSegments:
 
 
 EMPTY_LINE_SEGMENTS = LineSegments(
-    endpoints=np.empty((0, 4), dtype=np.float32),
-    widths=np.empty((0,), dtype=np.float32),
-    colours=np.empty((0, 4), dtype=np.uint8),
-    dash_on=np.empty((0,), dtype=np.float32),
-    dash_off=np.empty((0,), dtype=np.float32),
-    phase=np.empty((0,), dtype=np.float32),
+    endpoints=np.empty((0, ENDPOINT_FLOATS), dtype=DTYPE),
+    widths=np.empty((0,), dtype=DTYPE),
+    colours=np.empty((0, COLOUR_CHANNELS), dtype=np.uint8),
+    dash_on=np.empty((0,), dtype=DTYPE),
+    dash_off=np.empty((0,), dtype=DTYPE),
+    phase=np.empty((0,), dtype=DTYPE),
 )
 
 #: Colour used when a GPU line payload is built without a palette, matching the

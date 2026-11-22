@@ -833,7 +833,7 @@ def test_enc_scene_offset_cancels_the_published_pan():
 def _placement(item, camera, reference, published, request=None, generation=None):
     """The production ``_place_enc_scene`` bound to a headless double."""
     widget = SimpleNamespace(
-        _enc_scene_item=item,
+        _enc_scene_item=encgpu.EncSceneLayers.single(item),
         _enc_scene_camera=published,
         _enc_scene_frame_camera=published,
         _map_pan_reference=reference,
@@ -1383,7 +1383,14 @@ def test_a_partial_publication_never_replaces_the_ready_scene(app):
         margin=margin,
     )
     shown = SimpleNamespace(
-        _enc_scene_item=item,
+        _enc_scene_item=encgpu.EncSceneLayers.single(item),
+        # The real widget always holds the trial line layer; this double only
+        # needs the calls adoption and withdrawal make on it.
+        _enc_gpu_line_layer=SimpleNamespace(
+            update=lambda *args, **kwargs: None,
+            clear=lambda: None,
+            set_camera=lambda *args, **kwargs: None,
+        ),
         _enc_scene_provisional=False,
         _enc_scene_ready_generation=None,
         _enc_scene_generation=None,

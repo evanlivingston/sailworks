@@ -830,7 +830,7 @@ def _scene_widget(camera, *, metadata=None, layer=None, item=None, widget=None):
         shown_vertex_count=lambda: 12,
         scene_covers_view=lambda: True,
         isVisible=lambda: True,
-        _text_labels=("S1",),
+        text_labels=("S1",),
     )
     item_fields.update(item or {})
     widget_fields = dict(
