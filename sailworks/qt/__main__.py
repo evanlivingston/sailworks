@@ -47,6 +47,15 @@ def main(argv=None):
         choices=("cpu", "gpu"),
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--render-loop",
+        choices=("basic", "threaded", "windows"),
+        help=(
+            "Qt scenegraph render loop for QQuickWidget. Default basic keeps "
+            "current behaviour; measured slower than basic on macOS (more "
+            "per-frame gap, lower frame rate), kept for cross-platform testing."
+        ),
+    )
 
     parser.add_argument(
         "--gpu-resident-fields",
@@ -77,6 +86,8 @@ def main(argv=None):
     from .window import PreviewWindow
     from .theme import apply_theme
 
+    if args.render_loop is not None:
+        os.environ["QSG_RENDER_LOOP"] = args.render_loop
     app = cast(QApplication, QApplication.instance()) or QApplication([sys.argv[0]])
     label = build_label()
     app.setApplicationName("Sailworks")

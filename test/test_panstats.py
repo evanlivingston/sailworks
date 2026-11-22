@@ -31,6 +31,8 @@ FIELDS = [
     "paint_ms_p95",
     "render_ms_p50",
     "render_ms_p95",
+    "gap_ms_p50",
+    "gap_ms_p95",
     "repaints",
     "repaints_hz",
     "repaints_moving",
@@ -227,8 +229,8 @@ def test_summary_line_order_and_rounding(monkeypatch):
         "resumes=0 session_s=3.0 hitches=0 hitch_max_ms=0.0 hitch_top=none "
         "raster_skips=0 camera_ms_p50=0.0 camera_ms_p95=0.0 camera_ms_max=0.0 "
         "camera_busy_pct=0.0 paint_ms_p50=0.0 paint_ms_p95=0.0 "
-        "render_ms_p50=0.0 render_ms_p95=0.0 repaints=0 repaints_hz=0.0 "
-        "repaints_moving=0 repaints_moving_hz=0.0"
+        "render_ms_p50=0.0 render_ms_p95=0.0 gap_ms_p50=0.0 gap_ms_p95=0.0 "
+        "repaints=0 repaints_hz=0.0 repaints_moving=0 repaints_moving_hz=0.0"
     )
 
 
