@@ -829,7 +829,7 @@ def _scene_widget(camera, *, metadata=None, layer=None, item=None, widget=None):
         unsupported_count=0,
         shown_vertex_count=lambda: 12,
         scene_covers_view=lambda: True,
-        isVisible=lambda: True,
+        is_visible=lambda: True,
         text_labels=("S1",),
     )
     item_fields.update(item or {})
@@ -870,7 +870,10 @@ def test_scene_presentation_requires_published_adopted_and_drawn():
     )
     assert not empty["drawn"] and not empty["presented"]
     hidden = module.scene_presentation(
-        _scene_widget(camera, item={"isVisible": lambda: False})
+        _scene_widget(
+            camera,
+            item={"is_visible": lambda: False, "isVisible": lambda: False},
+        )
     )
     assert not hidden["drawn"] and not hidden["presented"]
     partial = module.scene_presentation(

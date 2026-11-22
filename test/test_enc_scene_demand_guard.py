@@ -123,7 +123,7 @@ def _widget(layer=None, camera=None):
     widget_class = _viewport_widget_class()
     widget = SimpleNamespace(
         _disposed=False,
-        # The real widget always holds the trial line layer; these stubs
+        # The real widget always holds the GPU line layer; these stubs
         # only need the calls scene adoption and withdrawal make on it.
         _enc_gpu_line_layer=SimpleNamespace(
             update=lambda *args, **kwargs: None,

@@ -1,6 +1,6 @@
-"""Wiring of the flag-gated GPU ENC line trial.
+"""Wiring of the GPU ENC line layer.
 
-The trial has two failure modes the default process must never meet: an
+The layer has two failure modes the default process must never meet: an
 unconditional QML import of a C++ module that may not be built, and a write to
 an item that does not exist.  These tests pin both: the scene QML carries no
 ``SailworksRouting`` import, creation is a no-op when the module is absent, and
@@ -45,7 +45,7 @@ class _Signal:
 
 
 class FakeItem:
-    """The QQuickItem surface the trial writes to."""
+    """The QQuickItem surface the line layer writes to."""
 
     def __init__(self):
         self.writes = []

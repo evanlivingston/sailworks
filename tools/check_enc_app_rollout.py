@@ -229,9 +229,7 @@ def scene_presentation(widget, camera=None):
         reaches = getattr(item, "scene_covers_view", None)
         covers = bool(reaches()) if callable(reaches) else bool(reaches)
         is_visible = getattr(item, "is_visible", None)
-        if not callable(is_visible):
-            is_visible = getattr(item, "isVisible", None)
-        visible = bool(is_visible()) if callable(is_visible) else bool(is_visible)
+        visible = bool(is_visible()) if callable(is_visible) else False
         item_generation = getattr(item, "generation", None)
         uploads = getattr(item, "upload_count", None)
         unsupported = getattr(item, "unsupported_count", None)

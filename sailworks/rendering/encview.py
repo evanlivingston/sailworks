@@ -618,6 +618,90 @@ class ViewScene:
             return self.colours
         return encpalette.vertex_colours(self.parts, self.vertex_count, default)
 
+    def subset(self, kinds, *, keep_soundings=True):
+        """Restrict the scene to the parts whose kind is in ``kinds``.
+
+        The fill and marker items must not draw each other's geometry, so each
+        one uploads a filtered copy of the same assembled scene.  Vertex ranges
+        are packed down to the kept parts and every cell span is recomputed,
+        keeping the scene's composite order.  ``unsupported``/``skipped``
+        metadata and the cache counters are carried through unchanged; they
+        describe the assembly, not the item's slice of it.
+
+        A scene that already contains only the requested kinds is returned
+        as-is, so the item's identity-based no-op and retained-frame
+        bookkeeping keep working for the unsplit path.  ``keep_soundings=False``
+        drops the SOUNDG array: only the marker item lays out labels, so the
+        fill copy must not retain a second reference to it.
+        """
+        parts = tuple(self.parts or ())
+        if not parts:
+            filtered = self
+        else:
+            kept = tuple(part for part in parts if part.kind in kinds)
+            if len(kept) == len(parts):
+                filtered = self
+            else:
+                positions = np.asarray(self.positions)
+                count = int(positions.shape[0])
+                mask = np.zeros(count, dtype=bool)
+                for part in kept:
+                    first = int(part.first_vertex)
+                    mask[first : first + int(part.vertex_count)] = True
+
+                new_parts = []
+                offset = 0
+                for part in parts:
+                    if part.kind not in kinds:
+                        continue
+                    new_parts.append(dataclasses.replace(part, first_vertex=offset))
+                    offset += int(part.vertex_count)
+
+                cells = []
+                first_part = 0
+                first_vertex = 0
+                for span in tuple(self.cells or ()):
+                    start = int(span.first_part)
+                    selected = [
+                        part
+                        for part in parts[start : start + int(span.part_count)]
+                        if part.kind in kinds
+                    ]
+                    vertex_count = sum(int(part.vertex_count) for part in selected)
+                    cells.append(
+                        dataclasses.replace(
+                            span,
+                            first_part=first_part,
+                            part_count=len(selected),
+                            first_vertex=first_vertex,
+                            vertex_count=vertex_count,
+                        )
+                    )
+                    first_part += len(selected)
+                    first_vertex += vertex_count
+
+                colours = self.colours
+                new_colours = colours
+                if colours is not None:
+                    colours = np.asarray(colours)
+                    if colours.shape[:1] == (count,):
+                        new_colours = colours[mask]
+
+                filtered = dataclasses.replace(
+                    self,
+                    positions=positions[mask],
+                    parts=tuple(new_parts),
+                    cells=tuple(cells),
+                    colours=new_colours,
+                )
+
+        if keep_soundings:
+            return filtered
+        soundings = filtered.soundings
+        if soundings is not None and int(np.asarray(soundings).shape[0]):
+            return dataclasses.replace(filtered, soundings=encsounding.EMPTY_SOUNDINGS)
+        return filtered
+
 
 EMPTY_VIEW_SCENE = ViewScene(
     positions=np.empty((0, 2), dtype=np.float64),

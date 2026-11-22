@@ -100,7 +100,7 @@ def _widget(layer_state="ready", error="", covers_view=True, reaches_view=None):
     widget = SimpleNamespace(
         _disposed=False,
         _enc_scene_item=_Item(covers_view, reaches_view),
-        # The real widget always holds the trial line layer; these stubs
+        # The real widget always holds the GPU line layer; these stubs
         # only need the calls scene adoption and withdrawal make on it.
         _enc_gpu_line_layer=SimpleNamespace(
             update=lambda *args, **kwargs: None,

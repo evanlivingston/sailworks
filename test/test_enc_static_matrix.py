@@ -1384,7 +1384,7 @@ def test_a_partial_publication_never_replaces_the_ready_scene(app):
     )
     shown = SimpleNamespace(
         _enc_scene_item=encgpu.EncSceneLayers.single(item),
-        # The real widget always holds the trial line layer; this double only
+        # The real widget always holds the GPU line layer; this double only
         # needs the calls adoption and withdrawal make on it.
         _enc_gpu_line_layer=SimpleNamespace(
             update=lambda *args, **kwargs: None,

@@ -30,7 +30,6 @@ from sailworks.qt.encgpu import (  # noqa: E402
     MARKER_KINDS,
     EncMeshItem,
     EncSceneLayers,
-    filter_view_scene,
 )
 from sailworks.qt.gribviewport import enc_scene_item  # noqa: E402
 from sailworks.rendering.encview import CellSpan, ViewScene  # noqa: E402
@@ -94,7 +93,7 @@ def _kinds(scene):
 def test_filter_packs_fill_vertices_and_rebuilds_cell_spans():
     scene = _scene()
 
-    fill = filter_view_scene(scene, FILL_KINDS, keep_soundings=False)
+    fill = scene.subset(FILL_KINDS, keep_soundings=False)
 
     assert _kinds(fill) == (encmesh.AREA_FILL, encmesh.LINE, encmesh.AREA_OUTLINE)
     # The marker's three vertices are gone; the remaining ranges are packed.
@@ -123,7 +122,7 @@ def test_filter_packs_fill_vertices_and_rebuilds_cell_spans():
 def test_filter_marker_keeps_soundings_and_empty_fill_cells():
     scene = _scene()
 
-    marker = filter_view_scene(scene, MARKER_KINDS, keep_soundings=True)
+    marker = scene.subset(MARKER_KINDS, keep_soundings=True)
 
     assert _kinds(marker) == (encmesh.MARKER,)
     assert marker.positions.shape == (3, 2)
@@ -135,11 +134,8 @@ def test_filter_marker_keeps_soundings_and_empty_fill_cells():
 
 def test_filter_is_identity_when_every_part_is_kept():
     scene = _scene()
-    assert filter_view_scene(scene, FILL_KINDS | MARKER_KINDS) is scene
-    assert (
-        filter_view_scene(scene, FILL_KINDS | MARKER_KINDS, keep_soundings=False)
-        is not scene
-    )
+    assert scene.subset(FILL_KINDS | MARKER_KINDS) is scene
+    assert scene.subset(FILL_KINDS | MARKER_KINDS, keep_soundings=False) is not scene
 
 
 def test_enc_mesh_item_owns_only_its_kinds(app):
@@ -177,7 +173,7 @@ class _FakeItem:
         self._shown = 0
         self._covers = False
         self._reaches = False
-        self._cell_nodes = []
+        self.cell_nodes = 0
         self.labels = ()
 
     def set_view_scene(self, scene):
@@ -234,6 +230,9 @@ class _FakeItem:
 
     def scene_reaches_view(self):
         return self._reaches
+
+    def cell_node_count(self):
+        return self.cell_nodes
 
 
 def test_split_layers_delegate_scene_state_and_placement():
@@ -296,8 +295,8 @@ def test_split_layers_report_labels_vertices_and_cells():
     marker = _FakeItem()
     fill._shown = 4
     marker._shown = 7
-    fill._cell_nodes = [object()]
-    marker._cell_nodes = [object(), object()]
+    fill.cell_nodes = 1
+    marker.cell_nodes = 2
     fill.labels = ()
     marker.labels = ("S1", "S2")
     layers = EncSceneLayers.split(fill, marker, _FakeItem())
@@ -341,7 +340,7 @@ def test_single_wraps_one_mesh_as_the_same_surface():
     mesh._shown = 5
     mesh._covers = True
     mesh._reaches = True
-    mesh._cell_nodes = [object(), object()]
+    mesh.cell_nodes = 2
     mesh.labels = ("DEPTH",)
     mesh.view_scene = "one"
     mesh.generation = 7
@@ -439,6 +438,8 @@ def test_enc_scene_item_falls_back_to_one_item(app):
     assert layers.marker is None
     assert layers.lines is None
     assert layers.is_visible() is False
+    assert layers.fill.cell_node_count() == 0
+    assert layers.cell_node_count == 0
     # Requesting the split without a created native item is the fallback too:
     # a mesh pair without its line layer would still draw the CPU stroke.
     fallback = enc_scene_item(container, gpu_lines=True, lines=None)

@@ -1367,89 +1367,28 @@ FILL_KINDS = frozenset({AREA_FILL, AREA_OUTLINE, LINE})
 MARKER_KINDS = frozenset({MARKER})
 
 
-def filter_view_scene(scene, kinds, *, keep_soundings=True):
-    """Restrict ``scene`` to the parts whose kind is in ``kinds``.
+def _size_scene_item(item, container):
+    """Cover ``container`` with one ENC item and keep it covering it.
 
-    The fill and marker items must not draw each other's geometry, so each one
-    uploads a filtered copy of the same assembled scene.  Vertex ranges are
-    packed down to the kept parts and every cell span is recomputed, keeping
-    the scene's composite order.  ``unsupported``/``skipped`` metadata and the
-    cache counters are carried through unchanged; they describe the assembly,
-    not the item's slice of it.
-
-    A scene that already contains only the requested kinds is returned as-is,
-    so the item's identity-based no-op and retained-frame bookkeeping keep
-    working for the unsplit path.  ``keep_soundings=False`` drops the SOUNDG
-    array: only the marker item lays out labels, so the fill copy must not
-    retain a second reference to it.
+    ``widthChanged``/``heightChanged`` carry no argument, so the slot has to
+    read the container's current size: connecting ``item.setWidth`` directly
+    would call it with zero arguments and raise.
     """
-    parts = tuple(getattr(scene, "parts", ()) or ())
-    if not parts:
-        filtered = scene
-    else:
-        kept = tuple(part for part in parts if part.kind in kinds)
-        if len(kept) == len(parts):
-            filtered = scene
-        else:
-            positions = np.asarray(scene.positions)
-            count = int(positions.shape[0])
-            mask = np.zeros(count, dtype=bool)
-            for part in kept:
-                first = int(part.first_vertex)
-                mask[first : first + int(part.vertex_count)] = True
+    item.setWidth(container.width())
+    item.setHeight(container.height())
+    container.widthChanged.connect(lambda: item.setWidth(container.width()))
+    container.heightChanged.connect(lambda: item.setHeight(container.height()))
+    return item
 
-            new_parts = []
-            offset = 0
-            for part in parts:
-                if part.kind not in kinds:
-                    continue
-                new_parts.append(dataclasses.replace(part, first_vertex=offset))
-                offset += int(part.vertex_count)
 
-            cells = []
-            first_part = 0
-            first_vertex = 0
-            for span in tuple(getattr(scene, "cells", ()) or ()):
-                start = int(span.first_part)
-                selected = [
-                    part
-                    for part in parts[start : start + int(span.part_count)]
-                    if part.kind in kinds
-                ]
-                vertex_count = sum(int(part.vertex_count) for part in selected)
-                cells.append(
-                    dataclasses.replace(
-                        span,
-                        first_part=first_part,
-                        part_count=len(selected),
-                        first_vertex=first_vertex,
-                        vertex_count=vertex_count,
-                    )
-                )
-                first_part += len(selected)
-                first_vertex += vertex_count
+def _scene_slot(container, name):
+    """The declarative child slot of the ENC scene container."""
+    from PySide6.QtQuick import QQuickItem
 
-            colours = getattr(scene, "colours", None)
-            new_colours = colours
-            if colours is not None:
-                colours = np.asarray(colours)
-                if colours.shape[:1] == (count,):
-                    new_colours = colours[mask]
-
-            filtered = dataclasses.replace(
-                scene,
-                positions=positions[mask],
-                parts=tuple(new_parts),
-                cells=tuple(cells),
-                colours=new_colours,
-            )
-
-    if keep_soundings:
-        return filtered
-    soundings = getattr(filtered, "soundings", None)
-    if soundings is not None and int(np.asarray(soundings).shape[0]):
-        return dataclasses.replace(filtered, soundings=encsounding.EMPTY_SOUNDINGS)
-    return filtered
+    slot = container.findChild(QQuickItem, name)
+    if slot is None:
+        raise RuntimeError(f"The ENC scene layer has no {name}")
+    return slot
 
 
 class EncSceneLayers:
@@ -1492,6 +1431,52 @@ class EncSceneLayers:
     def split(cls, fill, marker, lines):
         """Wrap the GPU line split's mesh siblings, in paint order."""
         return cls(fill, marker, lines)
+
+    @classmethod
+    def create(cls, container, line_item=None):
+        """Parent the ENC scene's layers on their QML slots and size them.
+
+        The scene's coordinates are viewport logical pixels, so the meshes
+        cover the container rather than a zero-sized rect.  The scene starts
+        hidden: it is shown only when a ready scene is published, never as an
+        empty overlay.
+
+        ``ViewportChartScene.qml`` declares ``encFillSlot``, ``encLineSlot``
+        and ``encMarkerSlot`` in paint order.  When ``line_item`` is given,
+        the fill mesh is parented to the fill slot, the marker mesh to the
+        marker slot, and the native item is reparented into the line slot, so
+        the line payload paints above the fills and below the symbols and
+        labels without a Python ``setZ`` write.  Without it -- the flag off,
+        the module unavailable, creation failed -- one all-kinds mesh item is
+        parented to the fill slot.  Both paths return the same explicit
+        surface.
+        """
+        if line_item is not None:
+            fill_slot = _scene_slot(container, "encFillSlot")
+            line_slot = _scene_slot(container, "encLineSlot")
+            marker_slot = _scene_slot(container, "encMarkerSlot")
+            fill = _size_scene_item(
+                EncMeshItem(fill_slot, kinds=FILL_KINDS, text_enabled=False),
+                container,
+            )
+            marker = _size_scene_item(
+                EncMeshItem(marker_slot, kinds=MARKER_KINDS, text_enabled=True),
+                container,
+            )
+            line_item.setParentItem(line_slot)
+            layers = cls.split(fill, marker, line_item)
+            layers.set_visible(False)
+            return layers
+
+        try:
+            slot = _scene_slot(container, "encFillSlot")
+        except RuntimeError:
+            # A bare container (a test scene without the declarative slots)
+            # has no fill slot: parent to the container itself, as before.
+            slot = container
+        layers = cls.single(_size_scene_item(EncMeshItem(slot), container))
+        layers.set_visible(False)
+        return layers
 
     @property
     def fill(self):
@@ -1606,7 +1591,7 @@ class EncSceneLayers:
     @property
     def cell_node_count(self):
         """Cell draw nodes across the meshes, for the state-probe surface."""
-        return sum(len(getattr(item, "_cell_nodes", ()) or ()) for item in self._meshes)
+        return sum(item.cell_node_count() for item in self._meshes)
 
     @property
     def view_scene(self):
@@ -1872,6 +1857,10 @@ class EncMeshItem(QQuickItem):
             return int(sum(counts))
         return int(sum(count for count, shown in zip(counts, mask) if shown))
 
+    def cell_node_count(self) -> int:
+        """Cell draw nodes this frame has attached, for the state probe."""
+        return len(self._cell_nodes)
+
     def scene_covers_view(self) -> bool:
         """Whether the cells this frame *draws* cover the whole viewport.
 
@@ -2055,9 +2044,7 @@ class EncMeshItem(QQuickItem):
                 source = None
             if source is view_scene:
                 return filtered
-        filtered = filter_view_scene(
-            view_scene, self._kinds, keep_soundings=self._text_enabled
-        )
+        filtered = view_scene.subset(self._kinds, keep_soundings=self._text_enabled)
         try:
             entry = (weakref.ref(view_scene), filtered)
         except TypeError:  # pragma: no cover - non-weakrefable fake scene
@@ -2073,7 +2060,8 @@ class EncMeshItem(QQuickItem):
         part order is preserved exactly as assembled and per-part colours
         travel in the vertex buffer.  An item with a ``kinds`` allowlist
         presents a packed copy containing only those parts (see
-        :func:`filter_view_scene`); the default item presents the scene whole.
+        :meth:`sailworks.rendering.encview.ViewScene.subset`); the default item
+        presents the scene whole.
         Presenting a view scene enables the
         coloured layout; the flat ``set_mesh``/``set_color`` path is unaffected.
         ``None`` clears to empty geometry.  Re-presenting the scene already on

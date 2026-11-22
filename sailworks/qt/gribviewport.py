@@ -4362,7 +4362,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             item = getattr(self, "_enc_scene_item", None)
             if item is not None:
                 item.set_visible(False)
-            # The trial layer never outlives the scene it was drawn for.
+            # The GPU line layer never outlives the scene it was drawn for.
             self._enc_gpu_line_layer.clear()
             trace_raster_visibility(self, "scene_withdrawn")
             # Nothing draws chart content any more: the raster must, now.
@@ -4381,7 +4381,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             """
             if getattr(self, "_enc_scene_item", None) is None:
                 return
-            # The trial GPU line layer projects degrees from the live camera,
+            # The GPU line layer projects degrees from the live camera,
             # so a pan or zoom moves it with the view immediately instead of
             # waiting for the next publication.  No-op when it is unbuilt.
             self._enc_gpu_line_layer.set_camera(self._camera)
@@ -11043,74 +11043,17 @@ def enc_scene_catalog(data_dir, palette=None):
     return EncCatalog(data_dir)
 
 
-def _size_enc_scene_item(item, container):
-    """Cover ``container`` with one ENC item and keep it covering it.
-
-    ``widthChanged``/``heightChanged`` carry no argument, so the slot has to
-    read the container's current size: connecting ``item.setWidth`` directly
-    would call it with zero arguments and raise.
-    """
-    item.setWidth(container.width())
-    item.setHeight(container.height())
-    container.widthChanged.connect(lambda: item.setWidth(container.width()))
-    container.heightChanged.connect(lambda: item.setHeight(container.height()))
-    return item
-
-
-def _enc_scene_slot(container, name):
-    """The declarative child slot of the ENC scene container."""
-    from PySide6.QtQuick import QQuickItem
-
-    slot = container.findChild(QQuickItem, name)
-    if slot is None:
-        raise RuntimeError(f"The ENC scene layer has no {name}")
-    return slot
-
-
 def enc_scene_item(container, *, gpu_lines=False, lines=None):
     """Parent the ENC scene's layers on their QML slots and size them.
 
-    The scene's coordinates are viewport logical pixels, so the meshes cover
-    the container rather than a zero-sized rect.  The scene starts hidden: it
-    is shown only when a ready scene is published, never as an empty overlay.
-
-    ``ViewportChartScene.qml`` declares ``encFillSlot``, ``encLineSlot`` and
-    ``encMarkerSlot`` in paint order.  When ``gpu_lines`` is true and the
-    native line item exists, the fill mesh is parented to the fill slot, the
-    marker mesh to the marker slot, and the native item is reparented into the
-    line slot, so the line payload paints above the fills and below the
-    symbols and labels without a Python ``setZ`` write.  Every other path --
-    the flag off, the module unavailable, creation failed -- parents one
-    all-kinds mesh item to the fill slot.  Both paths return the same
-    :class:`~sailworks.qt.encgpu.EncSceneLayers` surface.
+    A thin wrapper over :meth:`sailworks.qt.encgpu.EncSceneLayers.create`: the
+    flag and the created native line item decide between the split and the
+    single all-kinds mesh, and the layer surface is the same either way.  The
+    scene starts hidden; only a ready publication shows it.
     """
-    from .encgpu import FILL_KINDS, MARKER_KINDS, EncMeshItem, EncSceneLayers
+    from .encgpu import EncSceneLayers
 
-    if gpu_lines and lines is not None:
-        fill_slot = _enc_scene_slot(container, "encFillSlot")
-        line_slot = _enc_scene_slot(container, "encLineSlot")
-        marker_slot = _enc_scene_slot(container, "encMarkerSlot")
-        fill = _size_enc_scene_item(
-            EncMeshItem(fill_slot, kinds=FILL_KINDS, text_enabled=False), container
-        )
-        marker = _size_enc_scene_item(
-            EncMeshItem(marker_slot, kinds=MARKER_KINDS, text_enabled=True), container
-        )
-        lines.setParentItem(line_slot)
-        layers = EncSceneLayers.split(fill, marker, lines)
-        layers.set_visible(False)
-        return layers
-
-    try:
-        slot = _enc_scene_slot(container, "encFillSlot")
-    except RuntimeError:
-        # A bare container (a test scene without the declarative slots) has
-        # no fill slot: parent to the container itself, as before the split.
-        slot = container
-    item = _size_enc_scene_item(EncMeshItem(slot), container)
-    layers = EncSceneLayers.single(item)
-    layers.set_visible(False)
-    return layers
+    return EncSceneLayers.create(container, lines if gpu_lines else None)
 
 
 def viewport_layer_flags(args):
