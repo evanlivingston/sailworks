@@ -21,6 +21,15 @@ import cairo
 import numpy as np
 
 from sailworks.rendering.style import CairoStyle, Style
+from sailworks.rendering.scene.policy import (
+    BAND_MEDIUM,
+    BAND_DEEP,
+    BAND_SHALLOW,
+    DEPTH_ABSENT_DRVAL1,
+    DEPTH_ABSENT_DRVAL2,
+    DEPTH_BAND_COLOURS,
+    depare_band,
+)
 from sailworks.core.mapviewport import MapPoint
 
 from .vectorchartdrawer import VectorChartDrawer
@@ -28,8 +37,9 @@ from .vectorchartdrawer import VectorChartDrawer
 logger = logging.getLogger("sailworks")
 
 # Depth color styles
-DEPTH_MEDIUM = CairoStyle(color=(0.65, 0.85, 0.95, 1.0))  # Very light blue
-DEPTH_DEEP = CairoStyle(color=(0.83, 0.92, 0.93, 1.0))  # Near white-blue
+DEPTH_MEDIUM = CairoStyle(color=DEPTH_BAND_COLOURS[BAND_MEDIUM])  # Very light blue
+DEPTH_DEEP = CairoStyle(color=DEPTH_BAND_COLOURS[BAND_DEEP])  # Near white-blue
+DEPTH_BAND_STYLES = {BAND_MEDIUM: DEPTH_MEDIUM, BAND_DEEP: DEPTH_DEEP}
 
 CONTOUR_STYLE = CairoStyle(color=(0.5, 0.6, 0.7, 0.6), line_width=0.5)
 DASHED_STYLE = CairoStyle(color=(0.4, 0.4, 0.5, 0.6), line_width=0.8, dash=4.0)
@@ -187,14 +197,11 @@ class CM93ChartDrawer(VectorChartDrawer):
     @staticmethod
     def _get_depare_styles(attributes, palette):
         """Return (fill, stroke) for DEPARE features based on depth values."""
-        drval1 = attributes.get("DRVAL1", 0)
-        drval2 = attributes.get("DRVAL2", 100)
-        if isinstance(drval1, (int, float)) and drval1 < 5:
-            fill = palette.shallow_sea
-        elif isinstance(drval2, (int, float)) and drval2 < 20:
-            fill = DEPTH_MEDIUM
-        else:
-            fill = DEPTH_DEEP
+        band = depare_band(
+            attributes.get("DRVAL1", DEPTH_ABSENT_DRVAL1),
+            attributes.get("DRVAL2", DEPTH_ABSENT_DRVAL2),
+        )
+        fill = palette.shallow_sea if band == BAND_SHALLOW else DEPTH_BAND_STYLES[band]
         return fill, CONTOUR_STYLE
 
     def _render_area(self, gpsmap, cr, feature, palette):

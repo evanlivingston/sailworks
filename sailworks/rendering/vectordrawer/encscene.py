@@ -16,20 +16,11 @@ from dataclasses import dataclass
 
 from osgeo import ogr
 
-# Mirrors of the drawer's layer rules.  They are duplicated rather than
-# imported so this module stays independent of Cairo; test_enc_scene asserts
-# they stay equal to S57ChartDrawer's.
-SKIP_LAYERS = {"DSID", "M_COVR", "M_QUAL", "M_NSYS", "M_CSCL", "M_SDAT", "M_VDAT"}
-ATTRIBUTE_FIELDS = {"DEPARE": ("DRVAL1", "DRVAL2"), "BOYLAT": ("COLOUR",)}
-
-#: S-57 minimum display scale.  A feature belongs on charts equal to or finer
-#: than this denominator, so it is omitted when the display scale is coarser:
-#: ``display_scale > SCAMIN``.  That is the direction the repo already uses
-#: for scale gates - :func:`sailworks.core.encharts.chart_scale_visible` hides
-#: a cell when ``display_scale > native_scale * 16`` and
-#: :mod:`encsounding` hides soundings when ``scale > SCALE_LIMIT`` - and it is
-#: pinned by ``test_enc_mesh.test_scamin_culls_only_at_coarser_scales``.
-SCAMIN_FIELD = "SCAMIN"
+from sailworks.rendering.scene.policy import (
+    ATTRIBUTE_FIELDS,
+    SCAMIN_FIELD,
+    SKIP_LAYERS,
+)
 
 _CANCEL_STRIDE = 64  # envelope tests between cancellation polls
 _GRID_MAX_SIDE = 64  # coarse-index cap, so query work stays bounded
