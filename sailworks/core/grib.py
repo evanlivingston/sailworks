@@ -70,6 +70,15 @@ def _gdal_open(path):
     return gdal.Open(path)
 
 
+def __getattr__(name):
+    """Resolve ``grib.gdal`` on demand so callers that patch it keep working."""
+    if name == "gdal":
+        from osgeo import gdal
+
+        return gdal
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 PRESSURE_ELEMENTS = _PRESSURE_ELEMENTS
 
 
