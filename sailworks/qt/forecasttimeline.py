@@ -524,6 +524,7 @@ class ForecastTimeline(QWidget):
         self._signature = None
         self._syncing = False
         self._pending = None
+        self._seek_stamp = None
         self._expanded = False
         self.closed = False
         self.seconds = 900
@@ -682,6 +683,10 @@ class ForecastTimeline(QWidget):
         self.commit_timer.setSingleShot(True)
         self.commit_timer.setInterval(16)
         self.commit_timer.timeout.connect(self.commit)
+        self.seek_timer = QTimer(self)
+        self.seek_timer.setSingleShot(True)
+        self.seek_timer.setInterval(16)
+        self.seek_timer.timeout.connect(self._apply_seek)
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(500)
         self.poll_timer.timeout.connect(self.refresh)
@@ -947,6 +952,20 @@ class ForecastTimeline(QWidget):
         try:
             self.pause()
             self.cancel_commit()
+            # Continuous scrubbing restarts the timer, so only the last
+            # position of a drag is applied.
+            self._seek_stamp = stamp
+            self.seek_timer.start()
+        except Exception as exc:  # Never let a seek crash the app
+            logger.warning("ForecastTimeline seek error: %s", exc)
+
+    def _apply_seek(self):
+        stamp = self._seek_stamp
+        self._seek_stamp = None
+        if stamp is None or self.closed:
+            return
+        try:
+            self.pause()
             self.clock.set_time(datetime.fromtimestamp(stamp))
         except Exception as exc:  # Never let a seek crash the app
             logger.warning("ForecastTimeline seek error: %s", exc)
@@ -956,6 +975,9 @@ class ForecastTimeline(QWidget):
             return
         try:
             self.pause()
+            # A slider move wins over a seek still waiting on the timer.
+            self.seek_timer.stop()
+            self._seek_stamp = None
             start, end = self.bounds
             self._pending = start + value * (end - start) / self.slider.maximum()
             if not self.commit_timer.isActive():
@@ -965,6 +987,8 @@ class ForecastTimeline(QWidget):
 
     def cancel_commit(self):
         self.commit_timer.stop()
+        self.seek_timer.stop()
+        self._seek_stamp = None
         self._pending = None
 
     def commit(self):
