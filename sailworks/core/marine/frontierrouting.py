@@ -140,7 +140,9 @@ class ArraySamples:
     valid: np.ndarray
 
     def metadata(self, global_id):
-        j = int(np.searchsorted(self.ids, global_id))
+        return self.metadata_at(int(np.searchsorted(self.ids, global_id)))
+
+    def metadata_at(self, j):
         cur = self.currents
         result = dict(
             latitude=self.positions[j, 0],
@@ -151,6 +153,58 @@ class ArraySamples:
         )
         if j in cur.special:
             q = cur.special[j]
+            if q.qc_flags:
+                result["current_sampling"] = q.qc_flags
+                result["current_sample_location"] = json.loads(q.detail)
+        return result
+
+    def compact(self, global_ids):
+        rows = np.searchsorted(self.ids, global_ids)
+        assert np.array_equal(self.ids[rows], global_ids)
+        currents = self.currents
+        # identifier(index) is fields[dataset[index]].id for ordinary rows and
+        # special[index].dataset_id for wet-corner rows.
+        dataset = currents.dataset[rows]
+        dataset_ids = np.full(len(rows), None, dtype=object)
+        for value in np.unique(dataset):
+            if value >= 0:
+                dataset_ids[dataset == value] = currents.fields[int(value)].id
+        special = {}
+        for row, query in currents.special.items():
+            pos = int(np.searchsorted(rows, row))
+            if pos < len(rows) and int(rows[pos]) == row:
+                dataset_ids[pos] = query.dataset_id
+                special[pos] = query
+        return SampleRows(
+            ids=global_ids,
+            positions=self.positions[rows],
+            times_us=self.times_us[rows],
+            dataset_ids=dataset_ids,
+            sources=self.sources[rows],
+            special=special,
+        )
+
+
+@dataclass
+class SampleRows:
+    ids: np.ndarray
+    positions: np.ndarray
+    times_us: np.ndarray
+    dataset_ids: np.ndarray
+    sources: np.ndarray
+    special: dict
+
+    def metadata(self, global_id):
+        j = int(np.searchsorted(self.ids, global_id))
+        result = dict(
+            latitude=self.positions[j, 0],
+            longitude=self.positions[j, 1],
+            time=instant(self.times_us[j]).isoformat(),
+            dataset_id=self.dataset_ids[j],
+            wind_source=self.sources[j],
+        )
+        if j in self.special:
+            q = self.special[j]
             if q.qc_flags:
                 result["current_sampling"] = q.qc_flags
                 result["current_sample_location"] = json.loads(q.detail)
@@ -197,8 +251,8 @@ class ArrayEnvironment:
             gaps[(gap.position, gap.time, gap.kind)] = gap
         return ArraySamples(
             ids.copy(),
-            positions.copy(),
-            times_us.copy(),
+            positions,
+            times_us,
             currents,
             sources,
             values,
@@ -240,11 +294,19 @@ def propagate(self, frontier, seconds, end, gaps, numeric):  # noqa: C901
     prepared_polar = _prepare_polar(self.polar)
     policy = policy_of(self.polar)
 
-    def velocities(ids, positions, times):
-        samples = numeric.sample(ids, positions[ids], times[ids], gaps)
+    # Per-substep scratch buffers, allocated once and rewritten only at `ids`.
+    # Rows outside the current candidate set may hold stale values; every read
+    # is masked by `ids`, `kept` or the sampling validity masks.
+    v = np.zeros((count, 7))
+    mv = np.zeros((count, 7))
+    midpoint = np.empty((count, 2))
+    destination = np.empty((count, 2))
+    duration = np.empty(count)
+
+    def velocities(ids, positions, clock, out):
+        samples = numeric.sample(ids, positions[ids], clock, gaps)
         kept = ids[samples.valid]
         data = samples.values[samples.valid]
-        result = np.zeros((count, 7))
         angle = np.abs(
             (headings[kept] - data[:, 0] + math.pi) % (2 * math.pi) - math.pi
         )
@@ -259,16 +321,16 @@ def propagate(self, frontier, seconds, end, gaps, numeric):  # noqa: C901
             angle = angle[keep]
             ws_kn = ws_kn[keep]
         if not len(kept):
-            return kept, result, samples
+            return kept, out, samples
         speed = polar_many_prepared(prepared_polar, ws_kn, angle) * KNOT
         if (~np.isfinite(speed) | (speed < 0)).any():
             raise ValueError("Invalid polar speed")
-        result[kept, 2:] = np.column_stack(
+        out[kept, 2:] = np.column_stack(
             (speed, data[:, 0], data[:, 1], data[:, 2], data[:, 3])
         )
-        result[kept, 0] = speed * np.sin(headings[kept]) + data[:, 2]
-        result[kept, 1] = speed * np.cos(headings[kept]) + data[:, 3]
-        return kept, result, samples
+        out[kept, 0] = speed * np.sin(headings[kept]) + data[:, 2]
+        out[kept, 1] = speed * np.cos(headings[kept]) + data[:, 3]
+        return kept, out, samples
 
     def valid(ids, a, b):
         mask = np.ones(len(ids), dtype=bool)
@@ -305,11 +367,10 @@ def propagate(self, frontier, seconds, end, gaps, numeric):  # noqa: C901
         if not len(ids):
             break
         alive[ids] = False
-        ids, v, initial = velocities(ids, positions, times)
+        ids, v, initial = velocities(ids, positions, times[ids], v)
         if not len(ids):
             continue
         sog = np.maximum(np.hypot(v[ids, 0], v[ids, 1]), 0.01)
-        duration = np.zeros(count)
         duration[ids] = np.minimum.reduce(
             (
                 np.full(len(ids), 300),
@@ -318,35 +379,39 @@ def propagate(self, frontier, seconds, end, gaps, numeric):  # noqa: C901
                 distance[ids] / sog,
             )
         )
-        midpoint = positions.copy()
         midpoint[ids] = move_many(positions[ids], v[ids], duration[ids] / 2)
         ids = valid(ids, positions, midpoint)
         if not len(ids):
             continue
-        mt = times.copy()
-        mt[ids] += np.rint(duration[ids] * 1e6 / 2).astype(np.int64)
-        ids, mv, middle = velocities(ids, midpoint, mt)
+        half_us = np.rint(duration[ids] * 1e6 / 2).astype(np.int64)
+        ids, mv, middle = velocities(ids, midpoint, times[ids] + half_us, mv)
         if not len(ids):
             continue
-        destination = positions.copy()
         destination[ids] = move_many(positions[ids], mv[ids], duration[ids])
         ids = valid(ids, midpoint, destination)
         if not len(ids):
             continue
-        arrival = times.copy()
-        arrival[ids] += np.rint(duration[ids] * 1e6).astype(np.int64)
-        endpoint = numeric.sample(ids, destination[ids], arrival[ids], gaps)
-        ids = ids[endpoint.valid]
+        full_us = np.rint(duration[ids] * 1e6).astype(np.int64)
+        endpoint = numeric.sample(ids, destination[ids], times[ids] + full_us, gaps)
+        keep = endpoint.valid
+        ids = ids[keep]
         if not len(ids):
             continue
+        full_us = full_us[keep]
         alive[ids] = True
         positions[ids] = destination[ids]
-        times[ids] = arrival[ids]
+        times[ids] = times[ids] + full_us
         elapsed[ids] += duration[ids]
         last[ids] = v[ids]
-        accepted = np.zeros(count, dtype=bool)
-        accepted[ids] = True
-        logs.append((accepted, initial, middle, endpoint, mv))
+        logs.append(
+            (
+                ids,
+                initial.compact(ids),
+                middle.compact(ids),
+                endpoint.compact(ids),
+                mv[ids],
+            )
+        )
     return dict(
         parents=parents,
         headings=headings,
@@ -452,8 +517,9 @@ def route_frontier(self, lastlog, t, hours, start, end):  # noqa: C901
         point = frontier[parent]
         bearing, _, travelled = GEOD.inv(point.pos[1], point.pos[0], p[i, 1], p[i, 0])
         samples: list = []
-        for accepted, initial, middle, endpoint, mv in data["logs"]:
-            if not accepted[i]:
+        for accepted_ids, initial, middle, endpoint, mv_rows in data["logs"]:
+            pos = int(np.searchsorted(accepted_ids, i))
+            if pos >= len(accepted_ids) or accepted_ids[pos] != i:
                 continue
             samples.extend(
                 (
@@ -461,9 +527,9 @@ def route_frontier(self, lastlog, t, hours, start, end):  # noqa: C901
                     endpoint.metadata(i),
                     dict(
                         **middle.metadata(i),
-                        current_east_ms=float(mv[i, 5]),
-                        current_north_ms=float(mv[i, 6]),
-                        speed_through_water_kn=float(mv[i, 2]) / KNOT,
+                        current_east_ms=float(mv_rows[pos, 5]),
+                        current_north_ms=float(mv_rows[pos, 6]),
+                        speed_through_water_kn=float(mv_rows[pos, 2]) / KNOT,
                         heading_true=math.degrees(data["headings"][i]) % 360,
                     ),
                 )

@@ -499,10 +499,8 @@ class CurrentIsoRouter(LinearBestIsoRouter):
         position, instant = point.pos, point.time
         samples: list = []
         elapsed = 0.0
-        while elapsed < seconds:
-            distance, _ = distance_bearing(position, end)
-            if distance <= 1.0:
-                break
+        distance, _ = distance_bearing(position, end)
+        while elapsed < seconds and distance > 1.0:
             v = self.velocity(position, instant, heading)
             sog = math.hypot(v[0], v[1])
             duration = min(
@@ -534,9 +532,8 @@ class CurrentIsoRouter(LinearBestIsoRouter):
             )
             position, instant = destination, arrival
             elapsed += duration
-        distance, _ = distance_bearing(position, end)
-        _, bearing = distance_bearing(point.pos, position)
-        travelled, _ = distance_bearing(point.pos, position)
+            distance, _ = distance_bearing(position, end)
+        travelled, bearing = distance_bearing(point.pos, position)
         result = IsoPoint(
             position,
             time=instant,
