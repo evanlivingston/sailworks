@@ -271,3 +271,38 @@ def test_download_refuses_a_run_with_no_data(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="no data"):
         source.download(_wind_identifier([3, 6]), str(tmp_path), lambda _p: None)
     assert list(tmp_path.glob("*.grib2")) == []
+
+
+def test_catalogue_probe_pool_uses_the_bounded_worker_count(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
+
+    from sailworks.core.gribsources import weathernext
+    from sailworks.core.gribsources.parallel import MAX_CONCURRENT_FORECAST_REQUESTS
+
+    recorded = []
+
+    class RecordingExecutor(RealThreadPoolExecutor):
+        def __init__(self, max_workers=None, **kwargs):
+            recorded.append(max_workers)
+            super().__init__(max_workers=max_workers, **kwargs)
+
+    class Filesystem:
+        def ls(self, _root, detail=False):
+            return ["gs://bucket/20261103_12hr_01_preds/"]
+
+        def exists(self, _path):
+            return True
+
+    monkeypatch.setattr(weathernext, "ThreadPoolExecutor", RecordingExecutor)
+    monkeypatch.setattr(weathernext, "_CATALOGUE", ())
+    monkeypatch.setattr(weathernext, "_CATALOGUE_AT", 0.0)
+    monkeypatch.setattr(
+        weathernext.WeatherNextCredentials,
+        "gcs_filesystem",
+        lambda self: Filesystem(),
+    )
+
+    runs = WeatherNextSource()._catalogue_runs()
+
+    assert recorded == [MAX_CONCURRENT_FORECAST_REQUESTS]
+    assert runs

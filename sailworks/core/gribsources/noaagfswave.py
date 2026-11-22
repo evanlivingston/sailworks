@@ -21,9 +21,8 @@ from .options import DownloadOptions, custom_rows
 from .ranged import (
     HTTPStatusError,
     MarkedStatusError,
-    append_message,
+    fetch_message,
     fetch_text,
-    message_length,
 )
 
 # The AWS Open Data mirror has no directory listings, so runs are discovered by
@@ -435,24 +434,13 @@ class NOAAGFSWaveSource(GribSource):
                             f"Pinned GFS-Wave run is missing requested fields at f{hour:03d}"
                         )
                     for offset, indexed_length in spans:
-                        length = message_length(
+                        bytes_written += fetch_message(
                             self.session,
                             url,
                             offset,
-                            cancel=cancel,
-                            max_bytes=MAX_MESSAGE_BYTES,
-                        )
-                        if indexed_length is not None and length != indexed_length:
-                            raise ValueError(
-                                "GFS-Wave index length differs from GRIB message"
-                            )
-                        bytes_written += append_message(
-                            self.session,
-                            url,
-                            offset,
-                            length,
                             output,
                             cancel=cancel,
+                            expected_length=indexed_length,
                             max_bytes=MAX_MESSAGE_BYTES,
                         )
                         completed += 1

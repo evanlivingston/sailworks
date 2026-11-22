@@ -27,6 +27,7 @@ import requests
 from sailworks.core.gribsources.base import GribSource
 from .parallel import write_ordered_forecasts
 from .options import DEFAULT_FIELDS, custom_rows, filtered_parameters, selection
+from .retry import ThreadLocalSessions, get_with_retry
 
 logger = logging.getLogger("sailworks")
 
@@ -255,12 +256,17 @@ class NOAAHRRRSource(GribSource):
             dir=dest_dir, suffix=".part", delete=False
         )
         try:
-            with temporary as outfile:
+            with temporary as outfile, ThreadLocalSessions() as sessions:
 
                 def request(fhour):
                     params = self._build_filter_url(date_str, cycle, fhour, fields)
-                    return requests.get(
-                        HRRR_FILTER_URL, params=params, stream=True, timeout=(10, 60)
+                    return get_with_retry(
+                        sessions.get(),
+                        HRRR_FILTER_URL,
+                        params=params,
+                        stream=True,
+                        timeout=(10, 60),
+                        allow_redirects=False,
                     )
 
                 bytes_written = write_ordered_forecasts(

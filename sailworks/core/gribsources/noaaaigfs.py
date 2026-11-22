@@ -22,7 +22,7 @@ from sailworks.core.gribsources.base import GribSource
 from sailworks.core.marine.chs import DownloadCancelledError
 from .aigfsindex import parse_index as _parse_index
 from .options import DownloadOptions
-from .ranged import HTTPStatusError, append_message, fetch_text, message_length
+from .ranged import HTTPStatusError, fetch_message, fetch_text, message_length
 from .parallel import MAX_CONCURRENT_FORECAST_REQUESTS, write_ordered_payloads
 
 AIGFS_ROOT = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigfs/prod/"
@@ -321,16 +321,15 @@ class NOAAAIGFSSource(GribSource):
             filename = f"aigfs.t{cycle}z.sfc.f{hour:03d}.grib2"
             grib_url = urljoin(run_url, filename)
             for offset, indexed_length in spans:
-                length = message_length(
-                    self.session,
-                    grib_url,
-                    offset,
-                    cancel=cancel,
-                    max_bytes=MAX_MESSAGE_BYTES,
-                )
-                if indexed_length is not None and length != indexed_length:
-                    raise ValueError(
-                        "AI-GFS index span does not match GRIB message length"
+                if indexed_length is not None:
+                    length = indexed_length
+                else:
+                    length = message_length(
+                        self.session,
+                        grib_url,
+                        offset,
+                        cancel=cancel,
+                        max_bytes=MAX_MESSAGE_BYTES,
                     )
                 messages.append((hour, grib_url, offset, length))
 
@@ -358,8 +357,14 @@ class NOAAAIGFSSource(GribSource):
                     try:
                         for url, offset, length in by_hour[hour]:
                             self._check_cancel(cancel)
-                            actual = append_message(
-                                session, url, offset, length, payload, cancel=cancel
+                            actual = fetch_message(
+                                session,
+                                url,
+                                offset,
+                                payload,
+                                cancel=cancel,
+                                expected_length=length,
+                                max_bytes=MAX_MESSAGE_BYTES,
                             )
                             if actual != length:
                                 raise ValueError(
@@ -421,16 +426,15 @@ class NOAAAIGFSSource(GribSource):
                 filename = f"aigfs.t{cycle}z.sfc.f{hour:03d}.grib2"
                 grib_url = urljoin(run_url, filename)
                 for offset, indexed_length in spans:
-                    length = message_length(
-                        self.session,
-                        grib_url,
-                        offset,
-                        cancel=cancel,
-                        max_bytes=MAX_MESSAGE_BYTES,
-                    )
-                    if indexed_length is not None and length != indexed_length:
-                        raise ValueError(
-                            "AI-GFS index span does not match GRIB message length"
+                    if indexed_length is not None:
+                        length = indexed_length
+                    else:
+                        length = message_length(
+                            self.session,
+                            grib_url,
+                            offset,
+                            cancel=cancel,
+                            max_bytes=MAX_MESSAGE_BYTES,
                         )
                     total += length
         if total <= 0:

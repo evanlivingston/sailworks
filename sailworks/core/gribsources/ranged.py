@@ -2,6 +2,8 @@
 
 import re
 
+from .retry import get_with_retry
+
 _CONTENT_RANGE = re.compile(r"^bytes (\d+)-(\d+)/(\d+)$")
 GRIB_MESSAGE_LIMIT = 64 * 1024 * 1024
 _TIMEOUT = (10, 60)
@@ -51,15 +53,17 @@ def _read_bounded(response, limit, cancel):
     return bytes(body[:limit])
 
 
-def _request(session, url, *, headers=None, stream=True):
+def _request(session, url, *, headers=None, stream=True, cancel=None):
     request_headers = {"Accept-Encoding": "identity"}
     request_headers.update(headers or {})
-    return session.get(
+    return get_with_retry(
+        session,
         url,
         headers=request_headers,
         stream=stream,
         timeout=_TIMEOUT,
         allow_redirects=False,
+        cancel=cancel,
     )
 
 
@@ -102,7 +106,7 @@ def fetch_text(
     ):
         raise ValueError("error_marker must be bytes with a positive error_bytes")
     _check_cancel(cancel)
-    response = _request(session, url)
+    response = _request(session, url, cancel=cancel)
     try:
         if response.status_code != 200:
             if (
@@ -128,7 +132,12 @@ def fetch_text(
         _close(response)
 
 
-def _range_total(response, offset, end, url):
+def _range_span(response, start, url):
+    """Validate a partial-content range response beginning at ``start``.
+
+    Returns ``(actual_end, total)`` where ``total`` is the full remote object
+    size. Exact-range callers build on this through :func:`_range_total`.
+    """
     if response.status_code != 206:
         raise HTTPStatusError(206, response, url)
     _require_identity_encoding(response)
@@ -137,7 +146,14 @@ def _range_total(response, offset, end, url):
     if match is None:
         raise ValueError("Range response has invalid Content-Range")
     actual_start, actual_end, total = map(int, match.groups())
-    if actual_start != offset or actual_end != end or total <= actual_end:
+    if actual_start != start or total <= actual_end:
+        raise ValueError("Range response does not match requested byte interval")
+    return actual_end, total
+
+
+def _range_total(response, offset, end, url):
+    actual_end, total = _range_span(response, offset, url)
+    if actual_end != end:
         raise ValueError("Range response does not match requested byte interval")
     return total
 
@@ -168,6 +184,7 @@ def message_length(session, url, offset, *, cancel=None, max_bytes=GRIB_MESSAGE_
             "Range": f"bytes={offset}-{offset + 15}",
             "Accept-Encoding": "identity",
         },
+        cancel=cancel,
     )
     try:
         total = _range_total(response, offset, offset + 15, url)
@@ -185,6 +202,135 @@ def message_length(session, url, offset, *, cancel=None, max_bytes=GRIB_MESSAGE_
         return length
     finally:
         _close(response)
+
+
+def fetch_message(
+    session,
+    url,
+    offset,
+    output,
+    *,
+    cancel=None,
+    progress=None,
+    expected_length=None,
+    max_bytes=GRIB_MESSAGE_LIMIT,
+    window=64 * 1024,
+):
+    """Stream one GRIB2 message into ``output`` with a single header request.
+
+    When ``expected_length`` is supplied the first Range covers exactly that
+    message, so a caller holding an index length needs one round trip instead
+    of a header probe plus a body request. Without it the first Range covers
+    ``window`` bytes and the length is read from the same response. A message
+    larger than the window continues with exact Range requests until complete.
+    ``progress`` receives cumulative bytes for this message after each write.
+    """
+    if (
+        type(offset) is not int
+        or offset < 0
+        or type(max_bytes) is not int
+        or max_bytes < 20
+        or type(window) is not int
+        or window < 16
+        or (
+            expected_length is not None
+            and (
+                type(expected_length) is not int
+                or expected_length < 20
+                or expected_length > max_bytes
+            )
+        )
+    ):
+        raise ValueError("invalid message range or size limit")
+    _check_cancel(cancel)
+    header = bytearray()
+    tail = bytearray()
+    length = None
+    written = 0
+
+    def consume(chunks, total):
+        nonlocal length, written
+        for chunk in chunks:
+            _check_cancel(cancel)
+            if not chunk:
+                continue
+            if length is None:
+                missing = 16 - len(header)
+                header.extend(chunk[:missing])
+                if len(header) < 16:
+                    continue
+                chunk = chunk[missing:]
+                length = _grib_header(bytes(header), max_bytes)
+                if expected_length is not None and length != expected_length:
+                    raise ValueError(
+                        "GRIB header length does not match indexed message length"
+                    )
+                if offset + length > total:
+                    raise ValueError("GRIB message extends beyond remote object")
+                output.write(bytes(header))
+                written = 16
+                if progress is not None:
+                    progress(written)
+                if not chunk:
+                    continue
+            take = min(len(chunk), length - written)
+            if take:
+                data = chunk[:take]
+                output.write(data)
+                tail.extend(data)
+                if len(tail) > 4:
+                    del tail[:-4]
+                written += take
+                if progress is not None:
+                    progress(written)
+            if written == length:
+                return
+
+    if expected_length is not None:
+        first_end = offset + expected_length - 1
+    else:
+        first_end = offset + window - 1
+    response = _request(
+        session,
+        url,
+        headers={
+            "Range": f"bytes={offset}-{first_end}",
+            "Accept-Encoding": "identity",
+        },
+        cancel=cancel,
+    )
+    try:
+        _actual_end, total = _range_span(response, offset, url)
+        consume(response.iter_content(chunk_size=64 * 1024), total)
+    finally:
+        _close(response)
+    if length is None:
+        raise ValueError("Range response is truncated")
+    while written < length:
+        start = offset + written
+        response = _request(
+            session,
+            url,
+            headers={
+                "Range": f"bytes={start}-{offset + length - 1}",
+                "Accept-Encoding": "identity",
+            },
+            cancel=cancel,
+        )
+        try:
+            before = written
+            _actual_end, total = _range_span(response, start, url)
+            consume(response.iter_content(chunk_size=64 * 1024), total)
+            if written == before:
+                raise ValueError("Range response is truncated")
+        finally:
+            _close(response)
+    _check_cancel(cancel)
+    if written != length:
+        raise ValueError("Range response is truncated")
+    if bytes(tail) != b"7777":
+        raise ValueError("GRIB2 message has no end marker")
+    return written
 
 
 def append_message(
@@ -218,6 +364,7 @@ def append_message(
         session,
         url,
         headers={"Range": f"bytes={offset}-{end}", "Accept-Encoding": "identity"},
+        cancel=cancel,
     )
     try:
         _range_total(response, offset, end, url)

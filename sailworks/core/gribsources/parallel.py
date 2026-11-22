@@ -51,21 +51,24 @@ def write_ordered_forecasts(
             if status != 200:
                 raise _non_grib_step_error(model, step, status, rate_limit_detail)
             response.raise_for_status()
-            content = bytearray()
-            for chunk in response.iter_content(chunk_size=8192):
+            chunks = []
+            total = 0
+            for chunk in response.iter_content(chunk_size=64 * 1024):
                 check_cancel()
                 if not chunk:
                     continue
-                if len(content) + len(chunk) > MAX_DOWNLOAD_BYTES:
+                total += len(chunk)
+                if total > MAX_DOWNLOAD_BYTES:
                     raise ValueError(
                         "Forecast download exceeded 256 MiB; choose a smaller route area"
                     )
-                content.extend(chunk)
-            if not content.startswith(GRIB_MAGIC):
+                chunks.append(chunk)
+            payload = b"".join(chunks)
+            if not payload.startswith(GRIB_MAGIC):
                 raise _non_grib_step_error(
                     model, step, status, "response body is not a GRIB file"
                 )
-            return content
+            return payload
         finally:
             response.close()
 
@@ -116,7 +119,8 @@ def write_ordered_payloads(
         payload = fetch(step)
         if not isinstance(payload, (bytes, bytearray, memoryview)):
             raise TypeError("fetch must return a bytes-like payload")
-        payload = bytes(payload)
+        if type(payload) is not bytes:
+            payload = bytes(payload)
         nonlocal total_bytes
         with budget_lock:
             if total_bytes + len(payload) > MAX_DOWNLOAD_BYTES:

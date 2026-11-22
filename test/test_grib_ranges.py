@@ -2,9 +2,11 @@ from io import BytesIO
 
 import pytest
 
+from sailworks.core.gribsources.parallel import write_ordered_forecasts
 from sailworks.core.gribsources.ranged import (
     HTTPStatusError,
     append_message,
+    fetch_message,
     fetch_text,
     message_length,
 )
@@ -144,3 +146,127 @@ def test_append_preserves_bytes_and_reports_cumulative_per_message_progress():
     assert count == len(message)
     assert output.getvalue() == message
     assert progress[-1] == len(message)
+
+
+def test_fetch_message_with_expected_length_uses_one_exact_request():
+    message = synthetic_grib(b"wire bytes")
+    offset = 40
+    response = Response(message, headers=content_range(offset, len(message), 5000))
+    session = Session(response)
+    output = BytesIO()
+    progress = []
+
+    count = fetch_message(
+        session,
+        "remote",
+        offset,
+        output,
+        expected_length=len(message),
+        progress=progress.append,
+    )
+
+    assert count == len(message)
+    assert output.getvalue() == message
+    assert progress[-1] == len(message)
+    assert response.closed
+    assert len(session.calls) == 1
+    headers = session.calls[0][1]["headers"]
+    assert headers["Range"] == f"bytes={offset}-{offset + len(message) - 1}"
+
+
+def test_fetch_message_continues_past_its_window_without_truncation():
+    message = synthetic_grib(b"x" * 200)
+    offset = 7
+    window = 32
+    total = 4096
+
+    class RangedSession(Session):
+        def get(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            first, last = kwargs["headers"]["Range"][len("bytes=") :].split("-")
+            first, last = int(first), int(last)
+            body = message[first - offset : last - offset + 1]
+            return Response(body, headers=content_range(first, len(body), total))
+
+    session = RangedSession(None)
+    output = BytesIO()
+
+    count = fetch_message(session, "remote", offset, output, window=window)
+
+    assert count == len(message)
+    assert output.getvalue() == message
+    assert [call[1]["headers"]["Range"] for call in session.calls] == [
+        f"bytes={offset}-{offset + window - 1}",
+        f"bytes={offset + window}-{offset + len(message) - 1}",
+    ]
+
+
+def test_fetch_message_rejects_header_length_that_differs_from_index():
+    message = synthetic_grib(b"z" * 40)
+    offset = 12
+    expected_length = len(message) + 8
+    response = Response(message, headers=content_range(offset, len(message), 5000))
+    session = Session(response)
+    output = BytesIO()
+
+    with pytest.raises(ValueError, match="does not match"):
+        fetch_message(
+            session, "remote", offset, output, expected_length=expected_length
+        )
+
+    assert response.closed
+    assert len(session.calls) == 1
+    assert output.getvalue() == b""
+
+
+def test_fetch_message_rejects_empty_continuation_after_header():
+    message = synthetic_grib(b"y" * 200)
+    offset = 0
+    window = 32
+    total = 4096
+
+    class StallingSession(Session):
+        def get(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            if len(self.calls) == 1:
+                body = message[:16]
+                return Response(body, headers=content_range(offset, len(body), total))
+            start = offset + 16
+            return Response(b"", headers=content_range(start, len(message) - 16, total))
+
+    session = StallingSession(None)
+    output = BytesIO()
+
+    with pytest.raises(ValueError, match="truncated"):
+        fetch_message(session, "remote", offset, output, window=window)
+
+    assert len(session.calls) == 2
+    assert [call[1]["headers"]["Range"] for call in session.calls] == [
+        f"bytes={offset}-{offset + window - 1}",
+        f"bytes={offset + 16}-{offset + len(message) - 1}",
+    ]
+
+
+def test_write_ordered_forecasts_streams_64k_chunks_and_returns_bytes():
+    chunk_sizes = []
+
+    class RecordingResponse(Response):
+        def iter_content(self, chunk_size):
+            chunk_sizes.append(chunk_size)
+            return super().iter_content(chunk_size)
+
+    response = RecordingResponse(b"GRIBdata", status=200)
+    response.raise_for_status = lambda: None
+    output = BytesIO()
+
+    write_ordered_forecasts(
+        output,
+        (0,),
+        lambda _step: response,
+        lambda: None,
+        lambda _percentage: None,
+    )
+
+    assert chunk_sizes == [64 * 1024]
+    assert output.getvalue() == b"GRIBdata"
+    assert type(output.getvalue()) is bytes
