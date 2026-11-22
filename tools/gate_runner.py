@@ -517,6 +517,19 @@ def not_evaluated_record(gate_id, args, reason):
     return record
 
 
+def _as_text(value):
+    """Return captured process output as text, whatever form it arrived in.
+
+    subprocess.TimeoutExpired carries raw bytes when the child was not read
+    with text=True, and None when nothing was captured on that stream.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
 def run_gate(gate_id, args):
     """Run one gate and return its result record."""
     gate = gates.GATES[gate_id]
@@ -582,7 +595,7 @@ def run_gate(gate_id, args):
             duration_s=round(time.perf_counter() - began, 3),
         )
         (outdir / f"{gate_id}.tool.log").write_text(
-            (exc.stdout or "") + (exc.stderr or ""), encoding="utf-8"
+            _as_text(exc.stdout) + _as_text(exc.stderr), encoding="utf-8"
         )
         record["checks"] = []
         _write_result(outdir, gate_id, record)
