@@ -357,10 +357,12 @@ class TestForecastSourceOverview(unittest.TestCase):
         self.timeline.dispose()
         self.assertEqual(animation.state(), QAbstractAnimation.State.Stopped)
 
-    def test_poll_timer_follows_timeline_visibility(self):
+    def test_refresh_is_event_driven_without_idle_poll(self):
+        # The panel is rebuilt from display_forecast/marine/region changes and
+        # on show; a 500 ms idle poll used to re-run the whole refresh.
+        self.assertFalse(hasattr(self.timeline, "poll_timer"))
         self.timeline.hide()
         self.app.processEvents()
-        self.assertFalse(self.timeline.poll_timer.isActive())
         self.timeline.show()
         self.app.processEvents()
-        self.assertTrue(self.timeline.poll_timer.isActive())
+        self.assertTrue(self.timeline.bounds)

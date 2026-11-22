@@ -687,9 +687,6 @@ class ForecastTimeline(QWidget):
         self.seek_timer.setSingleShot(True)
         self.seek_timer.setInterval(16)
         self.seek_timer.timeout.connect(self._apply_seek)
-        self.poll_timer = QTimer(self)
-        self.poll_timer.setInterval(500)
-        self.poll_timer.timeout.connect(self.refresh)
         self.clock.connect("time_change", self._time_changed)
         self.marine.connect("changed", self._marine_changed)
         self.marine.fields.connect("changed", self._marine_changed)
@@ -700,7 +697,6 @@ class ForecastTimeline(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         if not self.closed:
-            self.poll_timer.start()
             self.refresh()
 
     def resizeEvent(self, event):
@@ -1128,7 +1124,6 @@ class ForecastTimeline(QWidget):
             if not self.closed:
                 self.pause()
                 self.cancel_commit()
-                self.poll_timer.stop()
         except Exception as exc:  # Never let a hide crash the app
             logger.warning("ForecastTimeline hide error: %s", exc)
         super().hideEvent(event)
@@ -1141,7 +1136,6 @@ class ForecastTimeline(QWidget):
             self.source_overview.stop()
             self.pause()
             self.cancel_commit()
-            self.poll_timer.stop()
             self.day_strip.stop_clock()
             self.clock.disconnect("time_change", self._time_changed)
             self.marine.disconnect("changed", self._marine_changed)
