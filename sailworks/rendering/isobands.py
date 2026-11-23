@@ -21,7 +21,7 @@ instead of stretching one quad across it.
 
 from __future__ import annotations
 
-from math import hypot
+from math import floor, hypot
 from statistics import median
 
 from .daynight import day_night_colour
@@ -53,6 +53,38 @@ def _centroid(points) -> tuple:
 
 def _distance(a, b) -> float:
     return hypot(a[0] - b[0], a[1] - b[1])
+
+
+def _focus(points, samples: int):
+    """Centroid, bbox and step bound of one frontier.
+
+    The centroid and the arc use the same arithmetic as the all-pairs scan, so
+    a retained candidate carries exactly the distance the greedy sort expects,
+    and the bbox supplies the extent bound used to place the search grid. The
+    step bound is the largest ``_step`` any pair containing this contour could
+    report: a median segment never exceeds the mean, which is
+    ``arc / (count - 1)``, and the resampled term is ``arc / (samples - 1)``.
+    """
+    count = len(points)
+    min_lat = max_lat = points[0][0]
+    min_lon = max_lon = points[0][1]
+    for point in points:
+        lat, lon = point[0], point[1]
+        if lat < min_lat:
+            min_lat = lat
+        elif lat > max_lat:
+            max_lat = lat
+        if lon < min_lon:
+            min_lon = lon
+        elif lon > max_lon:
+            max_lon = lon
+    arc = _arc_length(points)
+    bound = ISOCHRONE_BAND_MIN_SPACING
+    if count > 1:
+        bound = max(bound, arc / (count - 1))
+    if samples > 1:
+        bound = max(bound, arc / (samples - 1))
+    return (_centroid(points), (min_lat, min_lon, max_lat, max_lon), bound)
 
 
 def _segments(points) -> list:
@@ -295,24 +327,83 @@ def _paired_contours(prev, nxt, samples: int):
     the gate refused, so a fully rejected layer pair counts once per available
     frontier rather than once per rejected combination.
 
+    Candidates come from a spatial grid rather than every combination: a layer
+    pair can hold hundreds of frontiers, and only pairs whose boxes meet can
+    pass the gate. Each previous contour searches the cells around a radius
+    that any gate-passing partner must fall inside, or every partner when that
+    rectangle holds more cells than there are next contours. The radius uses
+    the largest extent on each side plus an upper bound on the gate's margin,
+    so it never drops a pair the gate would accept; because the greedy loop
+    only ever sees a superset of the acceptable pairs in the same sorted order,
+    the result is identical to the all-pairs scan.
+
     Returns ``(pairs, skipped)`` where each pair is
     ``(prev_index, next_index, first, second, step)`` with both frontiers
     already resampled and aligned, so the caller does not repeat that work.
     """
     usable_prev = [
-        (index, _centroid(points)) for index, points in enumerate(prev) if points
+        (index, _focus(points, samples)) for index, points in enumerate(prev) if points
     ]
     usable_next = [
-        (index, _centroid(points)) for index, points in enumerate(nxt) if points
+        (index, _focus(points, samples)) for index, points in enumerate(nxt) if points
     ]
+    if not usable_prev or not usable_next:
+        return [], 0
+    step_limit = max(focus[2] for _index, focus in usable_prev + usable_next)
+
+    # Largest centroid-to-box extent on the next side, per direction. A pair
+    # within margin m has |centroid delta| <= max(u_p + v_n, u_n + v_p) + m, so
+    # these maxima turn the per-pair bound into a per-prev search radius.
+    north_next = south_next = east_next = west_next = 0.0
+    for _index, (centroid, box, _bound) in usable_next:
+        north_next = max(north_next, box[2] - centroid[0])
+        south_next = max(south_next, centroid[0] - box[0])
+        east_next = max(east_next, box[3] - centroid[1])
+        west_next = max(west_next, centroid[1] - box[1])
+
+    sizes = [
+        max(box[2] - box[0], box[3] - box[1])
+        for _index, (_centroid, box, _bound) in usable_prev + usable_next
+    ]
+    # Cells near the typical contour size keep a search to the same and adjacent
+    # cells; the floor stops a layer of degenerate contours from making cells
+    # smaller than one gate step.
+    cell = max(median(sizes), 2.0 * step_limit, ISOCHRONE_BAND_MIN_SPACING)
+    buckets = {}
+    for next_index, (centroid, _box, _bound) in usable_next:
+        key = (floor(centroid[0] / cell), floor(centroid[1] / cell))
+        buckets.setdefault(key, []).append((next_index, centroid))
+
+    candidates = []
+    for prev_index, (centroid, box, _bound) in usable_prev:
+        lat, lon = centroid
+        lat_radius = max(box[2] - lat + south_next, north_next + lat - box[0])
+        lon_radius = max(box[3] - lon + west_next, east_next + lon - box[1])
+        # A tiny relative pad keeps a float on the bound inside the rectangle.
+        lat_radius = (lat_radius + step_limit) * (1.0 + 1e-9) + 1e-12
+        lon_radius = (lon_radius + step_limit) * (1.0 + 1e-9) + 1e-12
+        lat_low = floor((lat - lat_radius) / cell)
+        lat_high = floor((lat + lat_radius) / cell)
+        lon_low = floor((lon - lon_radius) / cell)
+        lon_high = floor((lon + lon_radius) / cell)
+        if (lat_high - lat_low + 1) * (lon_high - lon_low + 1) > len(usable_next):
+            pool = ((index, focus[0]) for index, focus in usable_next)
+        else:
+            # Each centroid lives in exactly one cell, so the union has no repeats.
+            pool = []
+            for lat_cell in range(lat_low, lat_high + 1):
+                for lon_cell in range(lon_low, lon_high + 1):
+                    for next_index, next_centroid in buckets.get(
+                        (lat_cell, lon_cell), ()
+                    ):
+                        pool.append((next_index, next_centroid))
+        for next_index, (next_lat, next_lon) in pool:
+            candidates.append(
+                (hypot(lat - next_lat, lon - next_lon), prev_index, next_index)
+            )
+    candidates.sort()
     prev_stats = {}
     next_stats = {}
-    candidates = []
-    for prev_index, (prev_lat, prev_lon) in usable_prev:
-        for next_index, (next_lat, next_lon) in usable_next:
-            distance = hypot(prev_lat - next_lat, prev_lon - next_lon)
-            candidates.append((distance, prev_index, next_index))
-    candidates.sort()
     used_prev = set()
     used_next = set()
     pairs = []

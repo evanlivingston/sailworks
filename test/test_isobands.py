@@ -249,6 +249,34 @@ def test_pairing_is_one_to_one_and_nearest():
     assert pair_contours(extra, nxt) == [(0, 1), (1, 0)]
 
 
+def test_a_meeting_pair_is_found_when_the_grid_cells_are_small():
+    # One long front, evenly sampled: its mean point sits mid-front.
+    prev = [_line(501, 48.0, step=0.02)]
+    # The same front a step north, but sampled with most points bunched at its
+    # WEST end, so that mean sits well west of the other front's mean even
+    # though the frontiers run side by side and their extents meet.
+    dense = [(48.01, -124.0 + 0.0005 * index) for index in range(401)]
+    coarse_step = (10.0 - 0.2) / 120.0
+    coarse = [(48.01, -123.8 + coarse_step * index) for index in range(1, 121)]
+    # The tiny loops do not set the cell size: their 0.01 extent is far below
+    # the 0.317 floor of 2 * step_limit, which is what the shared cell becomes.
+    # They matter by count, keeping len(usable_next) (901) above the search
+    # rectangle's cell count (~172) so the bucketed path is taken instead of
+    # the full-scan fallback. That path then has to reach the pair, which spans
+    # about a dozen cells.
+    tiny = [
+        [
+            (lat, lon),
+            (lat + 0.01, lon),
+            (lat + 0.01, lon + 0.01),
+            (lat, lon + 0.01),
+        ]
+        for lat in (-20.0 + 0.4 * index for index in range(30))
+        for lon in (20.0 + 0.4 * index for index in range(30))
+    ]
+    assert (0, 0) in pair_contours(prev, [dense + coarse] + tiny)
+
+
 def test_mismatched_starburst_and_arc_produce_no_band():
     layers = [
         {"layer_id": "a", "epoch_s": 100, "contours": [_starburst()]},
