@@ -27,6 +27,26 @@ from test.map_helpers import MapCanvas
 #: The modules the viewport's own code is made of.
 PRODUCT_MODULES = (viewportenc, gribviewportchart, gribviewport)
 
+#: The viewport modules that may compose the ENC source they own.
+ENC_SOURCE_MODULES = {"viewportenc.py", "gribviewport.py", "gribviewportchart.py"}
+
+#: Names an application module may take from the ENC source: inert helpers
+#: that decide *whether* the viewport asks for ENC, never the code that draws
+#: it.
+HARMLESS_SOURCE_NAMES = {
+    "cache_directory",
+    "disabled_metadata",
+    "enc_cell_name",
+    "is_enc_path",
+    "manifest_stamp",
+    "read_manifest",
+}
+
+#: The classes that rasterise an ENC source.  Only the source module itself may
+#: name them; base-chart loading elsewhere legitimately uses GDALVectorChart,
+#: S57ChartDrawer and ChartCollection for the application's own charts.
+ENC_RENDERER_SYMBOLS = {"ENCOverlayRenderer", "ViewportEncRenderer"}
+
 #: The modules the chart worker runs in: they never see the application's
 #: global settings or its controllers.
 WORKER_MODULES = (viewportenc, gribviewportchart)
@@ -1083,17 +1103,48 @@ def test_the_viewport_never_imports_the_tools_package():
         assert not any(name.startswith("tools") for name in imported), module.__name__
 
 
+def _enc_source_names(tree):
+    """The names a module takes from the ENC source, or ``"*"`` for the module."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module == "viewportenc" or module.endswith(".viewportenc"):
+                for alias in node.names:
+                    yield alias.name
+            elif module == "sailworks.qt":
+                for alias in node.names:
+                    if alias.name == "viewportenc":
+                        yield "*"
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "sailworks.qt.viewportenc" or alias.name.endswith(
+                    ".viewportenc"
+                ):
+                    yield "*"
+
+
 def test_the_application_never_imports_the_enc_source():
-    """The ENC source is the viewport's own; the application never uses it."""
+    """The ENC source is the viewport's own; the application never draws it.
+
+    The viewport modules may compose the source, but no other module may take
+    anything from it except inert helpers such as ``manifest_stamp``, and no
+    module except the source itself may name the rasterising renderer.  The
+    guard checks symbols rather than filenames so that a harmless import does
+    not exempt a module that later starts drawing ENC.
+    """
     package = Path(gribviewport.__file__).parent
     for path in sorted(package.glob("*.py")):
-        # The ENC presenters and their scene cache are the viewport's own code;
-        # every other application module must not reach into the source.
-        if path.name in (
-            "gribviewport.py",
-            "gribviewportchart.py",
-            "viewportenc.py",
-            "encscenelayer.py",
-        ):
-            continue
-        assert "viewportenc" not in path.read_text(), path.name
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if path.name not in ENC_SOURCE_MODULES:
+            for name in _enc_source_names(tree):
+                assert name in HARMLESS_SOURCE_NAMES, (path.name, name)
+        if path.name != "viewportenc.py":
+            referenced = {
+                node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
+            } | {
+                node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+            }
+            assert not referenced & ENC_RENDERER_SYMBOLS, (
+                path.name,
+                referenced & ENC_RENDERER_SYMBOLS,
+            )

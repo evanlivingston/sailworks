@@ -48,6 +48,14 @@ def vector_driver_name(path):
 
 
 class GDALVectorChart(ChartLayer):
+    def __new__(cls, *args, **kwargs):
+        chart = super().__new__(cls)
+        # Chart workers build charts with __new__ so they can skip the
+        # GUI-facing constructor; every chart still has the coverage list
+        # do_draw and covers_point read.
+        chart._coverage = []
+        return chart
+
     def __init__(self, path, settings_manager, metadata=None, enabled=True):
         super().__init__(path, "vector", settings_manager, metadata, enabled)
 
@@ -135,13 +143,17 @@ class GDALVectorChart(ChartLayer):
                 g.Intersects(bounding_geometry) for g in self._coverage
             ):
                 return
-        self.drawer.draw(
-            gpsmap,
-            canvas,
-            self.vector_file,
-            bounding_geometry,
-            coverage=self._coverage,
-        )
+            # Only the S7 drawer consumes coverage; the simple, CM93 and OSM
+            # drawers draw the whole file and take no coverage argument.
+            self.drawer.draw(
+                gpsmap,
+                canvas,
+                self.vector_file,
+                bounding_geometry,
+                coverage=self._coverage,
+            )
+            return
+        self.drawer.draw(gpsmap, canvas, self.vector_file, bounding_geometry)
 
     def do_render(self, gpsmap):
         pass

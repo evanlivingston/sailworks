@@ -22,8 +22,6 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from typing import Callable, List
 
-import requests
-
 from sailworks.core.gribsources.base import GribSource
 from .parallel import write_ordered_forecasts
 from .options import DEFAULT_FIELDS, custom_rows, filtered_parameters, selection
