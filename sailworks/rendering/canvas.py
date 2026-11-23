@@ -47,6 +47,11 @@ TextExtents = namedtuple(
     "TextExtents", "width height x_bearing y_bearing x_advance y_advance"
 )
 
+# Line joins, named rather than re-exporting either backend's constants.
+JOIN_MITER = "miter"
+JOIN_ROUND = "round"
+JOIN_BEVEL = "bevel"
+
 
 class Canvas:
     """The drawing operations the dashboard and numeric gauges need.
@@ -67,7 +72,19 @@ class Canvas:
     def set_line_width(self, width):
         raise NotImplementedError
 
+    def set_line_join(self, join):
+        raise NotImplementedError
+
+    def set_dash(self, pattern):
+        raise NotImplementedError
+
     def set_font_size(self, size):
+        raise NotImplementedError
+
+    def translate(self, x, y):
+        raise NotImplementedError
+
+    def rotate(self, radians):
         raise NotImplementedError
 
     def new_sub_path(self):
@@ -125,8 +142,29 @@ class CairoCanvas(Canvas):
     def set_line_width(self, width):
         self._cr.set_line_width(width)
 
+    def set_line_join(self, join):
+        # Imported lazily so importing this module never imports cairo.
+        import cairo
+
+        self._cr.set_line_join(
+            {
+                JOIN_MITER: cairo.LINE_JOIN_MITER,
+                JOIN_ROUND: cairo.LINE_JOIN_ROUND,
+                JOIN_BEVEL: cairo.LINE_JOIN_BEVEL,
+            }[join]
+        )
+
+    def set_dash(self, pattern):
+        self._cr.set_dash(list(pattern))
+
     def set_font_size(self, size):
         self._cr.set_font_size(size)
+
+    def translate(self, x, y):
+        self._cr.translate(x, y)
+
+    def rotate(self, radians):
+        self._cr.rotate(radians)
 
     def new_sub_path(self):
         self._cr.new_sub_path()
@@ -183,6 +221,8 @@ class QPainterCanvas(Canvas):
         self._started = False
         self._color = QColor.fromRgbF(0.0, 0.0, 0.0, 1.0)
         self._line_width = 1.0
+        self._join = Qt.MiterJoin
+        self._dash = []
         self._font = QFont()
         self._current = QPointF(0.0, 0.0)
 
@@ -211,10 +251,45 @@ class QPainterCanvas(Canvas):
     def set_line_width(self, width):
         self._line_width = width
 
+    def set_line_join(self, join):
+        self._join = {
+            JOIN_MITER: Qt.MiterJoin,
+            JOIN_ROUND: Qt.RoundJoin,
+            JOIN_BEVEL: Qt.BevelJoin,
+        }[join]
+
+    def set_dash(self, pattern):
+        """Set a Cairo-style dash pattern, mapping it onto Qt's pen units.
+
+        Cairo measures dash lengths in user-space units, independent of the pen
+        width. ``QPen.setDashPattern`` measures them in multiples of the pen
+        width, so each length is divided by the current width. A zero or unset
+        width is treated as 1.0, Qt's default width and the closest mapping
+        that cannot divide by zero. An empty pattern means a solid line. Cairo
+        repeats an odd-length pattern while Qt ignores one, so an odd list is
+        doubled; ``[8.0]`` keeps its 8-on/8-off meaning.
+        """
+        if not pattern:
+            self._dash = []
+            return
+        width = self._line_width
+        if width <= 0:
+            width = 1.0
+        values = [float(length) / width for length in pattern]
+        if len(values) % 2:
+            values = values * 2
+        self._dash = values
+
     def set_font_size(self, size):
         font = QFont(self._font)
         font.setPixelSize(max(1, int(round(size))))
         self._font = font
+
+    def translate(self, x, y):
+        self._painter.translate(x, y)
+
+    def rotate(self, radians):
+        self._painter.rotate(math.degrees(radians))
 
     def new_sub_path(self):
         # Cairo starts a fresh subpath with no current point. QPainterPath
@@ -268,10 +343,13 @@ class QPainterCanvas(Canvas):
     def stroke(self):
         pen = QPen(self._color)
         pen.setWidthF(self._line_width)
-        pen.setStyle(Qt.SolidLine)
         # Cairo's defaults: butt caps, miter joins.
         pen.setCapStyle(Qt.FlatCap)
-        pen.setJoinStyle(Qt.MiterJoin)
+        pen.setJoinStyle(self._join)
+        if self._dash:
+            pen.setDashPattern(self._dash)
+        else:
+            pen.setStyle(Qt.SolidLine)
         self._painter.strokePath(self._path, pen)
         self._path = self._new_path()
         self._started = False

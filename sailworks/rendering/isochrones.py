@@ -8,6 +8,7 @@ import numpy as np
 from pyproj import Geod
 
 from sailworks.core.mapviewport import MapPoint
+from .canvas import CairoCanvas, JOIN_ROUND
 from .style import Style
 from .overlayrenderer import OverlayRenderer
 from .navigation import draw_current_exclusions
@@ -35,15 +36,17 @@ class IsochronesRenderer(OverlayRenderer):
             job.viewport.height * job.factor,
         )
         surface.set_device_scale(job.factor, job.factor)
-        render_isochrones(job.viewport, cairo.Context(surface), frame, job.cancel)
+        render_isochrones(
+            job.viewport, CairoCanvas(cairo.Context(surface)), frame, job.cancel
+        )
         surface.flush()
         return surface
 
 
-def render_isochrones(view, cr, frame, cancel):
+def render_isochrones(view, canvas, frame, cancel):
     """Project and draw every point off the UI thread; keep the same 3 km joins."""
     geod = Geod(ellps="WGS84")
-    cr.set_line_join(cairo.LINE_JOIN_ROUND)
+    canvas.set_line_join(JOIN_ROUND)
     for frontier in frame.isochrones:
         if cancel.is_set():
             return
@@ -56,19 +59,19 @@ def render_isochrones(view, cr, frame, cancel):
         _, _, distance = geod.inv(
             positions[:-1, 1], positions[:-1, 0], positions[1:, 1], positions[1:, 0]
         )
-        cr.set_source_rgba(0, 0, 0.8, 0.5)
-        cr.set_line_width(1.5)
+        canvas.set_source_rgba(0, 0, 0.8, 0.5)
+        canvas.set_line_width(1.5)
         joined = np.flatnonzero(distance <= 3000)
         connected = np.zeros(len(frontier), dtype=bool)
         connected[joined] = connected[joined + 1] = True
         # Sparse/disconnected frontiers still show their actual search points.
         for index in np.flatnonzero(~connected):
-            cr.arc(xs[index], ys[index], 1.5, 0, 2 * math.pi)
-            cr.fill()
+            canvas.arc(xs[index], ys[index], 1.5, 0, 2 * math.pi)
+            canvas.fill()
         for index in joined:
-            cr.move_to(xs[index], ys[index])
-            cr.line_to(xs[index + 1], ys[index + 1])
-            cr.stroke()
+            canvas.move_to(xs[index], ys[index])
+            canvas.line_to(xs[index + 1], ys[index + 1])
+            canvas.stroke()
     previous = None
     for point in frame.path:
         if cancel.is_set():
@@ -78,16 +81,16 @@ def render_isochrones(view, cr, frame, cancel):
             MapPoint.new_degrees(latitude, longitude)
         )
         if previous is not None:
-            Style.Track.RoutingTrack.apply(cr)
-            cr.move_to(*previous)
-            cr.line_to(x, y)
-            cr.stroke()
-        Style.Track.RoutingTrackCircle.apply(cr)
-        cr.arc(x, y, 5, 0, 2 * math.pi)
-        cr.stroke()
+            Style.Track.RoutingTrack.apply_canvas(canvas)
+            canvas.move_to(*previous)
+            canvas.line_to(x, y)
+            canvas.stroke()
+        Style.Track.RoutingTrackCircle.apply_canvas(canvas)
+        canvas.arc(x, y, 5, 0, 2 * math.pi)
+        canvas.stroke()
         previous = x, y
     if not cancel.is_set():
-        draw_current_exclusions(view, cr, frame.exclusions)
+        draw_current_exclusions(view, canvas, frame.exclusions)
 
 
 def isochrone_overlay_data(frame):

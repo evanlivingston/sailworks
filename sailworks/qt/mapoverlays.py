@@ -486,7 +486,7 @@ class RetainedOverlayMixin:
             ais_targets = getattr(self, "ais_targets", ())
             if ais_renderer is not None:
                 try:
-                    ais_renderer.draw_targets(self, cr, ais_targets)
+                    ais_renderer.draw_targets(self, CairoCanvas(cr), ais_targets)
                 except Exception as error:
                     _record_overlay_failure(self, "AIS", error)
                 else:

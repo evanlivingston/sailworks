@@ -25,6 +25,7 @@ import dateutil.parser
 from sailworks.core import utils
 
 from sailworks.core.mapviewport import MapPoint
+from .canvas import CairoCanvas
 from .style import (
     CairoStyle,
     ROUTE_SAIL_CHANGE_COLOUR,
@@ -53,11 +54,11 @@ def sail_change_indices(identities):
     return tuple(indices)
 
 
-def draw_current_exclusions(gpsmap, cr, samples):
+def draw_current_exclusions(gpsmap, canvas, samples):
     """Mark sampled rejection locations, without claiming a surveyed gap polygon."""
     if not samples:
         return
-    cr.save()
+    canvas.save()
     drawn = set()
     for sample in samples:
         x, y = gpsmap.convert_geographic_to_screen(
@@ -67,17 +68,17 @@ def draw_current_exclusions(gpsmap, cr, samples):
         if key in drawn:
             continue
         drawn.add(key)
-        cr.set_source_rgba(0.9, 0.05, 0.05, 0.18)
-        cr.arc(x, y, 7, 0, 2 * math.pi)
-        cr.fill()
-        cr.set_source_rgba(0.85, 0.02, 0.02, 0.9)
-        cr.set_line_width(1.5)
-        cr.move_to(x - 3, y - 3)
-        cr.line_to(x + 3, y + 3)
-        cr.move_to(x - 3, y + 3)
-        cr.line_to(x + 3, y - 3)
-        cr.stroke()
-    cr.restore()
+        canvas.set_source_rgba(0.9, 0.05, 0.05, 0.18)
+        canvas.arc(x, y, 7, 0, 2 * math.pi)
+        canvas.fill()
+        canvas.set_source_rgba(0.85, 0.02, 0.02, 0.9)
+        canvas.set_line_width(1.5)
+        canvas.move_to(x - 3, y - 3)
+        canvas.line_to(x + 3, y + 3)
+        canvas.move_to(x - 3, y + 3)
+        canvas.line_to(x + 3, y - 3)
+        canvas.stroke()
+    canvas.restore()
 
 
 @lru_cache(maxsize=16384)
@@ -390,7 +391,7 @@ class NavigationRenderer:
                 if highlight:
                     draw_current_exclusions(
                         gpsmap,
-                        cr,
+                        CairoCanvas(cr),
                         (tr.provenance or {}).get("excluded_current_samples", ()),
                     )
 

@@ -38,6 +38,29 @@ class CairoStyle:
                 self.color[0], self.color[1], self.color[2], self.color[3]
             )
 
+    def apply_canvas(self, canvas):
+        """Apply the same state as :meth:`apply` through the canvas seam.
+
+        ``apply(cr)`` stays for the modules that still draw on a raw context;
+        this is its canvas-facing twin. The order is preserved so a ported
+        module sets the pen width before the dash, which is what the Qt dash
+        mapping needs (it divides each length by the current width).
+        """
+        if self.line_width:
+            canvas.set_line_width(self.line_width)
+        if self.font_size:
+            canvas.set_font_size(self.font_size)
+
+        if self.dash is not None and type(self.dash) is float:
+            canvas.set_dash([self.dash])
+        elif self.dash is not None and type(self.dash) is not float:
+            canvas.set_dash(self.dash)
+
+        if self.color:
+            canvas.set_source_rgba(
+                self.color[0], self.color[1], self.color[2], self.color[3]
+            )
+
 
 class ChartPalette:
     def __init__(self, shallow, sea, landstroke, landfill):
@@ -51,6 +74,10 @@ class Style:
     @staticmethod
     def reset_dash(cr):
         cr.set_dash([])
+
+    @staticmethod
+    def reset_dash_canvas(canvas):
+        canvas.set_dash([])
 
     chart_palettes = {
         "cm93": ChartPalette(
