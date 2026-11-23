@@ -678,6 +678,11 @@ class _ChartComposer:
 
         if self._sources:
             surface = self._renderer._render(job)
+            if surface is not None and hasattr(surface, "copy_as"):
+                # The rest of this composer (ENC and isobars) still draws
+                # through cairo, so convert the base chart once at the
+                # boundary.  Removed when this path is ported.
+                surface = surface.copy_as("cairo")
         else:
             # No installed coastline: the layer composes the isobars alone,
             # on an empty surface of the same size and scale.

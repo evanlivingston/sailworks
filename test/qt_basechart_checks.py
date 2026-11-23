@@ -13,7 +13,7 @@ from PySide6.QtCore import QTimer
 
 from sailworks.core.mapviewport import MapViewport
 from sailworks.qt.basecharts import BaseChartRenderer, describe_sources
-from sailworks.rendering.canvas import CairoCanvas
+from sailworks.rendering.canvas import CairoCanvas, Canvas, CanvasImage
 from sailworks.rendering.gdalvectorchart import GDALVectorChart
 from sailworks.rendering.gshhs import GSHHSVectorChart
 from sailworks.rendering.overlayrenderer import MARGIN, RenderJob
@@ -92,10 +92,8 @@ class BaseChartChecks(Fixture):
                     descriptor = describe_sources([source])[0]
                     job = RenderJob((), viewport, ((descriptor,),), 1, palette)
                     candidate = renderer._render(job)
-                    reference = cairo.ImageSurface(
-                        cairo.FORMAT_ARGB32, viewport.width, viewport.height
-                    )
-                    source.do_draw(viewport, CairoCanvas(cairo.Context(reference)))
+                    reference = CanvasImage.new(viewport.width, viewport.height)
+                    source.do_draw(viewport, Canvas.for_image(reference))
                     reference.flush()
                     self.assertEqual(
                         bytes(candidate.get_data()),

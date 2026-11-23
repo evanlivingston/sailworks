@@ -20,8 +20,6 @@ import os
 from typing import List, Optional
 from weakref import WeakKeyDictionary
 
-import cairo
-
 from sailworks.common import resource_path
 from sailworks.core.core import LinePointValidityProvider
 from sailworks.core.enccharts import chart_scale_rank
@@ -44,9 +42,7 @@ from .gdalvectorchart import GDALVectorChart
 from .encrenderer import ENCOverlayRenderer
 from .mbtilesrenderer import MBTilesChart, MBTilesRenderer
 from sailworks.rendering.overlayrenderer import paint_viewport
-from .vectordrawer.cm93chartdrawer import CM93ChartDrawer
 from .vectordrawer.s57chartdrawer import S57ChartDrawer
-from .vectordrawer.simplechartdrawer import SimpleChartDrawer
 from .gshhs import GSHHSVectorChart
 
 logger = logging.getLogger("sailworks")
@@ -66,7 +62,7 @@ class ChartCollection:
         self.settings_manager: SettingsManager = settings_manager
         self.maps: List = []
         self._chart_surfaces: WeakKeyDictionary[
-            object, tuple[tuple, MapViewport, cairo.ImageSurface]
+            object, tuple[tuple, MapViewport, CanvasImage]
         ] = WeakKeyDictionary()
         self._enc_renderer = ENCOverlayRenderer(schedule)
         self._mbtiles_renderer = MBTilesRenderer(schedule)
@@ -483,27 +479,15 @@ class ChartCollection:
                 gpsmap.queue_draw()
 
             viewport = MapViewport(gpsmap, margin, invalidate)
-            # The intermediate buffer follows the destination: one buffer has
-            # exactly one rasteriser, so it is cairo while the widget composite
-            # still owns a cairo context and Qt when that seam hands over a Qt
-            # canvas. Unported (OSM) drawers keep the raw cairo context, so
-            # they can only share a cairo buffer.
-            image = CanvasImage.new(
-                viewport.width, viewport.height, factor, backend=destination.backend
-            )
+            # The intermediate buffer is always a Qt image: every base drawer
+            # draws through the canvas API, so one buffer has exactly one
+            # rasteriser, and a destination that still owns a cairo context
+            # gets the conversion once, at the blit below.
+            image = CanvasImage.new(viewport.width, viewport.height, factor)
             canvas = Canvas.for_image(image)
-            chart_cr = getattr(canvas, "context", None)
             for chart in filter(lambda c: c.enabled, charts):
                 canvas.save()
-                target = canvas if chart_cr is None else chart_cr
-                drawer = getattr(chart, "drawer", None)
-                if (
-                    type(chart) is GSHHSVectorChart
-                    or isinstance(chart, GDALRasterChart)
-                    or isinstance(drawer, (SimpleChartDrawer, CM93ChartDrawer))
-                ):
-                    target = canvas
-                chart.do_draw(viewport, target)
+                chart.do_draw(viewport, canvas)
                 canvas.restore()
             canvas.finish()
             cached = (signature, viewport, image)
