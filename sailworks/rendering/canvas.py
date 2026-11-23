@@ -256,7 +256,7 @@ class QPainterCanvas(Canvas):
         self._fill_rule = Qt.WindingFill
         self._path = self._new_path(self._fill_rule)
         self._started = False
-        self._color = QColor.fromRgbF(0.0, 0.0, 0.0, 1.0)
+        self._color = QColor(0, 0, 0, 255)
         self._line_width = 1.0
         self._join = Qt.MiterJoin
         self._dash = []
@@ -282,8 +282,30 @@ class QPainterCanvas(Canvas):
     def restore(self):
         self._painter.restore()
 
+    @staticmethod
+    def _channel(value):
+        """Map a Cairo float channel onto 8 bits the way Cairo does.
+
+        Cairo rounds the float to 16 bits and the 8-bit target then drops the
+        low byte, so ``0.95`` becomes 243 rather than the 242 that
+        ``round(0.95 * 255)`` gives, and ``0.7`` becomes 179 rather than 178.
+        ``QColor.fromRgbF`` follows neither rule, which cost one blue level on
+        every DEPARE fill. Reproduce Cairo's two steps, then clamp.
+        """
+        level = int(value * 65535.0 + 0.5) >> 8
+        if level < 0:
+            return 0
+        if level > 255:
+            return 255
+        return level
+
     def set_source_rgba(self, r, g, b, a):
-        self._color = QColor.fromRgbF(r, g, b, a)
+        self._color = QColor(
+            self._channel(r),
+            self._channel(g),
+            self._channel(b),
+            self._channel(a),
+        )
 
     def set_line_width(self, width):
         self._line_width = width

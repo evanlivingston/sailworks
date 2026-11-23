@@ -50,8 +50,8 @@ HEIGHT = 320
 # fraction is the share of pixels whose RGBA differs at all. Most of the
 # residual is glyph placement from the two font stacks.
 BASELINE_MAX_DIFF = 232
-BASELINE_MEAN_DIFF = 1.63
-BASELINE_DIFF_FRACTION = 0.0324
+BASELINE_MEAN_DIFF = 1.61
+BASELINE_DIFF_FRACTION = 0.0239
 
 MAX_DIFF_MARGIN = 16
 MEAN_DIFF_MARGIN = 1.0
@@ -228,15 +228,15 @@ TEXT_DIFF_FRACTION_CEILING = 0.05
 # strict non-text ceiling.
 ISO_BASELINE_MAX_DIFF = 76
 ISO_BASELINE_MEAN_DIFF = 0.106
-ISO_BASELINE_DIFF_FRACTION = 0.0098
+ISO_BASELINE_DIFF_FRACTION = 0.0099
 
 DASH_BASELINE_MAX_DIFF = 1
 
 # The label background is sized from each backend's own text metrics, so the
 # residual is glyph placement and those metrics, not the ship geometry.
 AIS_BASELINE_MAX_DIFF = 243
-AIS_BASELINE_MEAN_DIFF = 0.297
-AIS_BASELINE_DIFF_FRACTION = 0.0039
+AIS_BASELINE_MEAN_DIFF = 0.298
+AIS_BASELINE_DIFF_FRACTION = 0.0043
 
 ISO_MAX_MARGIN = 8
 AIS_MAX_MARGIN = 32
@@ -558,10 +558,13 @@ def test_qpainter_depare_island_is_a_hole_in_both_backends():
     assert abs(measured["max"] - DEPARE_FRINGE_MAX_DIFF) <= CHART_FRINGE_MARGIN
 
     # The island is background in both backends; the ring around it is filled
-    # with the same solid colour, one level apart at most.
+    # with the same solid colour, so the two must agree exactly inside it.
     for name, image in (("cairo", cairo_image), ("qt", painter_image)):
         assert image.pixelColor(WIDTH // 2, HEIGHT // 2).alpha() == 0, name
         assert image.pixelColor(130, HEIGHT // 2).alpha() == 255, name
+    # A pixel well inside the fill carries the converted colour itself rather
+    # than a blend, so it pins the float-to-8-bit conversion to Cairo's.
+    assert _colour_diff(cairo_image, painter_image, 150, 110) == 0
     assert _colour_diff(cairo_image, painter_image, 130, HEIGHT // 2) <= (
         NON_TEXT_MAX_DIFF_CEILING
     )
