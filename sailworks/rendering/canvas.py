@@ -27,6 +27,7 @@ not import cairo; the caller owns the context and the cairo import, so a
 QPainter-only path never loads it.
 """
 
+import io
 import math
 from collections import namedtuple
 
@@ -41,6 +42,7 @@ QBrush = None
 QColor = None
 QFont = None
 QFontMetricsF = None
+QImage = None
 QPainter = None
 QPainterPath = None
 QPen = None
@@ -48,7 +50,7 @@ QPen = None
 
 def _qt():
     """Bind the Qt names once, on the first call."""
-    global Qt, QPointF, QRectF, QBrush, QColor, QFont, QFontMetricsF
+    global Qt, QPointF, QRectF, QBrush, QColor, QFont, QFontMetricsF, QImage
     global QPainter, QPainterPath, QPen
     if QPainter is not None:
         return
@@ -58,6 +60,7 @@ def _qt():
         QColor as _QColor,
         QFont as _QFont,
         QFontMetricsF as _QFontMetricsF,
+        QImage as _QImage,
         QPainter as _QPainter,
         QPainterPath as _QPainterPath,
         QPen as _QPen,
@@ -70,6 +73,7 @@ def _qt():
     QColor = _QColor
     QFont = _QFont
     QFontMetricsF = _QFontMetricsF
+    QImage = _QImage
     QPainter = _QPainter
     QPainterPath = _QPainterPath
     QPen = _QPen
@@ -145,6 +149,63 @@ class CanvasImage:
             qimage=image,
         )
 
+    @classmethod
+    def from_png_bytes(cls, data, backend="cairo"):
+        """Decode PNG bytes into a carrier at its natural pixel size.
+
+        ``backend`` selects the decoder. It defaults to Cairo because that is
+        the backend the renderers built on this seam use today; pass ``"qt"``
+        to build the Qt view in a Qt-only process. The carrier reports
+        ``device_scale`` 1, so a caller that needs a different logical size
+        passes it to :meth:`Canvas.draw_image`.
+        """
+        if backend == "cairo":
+            # Imported lazily so importing this module never imports cairo.
+            import cairo
+
+            try:
+                surface = cairo.ImageSurface.create_from_png(io.BytesIO(data))
+            except cairo.Error as error:
+                # The seam owns the backend's exception so callers never have
+                # to import cairo just to catch a corrupt image.
+                raise ValueError(str(error)) from error
+            return cls.from_cairo_surface(surface)
+        if backend == "qt":
+            _qt()
+            image = QImage.fromData(data)
+            if image.isNull():
+                raise ValueError("Unable to decode image bytes")
+            return cls.from_qimage(image)
+        raise ValueError(f"Unknown canvas backend: {backend!r}")
+
+    @classmethod
+    def empty(cls, width, height, device_scale=1.0, backend="cairo"):
+        """Create a blank image of ``width`` x ``height`` logical pixels.
+
+        The pixel buffer is ``width * device_scale`` by ``height *
+        device_scale``; the carrier keeps the requested logical size so a
+        fractional device scale cannot drift it. The image is transparent and
+        can be drawn onto through a canvas built on it.
+        """
+        pixel_width = max(1, int(round(width * device_scale)))
+        pixel_height = max(1, int(round(height * device_scale)))
+        if backend == "cairo":
+            # Imported lazily so importing this module never imports cairo.
+            import cairo
+
+            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, pixel_width, pixel_height)
+            surface.set_device_scale(device_scale, device_scale)
+            return cls(width, height, device_scale, surface=surface)
+        if backend == "qt":
+            _qt()
+            image = QImage(
+                pixel_width, pixel_height, QImage.Format.Format_ARGB32_Premultiplied
+            )
+            image.fill(Qt.transparent)
+            image.setDevicePixelRatio(device_scale)
+            return cls(width, height, device_scale, qimage=image)
+        raise ValueError(f"Unknown canvas backend: {backend!r}")
+
     @property
     def surface(self):
         """The cairo surface, or a clear error when this is a Qt image."""
@@ -193,6 +254,9 @@ class Canvas:
         raise NotImplementedError
 
     def set_font_size(self, size):
+        raise NotImplementedError
+
+    def set_font_face(self, family):
         raise NotImplementedError
 
     def translate(self, x, y):
@@ -318,6 +382,9 @@ class CairoCanvas(Canvas):
 
     def set_font_size(self, size):
         self._cr.set_font_size(size)
+
+    def set_font_face(self, family):
+        self._cr.select_font_face(family)
 
     def translate(self, x, y):
         self._cr.translate(x, y)
@@ -533,6 +600,11 @@ class QPainterCanvas(Canvas):
     def set_font_size(self, size):
         font = QFont(self._font)
         font.setPixelSize(max(1, int(round(size))))
+        self._font = font
+
+    def set_font_face(self, family):
+        font = QFont(self._font)
+        font.setFamily(family)
         self._font = font
 
     def translate(self, x, y):
