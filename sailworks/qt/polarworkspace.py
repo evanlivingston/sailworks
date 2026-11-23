@@ -4,9 +4,8 @@ import math
 from threading import Thread
 from types import SimpleNamespace
 
-import cairo
 from PySide6.QtCore import Qt, Signal, Slot, QTimer
-from PySide6.QtGui import QColor, QImage, QPainter
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -22,7 +21,7 @@ from PySide6.QtWidgets import (
 
 from sailworks.core.polarfiles import read_polar
 from sailworks.core.polarperformance import wind_band
-from sailworks.rendering.canvas import CairoCanvas
+from sailworks.rendering.canvas import Canvas, CanvasImage
 from sailworks.rendering.polar import PolarRenderer, POLAR_COLORS
 from .dropdown import Dropdown
 
@@ -38,24 +37,12 @@ class PolarCanvas(QWidget, PolarRenderer):
 
     def paintEvent(self, event):  # noqa: N802 - Qt virtual method name
         factor = math.ceil(self.devicePixelRatioF())
-        surface = cairo.ImageSurface(
-            cairo.FORMAT_ARGB32, self.width() * factor, self.height() * factor
-        )
-        surface.set_device_scale(factor, factor)
-        self.draw_polar(
-            CairoCanvas(cairo.Context(surface)), self.width(), self.height()
-        )
-        surface.flush()
-        image = QImage(
-            surface.get_data(),
-            surface.get_width(),
-            surface.get_height(),
-            surface.get_stride(),
-            QImage.Format.Format_ARGB32_Premultiplied,
-        ).copy()
-        image.setDevicePixelRatio(factor)
+        image = CanvasImage.new(self.width(), self.height(), factor)
+        canvas = Canvas.for_image(image)
+        self.draw_polar(canvas, self.width(), self.height())
+        canvas.finish()
         painter = QPainter(self)
-        painter.drawImage(0, 0, image)
+        painter.drawImage(0, 0, image.qimage)
         painter.end()
 
     def mouseMoveEvent(self, event):  # noqa: N802 - Qt virtual method name
