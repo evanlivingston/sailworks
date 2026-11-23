@@ -8,6 +8,7 @@ from unittest.mock import Mock
 import cairo
 
 from sailworks.core.core import BoatInfo
+from sailworks.rendering.canvas import CairoCanvas
 from sailworks.rendering.dashboard import DashboardRenderer
 
 
@@ -82,7 +83,7 @@ class TestDashboard(unittest.TestCase):
                 gauges = self.renderer._gauges
                 for gauge in gauges:
                     gauge.draw = Mock()
-                self.renderer._draw_dashboard(view, cairo.Context(surface))
+                self.renderer._draw_dashboard(view, CairoCanvas(cairo.Context(surface)))
                 positions = []
                 for gauge in gauges:
                     gauge.draw.assert_called_once()

@@ -51,14 +51,14 @@ _COLOR_RANGES = {
 _DEFAULT_ACCENT = (0.4, 0.6, 0.9)
 
 
-def _rounded_rect(cr, x, y, w, h, r):
+def _rounded_rect(canvas, x, y, w, h, r):
     """Draw a rounded rectangle path."""
-    cr.new_sub_path()
-    cr.arc(x + w - r, y + r, r, -math.pi / 2, 0)
-    cr.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
-    cr.arc(x + r, y + h - r, r, math.pi / 2, math.pi)
-    cr.arc(x + r, y + r, r, math.pi, 3 * math.pi / 2)
-    cr.close_path()
+    canvas.new_sub_path()
+    canvas.arc(x + w - r, y + r, r, -math.pi / 2, 0)
+    canvas.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
+    canvas.arc(x + r, y + h - r, r, math.pi / 2, math.pi)
+    canvas.arc(x + r, y + r, r, math.pi, 3 * math.pi / 2)
+    canvas.close_path()
 
 
 class NumericGauge(Gauge):
@@ -81,7 +81,7 @@ class NumericGauge(Gauge):
                 return (r, g, b)
         return (ranges[-1][1], ranges[-1][2], ranges[-1][3])
 
-    def draw(self, cr, x, y):
+    def draw(self, canvas, x, y):
         """Draw a modern numeric gauge cell at (x, y)."""
         w = self.WIDTH
         h = self.HEIGHT
@@ -89,33 +89,33 @@ class NumericGauge(Gauge):
         accent_h = 3
 
         # Background with rounded corners
-        cr.set_source_rgba(0.1, 0.1, 0.1, 0.75)
-        _rounded_rect(cr, x, y, w, h, radius)
-        cr.fill()
+        canvas.set_source_rgba(0.1, 0.1, 0.1, 0.75)
+        _rounded_rect(canvas, x, y, w, h, radius)
+        canvas.fill()
 
         # Subtle border
-        cr.set_source_rgba(0.35, 0.35, 0.35, 0.6)
-        cr.set_line_width(0.8)
-        _rounded_rect(cr, x, y, w, h, radius)
-        cr.stroke()
+        canvas.set_source_rgba(0.35, 0.35, 0.35, 0.6)
+        canvas.set_line_width(0.8)
+        _rounded_rect(canvas, x, y, w, h, radius)
+        canvas.stroke()
 
         # Color accent bar at top
         ar, ag, ab = self._get_accent_color()
-        cr.set_source_rgba(ar, ag, ab, 0.9)
+        canvas.set_source_rgba(ar, ag, ab, 0.9)
         # Clip to top rounded corners
-        cr.save()
-        _rounded_rect(cr, x, y, w, h, radius)
-        cr.clip()
-        cr.rectangle(x, y, w, accent_h)
-        cr.fill()
-        cr.restore()
+        canvas.save()
+        _rounded_rect(canvas, x, y, w, h, radius)
+        canvas.clip()
+        canvas.rectangle(x, y, w, accent_h)
+        canvas.fill()
+        canvas.restore()
 
         # Label (top area, below accent)
-        cr.set_source_rgba(0.6, 0.6, 0.6, 1.0)
-        cr.set_font_size(9)
-        label_ext = cr.text_extents(self.label)
-        cr.move_to(x + (w - label_ext.width) / 2, y + accent_h + 12)
-        cr.show_text(self.label)
+        canvas.set_source_rgba(0.6, 0.6, 0.6, 1.0)
+        canvas.set_font_size(9)
+        label_ext = canvas.text_extents(self.label)
+        canvas.move_to(x + (w - label_ext.width) / 2, y + accent_h + 12)
+        canvas.show_text(self.label)
 
         # Value (center, large)
         if self.value is not None:
@@ -123,14 +123,14 @@ class NumericGauge(Gauge):
         else:
             value_text = "---"
 
-        cr.set_font_size(20)
-        val_ext = cr.text_extents(value_text)
+        canvas.set_font_size(20)
+        val_ext = canvas.text_extents(value_text)
 
         # Unit measurement
         unit_w = 0
         if self.unit:
-            cr.set_font_size(9)
-            unit_ext = cr.text_extents(self.unit)
+            canvas.set_font_size(9)
+            unit_ext = canvas.text_extents(self.unit)
             unit_w = unit_ext.width + 3
 
         # Center value + unit together
@@ -138,14 +138,14 @@ class NumericGauge(Gauge):
         text_x = x + (w - total_text_w) / 2
 
         # Draw value
-        cr.set_source_rgba(1.0, 1.0, 1.0, 1.0)
-        cr.set_font_size(20)
-        cr.move_to(text_x, y + h - 10)
-        cr.show_text(value_text)
+        canvas.set_source_rgba(1.0, 1.0, 1.0, 1.0)
+        canvas.set_font_size(20)
+        canvas.move_to(text_x, y + h - 10)
+        canvas.show_text(value_text)
 
         # Draw unit
         if self.unit:
-            cr.set_source_rgba(0.55, 0.55, 0.55, 1.0)
-            cr.set_font_size(9)
-            cr.move_to(text_x + val_ext.width + 3, y + h - 10)
-            cr.show_text(self.unit)
+            canvas.set_source_rgba(0.55, 0.55, 0.55, 1.0)
+            canvas.set_font_size(9)
+            canvas.move_to(text_x + val_ext.width + 3, y + h - 10)
+            canvas.show_text(self.unit)

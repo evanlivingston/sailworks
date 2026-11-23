@@ -14,7 +14,7 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
-"""Production instrument values and Cairo dashboard for the Qt CPU fallback."""
+"""Production instrument values and the map dashboard."""
 
 import math
 
@@ -92,7 +92,7 @@ class DashboardRenderer:
             for gauge in self._gauges
         ]
 
-    def _draw_dashboard(self, gpsmap, cr):
+    def _draw_dashboard(self, gpsmap, canvas):
         """Draw the instrument dashboard panel on the map."""
         self._update_gauge_values()
 
@@ -123,12 +123,12 @@ class DashboardRenderer:
         # Draw panel background with rounded corners
         from .numericgauge import _rounded_rect
 
-        cr.set_source_rgba(0.03, 0.03, 0.03, 0.55)
-        _rounded_rect(cr, panel_x, panel_y, panel_w, total_h + panel_padding * 2, 8)
-        cr.fill()
+        canvas.set_source_rgba(0.03, 0.03, 0.03, 0.55)
+        _rounded_rect(canvas, panel_x, panel_y, panel_w, total_h + panel_padding * 2, 8)
+        canvas.fill()
 
         # Draw each gauge
         for i, gauge in enumerate(self._gauges):
             gx = panel_x + panel_padding + (i % cols) * (gauge_w + gauge_gap)
             gy = panel_y + panel_padding + (i // cols) * (gauge_h + gauge_gap)
-            gauge.draw(cr, gx, gy)
+            gauge.draw(canvas, gx, gy)
