@@ -1078,7 +1078,7 @@ class WindPainter:
 
         step_x = (x1 - x0) / (width - 1)
         step_y = (y1 - y0) / (height - 1)
-        image = CanvasImage.from_rgba(width, height, pixels, backend=canvas.backend)
+        image = CanvasImage.from_rgba(width, height, pixels)
         canvas.save()
         canvas.rectangle(x0, y0, x1 - x0, y1 - y0)
         canvas.clip()

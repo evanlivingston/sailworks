@@ -820,27 +820,19 @@ class ViewportEncSource:
         metadata = self._describe_regions(metadata, renderer.regions)
         if metadata["state"] != STATE_READY:
             return self._finish(metadata)
-        image = (
-            enc_surface
-            if isinstance(enc_surface, CanvasImage)
-            else CanvasImage.from_cairo_surface(enc_surface)
-        )
+        image = enc_surface
         # A Qt canvas clears the image it wraps (the factory assumes a fresh
         # buffer), and this composition goes onto the retained base-chart
-        # buffer. Keep those pixels and paint them back before the ENC; a
-        # cairo destination paints in place and needs no copy.
-        retained = None
-        if isinstance(surface, CanvasImage) and surface.backend == "qt":
-            retained = CanvasImage(
-                surface.width,
-                surface.height,
-                surface.device_scale(),
-                qimage=surface.qimage.copy(),
-            )
+        # buffer. Keep those pixels and paint them back before the ENC.
+        retained = CanvasImage(
+            surface.width,
+            surface.height,
+            surface.device_scale(),
+            qimage=surface.qimage.copy(),
+        )
         canvas = Canvas.for_image(surface)
-        if retained is not None:
-            canvas.draw_image(retained, 0, 0, smooth=False)
-        canvas.draw_image(image.copy_as(canvas.backend), 0, 0, smooth=False)
+        canvas.draw_image(retained, 0, 0, smooth=False)
+        canvas.draw_image(image, 0, 0, smooth=False)
         canvas.finish()
         surface.flush()
         metadata["state"] = STATE_READY

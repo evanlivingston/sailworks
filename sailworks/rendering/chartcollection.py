@@ -29,7 +29,7 @@ from sailworks.core.scheduling import schedule_idle
 from sailworks.core.mapviewport import MapViewport
 
 from .chartlayer import ChartLayer
-from .canvas import CairoCanvas, Canvas, CanvasImage
+from .canvas import Canvas, CanvasImage
 from .chartclasses import (
     CHART_CLASSES,
     chart_class,
@@ -467,7 +467,7 @@ class ChartCollection:
             offset_x -= viewport._lon_to_x(gpsmap._center_lon)
             offset_y = viewport._lat_to_y(viewport._center_lat)
             offset_y -= viewport._lat_to_y(gpsmap._center_lat)
-        destination = cr if isinstance(cr, Canvas) else CairoCanvas(cr)
+        destination = cr
         if (
             not cached
             or cached[0] != signature
@@ -481,8 +481,7 @@ class ChartCollection:
             viewport = MapViewport(gpsmap, margin, invalidate)
             # The intermediate buffer is always a Qt image: every base drawer
             # draws through the canvas API, so one buffer has exactly one
-            # rasteriser, and a destination that still owns a cairo context
-            # gets the conversion once, at the blit below.
+            # rasteriser, and the destination is a Qt canvas too.
             image = CanvasImage.new(viewport.width, viewport.height, factor)
             canvas = Canvas.for_image(image)
             for chart in filter(lambda c: c.enabled, charts):
@@ -494,7 +493,7 @@ class ChartCollection:
             self._chart_surfaces[gpsmap] = cached
             offset_x = offset_y = 0.0
         destination.draw_image(
-            cached[2].copy_as(destination.backend),
+            cached[2],
             offset_x - margin,
             offset_y - margin,
             smooth=None,

@@ -10,8 +10,6 @@ from sailworks.core.scheduling import schedule_idle
 
 from sailworks.core.mapviewport import MapViewport
 
-from .canvas import CairoCanvas, Canvas, CanvasImage
-
 logger = logging.getLogger("sailworks")
 MARGIN = 256
 
@@ -83,16 +81,9 @@ def covers(viewport, canvas):
 def paint_viewport(canvas, target, viewport, image):
     """Blit a prepared viewport image, scaled to this canvas' zoom ratio.
 
-    ``target`` is a ``Canvas``; a raw ``cairo.Context`` is accepted for the
-    callers that still own one. ``image`` must be a :class:`CanvasImage` so the
-    blit stays backend neutral.
+    ``target`` is a ``Canvas`` and ``image`` a :class:`CanvasImage`; both are
+    already Qt-backed.
     """
-    if not isinstance(target, Canvas):
-        target = CairoCanvas(target)
-    # Temporary boundary copy: the widget layer still owns a cairo target, so
-    # a Qt worker frame is copied here. Delete this when the widget layer
-    # hands over a Qt canvas and the backends already match.
-    image = image.copy_as(target.backend)
     ratio = 2.0 ** (canvas._zoom - viewport._zoom)
     x = canvas._lon_to_x(viewport._center_lon) - canvas._lon_to_x(canvas._center_lon)
     y = canvas._lat_to_y(viewport._center_lat) - canvas._lat_to_y(canvas._center_lat)
@@ -456,14 +447,8 @@ class OverlayRenderer:
 
     @staticmethod
     def _paint(canvas, cr, job, surface):
-        # Worker frames are still cairo surfaces; wrap at the single blit
-        # boundary so every other module can keep producing them unchanged.
-        image = (
-            surface
-            if isinstance(surface, CanvasImage)
-            else CanvasImage.from_cairo_surface(surface)
-        )
-        paint_viewport(canvas, cr, job.viewport, image)
+        # A worker frame is a CanvasImage; blit it onto the given canvas.
+        paint_viewport(canvas, cr, job.viewport, surface)
 
     def _start_next(self):
         if self._closed or self._running:
