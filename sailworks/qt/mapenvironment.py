@@ -1,9 +1,6 @@
 """Retained chart/weather/marine environment composition for Qt map hosts."""
 
-import math
-
-import cairo
-from PySide6.QtGui import QImage
+from sailworks.rendering.canvas import Canvas, CanvasImage
 
 
 class MapEnvironmentMixin:
@@ -52,21 +49,10 @@ class MapEnvironmentMixin:
     def _environment_image(self):
         """Existing above-ENC layers, retained between ENC and viewport barbs."""
         factor = self.get_scale_factor()
-        surface = cairo.ImageSurface(
-            cairo.FORMAT_ARGB32,
-            math.ceil(self.get_allocated_width() * factor),
-            math.ceil(self.get_allocated_height() * factor),
+        image = CanvasImage.new(
+            self.get_allocated_width(), self.get_allocated_height(), factor
         )
-        surface.set_device_scale(factor, factor)
-        cr = cairo.Context(surface)
-        self.charts.draw_above_enc(self, cr)
-        surface.flush()
-        image = QImage(
-            surface.get_data(),
-            surface.get_width(),
-            surface.get_height(),
-            surface.get_stride(),
-            QImage.Format.Format_ARGB32_Premultiplied,
-        ).copy()
-        image.setDevicePixelRatio(factor)
-        return image
+        canvas = Canvas.for_image(image)
+        self.charts.draw_above_enc(self, canvas)
+        canvas.finish()
+        return image.qimage

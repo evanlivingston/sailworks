@@ -21,8 +21,6 @@ from typing import List, Optional, Tuple
 
 from sailworks.core.polarperformance import PerformanceSample, wind_band
 
-from .canvas import CairoCanvas, Canvas
-
 logger = logging.getLogger("sailworks")
 
 POLAR_COLORS = [
@@ -138,8 +136,6 @@ class PolarRenderer:
         return closest
 
     def draw_polar(self, canvas, width, height):
-        if not isinstance(canvas, Canvas):
-            canvas = CairoCanvas(canvas)
         self._point_positions = []
         self._curve_segments = []
         canvas.set_source_rgb(0.15, 0.17, 0.20)

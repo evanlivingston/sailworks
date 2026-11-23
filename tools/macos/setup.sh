@@ -9,7 +9,7 @@ fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
-brew install gdal cairo pkg-config python@3.12
+brew install gdal pkg-config python@3.12
 
 BREW_PREFIX="$(brew --prefix)"
 export PATH="$(brew --prefix python@3.12)/bin:$BREW_PREFIX/bin:$PATH"
@@ -26,11 +26,6 @@ python -m pip install --upgrade pip wheel setuptools
 GDAL_VERSION="$(gdal-config --version)"
 python -m pip install numpy
 python -m pip install --no-build-isolation "GDAL[numpy]==${GDAL_VERSION}"
-# pycairo has no macOS wheel, so pip builds it from the source distribution.
-# Since 1.29 that source distribution uses the meson build backend, which
-# --no-build-isolation cannot install on its own. Install the backend and
-# its build tool first so the editable install below can resolve it.
-python -m pip install meson-python ninja
 # The satellite basemap's MapLibre Metal runtime is Apple Silicon only, so
 # install the extra where it can actually render.
 TARGET="."

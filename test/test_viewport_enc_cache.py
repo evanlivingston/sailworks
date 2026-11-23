@@ -15,11 +15,11 @@ from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 
-import cairo
 from osgeo import ogr, osr
 
 from sailworks.core.mapviewport import MapViewport
 from sailworks.qt import encgeometrycache, viewportenc
+from sailworks.rendering.canvas import CanvasImage
 from sailworks.rendering.encrenderer import ENCOverlayRenderer
 from sailworks.rendering.overlayrenderer import RenderJob
 from sailworks.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
@@ -169,11 +169,8 @@ def _source(tmp_path, palette="cm93"):
 
 def _compose(source, job):
     """The viewport's own composition of the library."""
-    surface = cairo.ImageSurface(
-        cairo.FORMAT_ARGB32, job.viewport.width, job.viewport.height
-    )
-    surface.set_device_scale(1, 1)
-    result, metadata = source.compose(job, surface)
+    image = CanvasImage.new(job.viewport.width, job.viewport.height)
+    result, metadata = source.compose(job, image)
     return result, metadata
 
 

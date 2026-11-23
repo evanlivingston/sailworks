@@ -22,7 +22,6 @@ from os.path import isfile, join
 from threading import Lock, Thread
 from typing import List, Optional
 
-import cairo
 import numpy as np
 from osgeo import gdal, osr
 from PySide6.QtGui import QImage
@@ -31,7 +30,7 @@ from sailworks.core.scheduling import schedule_idle
 
 from sailworks.core.mapviewport import MapPoint
 
-from .canvas import CanvasImage, QPainterCanvas
+from .canvas import CanvasImage
 from .chartlayer import ChartLayer
 
 logger = logging.getLogger("sailworks")
@@ -181,48 +180,35 @@ class GDALSingleRasterChart:
         self.bbox = dataset_bbox(dataset)
 
         data, band_x_size, band_y_size = self.band_to_surface(1)
-        # The decoded raster is a uint32 ARGB32 buffer. Cairo and QImage both
-        # keep only a raw pointer to it, so the chart instance holds the
-        # reference for as long as either backend image can be drawn.
+        # The decoded raster is a uint32 ARGB32 buffer. QImage keeps only a raw
+        # pointer to it, so the chart instance holds the reference for as long
+        # as the image can be drawn.
         self.data = data
         self.width = band_x_size
         self.height = band_y_size
         # ARGB32 and RGB24 strides are identical for every width (both are
         # 4-byte aligned); the pre-seam surface used the RGB24 helper, so this
         # keeps the effective stride unchanged rather than "fixing" it.
-        self._stride = cairo.Format.ARGB32.stride_for_width(band_x_size)
-        self._surface_image = None
+        self._stride = band_x_size * 4
         self._qimage = None
 
     def image_for(self, canvas):
-        """The decoded raster as a :class:`CanvasImage` for *canvas*'s backend.
+        """The decoded raster as a Qt-backed :class:`CanvasImage`.
 
-        The Cairo view is the historical one, built on demand; the Qt view
-        wraps the same NumPy buffer without a copy. Each is cached, and both
-        stay valid only while ``self.data`` is alive.
+        The image wraps the same NumPy buffer without a copy. It is cached and
+        stays valid only while ``self.data`` is alive.
         """
-        if isinstance(canvas, QPainterCanvas):
-            if self._qimage is None:
-                self._qimage = CanvasImage.from_qimage(
-                    QImage(
-                        self.data,
-                        self.width,
-                        self.height,
-                        self._stride,
-                        QImage.Format.Format_ARGB32_Premultiplied,
-                    )
+        if self._qimage is None:
+            self._qimage = CanvasImage.from_qimage(
+                QImage(
+                    self.data,
+                    self.width,
+                    self.height,
+                    self._stride,
+                    QImage.Format.Format_ARGB32_Premultiplied,
                 )
-            return self._qimage
-        if self._surface_image is None:
-            surface = cairo.ImageSurface.create_for_data(
-                self.data,
-                cairo.Format.ARGB32,
-                self.width,
-                self.height,
-                self._stride,
             )
-            self._surface_image = CanvasImage.from_cairo_surface(surface)
-        return self._surface_image
+        return self._qimage
 
     def band_to_surface(self, i):
         band = self.dataset.GetRasterBand(i)

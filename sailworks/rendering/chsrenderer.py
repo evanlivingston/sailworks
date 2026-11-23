@@ -20,7 +20,7 @@ from sailworks.core.chscharts import (
 )
 from sailworks.core.mapviewport import MapViewport
 
-from .canvas import CairoCanvas, Canvas, CanvasImage
+from .canvas import CanvasImage
 
 logger = logging.getLogger("sailworks")
 TileKey = tuple[int, int, int, int]
@@ -68,8 +68,6 @@ class CHSRenderer:
         if canvas._zoom < MIN_ZOOM - 0.5:
             self.forget(canvas)
             return
-        if not isinstance(cr, Canvas):
-            cr = CairoCanvas(cr)
         zoom = self._tile_zoom(canvas)
         visible, ratio, cx, cy = self._visible_tiles(canvas, zoom)
         wanted = {key for key, _, _ in visible}
@@ -279,7 +277,7 @@ class CHSRenderer:
 
     @staticmethod
     def _decode(key, data):
-        image = CanvasImage.from_png_bytes(data, backend="cairo")
+        image = CanvasImage.from_png_bytes(data)
         factor = key[3]
         if image.width != TILE_SIZE * factor or image.height != TILE_SIZE * factor:
             raise ValueError("CHS returned an unexpected image size")

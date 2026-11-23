@@ -19,7 +19,6 @@ import threading
 from collections import OrderedDict
 from functools import lru_cache
 
-import cairo
 import numpy as np
 from sailworks.common import wave_color, wind_color
 from sailworks.core.utils import point_in_country
@@ -27,9 +26,7 @@ from sailworks.rendering.canvas import (
     CAP_BUTT,
     SLANT_NORMAL,
     WEIGHT_BOLD,
-    CairoCanvas,
     CanvasImage,
-    QPainterCanvas,
 )
 
 try:
@@ -606,7 +603,7 @@ class WindPainter:
 
         Returns ``(geometry, count)`` where geometry groups screen-space
         lines/triangles/dots by color bucket. Used by the Qt foreground
-        painter; the cairo path above shares the same math.
+        painter; the background painter shares the same math.
 
         Reprojected world pixels are cached per field, camera, allocation and
         selection. ``palette_key`` participates in the key so a palette change
@@ -907,63 +904,18 @@ class WindPainter:
     def _draw_color_fill(self, gpsmap, canvas, data, scale):
         """Draw interpolated color fill between grid points.
 
-        The Cairo backend keeps the shared ``cairo.MeshPattern``: it is the
-        byte-exact reference and the production backend until Phase 5. Every
-        other backend takes the single-image approximation in
-        :meth:`_draw_color_fill_image`.
+        Every backend takes the single-image approximation in
+        :meth:`_draw_color_fill_image`: one RGBA image of the sampled grid,
+        filtered by the backend's bilinear sampler.
         """
         opacity = self.settings_manager.gribArrowOpacity * 0.3
         projected = self._grid_screen_points(gpsmap, data, scale)
         if projected is None:
             return
         screen_xs, screen_ys = projected
-        if isinstance(canvas, CairoCanvas):
-            self._draw_color_fill_mesh(
-                gpsmap, canvas, data, scale, opacity, screen_xs, screen_ys
-            )
-        else:
-            self._draw_color_fill_image(
-                gpsmap, canvas, data, scale, opacity, screen_xs, screen_ys
-            )
-
-    def _draw_color_fill_mesh(
-        self, gpsmap, canvas, data, scale, opacity, screen_xs, screen_ys
-    ):
-        """The cairo mesh: one straight-edged quad per sampled grid cell."""
-        cr = canvas.context
-        # A shared mesh avoids independently composited, antialiased cell edges.
-        pat = cairo.MeshPattern()
-        patches = 0
-        # Plain float lists index faster than numpy scalars and keep the work
-        # inside the quad loop free of new objects.
-        lats_by_column = [column[1].tolist() for column in data]
-        speeds_by_column = [column[3].tolist() for column in data]
-        for i in range(0, len(data) - scale, scale):
-            if gpsmap.render_cancelled():
-                return
-            try:
-                lats_next = lats_by_column[i + scale]
-                speeds_next = speeds_by_column[i + scale]
-            except IndexError:
-                continue
-            patches += self._fill_column(
-                pat,
-                opacity,
-                screen_xs,
-                screen_ys,
-                i // scale,
-                lats_by_column[i],
-                lats_next,
-                speeds_by_column[i],
-                speeds_next,
-                scale,
-            )
-
-        if patches:
-            cr.save()
-            cr.set_source(pat)
-            cr.paint()
-            cr.restore()
+        self._draw_color_fill_image(
+            gpsmap, canvas, data, scale, opacity, screen_xs, screen_ys
+        )
 
     def _draw_color_fill_image(
         self, gpsmap, canvas, data, scale, opacity, screen_xs, screen_ys
@@ -998,7 +950,6 @@ class WindPainter:
         mercator offsets. ``test_canvas_equivalence`` records that error for a
         mercator-projected grid.
         """
-        backend = "qt" if isinstance(canvas, QPainterCanvas) else "cairo"
         lats_by_column = [column[1].tolist() for column in data]
         speeds_by_column = [column[3].tolist() for column in data]
         column_count = len(screen_xs)
@@ -1011,7 +962,6 @@ class WindPainter:
                 return
             self._blit_grid_image(
                 canvas,
-                backend,
                 alpha,
                 speeds_by_column,
                 screen_xs,
@@ -1075,7 +1025,6 @@ class WindPainter:
     @staticmethod
     def _blit_grid_image(
         canvas,
-        backend,
         alpha,
         speeds_by_column,
         screen_xs,
@@ -1129,7 +1078,7 @@ class WindPainter:
 
         step_x = (x1 - x0) / (width - 1)
         step_y = (y1 - y0) / (height - 1)
-        image = CanvasImage.from_rgba(width, height, pixels, backend=backend)
+        image = CanvasImage.from_rgba(width, height, pixels)
         canvas.save()
         canvas.rectangle(x0, y0, x1 - x0, y1 - y0)
         canvas.clip()
@@ -1144,66 +1093,3 @@ class WindPainter:
             pad=True,
         )
         canvas.restore()
-
-    def _fill_column(
-        self,
-        pat,
-        opacity,
-        screen_xs,
-        screen_ys,
-        column,
-        lats,
-        lats_next,
-        speeds,
-        speeds_next,
-        scale,
-    ):
-        """Add the fill quads between two neighbouring columns."""
-        patches = 0
-        for j in range(0, len(lats) - scale, scale):
-            try:
-                lat_tl = lats[j]
-                lat_tr = lats[j + scale]
-                lat_bl = lats_next[j]
-                lat_br = lats_next[j + scale]
-                speed_tl = speeds[j]
-                speed_tr = speeds[j + scale]
-                speed_bl = speeds_next[j]
-                speed_br = speeds_next[j + scale]
-            except IndexError:
-                continue
-
-            row = j // scale
-            x_tl = screen_xs[column][row]
-            y_tl = screen_ys[column][row]
-            x_tr = screen_xs[column][row + 1]
-            y_tr = screen_ys[column][row + 1]
-            x_bl = screen_xs[column + 1][row]
-            y_bl = screen_ys[column + 1][row]
-            x_br = screen_xs[column + 1][row + 1]
-            y_br = screen_ys[column + 1][row + 1]
-
-            # Rows are longitude columns. Never join different latitude
-            # intervals when partial forecast coverage leaves a ragged grid.
-            if lat_tl != lat_bl or lat_tr != lat_br:
-                continue
-            pat.begin_patch()
-            # Path: TL → TR → BR → BL (clockwise)
-            pat.move_to(x_tl, y_tl)
-            pat.line_to(x_tr, y_tr)
-            pat.line_to(x_br, y_br)
-            pat.line_to(x_bl, y_bl)
-
-            # Corners match path order: 0=TL, 1=TR, 2=BR, 3=BL
-            r, g, b = wind_color(speed_tl)
-            pat.set_corner_color_rgba(0, r, g, b, opacity)
-            r, g, b = wind_color(speed_tr)
-            pat.set_corner_color_rgba(1, r, g, b, opacity)
-            r, g, b = wind_color(speed_br)
-            pat.set_corner_color_rgba(2, r, g, b, opacity)
-            r, g, b = wind_color(speed_bl)
-            pat.set_corner_color_rgba(3, r, g, b, opacity)
-            pat.end_patch()
-
-            patches += 1
-        return patches

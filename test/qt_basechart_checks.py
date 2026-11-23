@@ -7,13 +7,12 @@ import threading
 import unittest
 from unittest.mock import patch
 
-import cairo
 from osgeo import ogr
 from PySide6.QtCore import QTimer
 
 from sailworks.core.mapviewport import MapViewport
 from sailworks.qt.basecharts import BaseChartRenderer, describe_sources
-from sailworks.rendering.canvas import CairoCanvas
+from sailworks.rendering.canvas import Canvas, CanvasImage
 from sailworks.rendering.gdalvectorchart import GDALVectorChart
 from sailworks.rendering.gshhs import GSHHSVectorChart
 from sailworks.rendering.overlayrenderer import MARGIN, RenderJob
@@ -52,12 +51,10 @@ class BaseChartChecks(Fixture):
         return GDALVectorChart(str(path), self.controller.settings)
 
     def surface(self, canvas):
-        surface = cairo.ImageSurface(
-            cairo.FORMAT_ARGB32,
-            canvas.get_allocated_width(),
-            canvas.get_allocated_height(),
+        image = CanvasImage.new(
+            canvas.get_allocated_width(), canvas.get_allocated_height()
         )
-        return surface, cairo.Context(surface)
+        return image, Canvas.for_image(image)
 
     def test_private_worker_matches_simple_and_gshhs_portrayal(self):
         canvas = self.window.map
@@ -92,10 +89,8 @@ class BaseChartChecks(Fixture):
                     descriptor = describe_sources([source])[0]
                     job = RenderJob((), viewport, ((descriptor,),), 1, palette)
                     candidate = renderer._render(job)
-                    reference = cairo.ImageSurface(
-                        cairo.FORMAT_ARGB32, viewport.width, viewport.height
-                    )
-                    source.do_draw(viewport, CairoCanvas(cairo.Context(reference)))
+                    reference = CanvasImage.new(viewport.width, viewport.height)
+                    source.do_draw(viewport, Canvas.for_image(reference))
                     reference.flush()
                     self.assertEqual(
                         bytes(candidate.get_data()),

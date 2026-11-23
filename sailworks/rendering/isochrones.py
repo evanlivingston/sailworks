@@ -3,7 +3,6 @@
 import math
 from dataclasses import dataclass
 
-import cairo
 import numpy as np
 from pyproj import Geod
 

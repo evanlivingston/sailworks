@@ -263,10 +263,9 @@ def measure(snapshot, output, dpr=2, with_isobars=True):
 
 def _identity_check(data_dir, camera, dpr, published, gribviewportchart):
     """Compare a band composition's ENC identity with a full reference."""
-    import cairo
-
     from sailworks.core.mapviewport import MapViewport
     from sailworks.qt.viewportenc import ViewportEncSource
+    from sailworks.rendering.canvas import CanvasImage
     from sailworks.rendering.overlayrenderer import MARGIN, RenderJob
 
     viewport = MapViewport(
@@ -275,10 +274,7 @@ def _identity_check(data_dir, camera, dpr, published, gribviewportchart):
     cancel = __import__("threading").Event()
     viewport.render_cancelled = cancel.is_set
     job = RenderJob(("cm93", dpr, ()), viewport, (), dpr, "cm93", cancel)
-    surface = cairo.ImageSurface(
-        cairo.FORMAT_ARGB32, viewport.width * dpr, viewport.height * dpr
-    )
-    surface.set_device_scale(dpr, dpr)
+    surface = CanvasImage.new(viewport.width, viewport.height, dpr)
     source = ViewportEncSource(data_dir, "cm93")
     try:
         _surface, reference = source.compose(job, surface)

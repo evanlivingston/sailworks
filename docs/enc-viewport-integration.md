@@ -6,6 +6,13 @@ the current default. ENC subsequently shipped enabled by default; see
 [ENC rollout](enc-default-rollout.md) and the
 [performance plan current state](rendering-performance-plan.md#current-state).
 
+> **Superseded 2026-11-23 by #267.** The Cairo renderer described below was
+> removed. The CPU raster backend is Qt's `QPainter` (`QPainterCanvas` in
+> `sailworks/rendering/canvas.py`), and the ENC fidelity gate's reference image
+> is now built on that backend. `S57ChartDrawer` no longer serves as a cairo
+> oracle. The Cairo statements below are kept as the record of the #78-era
+> decision they were written as, not as current behaviour.
+
 ## Implementation contract (before implementation/runs)
 
 **Question:** can the independent viewport present complete installed/enabled ENC

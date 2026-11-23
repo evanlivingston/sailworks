@@ -12,14 +12,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import cairo
 import numpy as np
 from osgeo import ogr
 
 from sailworks.core.grib import Grib
 from sailworks.core.storage import DATA_DIR
 from sailworks.core.utils import COUNTRY_SHAPES, point_in_bbox
-from sailworks.rendering.canvas import CairoCanvas, Canvas, CanvasImage
+from sailworks.rendering.canvas import Canvas, CanvasImage
 from sailworks.rendering.overlayrenderer import OverlayRenderer, covers
 from sailworks.rendering.panprefetch import PanPreparationTime
 from sailworks.rendering.streamlines import trace_streamlines, geometry_for_view
@@ -1326,9 +1325,7 @@ class WindOverlayRenderer(OverlayRenderer):
             canvas._zoom,
             density=density,
         )
-        WindPainter.paint_barb_geometry(
-            cr if isinstance(cr, Canvas) else CairoCanvas(cr), geometry, opacity
-        )
+        WindPainter.paint_barb_geometry(cr, geometry, opacity)
 
     def live_geometry_for_view(
         self, canvas, width, height, center_lat, center_lon, zoom, density="standard"

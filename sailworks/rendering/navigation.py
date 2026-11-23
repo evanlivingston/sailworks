@@ -25,7 +25,6 @@ import dateutil.parser
 from sailworks.core import utils
 
 from sailworks.core.mapviewport import MapPoint
-from .canvas import CairoCanvas, Canvas
 from .style import (
     CairoStyle,
     ROUTE_SAIL_CHANGE_COLOUR,
@@ -381,8 +380,6 @@ class NavigationRenderer:
         )
 
     def draw_routes(self, gpsmap, canvas, display_time, draw_routes=True):  # noqa: C901
-        if not isinstance(canvas, Canvas):
-            canvas = CairoCanvas(canvas)
         # Legacy route times and the map clock are local and naive; newer
         # routes carry UTC offsets. Compare instants without discarding offsets.
 
@@ -687,8 +684,6 @@ class NavigationRenderer:
         return routes
 
     def draw_navigation(self, gpsmap, canvas, draw_tracks=True):  # noqa: C901
-        if not isinstance(canvas, Canvas):
-            canvas = CairoCanvas(canvas)
         if draw_tracks:
             for tr in self.core.trackManager:
                 if not tr.visible:
@@ -767,8 +762,6 @@ class NavigationRenderer:
 
     def draw_race_tracks(self, gpsmap, canvas, draw_pois=True):  # noqa: C901
         """Draw race-track geometry without per-fix number labels."""
-        if not isinstance(canvas, Canvas):
-            canvas = CairoCanvas(canvas)
         for tr in self.core.trackManager:
             if not tr.visible or not getattr(tr, "race_track", False):
                 continue

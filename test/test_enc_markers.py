@@ -5,8 +5,8 @@ symbols, the ink of the stroked shapes (half the line width beyond each path),
 the lateral-buoy disc and its port/starboard colour, BOYLAT ``COLOUR``/
 ``CATLAM`` remapping, source order, the optional per-camera scale gate and the
 generic fallback for unknown point classes.  They are Qt-free, apart from one
-optional cross-check of the palette against the Cairo drawer's own styles, and
-do not measure performance or claim chart fidelity.
+cross-check of the palette against the drawer's own styles, and do not measure
+performance or claim chart fidelity.
 """
 
 from __future__ import annotations
@@ -101,7 +101,7 @@ def test_every_kind_has_three_point_triangles(kind):
 
 
 @pytest.mark.parametrize("kind", encmarkers.KINDS)
-def test_template_extents_match_the_cairo_shapes(kind):
+def test_template_extents_match_the_drawer_shapes(kind):
     expected, tolerance = EXTENTS[kind]
     assert _bounds(kind) == pytest.approx(expected, abs=tolerance)
 
@@ -317,7 +317,7 @@ def test_lateral_buoys_are_the_generic_disc_in_their_side_colour():
     )
 
 
-def test_light_rays_are_the_cairo_half_pixel_stroke():
+def test_light_rays_are_the_half_pixel_stroke():
     template = _template(encmarkers.LIGHT)
     rays = template[encmarkers.DISC_SEGMENTS * 3 :].reshape(-1, 3, 2)
     assert len(rays) == 8
@@ -333,7 +333,7 @@ def test_light_rays_are_the_cairo_half_pixel_stroke():
     assert angles == pytest.approx([0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0])
 
 
-def test_beacon_is_the_hollow_cairo_stroke():
+def test_beacon_is_the_hollow_stroke():
     """Cairo strokes the 1.5 px triangle: a 0.75 px band either side, hollow."""
     template = _template(encmarkers.BEACON)
     # The Cairo path: apex (0, -5), base corners (+/-4, 3), closed and stroked.
@@ -359,7 +359,7 @@ def test_beacon_is_the_hollow_cairo_stroke():
     assert np.allclose(unique, edges, atol=1e-9)
 
 
-def test_landmark_is_the_hollow_cairo_square():
+def test_landmark_is_the_hollow_square():
     """Cairo strokes a 4x4 square 1 px wide: a ring, not a filled block."""
     template = _template(encmarkers.LANDMARK)
     assert _bounds(encmarkers.LANDMARK) == pytest.approx((-2.5, -2.5, 2.5, 2.5))
@@ -372,9 +372,8 @@ def test_landmark_is_the_hollow_cairo_square():
     assert not _covers_point(template, (0.5, 0.5))
 
 
-def test_marker_colours_match_the_cairo_point_styles():
+def test_marker_colours_match_the_point_styles():
     """``encpalette`` must mirror the drawer's module-level point styles."""
-    pytest.importorskip("cairo")
     from sailworks.rendering.vectordrawer import cm93chartdrawer
 
     mirrored = {

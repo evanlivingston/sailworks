@@ -13,13 +13,13 @@ import time
 from pathlib import Path
 from threading import Event
 
-import cairo
 from osgeo import ogr
 
 from sailworks.core.enccharts import chart_scale_rank, chart_scale_visible
 from sailworks.core.mapviewport import MapViewport
 from sailworks.qt import gribviewport, gribviewportchart, viewportenc
 from sailworks.qt.gribviewport import ViewportCamera
+from sailworks.rendering.canvas import Canvas as DrawCanvas, CanvasImage
 from sailworks.rendering.encrenderer import ENCOverlayRenderer
 from sailworks.rendering.overlayrenderer import RenderJob
 from test.map_helpers import MapCanvas
@@ -95,7 +95,7 @@ def _enc_job(charts=(), canvas=None):
 
 
 def _surface(width=100, height=100):
-    return cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+    return CanvasImage.new(width, height)
 
 
 def _pixel(surface, x, y):
@@ -460,7 +460,7 @@ def test_the_viewport_pixels_are_the_reference_pixels(monkeypatch):
 
 
 def test_a_fractional_factor_renders_at_whole_device_pixels(monkeypatch):
-    """A preview factor is a float, but cairo needs whole device pixels."""
+    """A preview factor is a float, but the frame needs whole device pixels."""
     canvas = MapCanvas()
     viewport = MapViewport(canvas)
     native = int(canvas.get_scale() * 3779.527559)
@@ -695,9 +695,10 @@ def test_a_ready_composition_reports_its_cells_and_its_coverage():
     cell = viewportenc.EncSource("/charts/US5TEST.000", 45000, ())
     region = ogr.CreateGeometryFromWkt("POLYGON((0 0,1 0,1 1,0 1,0 0))")
     painted = _surface()
-    context = cairo.Context(painted)
-    context.set_source_rgb(0, 0, 1)
-    context.paint()
+    canvas = DrawCanvas.for_image(painted)
+    canvas.set_source_rgb(0, 0, 1)
+    canvas.paint()
+    canvas.finish()
     renderer = _StubRenderer(surface=painted, regions=((cell.path, region),))
     source = _enc_source(sources=(cell,), renderer=renderer)
     surface = _surface()

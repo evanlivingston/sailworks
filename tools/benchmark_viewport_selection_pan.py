@@ -56,7 +56,6 @@ def summary(values):
 
 
 def environment():
-    import cairo
     import numpy
     import PySide6
 
@@ -68,7 +67,6 @@ def environment():
         "python": platform.python_version(),
         "qt": PySide6.__version__,
         "numpy": numpy.__version__,
-        "cairo": cairo.cairo_version_string(),
     }
 
 

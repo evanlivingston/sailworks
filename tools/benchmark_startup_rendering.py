@@ -300,7 +300,6 @@ def worker(config):
 
     socket.socket.connect = no_network
     socket.socket.connect_ex = no_network
-    import cairo
     import numpy as np
     import PySide6
     from osgeo import gdal
@@ -1057,7 +1056,6 @@ def worker(config):
                 "python": platform.python_version(),
                 "qt": PySide6.__version__,
                 "numpy": np.__version__,
-                "cairo": cairo.cairo_version_string(),
                 "gdal": gdal.VersionInfo("RELEASE_NAME"),
                 "qt_platform": app.platformName(),
                 "qt_style": app.style().objectName(),
@@ -1507,7 +1505,6 @@ def replay_viewport(controller, app, window, canvas, config, began):
         settle_ms = (time.perf_counter() - settle_began) * 1000
         import resource
 
-        import cairo
         import numpy as np
         import PySide6
         from osgeo import gdal
@@ -1523,7 +1520,6 @@ def replay_viewport(controller, app, window, canvas, config, began):
                 "python": platform.python_version(),
                 "qt": PySide6.__version__,
                 "numpy": np.__version__,
-                "cairo": cairo.cairo_version_string(),
                 "gdal": gdal.VersionInfo("RELEASE_NAME"),
                 "qt_platform": app.platformName(),
                 "qt_style": app.style().objectName(),

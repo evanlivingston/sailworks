@@ -1913,34 +1913,32 @@ class _RecordingComposer:
     """Stand-in for the application's composition, with a colour per call."""
 
     def __init__(self):
-        import cairo
+        from sailworks.rendering.canvas import Canvas, CanvasImage
 
         self.calls = []
         self.painter_instance = _RecordingPainter()
-        self._cairo = cairo
+        self._canvas_types = (Canvas, CanvasImage)
 
     def painter(self):
         return self.painter_instance
 
     def render(self, job, isobars=None, enc=None):
-        cairo = self._cairo
-        width = max(1, int(round(job.viewport.width * job.factor)))
-        height = max(1, int(round(job.viewport.height * job.factor)))
-        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
-        surface.set_device_scale(job.factor, job.factor)
-        cr = cairo.Context(surface)
+        Canvas, CanvasImage = self._canvas_types
+        image = CanvasImage.empty(job.viewport.width, job.viewport.height, job.factor)
+        canvas = Canvas.for_image(image)
         # The first composition is red; every later composition is green, so
         # a test can tell reused pixels from newly composed ones.
         if self.calls:
-            cr.set_source_rgb(0, 1, 0)
+            canvas.set_source_rgb(0, 1, 0)
         else:
-            cr.set_source_rgb(1, 0, 0)
-        cr.paint()
+            canvas.set_source_rgb(1, 0, 0)
+        canvas.paint()
+        canvas.finish()
         self.calls.append((job.viewport.width, job.viewport.height, job.factor))
         metadata = None
         if enc is not None:
-            surface, metadata = enc.compose(job, surface)
-        return surface, metadata
+            image, metadata = enc.compose(job, image)
+        return image, metadata
 
 
 class _GeometryComposer:
@@ -1953,38 +1951,36 @@ class _GeometryComposer:
     """
 
     def __init__(self, anchors):
-        import cairo
+        from sailworks.rendering.canvas import Canvas, CanvasImage
 
         self.calls = []
         self.painter_instance = _RecordingPainter()
-        self._cairo = cairo
+        self._canvas_types = (Canvas, CanvasImage)
         self._anchors = tuple(anchors)
 
     def painter(self):
         return self.painter_instance
 
     def render(self, job, isobars=None, enc=None):
-        cairo = self._cairo
+        Canvas, CanvasImage = self._canvas_types
         viewport = job.viewport
-        width = max(1, int(round(viewport.width * job.factor)))
-        height = max(1, int(round(viewport.height * job.factor)))
-        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
-        surface.set_device_scale(job.factor, job.factor)
-        cr = cairo.Context(surface)
-        cr.set_source_rgb(0.10, 0.20, 0.50)
-        cr.paint()
-        cr.set_source_rgb(1, 1, 1)
-        cr.set_font_size(12)
+        image = CanvasImage.empty(viewport.width, viewport.height, job.factor)
+        canvas = Canvas.for_image(image)
+        canvas.set_source_rgb(0.10, 0.20, 0.50)
+        canvas.paint()
+        canvas.set_source_rgb(1, 1, 1)
+        canvas.set_font_size(12)
         for lat, lon, text in self._anchors:
             x, y = viewport.convert_geographic_to_screen(_point(lat, lon))
             # A solid box is the label's anchor mark: it straddles region
             # boundaries and is unmistakable in a pixel comparison.
-            cr.rectangle(x - 4, y - 8, 8, 8)
-            cr.fill()
-            cr.move_to(x, y)
-            cr.show_text(text)
+            canvas.rectangle(x - 4, y - 8, 8, 8)
+            canvas.fill()
+            canvas.move_to(x, y)
+            canvas.show_text(text)
+        canvas.finish()
         self.calls.append((viewport.width, viewport.height, viewport._center_lon))
-        return surface, None
+        return image, None
 
 
 def _point(lat, lon):

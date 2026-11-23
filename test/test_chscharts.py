@@ -9,15 +9,15 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-import cairo
-
 from sailworks.core.chscharts import (
     CHSTileSource,
     HALF_WORLD,
     tile_bbox,
     tile_in_canada,
 )
-from sailworks.rendering.canvas import CairoCanvas
+from PySide6.QtCore import QBuffer, QIODevice
+
+from sailworks.rendering.canvas import Canvas, CanvasImage
 from sailworks.rendering.chsrenderer import CHSRenderer
 from test.map_helpers import MapCanvas as TestMap, QueuedScheduler
 
@@ -33,13 +33,15 @@ def tile_key(lat=49.3, lon=-123.17, zoom=14, factor=1):
 
 
 def png(factor=1):
-    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 256 * factor, 256 * factor)
-    cr = cairo.Context(surface)
-    cr.set_source_rgb(1, 0, 0)
-    cr.paint()
-    output = io.BytesIO()
-    surface.write_to_png(output)
-    return output.getvalue()
+    image = CanvasImage.new(256 * factor, 256 * factor)
+    canvas = Canvas.for_image(image)
+    canvas.set_source_rgb(1, 0, 0)
+    canvas.paint()
+    canvas.finish()
+    output = QBuffer()
+    output.open(QIODevice.OpenModeFlag.WriteOnly)
+    image.qimage.save(output, "PNG")
+    return bytes(output.data())
 
 
 class TestCHSTileSource(unittest.TestCase):
@@ -107,12 +109,13 @@ class TestCHSBackgroundRendering(unittest.TestCase):
             -123.17,
             14,
         )
-        self.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 400, 300)
-        self.cr = cairo.Context(self.surface)
+        self.image = CanvasImage.new(400, 300)
         self.addCleanup(self.renderer.set_enabled, False)
 
     def draw(self):
-        self.renderer.draw(self.canvas, self.cr)
+        self.target = Canvas.for_image(self.image)
+        self.renderer.draw(self.canvas, self.target)
+        self.target.finish()
 
     def drain(self, done):
         deadline = time.monotonic() + 2
@@ -135,12 +138,17 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         ):
             matrix = []
             attribution.side_effect = lambda target, w, h: matrix.append(
-                (target._cr.get_matrix().x0, target._cr.get_matrix().y0, w, h)
+                (
+                    target._painter.worldTransform().dx(),
+                    target._painter.worldTransform().dy(),
+                    w,
+                    h,
+                )
             )
             self.draw()
             self.assertEqual(matrix, [(100, 80, 200, 140)])
-            self.assertEqual(self.cr.get_matrix().x0, 0)
-            self.assertEqual(self.cr.get_matrix().y0, 0)
+            self.assertEqual(self.target._painter.worldTransform().dx(), 0)
+            self.assertEqual(self.target._painter.worldTransform().dy(), 0)
 
     def test_slow_worker_never_blocks_draw_and_concurrency_is_bounded(self):
         started, release = Event(), Event()
@@ -174,10 +182,10 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         self.drain(lambda: not self.renderer._inflight and not self.renderer._pending)
         self.draw()
         self.renderer.source.fetch.assert_not_called()
-        self.surface.flush()
-        offset = 150 * self.surface.get_stride() + 200 * 4
+        self.image.flush()
+        offset = 150 * self.image.get_stride() + 200 * 4
         self.assertEqual(
-            bytes(self.surface.get_data())[offset : offset + 4], b"\x00\x00\xff\xff"
+            bytes(self.image.get_data())[offset : offset + 4], b"\x00\x00\xff\xff"
         )
 
     def test_stale_tiles_stay_visible_when_refresh_fails(self):
@@ -207,7 +215,7 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         parent = (14, child[1] // 2, child[2] // 2, 1)
         self.renderer._tiles[parent] = (CHSRenderer._decode(parent, png()), time.time())
         self.assertTrue(
-            self.renderer._parent_preview(CairoCanvas(self.cr), child, 0, 0, 1)
+            self.renderer._parent_preview(Canvas.for_image(self.image), child, 0, 0, 1)
         )
         self.canvas._zoom_animating = False
         self.draw()
@@ -243,15 +251,17 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         child = (14, parent[1] * 2, parent[2] * 2, 1)
         self.renderer._tiles[child] = (CHSRenderer._decode(child, png()), time.time())
         self.assertTrue(
-            self.renderer._fallback_preview(CairoCanvas(self.cr), parent, 0, 0, 1)
+            self.renderer._fallback_preview(
+                Canvas.for_image(self.image), parent, 0, 0, 1
+            )
         )
-        self.surface.flush()
-        data = bytes(self.surface.get_data())
+        self.image.flush()
+        data = bytes(self.image.get_data())
         self.assertEqual(
-            data[64 * self.surface.get_stride() + 64 * 4 :][:4], b"\x00\x00\xff\xff"
+            data[64 * self.image.get_stride() + 64 * 4 :][:4], b"\x00\x00\xff\xff"
         )
         self.assertEqual(
-            data[192 * self.surface.get_stride() + 192 * 4 :][:4], b"\x00\x00\x00\x00"
+            data[192 * self.image.get_stride() + 192 * 4 :][:4], b"\x00\x00\x00\x00"
         )
 
     def test_large_zoom_out_gesture_bounds_tile_enumeration(self):

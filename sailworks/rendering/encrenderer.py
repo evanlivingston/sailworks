@@ -3,14 +3,13 @@
 from collections import OrderedDict
 from sailworks.core.scheduling import schedule_idle
 
-import cairo
 from osgeo import ogr
 
 from sailworks.core.enccharts import chart_scale_rank, chart_scale_visible
 from sailworks.core.mapviewport import MapPoint
 from sailworks.rendering.overlayrenderer import OverlayRenderer
 
-from .canvas import FILL_EVEN_ODD, CairoCanvas, Canvas, CanvasImage
+from .canvas import FILL_EVEN_ODD, Canvas, CanvasImage
 from .chartlayer import ChartLayer
 from .gdalvectorchart import GDALVectorChart
 from .vectordrawer.s57chartdrawer import S57ChartDrawer
@@ -18,8 +17,6 @@ from .vectordrawer.s57chartdrawer import S57ChartDrawer
 
 def coverage_path(canvas, viewport, geometry):
     """Append polygon rings to the canvas clip, including islands and holes."""
-    if not isinstance(canvas, Canvas):
-        canvas = CairoCanvas(canvas)
     kind = ogr.GT_Flatten(geometry.GetGeometryType())
     if kind == ogr.wkbPolygon:
         for index in range(geometry.GetGeometryCount()):

@@ -7,11 +7,10 @@ unaudited chart types retain ChartCollection's existing path.
 from collections import OrderedDict
 from dataclasses import dataclass, field
 
-import cairo
 from osgeo import ogr
 
 from sailworks.core.geo.shoreline import ShorelineGeometryCache
-from sailworks.rendering.canvas import CairoCanvas
+from sailworks.rendering.canvas import Canvas, CanvasImage
 from sailworks.rendering.gdalvectorchart import GDALVectorChart
 from sailworks.rendering.gshhs import GSHHSVectorChart
 from sailworks.rendering.overlayrenderer import MARGIN, OverlayRenderer
@@ -174,19 +173,14 @@ class BaseChartRenderer(OverlayRenderer):
 
     def _render(self, job):
         viewport = job.viewport
-        surface = cairo.ImageSurface(
-            cairo.FORMAT_ARGB32,
-            max(1, int(round(viewport.width * job.factor))),
-            max(1, int(round(viewport.height * job.factor))),
-        )
-        surface.set_device_scale(job.factor, job.factor)
-        cr = cairo.Context(surface)
+        image = CanvasImage.new(viewport.width, viewport.height, job.factor)
+        canvas = Canvas.for_image(image)
         for (source,) in job.charts:
             if job.cancel.is_set():
                 return None
             chart = self._worker_chart(source, job.palette)
-            cr.save()
-            chart.do_draw(viewport, CairoCanvas(cr))
-            cr.restore()
-        surface.flush()
-        return None if job.cancel.is_set() else surface
+            canvas.save()
+            chart.do_draw(viewport, canvas)
+            canvas.restore()
+        canvas.finish()
+        return None if job.cancel.is_set() else image
