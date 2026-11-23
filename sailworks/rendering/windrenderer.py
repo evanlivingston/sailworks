@@ -1400,6 +1400,7 @@ class WindOverlayRenderer(OverlayRenderer):
                 max_count=max_count,
                 land_mask=None if over_land else getattr(job, "barb_land", None),
                 projected=projection[1] if projection is not None else None,
+                palette_key=job.palette,
             )
             job.barb_geometry_view = barb_view
         geometry = job.barb_geometry

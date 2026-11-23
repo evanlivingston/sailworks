@@ -5,6 +5,7 @@ import sqlite3
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -53,6 +54,24 @@ def make_mbtiles(path, tiles=None, scheme="tms", metadata=None):
             row = 2**z - 1 - y if scheme == "tms" else y
             db.execute("INSERT INTO tiles VALUES (?,?,?,?)", (z, x, row, png(color)))
     return str(path)
+
+
+class RecordingArchive:
+    """Record the statements a renderer issues through an archive connection."""
+
+    def __init__(self, connection, statements):
+        self._connection = connection
+        self.statements = statements
+
+    def execute(self, sql, parameters=()):
+        self.statements.append(sql)
+        return self._connection.execute(sql, parameters)
+
+
+@contextmanager
+def recording_archive(path, statements):
+    with open_archive(path) as db:
+        yield RecordingArchive(db, statements)
 
 
 class TestMBTilesMetadata(unittest.TestCase):
@@ -225,6 +244,98 @@ class TestMBTilesPixels(unittest.TestCase):
         self.renderer = MBTilesRenderer()
         image = self.render(read_info(self.path))
         self.assertEqual(self.pixel(image, 300, 50), (0, 0, 0, 0))
+
+    def test_missing_tiles_cost_one_lookup_per_tile(self):
+        make_mbtiles(self.path, tiles={(0, 0, 0): (0, 0, 1), (4, 15, 15): (1, 0, 0)})
+        info = read_info(self.path)
+        self.assertEqual(info.zooms, (0, 4))
+        self.canvas._zoom = 3
+        target, _, _, _, ranges = self.renderer._tile_window(
+            MapViewport(self.canvas), info
+        )
+        self.assertEqual(target, 4)
+        painted = sum((b - a) * (d - c) for a, b, c, d, _ in ranges)
+        self.assertGreater(painted, 1)
+        statements = []
+        with patch(
+            "sailworks.rendering.mbtilesrenderer.open_archive",
+            side_effect=lambda path: recording_archive(path, statements),
+        ):
+            image = self.render(info)
+        # At most one tile lookup per painted tile, and fewer than the old walk
+        # issued for every candidate zoom of every tile.
+        self.assertLessEqual(len(statements), painted)
+        self.assertLess(len(statements), painted * len(info.zooms))
+        self.assertEqual(self.pixel(image, 100, 50), (255, 0, 0, 255))
+        repeated = []
+        with patch(
+            "sailworks.rendering.mbtilesrenderer.open_archive",
+            side_effect=lambda path: recording_archive(path, repeated),
+        ):
+            self.render(info)
+        self.assertEqual(repeated, [])
+
+    def test_first_tile_caches_hits_and_misses_without_a_second_lookup(self):
+        make_mbtiles(self.path, tiles={(1, 0, 0): (0, 0, 1)})
+        info = read_info(self.path)
+        with open_archive(self.path) as db:
+            hit = self.renderer._first_tile(db, info, 1, 0, 0)
+            self.assertEqual(hit[:3], (1, 0, 0))
+            self.assertIsNotNone(hit[3])
+            self.assertIsNone(self.renderer._first_tile(db, info, 1, 1, 0))
+        statements = []
+        with open_archive(self.path) as db:
+            recorder = RecordingArchive(db, statements)
+            self.assertEqual(
+                self.renderer._first_tile(recorder, info, 1, 0, 0)[:3], (1, 0, 0)
+            )
+            self.assertIsNone(self.renderer._first_tile(recorder, info, 1, 1, 0))
+        self.assertEqual(statements, [])
+
+    def test_first_tile_falls_back_after_a_corrupt_tile(self):
+        make_mbtiles(self.path, tiles={(0, 0, 0): (0, 0, 1), (1, 0, 0): (1, 0, 0)})
+        with sqlite3.connect(self.path) as db:
+            db.execute("UPDATE tiles SET tile_data=? WHERE zoom_level=1", (b"bad PNG",))
+        info = read_info(self.path)
+        statements = []
+        with open_archive(self.path) as db:
+            recorder = RecordingArchive(db, statements)
+            with self.assertLogs("sailworks", level="WARNING"):
+                tile = self.renderer._first_tile(recorder, info, 1, 0, 0)
+        self.assertEqual(tile[:3], (0, 0, 0))
+        self.assertIsNotNone(tile[3])
+        self.assertEqual(len(statements), 1)
+
+    def test_cached_coarse_tile_does_not_mask_a_finer_tile(self):
+        make_mbtiles(self.path, tiles={(0, 0, 0): (0, 0, 1), (4, 0, 0): (1, 0, 0)})
+        info = read_info(self.path)
+        with open_archive(self.path) as db:
+            coarse = self.renderer._first_tile(db, info, 0, 0, 0)
+            self.assertEqual(coarse[:3], (0, 0, 0))
+            self.assertEqual(self.pixel(coarse[3], 1, 1), (255, 0, 0, 255))
+            finer = self.renderer._first_tile(db, info, 4, 0, 0)
+        self.assertEqual(finer[:3], (4, 0, 0))
+        self.assertIsNotNone(finer[3])
+        self.assertIsNot(finer[3], coarse[3])
+        self.assertEqual(self.pixel(finer[3], 1, 1), (0, 0, 255, 255))
+
+    def test_first_tile_resolves_tms_and_xyz_rows_at_an_odd_y(self):
+        make_mbtiles(self.path, tiles={(1, 0, 1): (1, 0, 0)}, scheme="tms")
+        info = read_info(self.path)
+        with open_archive(self.path) as db:
+            tile = self.renderer._first_tile(db, info, 1, 0, 1)
+        # Stored at TMS row 0; xyz row math would consult the empty row 1.
+        self.assertEqual(tile[:3], (1, 0, 1))
+        self.assertIsNotNone(tile[3])
+        self.path.unlink()
+        make_mbtiles(self.path, tiles={(1, 0, 1): (0, 1, 0)}, scheme="xyz")
+        info = read_info(self.path)
+        with open_archive(self.path) as db:
+            tile = self.renderer._first_tile(db, info, 1, 0, 1)
+        # Stored at xyz row 1; tms row math would consult the empty row 0.
+        self.assertEqual(tile[:3], (1, 0, 1))
+        self.assertIsNotNone(tile[3])
+        self.assertEqual(self.pixel(tile[3], 1, 1), (0, 255, 0, 255))
 
     def test_outside_archive_does_not_open_sqlite_in_render(self):
         make_mbtiles(self.path, metadata={"bounds": "-129,48,-123,51"})

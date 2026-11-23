@@ -2752,6 +2752,22 @@ def enc_scene_demand_failed(widget, generation=None):
     widget._enc_scene_covered_demand = None
 
 
+def _arm_staged_timeout(owner, timer_attr, token_attr, token):
+    """Arm one staged layer's deadline, replacing any earlier deadline."""
+    setattr(owner, token_attr, token)
+    timer = getattr(owner, timer_attr, None)
+    if timer is not None:
+        timer.start()
+
+
+def _stop_staged_timeout(owner, timer_attr, token_attr):
+    """Cancel one staged layer's deadline and forget the armed token."""
+    timer = getattr(owner, timer_attr, None)
+    if timer is not None:
+        timer.stop()
+    setattr(owner, token_attr, None)
+
+
 def _viewport_widget_class():  # noqa: C901 - lazy factory
     """Build the render-context class on demand.
 
@@ -3614,6 +3630,30 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._chart_source_timer.setInterval(5000)
             self._chart_source_timer.timeout.connect(self._check_chart_sources)
             self._chart_source_timer.start()
+            # Staged layer deadlines (see ``_arm_staged_timeout``).  Each staged
+            # layer owns one restartable single-shot timer: a rapid burst of
+            # pans replaces the deadline instead of queueing an unparented
+            # timer that could never be stopped.  Wave fill and wave barbs
+            # can be pending together, so they never share one.
+            self._image_fill_timeout_timer = QTimer(self)
+            self._image_fill_timeout_timer.setSingleShot(True)
+            self._image_fill_timeout_timer.setInterval(10000)
+            self._image_fill_timeout_timer.timeout.connect(
+                self._image_fill_timeout_tick
+            )
+            self._image_fill_timeout_token = None
+            self._wave_timeout_timer = QTimer(self)
+            self._wave_timeout_timer.setSingleShot(True)
+            self._wave_timeout_timer.setInterval(10000)
+            self._wave_timeout_timer.timeout.connect(self._wave_timeout_tick)
+            self._wave_timeout_token = None
+            self._wave_barbs_timeout_timer = QTimer(self)
+            self._wave_barbs_timeout_timer.setSingleShot(True)
+            self._wave_barbs_timeout_timer.setInterval(10000)
+            self._wave_barbs_timeout_timer.timeout.connect(
+                self._wave_barbs_timeout_tick
+            )
+            self._wave_barbs_timeout_token = None
             self._watch_chart_budget()
             self.prepared.connect(self._refresh, Qt.ConnectionType.QueuedConnection)
             self.wavePrepared.connect(
@@ -7122,6 +7162,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._publication_manager.reject_pending(LayerRole.WAVE_FILL)
             self._publication_manager.withdraw_visible(LayerRole.WAVE_FILL)
             self._provider.release_fields((self, "wave"))
+            _stop_staged_timeout(self, "_wave_timeout_timer", "_wave_timeout_token")
             self._wave_token = None
             self._wave_state = "hidden"
             self._wave_error = ""
@@ -7139,6 +7180,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._publication_manager.reject_pending(LayerRole.WAVE_BARBS)
             self._publication_manager.withdraw_visible(LayerRole.WAVE_BARBS)
             self._provider.release_fields((self, "wave_barbs"))
+            _stop_staged_timeout(
+                self, "_wave_barbs_timeout_timer", "_wave_barbs_timeout_token"
+            )
             self._wave_barbs_token = None
             self._wave_arrows_state = "hidden"
             self._wave_arrows_error = ""
@@ -7608,11 +7652,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             # requested value when the slot is adopted.
             item.setOpacity(0.01)
             self._show_wave_stage(item)
+            _arm_staged_timeout(
+                self, "_wave_timeout_timer", "_wave_timeout_token", token
+            )
             self._try_commit_wave(token)
-            if isinstance(self, QObject):
-                QTimer.singleShot(
-                    10000, lambda staged=token: self._wave_timeout(staged)
-                )
 
         def _wave_fill_changed(self, item):
             if not self._disposed and item is self._wave_fill_back:
@@ -7653,6 +7696,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self._fail_wave(token, "Wave frame rejected")
                 return
             self._provider.promote_field((self, "wave"))
+            _stop_staged_timeout(self, "_wave_timeout_timer", "_wave_timeout_token")
             self._wave_token = None
             old = self._wave_fill
             if old is not None:
@@ -7667,6 +7711,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 return
             self._publication_manager.reject_pending(LayerRole.WAVE_FILL, token)
             self._provider.cancel_field((self, "wave"))
+            _stop_staged_timeout(self, "_wave_timeout_timer", "_wave_timeout_token")
             self._wave_token = None
             back = self._wave_fill_back
             if back is not None:
@@ -7759,6 +7804,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     LayerRole.WAVE_BARBS, self._wave_barbs_token
                 )
                 self._provider.cancel_field((self, "wave_barbs"))
+                _stop_staged_timeout(
+                    self, "_wave_barbs_timeout_timer", "_wave_barbs_timeout_token"
+                )
                 self._wave_barbs_token = None
                 self._show_wave_arrow_state(
                     result,
@@ -7799,6 +7847,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 selection = None
             if selection is None:
                 self._provider.cancel_field((self, "wave_barbs"))
+                _stop_staged_timeout(
+                    self, "_wave_barbs_timeout_timer", "_wave_barbs_timeout_token"
+                )
                 self._wave_barbs_token = None
                 self._show_wave_arrow_state("unavailable", "Wave arrows unavailable")
                 return
@@ -7908,11 +7959,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             item.setProperty("blend", fields["wave_height"].staged.weight(stamp))
             item.setOpacity(self._wind_opacity)
             item.setVisible(False)
+            _arm_staged_timeout(
+                self, "_wave_barbs_timeout_timer", "_wave_barbs_timeout_token", token
+            )
             self._try_commit_wave_barbs(token)
-            if isinstance(self, QObject):
-                QTimer.singleShot(
-                    10000, lambda staged=token: self._wave_barbs_timeout(staged)
-                )
 
         def _wave_barbs_changed(self, item):
             if not self._disposed and item is self._wave_barbs_back:
@@ -7949,6 +7999,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self._fail_wave_barbs(token, "Wave arrow frame rejected")
                 return
             self._provider.promote_field((self, "wave_barbs"))
+            _stop_staged_timeout(
+                self, "_wave_barbs_timeout_timer", "_wave_barbs_timeout_token"
+            )
             self._wave_barbs_token = None
             old = self._wave_barbs
             if old is not None:
@@ -7965,6 +8018,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 LayerRole.WAVE_BARBS, expected_token=token
             )
             self._provider.cancel_field((self, "wave_barbs"))
+            _stop_staged_timeout(
+                self, "_wave_barbs_timeout_timer", "_wave_barbs_timeout_token"
+            )
             self._wave_barbs_token = None
             back = self._wave_barbs_back
             if back is not None:
@@ -8509,6 +8565,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 timer = getattr(self, name, None)
                 if timer is not None:
                     timer.stop()
+            for timer_attr, token_attr in (
+                ("_image_fill_timeout_timer", "_image_fill_timeout_token"),
+                ("_wave_timeout_timer", "_wave_timeout_token"),
+                ("_wave_barbs_timeout_timer", "_wave_barbs_timeout_token"),
+            ):
+                _stop_staged_timeout(self, timer_attr, token_attr)
             if not self._native_weather_fields:
                 self._cancel_image_fill(withdraw=True)
             self._marine_layer.close()
@@ -9036,6 +9098,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         self._publication_manager.rebase_all(camera, new_gen)
                         # The rebase withdrew the wave frame's generation: do
                         # not keep drawing it while the new one is staged.
+                        _stop_staged_timeout(
+                            self, "_wave_timeout_timer", "_wave_timeout_token"
+                        )
                         self._wave_token = None
                         for item in (
                             getattr(self, "_wave_fill", None),
@@ -9045,6 +9110,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                                 item.setVisible(False)
                         # The rebase withdrew the wave barbs' generation as
                         # well: hide the stale arrows until they restage.
+                        _stop_staged_timeout(
+                            self,
+                            "_wave_barbs_timeout_timer",
+                            "_wave_barbs_timeout_token",
+                        )
                         self._wave_barbs_token = None
                         for item in (
                             getattr(self, "_wave_barbs", None),
@@ -9052,6 +9122,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         ):
                             if item is not None:
                                 item.setVisible(False)
+                        # The rebase also withdrew any staged image fill, so
+                        # stop its timeout with the other staged deadlines.
+                        _stop_staged_timeout(
+                            self,
+                            "_image_fill_timeout_timer",
+                            "_image_fill_timeout_token",
+                        )
+                        self._image_fill_token = None
                 else:
                     # No reference yet, create one
                     self._publication_manager.set_reference_camera(camera)
@@ -9526,11 +9604,52 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._published = selection.generation
             self._published_generations.add(selection.generation)
 
+        # ------------------------------------------------- staged deadlines
+        #
+        # Each staged layer owns one restartable single-shot timer.  A quick
+        # pan used to queue an unparented ``QTimer.singleShot`` per request;
+        # fifty pans left fifty timers that could not be stopped, and each of
+        # them would fail whichever request happened to be pending when it
+        # fired.  Re-arming the layer's own timer replaces the deadline, so a
+        # burst leaves one pending deadline, and only the latest armed token
+        # can ever be failed by it.
+        #
+        # The arm/stop helpers live at module level (``_arm_staged_timeout``
+        # and ``_stop_staged_timeout``) so callers that only carry the timer
+        # and token attributes, such as the test doubles, still work.
+        def _image_fill_timeout_tick(self):
+            token = getattr(self, "_image_fill_timeout_token", None)
+            if token is None:
+                return
+            _stop_staged_timeout(
+                self, "_image_fill_timeout_timer", "_image_fill_timeout_token"
+            )
+            self._image_fill_timeout(token)
+
+        def _wave_timeout_tick(self):
+            token = getattr(self, "_wave_timeout_token", None)
+            if token is None:
+                return
+            _stop_staged_timeout(self, "_wave_timeout_timer", "_wave_timeout_token")
+            self._wave_timeout(token)
+
+        def _wave_barbs_timeout_tick(self):
+            token = getattr(self, "_wave_barbs_timeout_token", None)
+            if token is None:
+                return
+            _stop_staged_timeout(
+                self, "_wave_barbs_timeout_timer", "_wave_barbs_timeout_token"
+            )
+            self._wave_barbs_timeout(token)
+
         def _image_fill_changed(self, item):
             if not self._disposed and item is self._fill_back:
                 self._try_commit_image_fill(getattr(self, "_image_fill_token", None))
 
         def _cancel_image_fill(self, withdraw=False):
+            _stop_staged_timeout(
+                self, "_image_fill_timeout_timer", "_image_fill_timeout_token"
+            )
             self._image_fill_token = None
             self._image_fill_pending_epoch = None
             self._publication_manager.reject_pending(LayerRole.FILL)
@@ -9645,13 +9764,16 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             finally:
                 self._fill_staging = False
             if token is not None:
-                self._try_commit_image_fill(token)
-                if not reuse_pending and isinstance(self, QObject):
+                if not reuse_pending:
                     # Some backends do not compile an effect inside a fully
                     # hidden subtree. Do not retain an unready field forever.
-                    QTimer.singleShot(
-                        10000, lambda staged=token: self._image_fill_timeout(staged)
+                    _arm_staged_timeout(
+                        self,
+                        "_image_fill_timeout_timer",
+                        "_image_fill_timeout_token",
+                        token,
                     )
+                self._try_commit_image_fill(token)
             return token
 
         def _image_fill_timeout(self, token):
@@ -9705,6 +9827,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self._show_state("unavailable")
                 return
             self._provider.promote_field(self)
+            _stop_staged_timeout(
+                self, "_image_fill_timeout_timer", "_image_fill_timeout_token"
+            )
             self._image_fill_token = None
             self._image_fill_pending_epoch = None
             self._image_fill_failed = None
@@ -9865,11 +9990,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     self._fill_back.setProperty(name, QUrl(url))
             finally:
                 self._fill_staging = False
+            _arm_staged_timeout(
+                self, "_image_fill_timeout_timer", "_image_fill_timeout_token", token
+            )
             self._try_commit_image_fill(token)
-            if isinstance(self, QObject):
-                QTimer.singleShot(
-                    10000, lambda staged=token: self._image_fill_timeout(staged)
-                )
             return urls
 
         def _find_shared_anchor_items(self):
