@@ -135,7 +135,9 @@ class TestMBTilesPixels(unittest.TestCase):
         return self.renderer._render(job)
 
     @staticmethod
-    def pixel(surface, x, y):
+    def pixel(image, x, y):
+        # The carrier keeps the cairo surface; read the pixels the worker wrote.
+        surface = image.surface
         surface.flush()
         offset = y * surface.get_stride() + x * 4
         return tuple(bytes(surface.get_data())[offset : offset + 4])
@@ -250,7 +252,9 @@ class TestMBTilesPixels(unittest.TestCase):
             side_effect=AssertionError("Decoded cached tile"),
         ):
             second = self.render(info)
-        self.assertEqual(bytes(first.get_data()), bytes(second.get_data()))
+        self.assertEqual(
+            bytes(first.surface.get_data()), bytes(second.surface.get_data())
+        )
         self.renderer.CACHE_ENTRIES = 2
         self.renderer.CACHE_BYTES = 8192
         self.renderer._tiles.clear()

@@ -1,6 +1,5 @@
 """Offline raster tile portrayal; SQLite access and PNG decode stay in workers."""
 
-import io
 import logging
 import math
 import sqlite3
@@ -12,6 +11,7 @@ from sailworks.core.mapviewport import MapViewport
 from sailworks.core.mbtiles import MBTilesInfo, open_archive, png_size, read_info
 from sailworks.core.scheduling import schedule_idle
 
+from .canvas import CairoCanvas, Canvas, CanvasImage
 from .chartlayer import ChartLayer
 from .overlayrenderer import OverlayRenderer
 
@@ -87,6 +87,8 @@ class MBTilesRenderer(OverlayRenderer):
         self._tile_bytes = 0
 
     def draw(self, canvas, cr, charts, palette):
+        if not isinstance(cr, Canvas):
+            cr = CairoCanvas(cr)
         super().draw(canvas, cr, charts, palette)
         state = self._states.get(canvas)
         if not state or not state.frame or state.frame[0].key != state.key:
@@ -117,7 +119,7 @@ class MBTilesRenderer(OverlayRenderer):
         cr.save()
         cr.rectangle(x, y, width, height)
         cr.clip()
-        cr.select_font_face("Sans")
+        cr.set_font_face("Sans")
         cr.set_font_size(10)
         text = "Offline imagery · " + " / ".join(dict.fromkeys(sources))
         text_width = cr.text_extents(text)[2]
@@ -144,11 +146,8 @@ class MBTilesRenderer(OverlayRenderer):
         if result:
             try:
                 png_size(result[0])
-                surface = cairo.ImageSurface.create_from_png(io.BytesIO(result[0]))
-                surface.set_device_scale(
-                    surface.get_width() / TILE_SIZE, surface.get_height() / TILE_SIZE
-                )
-            except (ValueError, cairo.Error) as error:
+                surface = CanvasImage.from_png_bytes(result[0])
+            except ValueError as error:
                 logger.warning(
                     "Unable to decode MBTiles tile %s/%s/%s in %s: %s",
                     zoom,
@@ -158,27 +157,18 @@ class MBTilesRenderer(OverlayRenderer):
                     error,
                 )
         self._tiles[key] = surface
-        self._tile_bytes += (
-            0 if surface is None else surface.get_stride() * surface.get_height()
-        )
+        self._tile_bytes += 0 if surface is None else surface.width * surface.height * 4
         while (
             len(self._tiles) > self.CACHE_ENTRIES or self._tile_bytes > self.CACHE_BYTES
         ):
             _, old = self._tiles.popitem(last=False)
-            self._tile_bytes -= (
-                0 if old is None else old.get_stride() * old.get_height()
-            )
+            self._tile_bytes -= 0 if old is None else old.width * old.height * 4
         return surface
 
     def _render(self, job):
         viewport = job.viewport
-        surface = cairo.ImageSurface(
-            cairo.FORMAT_ARGB32,
-            viewport.width * job.factor,
-            viewport.height * job.factor,
-        )
-        surface.set_device_scale(job.factor, job.factor)
-        cr = cairo.Context(surface)
+        frame = CanvasImage.empty(viewport.width, viewport.height, job.factor)
+        cr = CairoCanvas(cairo.Context(frame.surface))
         for (info,) in job.charts:
             if job.cancel.is_set():
                 return None
@@ -193,10 +183,9 @@ class MBTilesRenderer(OverlayRenderer):
                         cr, db, info, target, ratio, left, top, ranges, job
                     ):
                         return None
-            except (sqlite3.Error, OSError, ValueError, cairo.Error) as error:
+            except (sqlite3.Error, OSError, ValueError) as error:
                 logger.warning("Unable to render MBTiles %s: %s", info.path, error)
-        surface.flush()
-        return None if job.cancel.is_set() else surface
+        return None if job.cancel.is_set() else frame
 
     def _tile_window(self, viewport, info):
         """Zoom level and tile window to draw, or None when the chart is skipped."""
@@ -253,9 +242,14 @@ class MBTilesRenderer(OverlayRenderer):
                 (py * TILE_SIZE * distance - top) * ratio,
             )
             cr.scale(ratio * distance, ratio * distance)
-            cr.set_source_surface(tile)
-            cr.get_source().set_filter(cairo.FILTER_BILINEAR)
-            cr.get_source().set_extend(cairo.EXTEND_PAD)
-            cr.paint()
+            cr.draw_image(
+                tile,
+                0,
+                0,
+                width=TILE_SIZE,
+                height=TILE_SIZE,
+                smooth=True,
+                pad=True,
+            )
             cr.restore()
             break

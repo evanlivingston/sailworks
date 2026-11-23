@@ -9,6 +9,7 @@ antialiasing rounding. Pixel equality is therefore not asserted; the recorded
 distance is, together with a ceiling that keeps a real regression visible.
 """
 
+import io
 import os
 import threading
 from types import SimpleNamespace
@@ -927,3 +928,97 @@ def test_raster_chart_image_matches_on_both_backends(tmp_path):
     interior = _interior_max_diff(cairo_image, painter_image, regions)
     print(f"canvas equivalence (raster chart image): interior max={interior}")
     assert interior <= IMAGE_INTERIOR_MAX_DIFF
+
+
+# --- PNG tile decode and labels through the seam (#267 Phase 2 slice 6) ----
+#
+# The raster tile renderers decode PNG bytes into a carrier and blit them
+# scaled with edge padding; the CHS label and the MBTiles attribution each set
+# a font face before they draw. Both are measured here, with the blit's solid
+# interior kept separate from its boundary fringe.
+
+LABEL_TEXT = "Offline imagery · © CHS / Fisheries and Oceans Canada"
+
+# The label rectangle is fixed, so the residual is glyph placement from the
+# two font stacks; the mean and coverage allow for it the same way the AIS
+# label does. The max is recorded, not widened.
+PNG_LABEL_BASELINE_MAX_DIFF = 179
+PNG_LABEL_MAX_MARGIN = 16
+
+
+def _png_tile_bytes():
+    """Encode the four-quadrant blit source as PNG, as a tile archive would."""
+    array = _blit_source_array()
+    surface = cairo.ImageSurface.create_for_data(
+        array,
+        cairo.Format.ARGB32,
+        BLIT_SOURCE_W,
+        BLIT_SOURCE_H,
+        4 * BLIT_SOURCE_W,
+    )
+    stream = io.BytesIO()
+    surface.write_to_png(stream)
+    return stream.getvalue()
+
+
+def _cairo_png_scene(data, scale):
+    source = CanvasImage.from_png_bytes(data)
+    width, height = int(source.width) * scale, int(source.height) * scale
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+    canvas = CairoCanvas(cairo.Context(surface))
+    canvas.draw_image(source, 0, 0, width=width, height=height, smooth=True, pad=True)
+    return _image_from_surface(surface)
+
+
+def _qpainter_png_scene(data, scale):
+    source = CanvasImage.from_png_bytes(data, backend="qt")
+    width, height = int(source.width) * scale, int(source.height) * scale
+    image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+    canvas = QPainterCanvas(image)
+    canvas.draw_image(source, 0, 0, width=width, height=height, smooth=True, pad=True)
+    canvas.finish()
+    return image
+
+
+@pytest.mark.parametrize("scale", [1, 3])
+def test_png_tile_decode_blit_stays_inside_solid_interior(scale):
+    data = _png_tile_bytes()
+    cairo_image = _cairo_png_scene(data, scale)
+    painter_image = _qpainter_png_scene(data, scale)
+
+    assert (cairo_image.width(), cairo_image.height()) == (
+        painter_image.width(),
+        painter_image.height(),
+    )
+    measured = _compare_composited(cairo_image, painter_image)
+    _report(f"png tile {scale}x smooth+pad", measured)
+    regions = _quadrant_interior_regions(
+        BLIT_SOURCE_W, BLIT_SOURCE_H, scale, BLIT_INTERIOR_MARGIN
+    )
+    interior = _interior_max_diff(cairo_image, painter_image, regions)
+    print(f"canvas equivalence (png tile {scale}x smooth+pad): interior max={interior}")
+    assert interior <= IMAGE_INTERIOR_MAX_DIFF
+
+
+def _draw_label(canvas):
+    canvas.set_source_rgba(1, 1, 1, 0.85)
+    canvas.rectangle(20, 20, 300, 18)
+    canvas.fill()
+    canvas.set_source_rgb(0.15, 0.15, 0.15)
+    canvas.set_font_face("Sans")
+    canvas.set_font_size(10)
+    canvas.move_to(24, 33)
+    canvas.show_text(LABEL_TEXT)
+
+
+def test_png_label_after_set_font_face_stays_within_text_tolerance():
+    cairo_image = _cairo_scene(_draw_label)
+    painter_image = _qpainter_scene(_draw_label)
+
+    measured = _compare_composited(cairo_image, painter_image)
+    _report("png label", measured)
+
+    assert measured["non_blank_fraction"] > 0.0002
+    assert measured["mean"] <= TEXT_MEAN_DIFF_CEILING
+    assert measured["fraction"] <= TEXT_DIFF_FRACTION_CEILING
+    assert abs(measured["max"] - PNG_LABEL_BASELINE_MAX_DIFF) <= PNG_LABEL_MAX_MARGIN
