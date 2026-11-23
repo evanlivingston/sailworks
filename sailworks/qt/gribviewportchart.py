@@ -53,7 +53,7 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from sailworks.core.mapviewport import MercatorProjection
-from sailworks.rendering.canvas import CairoCanvas, Canvas, CanvasImage
+from sailworks.rendering.canvas import Canvas, CanvasImage
 from sailworks.rendering.overlayrenderer import MARGIN, RenderJob, covers
 
 if TYPE_CHECKING:
@@ -394,6 +394,27 @@ def _copy_surface(surface, factor):
     return copy, canvas
 
 
+def _canvas_preserving(image):
+    """A canvas on ``image`` that keeps the pixels it already holds.
+
+    The canvas factory assumes a fresh buffer and clears the image it wraps.
+    A composition step that adds to drawn pixels therefore paints them back
+    through the same canvas first; a cairo surface paints in place and needs
+    no copy.  This mirrors the ENC composition's own bridge.
+    """
+    if getattr(image, "backend", None) != "qt":
+        return Canvas.for_image(image)
+    retained = CanvasImage(
+        image.width,
+        image.height,
+        image.device_scale(),
+        qimage=image.qimage.copy(),
+    )
+    canvas = Canvas.for_image(image)
+    canvas.draw_image(retained, 0, 0, smooth=False)
+    return canvas
+
+
 def _surface_bytes(surface):
     """The retained surface's device pixel payload, in bytes."""
     return int(surface.get_width()) * int(surface.get_height()) * 4
@@ -687,16 +708,11 @@ class _ChartComposer:
             if surface is None:
                 return None, None
         if isobars:
-            # Temporary: the contour pass still draws through a cairo copy of
-            # the composition and converts it back.  Removed when the contour
-            # pass takes the viewport's canvas.
-            import cairo
-
-            cairo_surface = surface.copy_as("cairo")
-            cr = cairo.Context(cairo_surface)
-            self.painter().draw_isobars(job.viewport, CairoCanvas(cr), isobars)
-            cairo_surface.flush()
-            surface = CanvasImage.from_cairo_surface(cairo_surface)
+            # The chart and the ENC are already on the image, so the contour
+            # pass keeps them and draws the isobars on that same canvas.
+            canvas = _canvas_preserving(surface)
+            self.painter().draw_isobars(job.viewport, canvas, isobars)
+            canvas.finish()
         surface.flush()
         return surface, enc_metadata
 
