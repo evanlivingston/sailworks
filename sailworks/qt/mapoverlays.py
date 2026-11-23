@@ -7,6 +7,8 @@ import weakref
 import cairo
 from PySide6.QtGui import QImage
 
+from sailworks.rendering.canvas import CairoCanvas
+
 
 class MapOverlayServices:
     """Reusable construction boundary for non-CPU map overlay renderers."""
@@ -537,7 +539,7 @@ class RetainedOverlayMixin:
         )
         surface.set_device_scale(factor, factor)
         self.dashboard.boat_info = self.controller.core.boat_info
-        self.dashboard._draw_dashboard(self, cairo.Context(surface))
+        self.dashboard._draw_dashboard(self, CairoCanvas(cairo.Context(surface)))
         surface.flush()
         image = QImage(
             surface.get_data(),
