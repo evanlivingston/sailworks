@@ -1,14 +1,24 @@
-# Chart controls in Data Library
+# Chart controls
 
-Open **Data Library → Charts**. All chart controls now live here:
+Chart layers are editable in two places that share the same stored settings
+and mirror each other:
 
-- **Sources & appearance:** source-class checkboxes and vector chart colors.
-- **Local files:** imported chart selections, imports, and removal.
-- **Downloads & base maps:** world coastline/OpenSeaMap installation and NOAA ENC downloads.
+- **Main window → Chart Layers:** the map background choice (vector basemap or
+  satellite imagery) and the per-source overlay checkboxes, including the ENC
+  overlay. It is a panel in the right-hand panel stack, visible by default on a
+  fresh profile; the View menu lists it, so it can be closed and restored.
+- **Data Library → Charts:** the same picker under **Sources & appearance**,
+  alongside vector chart colors, local files and downloads.
 
-There is no separate Chart Layers dock or Map Data settings tab. Settings →
-Display retains only general interaction/renderer preferences, and Chart Debug
-is a read-only diagnostic inspector.
+The Data Library sections remain: **Sources & appearance** (source-class
+checkboxes and vector chart colors), **Local files** (imported chart
+selections, imports and removal), and **Downloads & base maps** (world
+coastline/OpenSeaMap installation and NOAA ENC downloads).
+
+There is no separate Chart Layers dock or Map Data settings tab: the
+main-window panel replaces the retired dock. Settings → Display retains only
+general interaction/renderer preferences, and Chart Debug is a read-only
+diagnostic inspector.
 
 Existing source selections, palettes and imported-file settings are retained.
 The startup missing-map-data offer opens Downloads & base maps directly,

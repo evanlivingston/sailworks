@@ -47,7 +47,7 @@ Read the one that covers the area you are changing; skip the rest.
 | [gpu-weather-interpolation.md](gpu-weather-interpolation.md) | The opt-in numerically interpolated wind-barb path and its explicit limits. |
 | [rendering-streamlines.md](rendering-streamlines.md) | The static wind-streamline style, its presets and its density semantics. |
 | [rendering-wind-shoreline-mask.md](rendering-wind-shoreline-mask.md) | The windbarb land-visibility mask, and the rule that it must not change selection. |
-| [chart-layers.md](chart-layers.md) | Where the chart controls live in the Data Library, and what the old Chart Layers dock became. |
+| [chart-layers.md](chart-layers.md) | Where the chart controls live, in the main-window Chart Layers panel and the Data Library. |
 | [chart-quilting-plan.md](chart-quilting-plan.md) | The detail-chart chart quilting design plan. Not implemented. |
 | [tides-currents-plan.md](tides-currents-plan.md) | The tides and currents implementation plan and its milestone status. |
 | [tides-currents-manager.md](tides-currents-manager.md) | The Tides & currents palette: its tabs, docking behaviour and controls. |
