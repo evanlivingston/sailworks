@@ -18,6 +18,12 @@ from pathlib import Path
 
 import pytest
 
+import os
+
+# Set before any test module imports: modules call ``os.environ.setdefault``
+# too, but the application must be created with a platform already chosen.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 _QT_MODULE_CACHE: dict[Path, bool] = {}
 _APPLICATION = None
 
@@ -55,6 +61,9 @@ def pytest_itemcollected(item):
         item.add_marker(pytest.mark.qt)
 
 
-def pytest_collection_modifyitems(items):
-    if any(item.get_closest_marker("qt") for item in items):
-        _session_application()
+def pytest_sessionstart(session):
+    # Runs before collection, so before any test module is imported.  Creating
+    # the application here (rather than after collection) means a module whose
+    # own guard would leave a ``QGuiApplication`` behind never gets the chance:
+    # the widget-capable instance already exists and every guard is a no-op.
+    _session_application()
