@@ -19,10 +19,11 @@ from osgeo import ogr
 from sailworks.core.grib import Grib
 from sailworks.core.storage import DATA_DIR
 from sailworks.core.utils import COUNTRY_SHAPES, point_in_bbox
+from sailworks.rendering.canvas import CairoCanvas
 from sailworks.rendering.overlayrenderer import OverlayRenderer, covers
 from sailworks.rendering.panprefetch import PanPreparationTime
-from sailworks.rendering.windpainter import WindPainter
 from sailworks.rendering.streamlines import trace_streamlines, geometry_for_view
+from sailworks.rendering.windpainter import WindPainter
 from sailworks.rendering.windpainter import (
     flatten_wind_columns,
     barb_density_parameters,
@@ -1270,7 +1271,7 @@ class WindOverlayRenderer(OverlayRenderer):
         # the smooth fill; the foreground repaints barbs live at fixed size.
         self._painter(settings, self._land_mask.contains).draw(
             viewport,
-            cairo.Context(surface),
+            CairoCanvas(cairo.Context(surface)),
             data,
             pressure,
             fill_data=fill_data,
@@ -1329,7 +1330,7 @@ class WindOverlayRenderer(OverlayRenderer):
             canvas._zoom,
             density=density,
         )
-        WindPainter.paint_barb_geometry(cr, geometry, opacity)
+        WindPainter.paint_barb_geometry(CairoCanvas(cr), geometry, opacity)
 
     def live_geometry_for_view(
         self, canvas, width, height, center_lat, center_lon, zoom, density="standard"

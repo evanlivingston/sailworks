@@ -1028,6 +1028,201 @@ def test_png_label_after_set_font_face_stays_within_text_tolerance():
     assert abs(measured["max"] - PNG_LABEL_BASELINE_MAX_DIFF) <= PNG_LABEL_MAX_MARGIN
 
 
+# --- Wind colour fill: the image approximation against the cairo mesh -------
+
+# The mesh is cairo-only. Every other backend gets one RGBA image of the
+# sampled grid, built from the same ``wind_color`` node colours and blitted
+# once, so the backend's bilinear filter interpolates between nodes. That is an
+# intentional approximation of ``cairo.MeshPattern`` (see
+# ``WindPainter._draw_color_fill_image``): the same colours over the same
+# cells, but filter arithmetic instead of mesh arithmetic, and rows placed
+# evenly between the first and last latitude instead of at their true mercator
+# offsets. Production keeps the cairo mesh, so its own output is unaffected.
+#
+# The numbers below are measured, not a design target. Each backend records its
+# own measurement: the two use different filter implementations by design, so
+# there is no cross-backend agreement check. For comparison, the strips this
+# replaced measured max=61 mean=2.343 fraction=0.4446 on Qt.
+WIND_APPROX_BASELINE_MAX_DIFF = 61
+WIND_APPROX_BASELINE_MEAN_DIFF = 0.6444
+WIND_APPROX_BASELINE_FRACTION = 0.3958
+WIND_APPROX_MAX_MARGIN = 8
+WIND_APPROX_MEAN_MARGIN = 0.35
+WIND_APPROX_FRACTION_MARGIN = 0.03
+
+# The same approximation measured on the Cairo backend as well. It is recorded
+# separately because Cairo and Qt filter independently; it is not expected to
+# match the Qt numbers and nothing asserts that it does.
+WIND_APPROX_CAIRO_MAX_DIFF = 61
+WIND_APPROX_CAIRO_MEAN_DIFF = 0.4794
+WIND_APPROX_CAIRO_FRACTION = 0.2634
+
+# Mercator row spacing is non-uniform, so a uniformly scaled image misplaces
+# interior rows between the first and last latitude. Measured on a 5-row grid
+# from 60S to 60N, 1400 px tall: 32.75 px, about 2.3% of the field height.
+WIND_APPROX_MERCATOR_ROW_ERROR_PX = 32.75
+WIND_APPROX_MERCATOR_ROW_ERROR_MARGIN = 0.5
+
+_WIND_LATS = (-2.0, -1.0, 0.0, 1.0, 2.0)
+_WIND_LONS = (-3, -2, -1, 0, 1, 2, 3)
+
+
+class _WindView:
+    """A regular grid under a linear, mercator-like projection."""
+
+    def render_cancelled(self):
+        return False
+
+    def get_scale(self):
+        return 350.0
+
+    def convert_geographic_to_screen_batch(self, lats, lons):
+        lats = np.asarray(lats, dtype=np.float64)
+        lons = np.asarray(lons, dtype=np.float64)
+        return 40.0 + (lons + 3.0) * 60.0, 40.0 + (lats + 3.0) * 48.0
+
+
+def _wind_columns():
+    columns = []
+    lats = np.array(_WIND_LATS, dtype=np.float64)
+    for lon in _WIND_LONS:
+        # Varying in both directions so a channel or axis swap is visible.
+        speeds = np.array(
+            [4.0 + 2.0 * abs(lon) + 3.0 * (lat + 2.0) for lat in _WIND_LATS],
+            dtype=np.float64,
+        )
+        columns.append((float(lon), lats, np.zeros(len(lats)), speeds))
+    return columns
+
+
+def _wind_settings():
+    return SimpleNamespace(gribArrowOpacity=0.8, gribWindGradient=True)
+
+
+def _wind_scene(backend, path):
+    columns = _wind_columns()
+    painter = WindPainter(_wind_settings())
+    view = _WindView()
+    if backend == "qt":
+        image = QImage(WIDTH, HEIGHT, QImage.Format.Format_ARGB32_Premultiplied)
+        canvas = QPainterCanvas(image)
+        painter._draw_color_fill(view, canvas, columns, 1)
+        canvas.finish()
+        return image
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, WIDTH, HEIGHT)
+    canvas = CairoCanvas(cairo.Context(surface))
+    if path == "mesh":
+        painter._draw_color_fill(view, canvas, columns, 1)
+    else:
+        projected = painter._grid_screen_points(view, columns, 1)
+        opacity = painter.settings_manager.gribArrowOpacity * 0.3
+        painter._draw_color_fill_image(view, canvas, columns, 1, opacity, *projected)
+    surface.flush()
+    return QImage(
+        surface.get_data(),
+        surface.get_width(),
+        surface.get_height(),
+        surface.get_stride(),
+        QImage.Format.Format_ARGB32_Premultiplied,
+    ).copy()
+
+
+def test_wind_colour_fill_approximation_distance_is_recorded():
+    mesh = _wind_scene("cairo", "mesh")
+    cairo_image = _wind_scene("cairo", "image")
+    painter_image = _wind_scene("qt", "image")
+
+    mesh_measured = _compare_composited(mesh, mesh)
+    assert mesh_measured["non_blank_fraction"] > MIN_NON_BLANK_FRACTION
+
+    cairo_measured = _compare_composited(mesh, cairo_image)
+    painter_measured = _compare_composited(mesh, painter_image)
+    _report("wind fill image on cairo vs mesh", cairo_measured)
+    _report("wind fill image on qt vs cairo mesh", painter_measured)
+
+    # Each backend is recorded against the mesh with its own measured numbers.
+    # The two backends filter independently by design, so nothing requires
+    # them to agree with each other.
+    for measured, max_diff, mean_diff, fraction in (
+        (
+            painter_measured,
+            WIND_APPROX_BASELINE_MAX_DIFF,
+            WIND_APPROX_BASELINE_MEAN_DIFF,
+            WIND_APPROX_BASELINE_FRACTION,
+        ),
+        (
+            cairo_measured,
+            WIND_APPROX_CAIRO_MAX_DIFF,
+            WIND_APPROX_CAIRO_MEAN_DIFF,
+            WIND_APPROX_CAIRO_FRACTION,
+        ),
+    ):
+        assert abs(measured["max"] - max_diff) <= WIND_APPROX_MAX_MARGIN
+        assert abs(measured["mean"] - mean_diff) <= WIND_APPROX_MEAN_MARGIN
+        assert abs(measured["fraction"] - fraction) <= WIND_APPROX_FRACTION_MARGIN
+
+
+def test_wind_colour_fill_has_no_transparent_band_seams_in_qt():
+    """A vertical line through the fill must not cross a blank row.
+
+    The strips this replaced faded at their own top and bottom edge, leaving a
+    transparent line between latitude bands. One image for the field has no
+    such edge, so every pixel between the first and last covered pixel of a
+    sampled vertical line carries the fill.
+    """
+    image = _wind_scene("qt", "image").convertToFormat(
+        QImage.Format.Format_ARGB32_Premultiplied
+    )
+    checked = 0
+    # The grid spans x=40..400; stay inside so the exact edge pixel of the
+    # clip is not what the assertion is about.
+    for x in range(60, 396, 4):
+        column = [image.pixelColor(x, y).alpha() for y in range(image.height())]
+        covered = [y for y, alpha in enumerate(column) if alpha]
+        assert covered, f"column {x} is entirely transparent"
+        assert covered[-1] - covered[0] > 40, f"column {x} coverage is too thin"
+        for y in range(covered[0], covered[-1] + 1):
+            assert column[y], f"transparent seam at ({x}, {y})"
+        checked += 1
+    assert checked > 50
+
+
+class _MercatorWindView(_WindView):
+    """A regular grid under a real mercator y mapping."""
+
+    _MERC_LATS = (-60.0, -30.0, 0.0, 30.0, 60.0)
+
+    def convert_geographic_to_screen_batch(self, lats, lons):
+        lats = np.asarray(lats, dtype=np.float64)
+        lons = np.asarray(lons, dtype=np.float64)
+        mercator = np.log(np.tan(math.pi / 4.0 + np.radians(lats) / 2.0))
+        return 40.0 + (lons + 3.0) * 60.0, 300.0 - mercator * 300.0
+
+
+def test_wind_colour_fill_records_mercator_row_placement_error():
+    """A uniform image scale cannot follow non-uniform mercator row spacing.
+
+    This is the known geometric error of the image approximation, recorded so a
+    change in it is visible rather than silent.
+    """
+    painter = WindPainter(_wind_settings())
+    view = _MercatorWindView()
+    columns = []
+    for lon, _, _, _ in _wind_columns():
+        lats = np.array(_MercatorWindView._MERC_LATS, dtype=np.float64)
+        speeds = np.array([4.0 + 2.0 * abs(lon) + 3.0 * (lat + 60.0) for lat in lats])
+        columns.append((lon, lats, np.zeros(len(lats)), speeds))
+
+    _, screen_ys = painter._grid_screen_points(view, columns, 1)
+    actual = np.asarray(screen_ys[0], dtype=np.float64)
+    placed = actual[0] + np.linspace(0.0, 1.0, len(actual)) * (actual[-1] - actual[0])
+    error = float(np.max(np.abs(placed - actual)))
+    print(f"wind fill mercator row placement max error: {error:.2f} px")
+    assert error <= (
+        WIND_APPROX_MERCATOR_ROW_ERROR_PX + WIND_APPROX_MERCATOR_ROW_ERROR_MARGIN
+    )
+
+
 # --- Outlined text: the isobar label's stroke-then-fill of a text path ------
 
 

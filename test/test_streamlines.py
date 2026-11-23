@@ -7,6 +7,7 @@ from unittest.mock import patch
 import numpy as np
 
 from sailworks.core.mapviewport import MapViewport
+from sailworks.rendering.canvas import CairoCanvas
 from sailworks.rendering.windpainter import WindPainter
 from sailworks.rendering.windgeometry import stroke_mesh
 import cairo
@@ -189,7 +190,9 @@ class TestStreamlines(unittest.TestCase):
         flat = trace_streamlines(self.view, self.field(), lambda lat, lon: False)
         geometry = geometry_for_view(flat, 0, 0, 8, 400, 300, True)
         surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 400, 300)
-        WindPainter.paint_barb_geometry(cairo.Context(surface), geometry, 0.8)
+        WindPainter.paint_barb_geometry(
+            CairoCanvas(cairo.Context(surface)), geometry, 0.8
+        )
         surface.flush()
         self.assertTrue(any(bytes(surface.get_data())))
         for lines, triangles, dots in geometry.values():

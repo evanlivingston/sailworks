@@ -14,6 +14,7 @@ import numpy as np
 from osgeo import gdal, ogr
 
 from sailworks.core.grib import Grib
+from sailworks.rendering.canvas import CairoCanvas
 from sailworks.rendering.windpainter import (
     WindPainter,
     wind_on_ground,
@@ -807,7 +808,7 @@ class TestWindOverlay(unittest.TestCase):
             for lon in range(3)
         ]
         surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 200, 200)
-        painter._draw_color_fill(view, cairo.Context(surface), data, 1)
+        painter._draw_color_fill(view, CairoCanvas(cairo.Context(surface)), data, 1)
         surface.flush()
         pixels = np.ndarray(
             (200, 200, 4),

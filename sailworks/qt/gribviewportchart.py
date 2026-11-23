@@ -53,6 +53,7 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from sailworks.core.mapviewport import MercatorProjection
+from sailworks.rendering.canvas import CairoCanvas
 from sailworks.rendering.overlayrenderer import MARGIN, RenderJob, covers
 
 if TYPE_CHECKING:
@@ -697,7 +698,7 @@ class _ChartComposer:
                 return None, None
         if isobars:
             cr = cairo.Context(surface)
-            self.painter().draw_isobars(job.viewport, cr, isobars)
+            self.painter().draw_isobars(job.viewport, CairoCanvas(cr), isobars)
         surface.flush()
         return surface, enc_metadata
 
@@ -1532,7 +1533,7 @@ class ViewportChartLayer:
             copy_ms = (time.perf_counter() - started) * 1000.0
             started = time.perf_counter()
             cr = cairo.Context(surface)
-            self._composer().painter().draw_isobars(viewport, cr, columns)
+            self._composer().painter().draw_isobars(viewport, CairoCanvas(cr), columns)
             surface.flush()
             isobar_ms = (time.perf_counter() - started) * 1000.0
         if self._view_moved(camera):
