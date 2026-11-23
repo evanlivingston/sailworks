@@ -16,7 +16,6 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.mark.parametrize("missing", ("none", "some", "all"))
 def test_barb_mesh_matches_cpu_geometry_and_reuses_textures(missing):
-    import cairo
     from PySide6.QtCore import QUrl
     from PySide6.QtGui import QGuiApplication, QColor
     from PySide6.QtQuick import QQuickView, QSGRendererInterface
@@ -25,7 +24,7 @@ def test_barb_mesh_matches_cpu_geometry_and_reuses_textures(missing):
         WeatherTexturePair,
         encode_component,
     )
-    from sailworks.rendering.canvas import CairoCanvas
+    from sailworks.rendering.canvas import Canvas, CanvasImage
     from sailworks.rendering.windpainter import WindPainter
 
     app = QGuiApplication.instance() or QGuiApplication([])
@@ -116,16 +115,14 @@ def test_barb_mesh_matches_cpu_geometry_and_reuses_textures(missing):
             geometry = WindPainter.build_barb_geometry(
                 ax[valid], ay[valid], directions, np.hypot(uv_u, uv_v)
             )
-            surface = cairo.ImageSurface(
-                cairo.FORMAT_ARGB32, image.width(), image.height()
-            )
-            cr = cairo.Context(surface)
+            surface = CanvasImage.new(image.width(), image.height())
+            cr = Canvas.for_image(surface)
             cr.scale(image.width() / 128, image.height() / 128)
-            WindPainter.paint_barb_geometry(CairoCanvas(cr), geometry, 1.0)
+            WindPainter.paint_barb_geometry(cr, geometry, 1.0)
+            cr.finish()
             surface.flush()
-            reference = np.frombuffer(surface.get_data(), np.uint8).reshape(
-                image.height(), image.width(), 4
-            )
+            reference = np.frombuffer(surface.get_data(), np.uint8).copy()
+            reference = reference.reshape(image.height(), image.width(), 4)
             expected = reference[..., :3].max(axis=2) > 60
             if expected.any():
                 overlap = (actual & expected).sum() / (actual | expected).sum()
@@ -140,7 +137,8 @@ def test_barb_mesh_matches_cpu_geometry_and_reuses_textures(missing):
                     region = np.s_[
                         y * half_h : (y + 1) * half_h, x * half_w : (x + 1) * half_w, :3
                     ]
-                    # Cairo is native little-endian BGRA; readback is RGBA.
+                    # The carrier is premultiplied BGRA on little-endian;
+                    # readback is RGBA.
                     expected_rgb = reference[region][..., ::-1].max(axis=(0, 1))
                     actual_rgb = pixels[region].max(axis=(0, 1))
                     np.testing.assert_allclose(actual_rgb, expected_rgb, atol=3, rtol=0)

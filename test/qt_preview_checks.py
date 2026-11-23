@@ -909,8 +909,7 @@ class QtPreviewChecks(unittest.TestCase):
         return start
 
     def test_coastline_polygon_hole_is_preserved(self):
-        import cairo
-        from PySide6.QtGui import QImage
+        from sailworks.rendering.canvas import Canvas, CanvasImage
 
         path = self.path / "coast.geojson"
         path.write_text(
@@ -965,21 +964,16 @@ class QtPreviewChecks(unittest.TestCase):
                 pass
 
         canvas = Projection()
-        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 600, 400)
-        cr = cairo.Context(surface)
+        surface = CanvasImage.new(600, 400)
+        cr = Canvas.for_image(surface)
         cr.set_source_rgb(0.0, 0.0, 1.0)
         cr.paint()
         self.controller.charts._draw_base(
             canvas, cr, tuple(self.controller.charts.charts)
         )
+        cr.finish()
         surface.flush()
-        image = QImage(
-            surface.get_data(),
-            surface.get_width(),
-            surface.get_height(),
-            surface.get_stride(),
-            QImage.Format.Format_ARGB32_Premultiplied,
-        ).copy()
+        image = surface.qimage.copy()
         center = image.pixelColor(image.width() // 2, image.height() // 2)
         self.assertGreater(center.blue(), center.red())  # Hole remains sea.
         viewport = MapViewport(canvas, 0)
@@ -1397,7 +1391,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(presenter.status.isVisible())
 
     def test_qt_overlay_completes_without_glib_and_shutdown_discards_callbacks(self):
-        import cairo
+        from sailworks.rendering.canvas import Canvas, CanvasImage
 
         canvas = self.window.map
         renderer = self.controller.charts._enc_renderer
@@ -1407,22 +1401,19 @@ class QtPreviewChecks(unittest.TestCase):
         def render(job):
             started.set()
             release.wait(2)
-            surface = cairo.ImageSurface(
-                cairo.FORMAT_ARGB32,
-                job.viewport.width * job.factor,
-                job.viewport.height * job.factor,
+            surface = CanvasImage.new(
+                job.viewport.width, job.viewport.height, job.factor
             )
-            surface.set_device_scale(job.factor, job.factor)
-            cr = cairo.Context(surface)
+            cr = Canvas.for_image(surface)
             cr.set_source_rgb(1, 0, 0)
             cr.paint()
+            cr.finish()
             return surface
 
         renderer._render = render
-        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 600, 400)
         renderer.draw(
             canvas,
-            cairo.Context(surface),
+            Canvas.for_image(CanvasImage.new(600, 400)),
             (("synthetic.000", 12000, ()),),
             "cm93",
         )
@@ -1445,8 +1436,8 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(self.controller.charts.maps)
 
     def test_production_enc_renders_ogr_dataset_with_owned_qt_pixels(self):
-        import cairo
         from osgeo import ogr
+        from sailworks.rendering.canvas import CanvasImage
         from sailworks.rendering.encrenderer import ENCOverlayRenderer
         from sailworks.rendering.overlayrenderer import RenderJob
 
@@ -1464,7 +1455,7 @@ class QtPreviewChecks(unittest.TestCase):
         viewport = MapViewport(self.window.map)
         job = RenderJob(("cm93", 1, (path,)), viewport, ((path, 0, ()),), 1, "cm93")
         surface = ENCOverlayRenderer(self.controller.scheduler.submit)._render(job)
-        self.assertIsInstance(surface, cairo.ImageSurface)
+        self.assertIsInstance(surface, CanvasImage)
         surface.flush()
         x, y = viewport.convert_geographic_to_screen(MapPoint(48.4, -123.4))
         offset = round(y) * surface.get_stride() + round(x) * 4
