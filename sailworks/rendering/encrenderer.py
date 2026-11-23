@@ -10,6 +10,7 @@ from sailworks.core.enccharts import chart_scale_rank, chart_scale_visible
 from sailworks.core.mapviewport import MapPoint
 from sailworks.rendering.overlayrenderer import OverlayRenderer
 
+from .canvas import CairoCanvas
 from .chartlayer import ChartLayer
 from .gdalvectorchart import GDALVectorChart
 from .vectordrawer.s57chartdrawer import S57ChartDrawer
@@ -48,6 +49,7 @@ class ENCOverlayRenderer(OverlayRenderer):
         )
         surface.set_device_scale(job.factor, job.factor)
         cr = cairo.Context(surface)
+        canvas = CairoCanvas(cr)
         p1, p2 = viewport.get_bbox()
         bounding = ogr.CreateGeometryFromWkt(
             ChartLayer.get_bounding_wkt_of_coords(*p1.get_degrees(), *p2.get_degrees())
@@ -89,7 +91,7 @@ class ENCOverlayRenderer(OverlayRenderer):
             coverage_path(cr, viewport, region)
             cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
             cr.clip()
-            chart.do_draw(viewport, cr)
+            chart.do_draw(viewport, canvas)
             cr.restore()
             if known_coverage:
                 covered = region if covered is None else covered.Union(region)

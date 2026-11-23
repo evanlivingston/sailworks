@@ -44,6 +44,7 @@ from .gdalvectorchart import GDALVectorChart
 from .encrenderer import ENCOverlayRenderer
 from .mbtilesrenderer import MBTilesChart, MBTilesRenderer
 from sailworks.rendering.overlayrenderer import paint_viewport
+from .vectordrawer.cm93chartdrawer import CM93ChartDrawer
 from .vectordrawer.s57chartdrawer import S57ChartDrawer
 from .vectordrawer.simplechartdrawer import SimpleChartDrawer
 from .gshhs import GSHHSVectorChart
@@ -486,8 +487,9 @@ class ChartCollection:
                 # Only the ported drawers accept the seam; raster and OSM
                 # charts keep the raw context.
                 target = chart_cr
-                if type(chart) is GSHHSVectorChart or (
-                    type(getattr(chart, "drawer", None)) is SimpleChartDrawer
+                drawer = getattr(chart, "drawer", None)
+                if type(chart) is GSHHSVectorChart or isinstance(
+                    drawer, (SimpleChartDrawer, CM93ChartDrawer)
                 ):
                     target = CairoCanvas(chart_cr)
                 chart.do_draw(viewport, target)

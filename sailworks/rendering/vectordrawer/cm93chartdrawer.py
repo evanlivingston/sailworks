@@ -17,9 +17,9 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 import logging
 import math
 
-import cairo
 import numpy as np
 
+from sailworks.rendering.canvas import JOIN_ROUND
 from sailworks.rendering.style import CairoStyle, Style
 from sailworks.rendering.scene.policy import (
     BAND_MEDIUM,
@@ -126,47 +126,47 @@ class CM93ChartDrawer(VectorChartDrawer):
         xs, ys = gpsmap.convert_geographic_to_screen_batch(lats, lons)
         return xs.tolist(), ys.tolist()
 
-    def draw(self, gpsmap, cr, vector_file, bounding):
+    def draw(self, gpsmap, canvas, vector_file, bounding):
         palette = Style.chart_palettes[self.palette]
 
         width = float(gpsmap.get_allocated_width())
         height = float(gpsmap.get_allocated_height())
-        palette.sea.apply(cr)
-        cr.rectangle(0, 0, width, height)
-        cr.fill()
+        palette.sea.apply_canvas(canvas)
+        canvas.rectangle(0, 0, width, height)
+        canvas.fill()
 
         cells, scale, viewport = self._get_visible_cells(gpsmap, vector_file)
         if not cells:
             return
 
         bg_areas, fine_areas, lines_points = self._separate_features(cells, viewport)
-        cr.set_line_join(cairo.LINE_JOIN_ROUND)
+        canvas.set_line_join(JOIN_ROUND)
 
         # Pass 1: bg areas (coarse gap-filler, rendered first)
-        self._render_areas(gpsmap, cr, bg_areas, palette)
+        self._render_areas(gpsmap, canvas, bg_areas, palette)
         # Pass 2: fine areas (paint over bg)
-        self._render_areas(gpsmap, cr, fine_areas, palette)
+        self._render_areas(gpsmap, canvas, fine_areas, palette)
         # Pass 3: fine lines and points
-        self._render_lines_points(gpsmap, cr, lines_points, palette, scale)
+        self._render_lines_points(gpsmap, canvas, lines_points, palette, scale)
 
-    def _render_areas(self, gpsmap, cr, areas, palette):
+    def _render_areas(self, gpsmap, canvas, areas, palette):
         """Render area features sorted by priority."""
         areas.sort(key=lambda f: f.priority)
         for feature in areas:
             try:
-                self._render_area(gpsmap, cr, feature, palette)
+                self._render_area(gpsmap, canvas, feature, palette)
             except Exception as e:
                 logger.debug("Area render error %s: %s", feature.obj_name, e)
 
-    def _render_lines_points(self, gpsmap, cr, features, palette, scale):
+    def _render_lines_points(self, gpsmap, canvas, features, palette, scale):
         """Render line and point features sorted by priority."""
         features.sort(key=lambda f: f.priority)
         for feature in features:
             try:
                 if feature.geom_type == "L":
-                    self._render_line(gpsmap, cr, feature, palette)
+                    self._render_line(gpsmap, canvas, feature, palette)
                 elif feature.geom_type == "P":
-                    self._render_point(gpsmap, cr, feature, palette, scale)
+                    self._render_point(gpsmap, canvas, feature, palette, scale)
             except Exception as e:
                 logger.debug("Feature render error %s: %s", feature.obj_name, e)
 
@@ -204,7 +204,7 @@ class CM93ChartDrawer(VectorChartDrawer):
         fill = palette.shallow_sea if band == BAND_SHALLOW else DEPTH_BAND_STYLES[band]
         return fill, CONTOUR_STYLE
 
-    def _render_area(self, gpsmap, cr, feature, palette):
+    def _render_area(self, gpsmap, canvas, feature, palette):
         fill, stroke = self._get_area_styles(
             feature.obj_name, feature.attributes, palette
         )
@@ -214,17 +214,17 @@ class CM93ChartDrawer(VectorChartDrawer):
                 continue
 
             xs, ys = self._geo_to_screen_batch(gpsmap, ring)
-            cr.move_to(xs[0], ys[0])
+            canvas.move_to(xs[0], ys[0])
             for i in range(1, len(xs)):
-                cr.line_to(xs[i], ys[i])
+                canvas.line_to(xs[i], ys[i])
 
-            cr.close_path()
-            fill.apply(cr)
-            cr.fill_preserve()
-            stroke.apply(cr)
-            cr.stroke()
+            canvas.close_path()
+            fill.apply_canvas(canvas)
+            canvas.fill_preserve()
+            stroke.apply_canvas(canvas)
+            canvas.stroke()
 
-    def _render_line(self, gpsmap, cr, feature, palette):
+    def _render_line(self, gpsmap, canvas, feature, palette):
         name = feature.obj_name
 
         if name == "COALNE":
@@ -242,111 +242,111 @@ class CM93ChartDrawer(VectorChartDrawer):
         if not points or len(points) < 2:
             return
 
-        style.apply(cr)
+        style.apply_canvas(canvas)
         xs, ys = self._geo_to_screen_batch(gpsmap, points)
-        cr.move_to(xs[0], ys[0])
+        canvas.move_to(xs[0], ys[0])
         for i in range(1, len(xs)):
-            cr.line_to(xs[i], ys[i])
+            canvas.line_to(xs[i], ys[i])
 
-        cr.stroke()
-        Style.reset_dash(cr)
+        canvas.stroke()
+        Style.reset_dash_canvas(canvas)
 
-    def _render_soundings(self, gpsmap, cr, feature):
+    def _render_soundings(self, gpsmap, canvas, feature):
         """Render sounding (depth) labels for 3D point features."""
         # Filter to renderable soundings first
         valid = [p for p in feature.geometry if len(p) > 2 and p[2] <= 100]
         if not valid:
             return
 
-        SOUNDING_STYLE.apply(cr)
+        SOUNDING_STYLE.apply_canvas(canvas)
         xs, ys = self._geo_to_screen_batch(gpsmap, valid)
         for i, point in enumerate(valid):
-            cr.move_to(xs[i] + 2, ys[i] + 2)
-            cr.show_text(f"{point[2]:.1f}")
+            canvas.move_to(xs[i] + 2, ys[i] + 2)
+            canvas.show_text(f"{point[2]:.1f}")
 
     @staticmethod
-    def _draw_light(cr, x, y):
+    def _draw_light(canvas, x, y):
         """Draw a light symbol (yellow circle with rays)."""
-        LIGHT_STYLE.apply(cr)
-        cr.arc(x, y, 4, 0, 2 * math.pi)
-        cr.fill()
-        cr.set_line_width(0.5)
+        LIGHT_STYLE.apply_canvas(canvas)
+        canvas.arc(x, y, 4, 0, 2 * math.pi)
+        canvas.fill()
+        canvas.set_line_width(0.5)
         for angle in range(0, 360, 45):
             rad = math.radians(angle)
-            cr.move_to(x + 4 * math.cos(rad), y + 4 * math.sin(rad))
-            cr.line_to(x + 7 * math.cos(rad), y + 7 * math.sin(rad))
-        cr.stroke()
+            canvas.move_to(x + 4 * math.cos(rad), y + 4 * math.sin(rad))
+            canvas.line_to(x + 7 * math.cos(rad), y + 7 * math.sin(rad))
+        canvas.stroke()
 
     @staticmethod
-    def _draw_beacon(cr, x, y):
+    def _draw_beacon(canvas, x, y):
         """Draw a beacon triangle symbol."""
-        BEACON_STYLE.apply(cr)
-        cr.set_line_width(1.5)
-        cr.move_to(x, y - 5)
-        cr.line_to(x - 4, y + 3)
-        cr.line_to(x + 4, y + 3)
-        cr.close_path()
-        cr.stroke()
+        BEACON_STYLE.apply_canvas(canvas)
+        canvas.set_line_width(1.5)
+        canvas.move_to(x, y - 5)
+        canvas.line_to(x - 4, y + 3)
+        canvas.line_to(x + 4, y + 3)
+        canvas.close_path()
+        canvas.stroke()
 
     @staticmethod
-    def _draw_buoy_lateral(cr, x, y, catlam):
+    def _draw_buoy_lateral(canvas, x, y, catlam):
         """Draw a lateral buoy (red for port, green otherwise)."""
         if catlam == 1:
-            BUOY_RED.apply(cr)
+            BUOY_RED.apply_canvas(canvas)
         else:
-            BUOY_GREEN.apply(cr)
-        cr.arc(x, y, 3, 0, 2 * math.pi)
-        cr.fill()
+            BUOY_GREEN.apply_canvas(canvas)
+        canvas.arc(x, y, 3, 0, 2 * math.pi)
+        canvas.fill()
 
     @staticmethod
-    def _draw_wreck(cr, x, y):
+    def _draw_wreck(canvas, x, y):
         """Draw an X mark for wrecks/obstructions."""
-        WRECK_STYLE.apply(cr)
-        cr.set_line_width(1.0)
-        cr.move_to(x - 3, y - 3)
-        cr.line_to(x + 3, y + 3)
-        cr.move_to(x + 3, y - 3)
-        cr.line_to(x - 3, y + 3)
-        cr.stroke()
+        WRECK_STYLE.apply_canvas(canvas)
+        canvas.set_line_width(1.0)
+        canvas.move_to(x - 3, y - 3)
+        canvas.line_to(x + 3, y + 3)
+        canvas.move_to(x + 3, y - 3)
+        canvas.line_to(x - 3, y + 3)
+        canvas.stroke()
 
     _BEACON_NAMES = {"BCNCAR", "BCNLAT", "BCNISD", "BCNSAW", "BCNSPP"}
     _BUOY_NAMES = {"BOYCAR", "BOYISD", "BOYSAW", "BOYSPP"}
     _WRECK_NAMES = {"WRECKS", "UWTROC", "OBSTRN"}
     _LANDMARK_NAMES = {"LNDMRK", "SILTNK", "CHIMNY", "TOWERS"}
 
-    def _render_point(self, gpsmap, cr, feature, palette, scale):
+    def _render_point(self, gpsmap, canvas, feature, palette, scale):
         name = feature.obj_name
         if not feature.geometry:
             return
 
         if name == "SOUNDG":
-            self._render_soundings(gpsmap, cr, feature)
+            self._render_soundings(gpsmap, canvas, feature)
             return
 
         lat, lon = feature.geometry[0][0], feature.geometry[0][1]
         x, y = gpsmap.convert_geographic_to_screen(MapPoint.new_degrees(lat, lon))
 
         if name == "LIGHTS":
-            self._draw_light(cr, x, y)
+            self._draw_light(canvas, x, y)
         elif name in self._BEACON_NAMES:
-            self._draw_beacon(cr, x, y)
+            self._draw_beacon(canvas, x, y)
         elif name in self._BUOY_NAMES:
-            DEFAULT_POINT.apply(cr)
-            cr.arc(x, y, 3, 0, 2 * math.pi)
-            cr.fill()
+            DEFAULT_POINT.apply_canvas(canvas)
+            canvas.arc(x, y, 3, 0, 2 * math.pi)
+            canvas.fill()
         elif name == "BOYLAT":
             catlam = feature.attributes.get("CATLAM", 0)
-            self._draw_buoy_lateral(cr, x, y, catlam)
+            self._draw_buoy_lateral(canvas, x, y, catlam)
         elif name in self._WRECK_NAMES:
-            self._draw_wreck(cr, x, y)
+            self._draw_wreck(canvas, x, y)
         elif name in self._LANDMARK_NAMES:
-            BEACON_STYLE.apply(cr)
-            cr.set_line_width(1.0)
-            cr.rectangle(x - 2, y - 2, 4, 4)
-            cr.stroke()
+            BEACON_STYLE.apply_canvas(canvas)
+            canvas.set_line_width(1.0)
+            canvas.rectangle(x - 2, y - 2, 4, 4)
+            canvas.stroke()
         else:
             if scale > 100:
                 return
-            DEFAULT_POINT.apply(cr)
-            cr.arc(x, y, 1.5, 0, 2 * math.pi)
-            cr.fill()
+            DEFAULT_POINT.apply_canvas(canvas)
+            canvas.arc(x, y, 1.5, 0, 2 * math.pi)
+            canvas.fill()

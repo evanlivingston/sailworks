@@ -17,6 +17,7 @@ import pytest
 from osgeo import ogr
 
 from sailworks.core.mapviewport import MercatorProjection
+from sailworks.rendering.canvas import CairoCanvas
 from sailworks.rendering.style import Style
 from sailworks.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
 
@@ -88,54 +89,79 @@ def _edge_filter():
     return drawer._coverage_edge_filter([COVERAGE], EPSILON / 2.0)
 
 
-class _RecordingContext:
-    """A context that remembers what it stroked.
+class RecordingCanvas(CairoCanvas):
+    """A canvas that remembers the path it was asked to stroke.
 
     ``stroke()`` consumes the current path in cairo, so the stroke path has
-    to be captured before the drawer's own ``stroke()`` clears it.
+    to be captured before the drawer's own ``stroke()`` clears it.  Reading
+    the seam's own calls is what the drawer now issues; no cairo path item is
+    inspected.
     """
 
-    def __init__(self, cr):
-        self._cr = cr
+    def __init__(self, context):
+        super().__init__(context)
+        self.events = []
+        self.path = []
         self.stroke_path = None
+        self.filled_path = None
 
-    def __getattr__(self, name):
-        return getattr(self._cr, name)
+    def new_path(self):
+        self.path = []
+        super().new_path()
+
+    def move_to(self, x, y):
+        self.events.append(("move_to", x, y))
+        self.path.append(("move_to", x, y))
+        super().move_to(x, y)
+
+    def line_to(self, x, y):
+        self.events.append(("line_to", x, y))
+        self.path.append(("line_to", x, y))
+        super().line_to(x, y)
+
+    def close_path(self):
+        self.events.append(("close_path",))
+        self.path.append(("close_path",))
+        super().close_path()
+
+    def fill(self):
+        self.events.append(("fill",))
+        self.filled_path = list(self.path)
+        super().fill()
+        self.path = []
+
+    def fill_preserve(self):
+        self.events.append(("fill_preserve",))
+        self.filled_path = list(self.path)
+        super().fill_preserve()
 
     def stroke(self):
-        self.stroke_path = list(self._cr.copy_path())
-        return self._cr.stroke()
+        self.events.append(("stroke",))
+        self.stroke_path = list(self.path)
+        super().stroke()
+        self.path = []
 
 
 def _edge_path(feature, edge_filter):
-    """The stroke path ``_render_area`` lays down, as cairo path points."""
+    """The stroke path ``_render_area`` lays down, as canvas operations."""
     surface = cairo.ImageSurface(
         cairo.FORMAT_ARGB32,
         CANVAS.get_allocated_width(),
         CANVAS.get_allocated_height(),
     )
-    recorder = _RecordingContext(cairo.Context(surface))
+    recorder = RecordingCanvas(cairo.Context(surface))
     drawer = S57ChartDrawer(_Settings())
     drawer._render_area(CANVAS, recorder, feature, PALETTE, edge_filter)
     return recorder.stroke_path
 
 
 def _path_points(path):
-    # pycairo path items are ``(PathDataType, points)`` pairs: the points
-    # are the segment's ``(x, y)`` coordinates, empty for a close.
-    points = []
-    for item in path:
-        if item[0] not in (cairo.PATH_MOVE_TO, cairo.PATH_LINE_TO):
-            continue
-        coords = item[1]
-        if coords and isinstance(coords[0], (tuple, list)):
-            coords = coords[0]
-        points.append(tuple(coords))
-    return points
+    """The move_to/line_to coordinates of a recorded path."""
+    return [(event[1], event[2]) for event in path if event[0] != "close_path"]
 
 
 def _has_close_path(path):
-    return any(item[0] == cairo.PATH_CLOSE_PATH for item in path)
+    return any(event[0] == "close_path" for event in path)
 
 
 def _screen(lats, lons, canvas=CANVAS):
@@ -290,7 +316,7 @@ def test_quilted_cell_draw_end_to_end_leaves_the_interior_contour():
             cr = cairo.Context(surface)
             drawer.draw(
                 canvas,
-                cr,
+                CairoCanvas(cr),
                 source,
                 bounding,
                 coverage=coverage if with_coverage else None,

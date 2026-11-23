@@ -4,9 +4,9 @@ import math
 from collections import OrderedDict
 from types import SimpleNamespace
 
-import cairo
 from osgeo import ogr
 
+from sailworks.rendering.canvas import FILL_EVEN_ODD, FILL_WINDING, JOIN_ROUND
 from sailworks.rendering.scene import policy
 from sailworks.rendering.style import Style
 
@@ -29,7 +29,7 @@ class S57ChartDrawer(CM93ChartDrawer):
     #: it.
     FEATURE_CACHE_ENTRIES = 4096
 
-    def draw(self, gpsmap, cr, vector_file, bounding, coverage=None):
+    def draw(self, gpsmap, canvas, vector_file, bounding, coverage=None):
         palette = Style.chart_palettes[self.palette]
         cancelled = getattr(gpsmap, "render_cancelled", lambda: False)
         min_lon, max_lon, min_lat, max_lat = bounding.GetEnvelope()
@@ -48,20 +48,20 @@ class S57ChartDrawer(CM93ChartDrawer):
             return
         areas, lines, points = collected
         edge_filter = self._coverage_edge_filter(coverage, tolerance)
-        cr.set_line_join(cairo.LINE_JOIN_ROUND)
+        canvas.set_line_join(JOIN_ROUND)
         for feature in sorted(areas, key=lambda f: self.AREA_ORDER.get(f.obj_name, 3)):
             if cancelled():
                 return
-            self._render_area(gpsmap, cr, feature, palette, edge_filter)
+            self._render_area(gpsmap, canvas, feature, palette, edge_filter)
         for feature in lines:
             if cancelled():
                 return
-            self._render_line(gpsmap, cr, feature, palette)
+            self._render_line(gpsmap, canvas, feature, palette)
         self._sounding_boxes = set()
         for feature in points:
             if cancelled():
                 return
-            self._render_point(gpsmap, cr, feature, palette, gpsmap.get_scale())
+            self._render_point(gpsmap, canvas, feature, palette, gpsmap.get_scale())
 
     def _collect_layers(self, vector_file, bounding, tolerance, cancelled):
         collected: CollectedFeatures = ([], [], [])
@@ -191,34 +191,34 @@ class S57ChartDrawer(CM93ChartDrawer):
                     name, attributes, geom.GetGeometryRef(i), areas, lines, points
                 )
 
-    def _render_area(self, gpsmap, cr, feature, palette, edge_filter=None):
+    def _render_area(self, gpsmap, canvas, feature, palette, edge_filter=None):
         fill, stroke = self._get_area_styles(
             feature.obj_name, feature.attributes, palette
         )
-        cr.new_path()
+        canvas.new_path()
         # One path with even/odd fill preserves islands and polygon holes.
-        cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
+        canvas.set_fill_rule(FILL_EVEN_ODD)
         projected = []
         for ring in feature.geometry:
             if len(ring) < 3:
                 continue
             xs, ys = self._geo_to_screen_batch(gpsmap, ring)
             projected.append((ring, xs, ys))
-            cr.move_to(xs[0], ys[0])
+            canvas.move_to(xs[0], ys[0])
             for x, y in zip(xs[1:], ys[1:]):
-                cr.line_to(x, y)
-            cr.close_path()
-        fill.apply(cr)
-        cr.fill_preserve()
+                canvas.line_to(x, y)
+            canvas.close_path()
+        fill.apply_canvas(canvas)
+        canvas.fill_preserve()
         if feature.obj_name == "DEPARE" and edge_filter is not None:
             # The fill stays whole; only the stroke is re-laid, so the
             # geographic portrayal and the polygon's own holes are untouched.
-            cr.new_path()
+            canvas.new_path()
             for ring, xs, ys in projected:
-                self._stroke_exposed_edges(cr, ring, xs, ys, edge_filter)
-        stroke.apply(cr)
-        cr.stroke()
-        cr.set_fill_rule(cairo.FILL_RULE_WINDING)
+                self._stroke_exposed_edges(canvas, ring, xs, ys, edge_filter)
+        stroke.apply_canvas(canvas)
+        canvas.stroke()
+        canvas.set_fill_rule(FILL_WINDING)
 
     def _coverage_edge_filter(self, coverage, tolerance):
         """The coverage-boundary filter for DEPARE outlines, or ``None``.
@@ -252,7 +252,7 @@ class S57ChartDrawer(CM93ChartDrawer):
             return None
         return tuple(boundaries), tolerance
 
-    def _stroke_exposed_edges(self, cr, ring, xs, ys, edge_filter):
+    def _stroke_exposed_edges(self, canvas, ring, xs, ys, edge_filter):
         """Add the ring's outline, skipping its coverage-boundary segments.
 
         Only DEPARE calls this: every other area keeps its full outline, and
@@ -263,10 +263,10 @@ class S57ChartDrawer(CM93ChartDrawer):
         if not candidates:
             # The ring is far from every coverage boundary: the whole
             # outline is real and is drawn closed, exactly as before.
-            cr.move_to(xs[0], ys[0])
+            canvas.move_to(xs[0], ys[0])
             for x, y in zip(xs[1:], ys[1:]):
-                cr.line_to(x, y)
-            cr.close_path()
+                canvas.line_to(x, y)
+            canvas.close_path()
             return
         closed = ring[0] == ring[-1]
         count = len(ring) - 1 if closed else len(ring)
@@ -280,10 +280,10 @@ class S57ChartDrawer(CM93ChartDrawer):
             # Nothing lies on the coverage boundary: the whole outline is
             # real and is drawn as the original closed path -- the closing
             # join included -- exactly as before.
-            cr.move_to(xs[0], ys[0])
+            canvas.move_to(xs[0], ys[0])
             for x, y in zip(xs[1:], ys[1:]):
-                cr.line_to(x, y)
-            cr.close_path()
+                canvas.line_to(x, y)
+            canvas.close_path()
             return
         drawing = False
         for i in range(count):
@@ -292,9 +292,9 @@ class S57ChartDrawer(CM93ChartDrawer):
                 drawing = False
                 continue
             if not drawing:
-                cr.move_to(xs[i], ys[i])
+                canvas.move_to(xs[i], ys[i])
                 drawing = True
-            cr.line_to(xs[j], ys[j])
+            canvas.line_to(xs[j], ys[j])
 
     @staticmethod
     def _nearby_boundaries(ring, boundaries, epsilon):
@@ -338,11 +338,11 @@ class S57ChartDrawer(CM93ChartDrawer):
                 return True
         return False
 
-    def _render_soundings(self, gpsmap, cr, feature):
+    def _render_soundings(self, gpsmap, canvas, feature):
         if gpsmap.get_scale() > 100:
             return
-        SOUNDING_STYLE.apply(cr)
-        cr.set_font_size(11)
+        SOUNDING_STYLE.apply_canvas(canvas)
+        canvas.set_font_size(11)
         xs, ys = self._geo_to_screen_batch(gpsmap, feature.geometry)
         for p, x, y in zip(feature.geometry, xs, ys):
             if not (
@@ -356,10 +356,10 @@ class S57ChartDrawer(CM93ChartDrawer):
             if box in self._sounding_boxes:
                 continue
             self._sounding_boxes.add(box)
-            cr.move_to(x + 2, y + 2)
-            cr.show_text(f"{p[2]:.1f}")
+            canvas.move_to(x + 2, y + 2)
+            canvas.show_text(f"{p[2]:.1f}")
 
-    def _render_point(self, gpsmap, cr, feature, palette, scale):
+    def _render_point(self, gpsmap, canvas, feature, palette, scale):
         # ENC colours account for the regional buoyage system.
         if feature.obj_name == "BOYLAT":
             colours = feature.attributes.get("COLOUR") or []
@@ -369,4 +369,4 @@ class S57ChartDrawer(CM93ChartDrawer):
                 feature.attributes["CATLAM"] = catlam
             else:
                 feature.obj_name = "BOYSPP"
-        super()._render_point(gpsmap, cr, feature, palette, scale)
+        super()._render_point(gpsmap, canvas, feature, palette, scale)

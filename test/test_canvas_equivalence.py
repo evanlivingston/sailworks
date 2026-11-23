@@ -24,6 +24,8 @@ pytest.importorskip("PySide6")
 from PySide6.QtGui import QGuiApplication, QImage  # noqa: E402
 
 from sailworks.core.core import BoatInfo  # noqa: E402
+from osgeo import ogr  # noqa: E402
+
 from sailworks.rendering.ais import AISRenderer  # noqa: E402
 from sailworks.rendering.canvas import (  # noqa: E402
     FILL_EVEN_ODD,
@@ -36,6 +38,10 @@ from sailworks.rendering.isochrones import (  # noqa: E402
     render_isochrones,
 )
 from sailworks.rendering.style import Style  # noqa: E402
+from sailworks.rendering.vectordrawer.cm93chartdrawer import (  # noqa: E402
+    CM93ChartDrawer,
+)
+from sailworks.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer  # noqa: E402
 
 WIDTH = 480
 HEIGHT = 320
@@ -473,3 +479,226 @@ def test_qpainter_fill_rule_punches_the_same_hole_as_cairo():
         assert (hole.red(), hole.green(), hole.blue()) == (0, 0, 255), name
         land = image.pixelColor(120, HEIGHT // 2)
         assert (land.red(), land.green(), land.blue()) == (255, 0, 0), name
+
+
+# --- The chart drawers through the seam -------------------------------------
+#
+# The CM93 and S57 drawers now draw only through ``Canvas``. These scenes put
+# their real paths through both backends: the even-odd DEPARE hole, the
+# exposed-edge filter, a sounding's text, procedural point symbols and the
+# CM93 light arcs and contour line.
+#
+# Their maxima are set by partial-coverage fringe pixels and by sub-pixel pen
+# widths rather than by the geometry: Cairo paints a faint coverage sample
+# where Qt's analytic rasteriser paints nothing, and a 1 px diagonal crossing
+# gets a different union coverage. Every solid fill and every symbol centre
+# is identical, which is asserted directly below. The agreed #272 mean
+# ceiling holds everywhere; the maxima are recorded with their cause, the way
+# the isochrone scene records its 76, rather than widened silently.
+DEPARE_FRINGE_MAX_DIFF = 10
+EDGES_FRINGE_MAX_DIFF = 10
+POINTS_FRINGE_MAX_DIFF = 53
+ARCS_FRINGE_MAX_DIFF = 34
+SOUNDINGS_MAX_DIFF = 204
+
+CHART_FRINGE_MARGIN = 8
+CHART_TEXT_MAX_MARGIN = 16
+
+
+class _ChartView(_FixedView):
+    """A fixed camera with the allocation and scale the drawers read."""
+
+    def get_allocated_width(self):
+        return self.width
+
+    def get_allocated_height(self):
+        return self.height
+
+    def get_scale(self):
+        return 40.0
+
+
+def _chart_view():
+    return _ChartView(WIDTH, HEIGHT, 50.0, 5.0, 30.0)
+
+
+def _colour_diff(left, right, x, y):
+    a, b = left.pixelColor(x, y), right.pixelColor(x, y)
+    return max(
+        abs(a.red() - b.red()),
+        abs(a.green() - b.green()),
+        abs(a.blue() - b.blue()),
+        abs(a.alpha() - b.alpha()),
+    )
+
+
+def _draw_depare_island(canvas):
+    """A DEPARE whose interior ring must be punched out by even-odd fill."""
+    feature = SimpleNamespace(
+        obj_name="DEPARE",
+        attributes={"DRVAL1": 5.0, "DRVAL2": 9.0},
+        geometry=[
+            [(48.0, 1.0), (48.0, 9.0), (52.0, 9.0), (52.0, 1.0), (48.0, 1.0)],
+            [(49.3, 4.0), (49.3, 6.0), (50.7, 6.0), (50.7, 4.0), (49.3, 4.0)],
+        ],
+    )
+    S57ChartDrawer.__new__(S57ChartDrawer)._render_area(
+        _chart_view(), canvas, feature, Style.chart_palettes["cm93"]
+    )
+
+
+def test_qpainter_depare_island_is_a_hole_in_both_backends():
+    cairo_image = _cairo_scene(_draw_depare_island)
+    painter_image = _qpainter_scene(_draw_depare_island)
+
+    measured = _compare_composited(cairo_image, painter_image)
+    _report("depare island", measured)
+    assert measured["non_blank_fraction"] > 0.10
+    assert measured["mean"] <= TEXT_MEAN_DIFF_CEILING
+    assert abs(measured["max"] - DEPARE_FRINGE_MAX_DIFF) <= CHART_FRINGE_MARGIN
+
+    # The island is background in both backends; the ring around it is filled
+    # with the same solid colour, one level apart at most.
+    for name, image in (("cairo", cairo_image), ("qt", painter_image)):
+        assert image.pixelColor(WIDTH // 2, HEIGHT // 2).alpha() == 0, name
+        assert image.pixelColor(130, HEIGHT // 2).alpha() == 255, name
+    assert _colour_diff(cairo_image, painter_image, 130, HEIGHT // 2) <= (
+        NON_TEXT_MAX_DIFF_CEILING
+    )
+
+
+def _coverage_filter(drawer, tolerance):
+    coverage = [ogr.CreateGeometryFromWkt("POLYGON((0 45, 10 45, 10 55, 0 55, 0 45))")]
+    return drawer._coverage_edge_filter(coverage, tolerance)
+
+
+def _draw_exposed_edges(canvas):
+    """A DEPARE along two coverage edges: only the interior L is stroked."""
+    drawer = S57ChartDrawer.__new__(S57ChartDrawer)
+    feature = SimpleNamespace(
+        obj_name="DEPARE",
+        attributes={"DRVAL1": 5.0, "DRVAL2": 9.0},
+        geometry=[[(45.0, 0.0), (45.0, 5.0), (50.0, 5.0), (50.0, 0.0), (45.0, 0.0)]],
+    )
+    drawer._render_area(
+        _chart_view(),
+        canvas,
+        feature,
+        Style.chart_palettes["cm93"],
+        _coverage_filter(drawer, 0.25),
+    )
+
+
+def _ink_bounds(image):
+    """The pixel box that carries ink, in both backends' output."""
+    plain = image.convertToFormat(QImage.Format.Format_ARGB32)
+    xs, ys = [], []
+    for y in range(plain.height()):
+        for x in range(plain.width()):
+            if plain.pixelColor(x, y).alpha() > 8:
+                xs.append(x)
+                ys.append(y)
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def test_qpainter_exposed_edge_stroke_has_the_same_extent_as_cairo():
+    cairo_image = _cairo_scene(_draw_exposed_edges)
+    painter_image = _qpainter_scene(_draw_exposed_edges)
+
+    measured = _compare_composited(cairo_image, painter_image)
+    _report("exposed edges", measured)
+    assert measured["non_blank_fraction"] > 0.10
+    assert measured["mean"] <= TEXT_MEAN_DIFF_CEILING
+    assert abs(measured["max"] - EDGES_FRINGE_MAX_DIFF) <= CHART_FRINGE_MARGIN
+
+    # The stroked edges reach exactly the same pixels in both backends.
+    assert _ink_bounds(cairo_image) == _ink_bounds(painter_image)
+    assert _colour_diff(cairo_image, painter_image, 130, HEIGHT // 2) <= (
+        NON_TEXT_MAX_DIFF_CEILING
+    )
+
+
+def _draw_soundings(canvas):
+    drawer = S57ChartDrawer.__new__(S57ChartDrawer)
+    drawer._sounding_boxes = set()
+    feature = SimpleNamespace(
+        geometry=[(50.0, 3.0 + 0.5 * index, 7.5 + index) for index in range(6)]
+    )
+    drawer._render_soundings(_chart_view(), canvas, feature)
+
+
+def test_qpainter_soundings_stay_within_text_tolerance():
+    cairo_image = _cairo_scene(_draw_soundings)
+    painter_image = _qpainter_scene(_draw_soundings)
+
+    measured = _compare_composited(cairo_image, painter_image)
+    _report("soundings", measured)
+    assert measured["non_blank_fraction"] > 0.0002
+    assert measured["mean"] <= TEXT_MEAN_DIFF_CEILING
+    assert measured["fraction"] <= TEXT_DIFF_FRACTION_CEILING
+    assert abs(measured["max"] - SOUNDINGS_MAX_DIFF) <= CHART_TEXT_MAX_MARGIN
+
+
+def _draw_chart_points(canvas):
+    """A lateral buoy (procedural arc) and a wreck (procedural lines)."""
+    drawer = CM93ChartDrawer.__new__(CM93ChartDrawer)
+    palette = Style.chart_palettes["cm93"]
+    for feature in (
+        SimpleNamespace(
+            obj_name="BOYLAT", attributes={"CATLAM": 1}, geometry=[(50.0, 3.0)]
+        ),
+        SimpleNamespace(obj_name="WRECKS", attributes={}, geometry=[(50.0, 7.0)]),
+    ):
+        drawer._render_point(_chart_view(), canvas, feature, palette, 40.0)
+
+
+def test_qpainter_point_symbols_stay_within_recorded_distance_from_cairo():
+    cairo_image = _cairo_scene(_draw_chart_points)
+    painter_image = _qpainter_scene(_draw_chart_points)
+
+    measured = _compare_composited(cairo_image, painter_image)
+    _report("chart points", measured)
+    assert measured["non_blank_fraction"] > 0.0002
+    assert measured["mean"] <= TEXT_MEAN_DIFF_CEILING
+    assert measured["fraction"] <= TEXT_DIFF_FRACTION_CEILING
+    assert abs(measured["max"] - POINTS_FRINGE_MAX_DIFF) <= CHART_FRINGE_MARGIN
+
+    # The disc and the X land on the same pixels with the same colours.
+    for name, image in (("cairo", cairo_image), ("qt", painter_image)):
+        buoy = image.pixelColor(180, 160)
+        assert (buoy.red(), buoy.green(), buoy.blue()) == (204, 26, 26), name
+        wreck = image.pixelColor(300, 160)
+        assert (wreck.red(), wreck.green(), wreck.blue()) == (76, 76, 76), name
+
+
+def _draw_cm93_arcs_and_contour(canvas):
+    """The CM93 contour line plus the light symbol's arcs and rays."""
+    drawer = CM93ChartDrawer.__new__(CM93ChartDrawer)
+    drawer._render_line(
+        _chart_view(),
+        canvas,
+        SimpleNamespace(
+            obj_name="DEPCNT",
+            attributes={},
+            geometry=[(47.0, 2.0), (48.5, 4.0), (50.0, 6.0), (51.5, 8.0)],
+        ),
+        Style.chart_palettes["cm93"],
+    )
+    drawer._draw_light(canvas, WIDTH / 2, HEIGHT / 2)
+
+
+def test_qpainter_cm93_arcs_and_contour_stay_within_recorded_distance():
+    cairo_image = _cairo_scene(_draw_cm93_arcs_and_contour)
+    painter_image = _qpainter_scene(_draw_cm93_arcs_and_contour)
+
+    measured = _compare_composited(cairo_image, painter_image)
+    _report("cm93 arcs", measured)
+    assert measured["non_blank_fraction"] > 0.0002
+    assert measured["mean"] <= TEXT_MEAN_DIFF_CEILING
+    assert measured["fraction"] <= TEXT_DIFF_FRACTION_CEILING
+    assert abs(measured["max"] - ARCS_FRINGE_MAX_DIFF) <= CHART_FRINGE_MARGIN
+
+    # The arc fill is the same yellow disc in both backends.
+    for name, image in (("cairo", cairo_image), ("qt", painter_image)):
+        light = image.pixelColor(WIDTH // 2, HEIGHT // 2)
+        assert (light.red(), light.green(), light.blue()) == (255, 255, 0), name
