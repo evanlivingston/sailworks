@@ -1706,44 +1706,35 @@ def test_retained_overlay_mixin_preserves_dpr_and_renderer_draw_calls():
     from sailworks.qt import mapoverlays
     from sailworks.qt.mapoverlays import RetainedOverlayMixin
 
-    surfaces = []
-
-    class Surface:
-        def __init__(self, _format, width, height):
-            self.width = width
-            self.height = height
-            surfaces.append(self)
-
-        def set_device_scale(self, _x, _y):
-            pass
-
-        def flush(self):
-            pass
-
-        def get_data(self):
-            return b"pixels"
-
-        def get_width(self):
-            return self.width
-
-        def get_height(self):
-            return self.height
-
-        def get_stride(self):
-            return self.width * 4
+    carriers = []
+    canvases = []
 
     class Image:
-        Format = SimpleNamespace(Format_ARGB32_Premultiplied=1)
-
-        def __init__(self, *args):
-            self.args = args
+        def __init__(self):
             self.dpr = None
-
-        def copy(self):
-            return self
 
         def setDevicePixelRatio(self, dpr):
             self.dpr = dpr
+
+    class Carrier:
+        def __init__(self, width, height, device_scale):
+            self.width = width
+            self.height = height
+            self.device_scale = device_scale
+            self.qimage = Image()
+            carriers.append(self)
+
+    class CanvasStub:
+        def __init__(self, carrier):
+            self.carrier = carrier
+            self.calls = []
+            canvases.append(self)
+
+        def __getattr__(self, name):
+            def record(*args, **kwargs):
+                self.calls.append(name)
+
+            return record
 
     isochrones = SimpleNamespace(draw=Mock())
     navigation = SimpleNamespace(draw_routes=Mock(), draw_navigation=Mock())
@@ -1764,22 +1755,33 @@ def test_retained_overlay_mixin_preserves_dpr_and_renderer_draw_calls():
     )
 
     with (
-        patch.object(mapoverlays.cairo, "ImageSurface", side_effect=Surface),
-        patch.object(mapoverlays.cairo, "Context", return_value=object()),
-        patch.object(mapoverlays, "QImage", Image),
+        patch.object(
+            mapoverlays,
+            "CanvasImage",
+            SimpleNamespace(
+                new=lambda width, height, scale: Carrier(width, height, scale)
+            ),
+        ),
+        patch.object(
+            mapoverlays,
+            "Canvas",
+            SimpleNamespace(for_image=CanvasStub),
+        ),
     ):
         navigation_image = RetainedOverlayMixin._navigation_image(host)
         dashboard_image = RetainedOverlayMixin._dashboard_image(host)
 
-    assert [(surface.width, surface.height) for surface in surfaces] == [
-        (20, 16),
-        (22, 18),
+    assert [(carrier.width, carrier.height) for carrier in carriers] == [
+        (10, 8),
+        (11, 9),
     ]
+    assert [carrier.device_scale for carrier in carriers] == [2, 2]
     assert navigation_image.dpr == dashboard_image.dpr == 2
-    isochrones.draw.assert_called_once()
-    navigation.draw_routes.assert_called_once()
-    navigation.draw_navigation.assert_called_once()
-    dashboard._draw_dashboard.assert_called_once_with(host, ANY)
+    assert "finish" in canvases[0].calls and "finish" in canvases[1].calls
+    isochrones.draw.assert_called_once_with(host, canvases[0], ANY, "routing-live")
+    assert navigation.draw_routes.call_args.args[1] is canvases[0]
+    assert navigation.draw_navigation.call_args.args[1] is canvases[0]
+    dashboard._draw_dashboard.assert_called_once_with(host, canvases[1])
 
 
 def test_overlay_service_owns_hide_and_close_lifecycle():

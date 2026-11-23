@@ -4,10 +4,9 @@ import logging
 import math
 import weakref
 
-import cairo
 from PySide6.QtGui import QImage
 
-from sailworks.rendering.canvas import CairoCanvas
+from sailworks.rendering.canvas import Canvas, CanvasImage
 
 
 class MapOverlayServices:
@@ -297,30 +296,18 @@ class RetainedOverlayMixin:
         if isinstance(cache, tuple) and len(cache) >= 2 and cache[0] == key:
             return cache[1]
 
-        import cairo
-        from PySide6.QtGui import QImage
-
         factor = self.get_scale_factor()
-        surface = cairo.ImageSurface(
-            cairo.FORMAT_ARGB32,
-            math.ceil(self.get_allocated_width() * factor),
-            math.ceil(self.get_allocated_height() * factor),
+        carrier = CanvasImage.new(
+            self.get_allocated_width(), self.get_allocated_height(), factor
         )
-        surface.set_device_scale(factor, factor)
-        cr = cairo.Context(surface)
+        canvas = Canvas.for_image(carrier)
         self.navigation.draw_race_tracks(
             self,
-            CairoCanvas(cr),
+            canvas,
             draw_pois=not getattr(self, "_qml_navigation_overlay", False),
         )
-        surface.flush()
-        image = QImage(
-            surface.get_data(),
-            surface.get_width(),
-            surface.get_height(),
-            surface.get_stride(),
-            QImage.Format.Format_ARGB32_Premultiplied,
-        ).copy()
+        canvas.finish()
+        image = carrier.qimage
         image.setDevicePixelRatio(factor)
         self._race_geometry_cache = (key, image)
         return image
@@ -389,13 +376,10 @@ class RetainedOverlayMixin:
         from types import SimpleNamespace
 
         factor = self.get_scale_factor()
-        surface = cairo.ImageSurface(
-            cairo.FORMAT_ARGB32,
-            math.ceil(self.get_allocated_width() * factor),
-            math.ceil(self.get_allocated_height() * factor),
+        carrier = CanvasImage.new(
+            self.get_allocated_width(), self.get_allocated_height(), factor
         )
-        surface.set_device_scale(factor, factor)
-        cr = cairo.Context(surface)
+        canvas = Canvas.for_image(carrier)
         isochrone_frame = getattr(
             self, "isochrone_frame", SimpleNamespace(isochrones=())
         )
@@ -407,7 +391,9 @@ class RetainedOverlayMixin:
             self, "_qml_isochrone_overlay", False
         ):
             try:
-                isochrones.draw(self, cr, frames, "routing-live")
+                # The overlay renderer's second argument is its paint target;
+                # it accepts a Canvas, so both halves are this widget's canvas.
+                isochrones.draw(self, canvas, frames, "routing-live")
             except Exception as error:
                 _record_overlay_failure(self, "Isochrones", error)
             else:
@@ -417,7 +403,7 @@ class RetainedOverlayMixin:
             try:
                 navigation.draw_routes(
                     self,
-                    CairoCanvas(cr),
+                    canvas,
                     self.time_control.time.timestamp(),
                     draw_routes=not getattr(self, "_qml_navigation_overlay", False),
                 )
@@ -428,7 +414,7 @@ class RetainedOverlayMixin:
             try:
                 navigation.draw_navigation(
                     self,
-                    CairoCanvas(cr),
+                    canvas,
                     draw_tracks=not getattr(self, "_qml_navigation_overlay", False),
                 )
             except Exception as error:
@@ -446,39 +432,19 @@ class RetainedOverlayMixin:
                     isinstance(cached_race_image, QImage)
                     and not cached_race_image.isNull()
                 ):
-                    # Keep the Qt image and its buffer alive for the lifetime of the
-                    # Cairo surface that wraps them; Cairo does not take ownership of
-                    # the external buffer.
-                    cached_bits = cached_race_image.bits()
-                    if cached_bits is None:
-                        raise RuntimeError("cached race image has no backing buffer")
-                    cached_width = cached_race_image.width()
-                    cached_height = cached_race_image.height()
-                    cached_stride = cached_race_image.bytesPerLine()
-                    if cached_width <= 0 or cached_height <= 0 or cached_stride <= 0:
-                        raise ValueError("cached race image has invalid dimensions")
-                    cached_surface = cairo.ImageSurface.create_for_data(
-                        cached_bits,
-                        cairo.FORMAT_ARGB32,
-                        cached_width,
-                        cached_height,
-                        cached_stride,
+                    # The carrier borrows the cached QImage's buffer and the
+                    # canvas blits it 1:1, so neither a Cairo surface nor a
+                    # copy is needed to compose it.
+                    canvas.draw_image(
+                        CanvasImage.from_qimage(cached_race_image),
+                        0,
+                        0,
+                        smooth=False,
                     )
-                    # Retain references in locals so the wrapped buffer cannot be
-                    # collected while Cairo reads it during painting.
-                    _race_composition_refs = (  # noqa: F841
-                        cached_race_image,
-                        cached_bits,
-                        cached_surface,
-                    )
-                    cached_surface.set_device_scale(factor, factor)
-                    cr.set_source_surface(cached_surface, 0, 0)
-                    cr.paint()
-                    cached_surface.flush()
             elif navigation is not None and hasattr(navigation, "draw_race_tracks"):
                 navigation.draw_race_tracks(
                     self,
-                    CairoCanvas(cr),
+                    canvas,
                     draw_pois=not getattr(self, "_qml_navigation_overlay", False),
                 )
         if getattr(self, "ais_visible", False) and not getattr(
@@ -488,14 +454,14 @@ class RetainedOverlayMixin:
             ais_targets = getattr(self, "ais_targets", ())
             if ais_renderer is not None:
                 try:
-                    ais_renderer.draw_targets(self, CairoCanvas(cr), ais_targets)
+                    ais_renderer.draw_targets(self, canvas, ais_targets)
                 except Exception as error:
                     _record_overlay_failure(self, "AIS", error)
                 else:
                     _clear_overlay_failure(self, "AIS")
         if not getattr(self, "_qml_race_overlay", False):
             # The viewport draws race markers itself; only the legacy map
-            # renderer needs these Cairo circles.
+            # renderer needs these circles.
             from sailworks.core.mapviewport import MapPoint
 
             positions = getattr(self, "race_boat_positions", ()) or getattr(
@@ -512,43 +478,27 @@ class RetainedOverlayMixin:
                     )
                 except Exception:
                     continue
-                cr.save()
-                cr.set_source_rgba(0.95, 0.2, 0.1, 1.0)
-                cr.arc(x, y, 7, 0, 2 * math.pi)
-                cr.fill()
-                cr.set_source_rgba(1.0, 1.0, 1.0, 0.95)
-                cr.set_line_width(1.5)
-                cr.arc(x, y, 7, 0, 2 * math.pi)
-                cr.stroke()
-                cr.restore()
-        surface.flush()
-        image = QImage(
-            surface.get_data(),
-            surface.get_width(),
-            surface.get_height(),
-            surface.get_stride(),
-            QImage.Format.Format_ARGB32_Premultiplied,
-        ).copy()
+                canvas.save()
+                canvas.set_source_rgba(0.95, 0.2, 0.1, 1.0)
+                canvas.arc(x, y, 7, 0, 2 * math.pi)
+                canvas.fill()
+                canvas.set_source_rgba(1.0, 1.0, 1.0, 0.95)
+                canvas.set_line_width(1.5)
+                canvas.arc(x, y, 7, 0, 2 * math.pi)
+                canvas.stroke()
+                canvas.restore()
+        canvas.finish()
+        image = carrier.qimage
         image.setDevicePixelRatio(factor)
         return image
 
     def _dashboard_image(self):
         factor = self.get_scale_factor()
-        surface = cairo.ImageSurface(
-            cairo.FORMAT_ARGB32,
-            math.ceil(self.width() * factor),
-            math.ceil(self.height() * factor),
-        )
-        surface.set_device_scale(factor, factor)
+        carrier = CanvasImage.new(self.width(), self.height(), factor)
+        canvas = Canvas.for_image(carrier)
         self.dashboard.boat_info = self.controller.core.boat_info
-        self.dashboard._draw_dashboard(self, CairoCanvas(cairo.Context(surface)))
-        surface.flush()
-        image = QImage(
-            surface.get_data(),
-            surface.get_width(),
-            surface.get_height(),
-            surface.get_stride(),
-            QImage.Format.Format_ARGB32_Premultiplied,
-        ).copy()
+        self.dashboard._draw_dashboard(self, canvas)
+        canvas.finish()
+        image = carrier.qimage
         image.setDevicePixelRatio(factor)
         return image
