@@ -249,14 +249,14 @@ class CanvasImage:
         )
 
     @classmethod
-    def from_png_bytes(cls, data, backend="cairo"):
+    def from_png_bytes(cls, data, backend="qt"):
         """Decode PNG bytes into a carrier at its natural pixel size.
 
-        ``backend`` selects the decoder. It defaults to Cairo because that is
-        the backend the renderers built on this seam use today; pass ``"qt"``
-        to build the Qt view in a Qt-only process. The carrier reports
-        ``device_scale`` 1, so a caller that needs a different logical size
-        passes it to :meth:`Canvas.draw_image`.
+        ``backend`` selects the decoder and defaults to the production Qt
+        surface; pass ``"cairo"`` for the previous backend, which remains the
+        rollback and the test oracle. The carrier reports ``device_scale`` 1,
+        so a caller that needs a different logical size passes it to
+        :meth:`Canvas.draw_image`.
         """
         if backend == "cairo":
             # Imported lazily so importing this module never imports cairo.
@@ -278,7 +278,7 @@ class CanvasImage:
         raise ValueError(f"Unknown canvas backend: {backend!r}")
 
     @classmethod
-    def from_rgba(cls, width, height, data, device_scale=1.0, backend="cairo"):
+    def from_rgba(cls, width, height, data, device_scale=1.0, backend="qt"):
         """Build a carrier from a row-major, **premultiplied** RGBA byte array.
 
         ``data`` holds four bytes per pixel in R, G, B, A order, row-major,
@@ -356,19 +356,94 @@ class CanvasImage:
         raise ValueError(f"Unknown canvas backend: {backend!r}")
 
     @classmethod
-    def new(cls, width, height, device_scale=1.0, backend="cairo"):
+    def _from_argb32(cls, width, height, data, device_scale=1.0, backend="qt"):
+        """Build a carrier from tight, row-major, premultiplied ARGB32 bytes.
+
+        This is the raw-word counterpart of :meth:`from_rgba`: the bytes are
+        already in the backend's own ``0xAARRGGBB`` layout, as
+        :meth:`get_data` returns them, so nothing is reordered.
+        """
+        raw = bytes(data)
+        expected = width * height * 4
+        if len(raw) != expected:
+            raise ValueError(
+                f"ARGB32 data is {len(raw)} bytes, expected {expected} "
+                f"for {width}x{height}"
+            )
+        logical_width = width / device_scale
+        logical_height = height / device_scale
+        if backend == "cairo":
+            # Imported lazily so importing this module never imports cairo.
+            import cairo
+
+            buffer = bytearray(raw)
+            surface = cairo.ImageSurface.create_for_data(
+                memoryview(buffer), cairo.FORMAT_ARGB32, width, height
+            )
+            surface.set_device_scale(device_scale, device_scale)
+            return cls(
+                logical_width,
+                logical_height,
+                device_scale,
+                surface=surface,
+                buffer=buffer,
+            )
+        if backend == "qt":
+            _qt()
+            image = QImage(
+                raw,
+                width,
+                height,
+                width * 4,
+                QImage.Format.Format_ARGB32_Premultiplied,
+            ).copy()
+            image.setDevicePixelRatio(device_scale)
+            return cls(
+                logical_width,
+                logical_height,
+                device_scale,
+                qimage=image,
+                buffer=raw,
+            )
+        raise ValueError(f"Unknown canvas backend: {backend!r}")
+
+    def copy_as(self, backend):
+        """A copy of this carrier in ``backend``'s representation.
+
+        Transitional bridge for the one boundary where a worker frame meets a
+        target canvas of the other backend: the foreground blit still paints
+        onto a cairo context owned by the widget layer. Only the source image
+        is read and the copy is a separate buffer, so one buffer is still
+        written by one rasteriser. When the widget slice hands over a Qt
+        canvas this becomes a no-op and can be deleted.
+        """
+        if backend == self.backend:
+            return self
+        # Temporary: this bridge exists only until the widget layer hands over a
+        # Qt canvas, at which point it becomes a no-op and is deleted.
+        scale = self.device_scale()
+        width = max(1, int(round(self.width * scale)))
+        height = max(1, int(round(self.height * scale)))
+        stride = self.get_stride()
+        data = bytes(self.get_data())
+        line = width * 4
+        if stride != line:
+            data = b"".join(data[y * stride : y * stride + line] for y in range(height))
+        return CanvasImage._from_argb32(width, height, data, scale, backend)
+
+    @classmethod
+    def new(cls, width, height, device_scale=1.0, backend="qt"):
         """Create a blank surface of ``width`` x ``height`` logical pixels.
 
         This is the constructor the renderers call, so ``backend`` here is the
-        single switch that moves one of them: ``"cairo"`` builds the previous
-        ``cairo.ImageSurface`` and ``"qt"`` builds the production
-        ``QImage``. It defaults to cairo until a renderer is measured against
-        the cairo output and flipped.
+        single switch that moves one of them: ``"qt"`` builds the production
+        ``QImage`` and ``"cairo"`` builds the previous ``cairo.ImageSurface``,
+        which stays available as the rollback and the test oracle.
         """
         return cls.empty(width, height, device_scale, backend)
 
     @classmethod
-    def empty(cls, width, height, device_scale=1.0, backend="cairo"):
+    def empty(cls, width, height, device_scale=1.0, backend="qt"):
         """Create a blank image of ``width`` x ``height`` logical pixels.
 
         The pixel buffer is ``width * device_scale`` by ``height *
@@ -420,6 +495,11 @@ class Canvas:
     Grow this class only when the next migration slice needs another
     operation; do not add speculative methods.
     """
+
+    @property
+    def backend(self):
+        """``"cairo"`` or ``"qt"``: the rasteriser that may write this buffer."""
+        raise NotImplementedError
 
     @classmethod
     def for_image(cls, image):
@@ -566,6 +646,8 @@ class Canvas:
 
 class CairoCanvas(Canvas):
     """Pure delegation to a ``cairo.Context``; output must not change."""
+
+    backend = "cairo"
 
     def __init__(self, context):
         self._cr = context
@@ -758,6 +840,8 @@ class QPainterCanvas(Canvas):
     ``finish()`` has been called. Cairo has no equivalent of ``finish`` because
     a surface is flushed by its owner.
     """
+
+    backend = "qt"
 
     def __init__(self, image):
         _qt()

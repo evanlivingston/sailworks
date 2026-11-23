@@ -279,7 +279,7 @@ class CHSRenderer:
 
     @staticmethod
     def _decode(key, data):
-        image = CanvasImage.from_png_bytes(data)
+        image = CanvasImage.from_png_bytes(data, backend="cairo")
         factor = key[3]
         if image.width != TILE_SIZE * factor or image.height != TILE_SIZE * factor:
             raise ValueError("CHS returned an unexpected image size")

@@ -239,7 +239,7 @@ class MBTilesRenderer(OverlayRenderer):
     def _render(self, job):
         viewport = job.viewport
         frame = CanvasImage.empty(viewport.width, viewport.height, job.factor)
-        cr = CairoCanvas(cairo.Context(frame.surface))
+        cr = Canvas.for_image(frame)
         for (info,) in job.charts:
             if job.cancel.is_set():
                 return None
@@ -256,6 +256,7 @@ class MBTilesRenderer(OverlayRenderer):
                         return None
             except (sqlite3.Error, OSError, ValueError) as error:
                 logger.warning("Unable to render MBTiles %s: %s", info.path, error)
+        cr.finish()
         return None if job.cancel.is_set() else frame
 
     def _tile_window(self, viewport, info):

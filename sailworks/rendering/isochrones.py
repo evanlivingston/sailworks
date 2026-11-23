@@ -8,7 +8,7 @@ import numpy as np
 from pyproj import Geod
 
 from sailworks.core.mapviewport import MapPoint
-from .canvas import CairoCanvas, JOIN_ROUND
+from .canvas import Canvas, CanvasImage, JOIN_ROUND
 from .style import Style
 from .overlayrenderer import OverlayRenderer
 from .navigation import draw_current_exclusions
@@ -30,17 +30,11 @@ class IsochronesRenderer(OverlayRenderer):
 
     def _render(self, job):
         frame = job.charts[0][0]
-        surface = cairo.ImageSurface(
-            cairo.FORMAT_ARGB32,
-            job.viewport.width * job.factor,
-            job.viewport.height * job.factor,
-        )
-        surface.set_device_scale(job.factor, job.factor)
-        render_isochrones(
-            job.viewport, CairoCanvas(cairo.Context(surface)), frame, job.cancel
-        )
-        surface.flush()
-        return surface
+        image = CanvasImage.new(job.viewport.width, job.viewport.height, job.factor)
+        canvas = Canvas.for_image(image)
+        render_isochrones(job.viewport, canvas, frame, job.cancel)
+        canvas.finish()
+        return image
 
 
 def render_isochrones(view, canvas, frame, cancel):

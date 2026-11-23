@@ -89,6 +89,10 @@ def paint_viewport(canvas, target, viewport, image):
     """
     if not isinstance(target, Canvas):
         target = CairoCanvas(target)
+    # Temporary boundary copy: the widget layer still owns a cairo target, so
+    # a Qt worker frame is copied here. Delete this when the widget layer
+    # hands over a Qt canvas and the backends already match.
+    image = image.copy_as(target.backend)
     ratio = 2.0 ** (canvas._zoom - viewport._zoom)
     x = canvas._lon_to_x(viewport._center_lon) - canvas._lon_to_x(canvas._center_lon)
     y = canvas._lat_to_y(viewport._center_lat) - canvas._lat_to_y(canvas._center_lat)
