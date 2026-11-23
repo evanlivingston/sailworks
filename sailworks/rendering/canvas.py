@@ -30,16 +30,50 @@ QPainter-only path never loads it.
 import math
 from collections import namedtuple
 
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import (
-    QBrush,
-    QColor,
-    QFont,
-    QFontMetricsF,
-    QPainter,
-    QPainterPath,
-    QPen,
-)
+# Qt is imported on first use by ``QPainterCanvas``, never at module import
+# time, so a module that only needs the seam's interface (or the Cairo
+# backend) can be imported in a process that never loads PySide6. This mirrors
+# how the Cairo backend binds pycairo.
+Qt = None
+QPointF = None
+QRectF = None
+QBrush = None
+QColor = None
+QFont = None
+QFontMetricsF = None
+QPainter = None
+QPainterPath = None
+QPen = None
+
+
+def _qt():
+    """Bind the Qt names once, on the first call."""
+    global Qt, QPointF, QRectF, QBrush, QColor, QFont, QFontMetricsF
+    global QPainter, QPainterPath, QPen
+    if QPainter is not None:
+        return
+    from PySide6.QtCore import QPointF as _QPointF, QRectF as _QRectF, Qt as _Qt
+    from PySide6.QtGui import (
+        QBrush as _QBrush,
+        QColor as _QColor,
+        QFont as _QFont,
+        QFontMetricsF as _QFontMetricsF,
+        QPainter as _QPainter,
+        QPainterPath as _QPainterPath,
+        QPen as _QPen,
+    )
+
+    Qt = _Qt
+    QPointF = _QPointF
+    QRectF = _QRectF
+    QBrush = _QBrush
+    QColor = _QColor
+    QFont = _QFont
+    QFontMetricsF = _QFontMetricsF
+    QPainter = _QPainter
+    QPainterPath = _QPainterPath
+    QPen = _QPen
+
 
 # Same six attributes cairo's TextExtents exposes, so callers stay backend
 # agnostic without a wrapper object.
@@ -55,6 +89,79 @@ JOIN_BEVEL = "bevel"
 # Fill rules, named rather than re-exporting either backend's constants.
 FILL_EVEN_ODD = "even-odd"
 FILL_WINDING = "winding"
+
+
+class CanvasImage:
+    """A decoded raster image, carried between the two canvas backends.
+
+    The carrier keeps whichever backend object built it and never converts on
+    access, so Qt code never receives a cairo surface and Cairo code never
+    receives a ``QImage``. Asking for the other backend's view raises instead
+    of silently copying, which keeps a wrong-backend draw a visible error.
+
+    ``width``/``height`` are logical (user-space) pixels: the backend pixel
+    size divided by ``device_scale``. The caller keeps the pixel buffer alive
+    for as long as the carrier can be drawn; this object does not own it.
+    """
+
+    def __init__(self, width, height, device_scale=1.0, surface=None, qimage=None):
+        self._width = width
+        self._height = height
+        self._device_scale = device_scale
+        self._surface = surface
+        self._qimage = qimage
+
+    @property
+    def width(self):
+        return self._width
+
+    @property
+    def height(self):
+        return self._height
+
+    @property
+    def device_scale(self):
+        return self._device_scale
+
+    @classmethod
+    def from_cairo_surface(cls, surface):
+        """Wrap a cairo image surface; the surface must outlive this object."""
+        scale = max(surface.get_device_scale())
+        return cls(
+            surface.get_width() / scale,
+            surface.get_height() / scale,
+            scale,
+            surface=surface,
+        )
+
+    @classmethod
+    def from_qimage(cls, image):
+        """Wrap a ``QImage``; the image and its buffer must outlive this object."""
+        scale = image.devicePixelRatio()
+        return cls(
+            image.width() / scale,
+            image.height() / scale,
+            scale,
+            qimage=image,
+        )
+
+    @property
+    def surface(self):
+        """The cairo surface, or a clear error when this is a Qt image."""
+        if self._surface is None:
+            raise RuntimeError(
+                "CanvasImage was built from a QImage; ask for .qimage instead"
+            )
+        return self._surface
+
+    @property
+    def qimage(self):
+        """The Qt image, or a clear error when this is a cairo surface."""
+        if self._qimage is None:
+            raise RuntimeError(
+                "CanvasImage was built from a cairo surface; ask for .surface instead"
+            )
+        return self._qimage
 
 
 class Canvas:
@@ -73,6 +180,9 @@ class Canvas:
     def set_source_rgba(self, r, g, b, a):
         raise NotImplementedError
 
+    def set_source_rgb(self, r, g, b):
+        raise NotImplementedError
+
     def set_line_width(self, width):
         raise NotImplementedError
 
@@ -89,6 +199,33 @@ class Canvas:
         raise NotImplementedError
 
     def rotate(self, radians):
+        raise NotImplementedError
+
+    def scale(self, sx, sy):
+        raise NotImplementedError
+
+    def draw_image(
+        self,
+        image,
+        x,
+        y,
+        width=None,
+        height=None,
+        alpha=1.0,
+        smooth=False,
+        pad=False,
+    ):
+        """Draw a :class:`CanvasImage` at ``(x, y)``.
+
+        ``width``/``height`` scale the image into that destination size; an
+        omitted dimension keeps the image's logical size. ``smooth`` selects
+        bilinear (True) or nearest (False) sampling. ``smooth=None`` asks for
+        the backend's historical default: Cairo's untouched ``FILTER_GOOD``
+        (what pre-seam code inherited by never calling ``set_filter``) and
+        Qt's smoothing transform. ``pad`` extends the edge pixels when the
+        pattern is sampled outside the image; ``False`` leaves the area
+        outside it transparent.
+        """
         raise NotImplementedError
 
     def new_sub_path(self):
@@ -124,6 +261,9 @@ class Canvas:
     def stroke(self):
         raise NotImplementedError
 
+    def paint(self):
+        raise NotImplementedError
+
     def stroke_preserve(self):
         raise NotImplementedError
 
@@ -155,6 +295,9 @@ class CairoCanvas(Canvas):
     def set_source_rgba(self, r, g, b, a):
         self._cr.set_source_rgba(r, g, b, a)
 
+    def set_source_rgb(self, r, g, b):
+        self._cr.set_source_rgb(r, g, b)
+
     def set_line_width(self, width):
         self._cr.set_line_width(width)
 
@@ -181,6 +324,43 @@ class CairoCanvas(Canvas):
 
     def rotate(self, radians):
         self._cr.rotate(radians)
+
+    def scale(self, sx, sy):
+        self._cr.scale(sx, sy)
+
+    def draw_image(
+        self,
+        image,
+        x,
+        y,
+        width=None,
+        height=None,
+        alpha=1.0,
+        smooth=False,
+        pad=False,
+    ):
+        # Imported lazily so importing this module never imports cairo.
+        import cairo
+
+        surface = image.surface
+        self._cr.save()
+        self._cr.translate(x, y)
+        if width is not None or height is not None:
+            target_width = image.width if width is None else width
+            target_height = image.height if height is None else height
+            self._cr.scale(target_width / image.width, target_height / image.height)
+        self._cr.set_source_surface(surface, 0, 0)
+        pattern = self._cr.get_source()
+        if smooth is not None:
+            pattern.set_filter(
+                cairo.FILTER_BILINEAR if smooth else cairo.FILTER_NEAREST
+            )
+        pattern.set_extend(cairo.EXTEND_PAD if pad else cairo.EXTEND_NONE)
+        if alpha == 1.0:
+            self._cr.paint()
+        else:
+            self._cr.paint_with_alpha(alpha)
+        self._cr.restore()
 
     def new_sub_path(self):
         self._cr.new_sub_path()
@@ -223,6 +403,9 @@ class CairoCanvas(Canvas):
     def stroke(self):
         self._cr.stroke()
 
+    def paint(self):
+        self._cr.paint()
+
     def stroke_preserve(self):
         self._cr.stroke_preserve()
 
@@ -248,6 +431,7 @@ class QPainterCanvas(Canvas):
     """
 
     def __init__(self, image):
+        _qt()
         self._image = image
         self._image.fill(Qt.transparent)
         self._painter = QPainter(image)
@@ -264,7 +448,11 @@ class QPainterCanvas(Canvas):
         self._current = QPointF(0.0, 0.0)
 
     @staticmethod
-    def _new_path(fill_rule=Qt.WindingFill):
+    def _new_path(fill_rule=None):
+        _qt()
+        if fill_rule is None:
+            # Cairo's default fill rule is winding (non-zero).
+            fill_rule = Qt.WindingFill
         path = QPainterPath()
         # Cairo's default fill rule is winding (non-zero); Qt defaults to
         # odd-even, so set it explicitly.
@@ -306,6 +494,9 @@ class QPainterCanvas(Canvas):
             self._channel(b),
             self._channel(a),
         )
+
+    def set_source_rgb(self, r, g, b):
+        self.set_source_rgba(r, g, b, 1.0)
 
     def set_line_width(self, width):
         self._line_width = width
@@ -349,6 +540,48 @@ class QPainterCanvas(Canvas):
 
     def rotate(self, radians):
         self._painter.rotate(math.degrees(radians))
+
+    def scale(self, sx, sy):
+        self._painter.scale(sx, sy)
+
+    def draw_image(
+        self,
+        image,
+        x,
+        y,
+        width=None,
+        height=None,
+        alpha=1.0,
+        smooth=False,
+        pad=False,
+    ):
+        """Draw a :class:`CanvasImage` through the painter's current transform.
+
+        Cairo's extend-pad paints the nearest edge colour outside the source
+        bounds; Qt has no equivalent pattern extend. For the scaled blits this
+        seam is used for, every sample inside the destination rect reads
+        inside the source, so clipping to that rect reproduces the visible
+        interior exactly. The edge colour is not painted outside the rect, so
+        ``pad=True`` is a faithful emulation inside the destination and only an
+        approximation beyond it.
+        """
+        qimage = image.qimage
+        target_width = image.width if width is None else width
+        target_height = image.height if height is None else height
+        target = QRectF(x, y, target_width, target_height)
+        self._painter.save()
+        self._painter.setOpacity(alpha)
+        if smooth is None:
+            # Cairo's untouched default is FILTER_GOOD, a smoothing filter.
+            # Map an unspecified filter to Qt's smoothing transform rather
+            # than to nearest, which would visibly block a scaled raster.
+            self._painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        else:
+            self._painter.setRenderHint(QPainter.SmoothPixmapTransform, smooth)
+        if pad:
+            self._painter.setClipRect(target, Qt.IntersectClip)
+        self._painter.drawImage(target, qimage)
+        self._painter.restore()
 
     def new_sub_path(self):
         # Cairo starts a fresh subpath with no current point. QPainterPath
@@ -430,6 +663,17 @@ class QPainterCanvas(Canvas):
         self._stroke_path()
         self._path = self._new_path(self._fill_rule)
         self._started = False
+
+    def paint(self):
+        """Fill the whole clip with the current source, in device space.
+
+        Cairo's ``paint`` ignores the CTM, so the transform is reset before
+        filling and restored afterwards.
+        """
+        self._painter.save()
+        self._painter.resetTransform()
+        self._painter.fillRect(self._image.rect(), self._color)
+        self._painter.restore()
 
     def stroke_preserve(self):
         # cairo_stroke_preserve leaves the current path intact.

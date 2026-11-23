@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from sailworks.core.mapviewport import MapViewport, MercatorProjection
+from sailworks.rendering.canvas import CanvasImage
 from sailworks.rendering.overlayrenderer import paint_viewport
 
 
@@ -41,7 +42,12 @@ def test_worker_surface_preserves_center_at_native_dpr(factor, offset):
     canvas._center_lon = canvas._x_to_lon(canvas._lon_to_x(canvas._center_lon) + offset)
     target = cairo.ImageSurface(cairo.FORMAT_ARGB32, 180 * factor, 160 * factor)
     target.set_device_scale(factor, factor)
-    paint_viewport(canvas, cairo.Context(target), viewport, source)
+    paint_viewport(
+        canvas,
+        cairo.Context(target),
+        viewport,
+        CanvasImage.from_cairo_surface(source),
+    )
     target.flush()
     pixels = np.frombuffer(target.get_data(), np.uint8).reshape(160 * factor, -1, 4)
     center = pixels[80 * factor, round((90 - offset) * factor)]

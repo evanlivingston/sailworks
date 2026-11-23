@@ -31,7 +31,7 @@ from sailworks.core.scheduling import schedule_idle
 from sailworks.core.mapviewport import MapViewport
 
 from .chartlayer import ChartLayer
-from .canvas import CairoCanvas
+from .canvas import CairoCanvas, CanvasImage
 from .chartclasses import (
     CHART_CLASSES,
     chart_class,
@@ -457,7 +457,12 @@ class ChartCollection:
                 old_signature[:3] == signature[:3]
                 and old_signature[4:] == signature[4:]
             ):
-                paint_viewport(gpsmap, cr, cached[1], cached[2])
+                paint_viewport(
+                    gpsmap,
+                    cr,
+                    cached[1],
+                    CanvasImage.from_cairo_surface(cached[2]),
+                )
                 return
         offset_x = offset_y = 0.0
         if cached and cached[0] == signature:
@@ -484,12 +489,14 @@ class ChartCollection:
             chart_cr = cairo.Context(surface)
             for chart in filter(lambda c: c.enabled, charts):
                 chart_cr.save()
-                # Only the ported drawers accept the seam; raster and OSM
-                # charts keep the raw context.
+                # Only the ported drawers accept the seam; OSM charts keep the
+                # raw context.
                 target = chart_cr
                 drawer = getattr(chart, "drawer", None)
-                if type(chart) is GSHHSVectorChart or isinstance(
-                    drawer, (SimpleChartDrawer, CM93ChartDrawer)
+                if (
+                    type(chart) is GSHHSVectorChart
+                    or isinstance(chart, GDALRasterChart)
+                    or isinstance(drawer, (SimpleChartDrawer, CM93ChartDrawer))
                 ):
                     target = CairoCanvas(chart_cr)
                 chart.do_draw(viewport, target)

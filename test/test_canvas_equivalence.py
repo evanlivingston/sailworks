@@ -30,6 +30,7 @@ from sailworks.rendering.ais import AISRenderer  # noqa: E402
 from sailworks.rendering.canvas import (  # noqa: E402
     FILL_EVEN_ODD,
     CairoCanvas,
+    CanvasImage,
     QPainterCanvas,
 )
 from sailworks.rendering.dashboard import DashboardRenderer  # noqa: E402
@@ -705,3 +706,224 @@ def test_qpainter_cm93_arcs_and_contour_stay_within_recorded_distance():
     for name, image in (("cairo", cairo_image), ("qt", painter_image)):
         light = image.pixelColor(WIDTH // 2, HEIGHT // 2)
         assert (light.red(), light.green(), light.blue()) == (255, 255, 0), name
+
+
+# --- Image blits through the seam (Phase 2 slice 5) ------------------------
+#
+# A scaled image blit has solid interiors and sharp colour boundaries; the
+# solid interior must match exactly enough to catch a regressed sampler,
+# while the boundary fringe is reported, not hidden behind a wider ceiling.
+
+BLIT_SOURCE_W = 48
+BLIT_SOURCE_H = 32
+BLIT_INTERIOR_MARGIN = 4
+IMAGE_INTERIOR_MAX_DIFF = 2
+
+
+def _blit_source_array():
+    """Four solid quadrants: flat interiors with sharp edges between them."""
+    array = np.empty((BLIT_SOURCE_H, BLIT_SOURCE_W), dtype=np.uint32)
+    colours = (0xFF3366AA, 0xFFAA6633, 0xFF223311, 0xFFCCCCCC)
+    for y in range(BLIT_SOURCE_H):
+        for x in range(BLIT_SOURCE_W):
+            index = (1 if x >= BLIT_SOURCE_W // 2 else 0) + (
+                2 if y >= BLIT_SOURCE_H // 2 else 0
+            )
+            array[y, x] = colours[index]
+    return array
+
+
+def _quadrant_interior_regions(width, height, scale, margin):
+    """Destination rects ``margin`` source pixels inside every quadrant."""
+    half_w, half_h = width // 2, height // 2
+    regions = []
+    for x0, x1 in ((0, half_w), (half_w, width)):
+        for y0, y1 in ((0, half_h), (half_h, height)):
+            regions.append(
+                (
+                    (x0 + margin) * scale,
+                    (y0 + margin) * scale,
+                    (x1 - margin) * scale,
+                    (y1 - margin) * scale,
+                )
+            )
+    return regions
+
+
+def _image_from_surface(surface):
+    surface.flush()
+    return QImage(
+        surface.get_data(),
+        surface.get_width(),
+        surface.get_height(),
+        surface.get_stride(),
+        QImage.Format.Format_ARGB32_Premultiplied,
+    ).copy()
+
+
+def _cairo_blit(array, scale, smooth, pad):
+    width, height = BLIT_SOURCE_W * scale, BLIT_SOURCE_H * scale
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+    source = cairo.ImageSurface.create_for_data(
+        array,
+        cairo.Format.ARGB32,
+        BLIT_SOURCE_W,
+        BLIT_SOURCE_H,
+        4 * BLIT_SOURCE_W,
+    )
+    canvas = CairoCanvas(cairo.Context(surface))
+    canvas.draw_image(
+        CanvasImage.from_cairo_surface(source),
+        0,
+        0,
+        width=width,
+        height=height,
+        smooth=smooth,
+        pad=pad,
+    )
+    return _image_from_surface(surface)
+
+
+def _qpainter_blit(array, scale, smooth, pad):
+    width, height = BLIT_SOURCE_W * scale, BLIT_SOURCE_H * scale
+    source = QImage(
+        array,
+        BLIT_SOURCE_W,
+        BLIT_SOURCE_H,
+        4 * BLIT_SOURCE_W,
+        QImage.Format.Format_ARGB32_Premultiplied,
+    )
+    image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+    canvas = QPainterCanvas(image)
+    canvas.draw_image(
+        CanvasImage.from_qimage(source),
+        0,
+        0,
+        width=width,
+        height=height,
+        smooth=smooth,
+        pad=pad,
+    )
+    canvas.finish()
+    return image
+
+
+def _interior_max_diff(left, right, regions):
+    left = left.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
+    right = right.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
+    left_bytes = bytes(left.constBits())
+    right_bytes = bytes(right.constBits())
+    stride = left.bytesPerLine()
+    worst = 0
+    for x0, y0, x1, y1 in regions:
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                offset = y * stride + x * 4
+                a = left_bytes[offset : offset + 4]
+                b = right_bytes[offset : offset + 4]
+                worst = max(worst, max(abs(a[c] - b[c]) for c in range(4)))
+    return worst
+
+
+@pytest.mark.parametrize("scale", [1, 3])
+def test_scaled_image_blit_with_padding_stays_inside_solid_interior(scale):
+    array = _blit_source_array()
+    cairo_image = _cairo_blit(array, scale, smooth=True, pad=True)
+    painter_image = _qpainter_blit(array, scale, smooth=True, pad=True)
+
+    measured = _compare_composited(cairo_image, painter_image)
+    _report(f"image blit {scale}x smooth+pad", measured)
+    regions = _quadrant_interior_regions(
+        BLIT_SOURCE_W, BLIT_SOURCE_H, scale, BLIT_INTERIOR_MARGIN
+    )
+    interior = _interior_max_diff(cairo_image, painter_image, regions)
+    print(
+        f"canvas equivalence (image blit {scale}x smooth+pad): interior max={interior}"
+    )
+    assert interior <= IMAGE_INTERIOR_MAX_DIFF
+
+
+@pytest.mark.parametrize("scale", [1, 3])
+def test_nearest_image_blit_stays_inside_solid_interior(scale):
+    array = _blit_source_array()
+    cairo_image = _cairo_blit(array, scale, smooth=False, pad=False)
+    painter_image = _qpainter_blit(array, scale, smooth=False, pad=False)
+
+    measured = _compare_composited(cairo_image, painter_image)
+    _report(f"image blit {scale}x nearest", measured)
+    regions = _quadrant_interior_regions(
+        BLIT_SOURCE_W, BLIT_SOURCE_H, scale, BLIT_INTERIOR_MARGIN
+    )
+    interior = _interior_max_diff(cairo_image, painter_image, regions)
+    print(f"canvas equivalence (image blit {scale}x nearest): interior max={interior}")
+    assert interior <= IMAGE_INTERIOR_MAX_DIFF
+
+
+def _raster_chart(tmp_path):
+    """A decoded GDAL raster chart: four palette quadrants, no resampling."""
+    from osgeo import gdal, osr
+
+    from sailworks.rendering.gdalrasterchart import GDALSingleRasterChart
+
+    path = str(tmp_path / "equivalence-raster.tif")
+    width, height = 40, 30
+    dataset = gdal.GetDriverByName("GTiff").Create(
+        path, width, height, 1, gdal.GDT_Byte
+    )
+    reference = osr.SpatialReference()
+    reference.ImportFromEPSG(4326)
+    dataset.SetProjection(reference.ExportToWkt())
+    dataset.SetGeoTransform((-124, 0.1, 0, 49, 0, -0.1))
+    band = dataset.GetRasterBand(1)
+    table = gdal.ColorTable()
+    for index, colour in enumerate(
+        ((11, 22, 33, 255), (44, 55, 66, 255), (77, 88, 99, 255), (200, 180, 160, 255)),
+        start=1,
+    ):
+        table.SetColorEntry(index, colour)
+    band.SetRasterColorTable(table)
+    values = np.zeros((height, width), dtype=np.uint8)
+    values[: height // 2, : width // 2] = 1
+    values[: height // 2, width // 2 :] = 2
+    values[height // 2 :, : width // 2] = 3
+    values[height // 2 :, width // 2 :] = 4
+    band.WriteArray(values)
+    dataset = None
+    return GDALSingleRasterChart(path)
+
+
+def _cairo_raster_scene(chart, scale):
+    width, height = chart.width * scale, chart.height * scale
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+    canvas = CairoCanvas(cairo.Context(surface))
+    canvas.draw_image(
+        chart.image_for(canvas), 0, 0, width=width, height=height, smooth=None
+    )
+    return _image_from_surface(surface)
+
+
+def _qpainter_raster_scene(chart, scale):
+    width, height = chart.width * scale, chart.height * scale
+    image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+    canvas = QPainterCanvas(image)
+    canvas.draw_image(
+        chart.image_for(canvas), 0, 0, width=width, height=height, smooth=None
+    )
+    canvas.finish()
+    return image
+
+
+def test_raster_chart_image_matches_on_both_backends(tmp_path):
+    chart = _raster_chart(tmp_path)
+    scale = 3
+    cairo_image = _cairo_raster_scene(chart, scale)
+    painter_image = _qpainter_raster_scene(chart, scale)
+
+    measured = _compare_composited(cairo_image, painter_image)
+    _report("raster chart image", measured)
+    regions = _quadrant_interior_regions(
+        chart.width, chart.height, scale, BLIT_INTERIOR_MARGIN
+    )
+    interior = _interior_max_diff(cairo_image, painter_image, regions)
+    print(f"canvas equivalence (raster chart image): interior max={interior}")
+    assert interior <= IMAGE_INTERIOR_MAX_DIFF

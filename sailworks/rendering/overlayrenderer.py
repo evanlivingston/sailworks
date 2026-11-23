@@ -6,10 +6,11 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from threading import Event, Lock, Thread
 
-import cairo
 from sailworks.core.scheduling import schedule_idle
 
 from sailworks.core.mapviewport import MapViewport
+
+from .canvas import CairoCanvas, Canvas, CanvasImage
 
 logger = logging.getLogger("sailworks")
 MARGIN = 256
@@ -79,19 +80,25 @@ def covers(viewport, canvas):
     )
 
 
-def paint_viewport(canvas, cr, viewport, surface):
+def paint_viewport(canvas, target, viewport, image):
+    """Blit a prepared viewport image, scaled to this canvas' zoom ratio.
+
+    ``target`` is a ``Canvas``; a raw ``cairo.Context`` is accepted for the
+    callers that still own one. ``image`` must be a :class:`CanvasImage` so the
+    blit stays backend neutral.
+    """
+    if not isinstance(target, Canvas):
+        target = CairoCanvas(target)
     ratio = 2.0 ** (canvas._zoom - viewport._zoom)
     x = canvas._lon_to_x(viewport._center_lon) - canvas._lon_to_x(canvas._center_lon)
     y = canvas._lat_to_y(viewport._center_lat) - canvas._lat_to_y(canvas._center_lat)
     x += canvas.get_allocated_width() / 2 - viewport.width * ratio / 2
     y += canvas.get_allocated_height() / 2 - viewport.height * ratio / 2
-    cr.save()
-    cr.translate(x, y)
-    cr.scale(ratio, ratio)
-    cr.set_source_surface(surface, 0, 0)
-    cr.get_source().set_filter(cairo.FILTER_BILINEAR)
-    cr.paint()
-    cr.restore()
+    target.save()
+    target.translate(x, y)
+    target.scale(ratio, ratio)
+    target.draw_image(image, 0, 0, smooth=True)
+    target.restore()
 
 
 class OverlayRenderer:
@@ -445,7 +452,14 @@ class OverlayRenderer:
 
     @staticmethod
     def _paint(canvas, cr, job, surface):
-        paint_viewport(canvas, cr, job.viewport, surface)
+        # Worker frames are still cairo surfaces; wrap at the single blit
+        # boundary so every other module can keep producing them unchanged.
+        image = (
+            surface
+            if isinstance(surface, CanvasImage)
+            else CanvasImage.from_cairo_surface(surface)
+        )
+        paint_viewport(canvas, cr, job.viewport, image)
 
     def _start_next(self):
         if self._closed or self._running:
