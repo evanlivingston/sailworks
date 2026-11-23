@@ -10,13 +10,16 @@ from sailworks.core.enccharts import chart_scale_rank, chart_scale_visible
 from sailworks.core.mapviewport import MapPoint
 from sailworks.rendering.overlayrenderer import OverlayRenderer
 
+from .canvas import FILL_EVEN_ODD, CairoCanvas, Canvas
 from .chartlayer import ChartLayer
 from .gdalvectorchart import GDALVectorChart
 from .vectordrawer.s57chartdrawer import S57ChartDrawer
 
 
-def coverage_path(cr, viewport, geometry):
-    """Append polygon rings to a Cairo clip, including islands and holes."""
+def coverage_path(canvas, viewport, geometry):
+    """Append polygon rings to the canvas clip, including islands and holes."""
+    if not isinstance(canvas, Canvas):
+        canvas = CairoCanvas(canvas)
     kind = ogr.GT_Flatten(geometry.GetGeometryType())
     if kind == ogr.wkbPolygon:
         for index in range(geometry.GetGeometryCount()):
@@ -24,13 +27,13 @@ def coverage_path(cr, viewport, geometry):
             for point_index, (lon, lat, *_) in enumerate(ring.GetPoints()):
                 x, y = viewport.convert_geographic_to_screen(MapPoint(lat, lon))
                 if point_index == 0:
-                    cr.move_to(x, y)
+                    canvas.move_to(x, y)
                 else:
-                    cr.line_to(x, y)
-            cr.close_path()
+                    canvas.line_to(x, y)
+            canvas.close_path()
     elif kind in (ogr.wkbMultiPolygon, ogr.wkbGeometryCollection):
         for index in range(geometry.GetGeometryCount()):
-            coverage_path(cr, viewport, geometry.GetGeometryRef(index))
+            coverage_path(canvas, viewport, geometry.GetGeometryRef(index))
 
 
 class ENCOverlayRenderer(OverlayRenderer):
@@ -48,6 +51,7 @@ class ENCOverlayRenderer(OverlayRenderer):
         )
         surface.set_device_scale(job.factor, job.factor)
         cr = cairo.Context(surface)
+        canvas = CairoCanvas(cr)
         p1, p2 = viewport.get_bbox()
         bounding = ogr.CreateGeometryFromWkt(
             ChartLayer.get_bounding_wkt_of_coords(*p1.get_degrees(), *p2.get_degrees())
@@ -84,13 +88,13 @@ class ENCOverlayRenderer(OverlayRenderer):
                 region = region.Difference(covered)
             if region.IsEmpty():
                 continue
-            cr.save()
-            cr.new_path()
-            coverage_path(cr, viewport, region)
-            cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
-            cr.clip()
-            chart.do_draw(viewport, cr)
-            cr.restore()
+            canvas.save()
+            canvas.new_path()
+            coverage_path(canvas, viewport, region)
+            canvas.set_fill_rule(FILL_EVEN_ODD)
+            canvas.clip()
+            chart.do_draw(viewport, canvas)
+            canvas.restore()
             if known_coverage:
                 covered = region if covered is None else covered.Union(region)
         surface.flush()

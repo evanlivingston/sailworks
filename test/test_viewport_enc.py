@@ -118,14 +118,17 @@ class _FakeChart:
         self._label_color = label_color
         self.drawn = 0
 
-    def do_draw(self, viewport, cr):
+    def do_draw(self, viewport, canvas):
         self.drawn += 1
-        cr.set_source_rgb(*self._color)
-        cr.paint()
+        # The ENC renderer hands every chart the ported seam. A rectangle
+        # larger than the target covers the clip exactly as paint() did.
+        canvas.set_source_rgba(*self._color, 1.0)
+        canvas.rectangle(-4096, -4096, 8192, 8192)
+        canvas.fill()
         if self._label_box is not None:
-            cr.set_source_rgb(*self._label_color)
-            cr.rectangle(*self._label_box)
-            cr.fill()
+            canvas.set_source_rgba(*self._label_color, 1.0)
+            canvas.rectangle(*self._label_box)
+            canvas.fill()
 
 
 class _StubRenderer:
@@ -1084,6 +1087,13 @@ def test_the_application_never_imports_the_enc_source():
     """The ENC source is the viewport's own; the application never uses it."""
     package = Path(gribviewport.__file__).parent
     for path in sorted(package.glob("*.py")):
-        if path.name in ("gribviewport.py", "gribviewportchart.py", "viewportenc.py"):
+        # The ENC presenters and their scene cache are the viewport's own code;
+        # every other application module must not reach into the source.
+        if path.name in (
+            "gribviewport.py",
+            "gribviewportchart.py",
+            "viewportenc.py",
+            "encscenelayer.py",
+        ):
             continue
         assert "viewportenc" not in path.read_text(), path.name

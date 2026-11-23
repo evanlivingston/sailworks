@@ -11,6 +11,7 @@ import cairo
 from osgeo import ogr
 
 from sailworks.core.geo.shoreline import ShorelineGeometryCache
+from sailworks.rendering.canvas import CairoCanvas
 from sailworks.rendering.gdalvectorchart import GDALVectorChart
 from sailworks.rendering.gshhs import GSHHSVectorChart
 from sailworks.rendering.overlayrenderer import MARGIN, OverlayRenderer
@@ -185,7 +186,7 @@ class BaseChartRenderer(OverlayRenderer):
                 return None
             chart = self._worker_chart(source, job.palette)
             cr.save()
-            chart.do_draw(viewport, cr)
+            chart.do_draw(viewport, CairoCanvas(cr))
             cr.restore()
         surface.flush()
         return None if job.cancel.is_set() else surface

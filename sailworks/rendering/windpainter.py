@@ -23,6 +23,14 @@ import cairo
 import numpy as np
 from sailworks.common import wave_color, wind_color
 from sailworks.core.utils import point_in_country
+from sailworks.rendering.canvas import (
+    CAP_BUTT,
+    SLANT_NORMAL,
+    WEIGHT_BOLD,
+    CairoCanvas,
+    CanvasImage,
+    QPainterCanvas,
+)
 
 try:
     from contourpy import contour_generator
@@ -286,7 +294,7 @@ class WindPainter:
         self.settings_manager = settings_manager
         self._on_ground = on_ground
 
-    def draw_wind_barb(self, cr, x, y, wdir, wspeed):
+    def draw_wind_barb(self, canvas, x, y, wdir, wspeed):
         """Draw a wind barb in standard meteorological notation.
 
         The barb points in the direction the wind comes FROM.
@@ -296,26 +304,26 @@ class WindPainter:
         opacity = self.settings_manager.gribArrowOpacity
 
         r, g, b = wind_color(wspeed)
-        cr.set_source_rgba(r, g, b, opacity)
+        canvas.set_source_rgba(r, g, b, opacity)
 
         # Wind barb points into the wind (direction wind comes FROM)
         angle = math.radians(wdir)
         shaft_len = 20
 
-        cr.save()
-        cr.translate(x, y)
-        cr.rotate(angle)
+        canvas.save()
+        canvas.translate(x, y)
+        canvas.rotate(angle)
 
         # Draw shaft (line pointing up = into the wind)
-        cr.move_to(0, 0)
-        cr.line_to(0, -shaft_len)
-        cr.stroke()
+        canvas.move_to(0, 0)
+        canvas.line_to(0, -shaft_len)
+        canvas.stroke()
 
         # Draw dot for calm winds
         if wspeed_kt < 2.5:
-            cr.arc(0, 0, 2, 0, 2 * math.pi)
-            cr.stroke()
-            cr.restore()
+            canvas.arc(0, 0, 2, 0, 2 * math.pi)
+            canvas.stroke()
+            canvas.restore()
             return
 
         # Build barbs from tip downward
@@ -326,31 +334,33 @@ class WindPainter:
 
         # Pennants (50 kt each)
         while remaining >= 47.5:
-            cr.move_to(0, barb_y)
-            cr.line_to(barb_len, barb_y)
-            cr.line_to(0, barb_y + barb_spacing)
-            cr.close_path()
-            cr.fill()
+            canvas.move_to(0, barb_y)
+            canvas.line_to(barb_len, barb_y)
+            canvas.line_to(0, barb_y + barb_spacing)
+            canvas.close_path()
+            canvas.fill()
             barb_y += barb_spacing
             remaining -= 50
 
         # Long barbs (10 kt each)
         while remaining >= 7.5:
-            cr.move_to(0, barb_y)
-            cr.line_to(barb_len, barb_y)
-            cr.stroke()
+            canvas.move_to(0, barb_y)
+            canvas.line_to(barb_len, barb_y)
+            canvas.stroke()
             barb_y += barb_spacing
             remaining -= 10
 
         # Short barb (5 kt)
         if remaining >= 2.5:
-            cr.move_to(0, barb_y)
-            cr.line_to(barb_len * 0.5, barb_y)
-            cr.stroke()
+            canvas.move_to(0, barb_y)
+            canvas.line_to(barb_len * 0.5, barb_y)
+            canvas.stroke()
 
-        cr.restore()
+        canvas.restore()
 
-    def draw(self, gpsmap, cr, data, pressure=None, fill_data=None, draw_barbs=True):
+    def draw(
+        self, gpsmap, canvas, data, pressure=None, fill_data=None, draw_barbs=True
+    ):
         """Draw the cached background (fill + isobars) and, optionally, barbs.
 
         Background rendering passes ``draw_barbs=False`` so barbs stay out of
@@ -369,17 +379,19 @@ class WindPainter:
             # A ragged multi-model union cannot form quads, so the caller
             # may supply a resampled regular grid for the fill while barbs
             # keep the dense native points.
-            self._draw_color_fill(gpsmap, cr, fill_data if fill_data else data, scale)
+            self._draw_color_fill(
+                gpsmap, canvas, fill_data if fill_data else data, scale
+            )
 
         # Isobars sit above the fill so thin lines stay readable.
-        self.draw_isobars(gpsmap, cr, pressure)
+        self.draw_isobars(gpsmap, canvas, pressure)
 
         if not data or not draw_barbs:
             return
 
         # Legacy path: bake barbs into the surface (kept for compatibility).
         # The live overlay below is the preferred foreground.
-        cr.set_line_width(1)
+        canvas.set_line_width(1)
         points = self._barb_points(gpsmap, data, scale)
         if points:
             lats = np.array([p[2][0] for p in points], dtype=np.float64)
@@ -388,12 +400,12 @@ class WindPainter:
             for xx, yy, p in zip(xxs, yys, points):
                 if gpsmap.render_cancelled():
                     return
-                self.draw_wind_barb(cr, xx, yy, p[0], p[1])
+                self.draw_wind_barb(canvas, xx, yy, p[0], p[1])
 
     def draw_barbs_live(
         self,
         gpsmap,
-        cr,
+        canvas,
         data_or_flat,
         opacity=None,
         hide_on_ground=None,
@@ -439,7 +451,7 @@ class WindPainter:
             step=step,
             max_count=max_count,
         )
-        self.paint_barb_geometry(cr, geometry, opacity)
+        self.paint_barb_geometry(canvas, geometry, opacity)
         return count
 
     @staticmethod
@@ -494,7 +506,7 @@ class WindPainter:
         return buckets
 
     @staticmethod
-    def paint_barb_geometry(cr, geometry, opacity, colors=None):
+    def paint_barb_geometry(canvas, geometry, opacity, colors=None):
         """Paint grouped geometry with one stroke/fill per color bucket.
 
         ``colors`` defaults to the wind-speed buckets; the wave arrows pass
@@ -503,29 +515,29 @@ class WindPainter:
         if not geometry:
             return
         palette = _BUCKET_COLORS if colors is None else colors
-        cr.save()
-        cr.set_line_width(1.0)
-        cr.set_line_cap(cairo.LINE_CAP_BUTT)
+        canvas.save()
+        canvas.set_line_width(1.0)
+        canvas.set_line_cap(CAP_BUTT)
         for bucket in sorted(geometry):
             lines, tris, dots = geometry[bucket]
             color = palette[bucket]
-            cr.set_source_rgba(color[0], color[1], color[2], opacity)
+            canvas.set_source_rgba(color[0], color[1], color[2], opacity)
             if lines or dots:
                 for x1, y1, x2, y2 in lines:
-                    cr.move_to(x1, y1)
-                    cr.line_to(x2, y2)
+                    canvas.move_to(x1, y1)
+                    canvas.line_to(x2, y2)
                 for x, y in dots:
-                    cr.move_to(x + 2.0, y)
-                    cr.arc(x, y, 2.0, 0, 2 * math.pi)
-                cr.stroke()
+                    canvas.move_to(x + 2.0, y)
+                    canvas.arc(x, y, 2.0, 0, 2 * math.pi)
+                canvas.stroke()
             if tris:
                 for ax, ay, bx, by, cx, cy in tris:
-                    cr.move_to(ax, ay)
-                    cr.line_to(bx, by)
-                    cr.line_to(cx, cy)
-                    cr.close_path()
-                cr.fill()
-        cr.restore()
+                    canvas.move_to(ax, ay)
+                    canvas.line_to(bx, by)
+                    canvas.line_to(cx, cy)
+                    canvas.close_path()
+                canvas.fill()
+        canvas.restore()
 
     @classmethod
     def clear_live_geometry_cache(cls):
@@ -692,7 +704,7 @@ class WindPainter:
         geometry = WindPainter.build_barb_geometry(kxx, kyy, kdirs, kspeeds)
         return geometry, int(len(kxx))
 
-    def draw_isobars(self, gpsmap, cr, pressure):
+    def draw_isobars(self, gpsmap, canvas, pressure):
         """Draw mean-sea-level pressure contours with configurable spacing and labels."""
         if not getattr(self.settings_manager, "gribIsobarsVisible", True):
             return
@@ -701,7 +713,7 @@ class WindPainter:
         for lats, lons, values in self._pressure_blocks(pressure):
             if gpsmap.render_cancelled():
                 return
-            self._draw_isobar_block(gpsmap, cr, lats, lons, values)
+            self._draw_isobar_block(gpsmap, canvas, lats, lons, values)
 
     @staticmethod
     def _pressure_blocks(pressure):
@@ -785,26 +797,26 @@ class WindPainter:
         return contours
 
     @staticmethod
-    def _stroke_contours(cr, gpsmap, contours, opacity=0.85):
+    def _stroke_contours(canvas, gpsmap, contours, opacity=0.85):
         # A dark halo keeps thin lines readable over the wind gradient fill.
         for width, color in (
             (3.0, (0, 0, 0, opacity * 0.45 / 0.85)),
             (1.1, (1, 1, 1, opacity)),
         ):
-            cr.save()
-            cr.set_line_width(width)
-            cr.set_source_rgba(*color)
+            canvas.save()
+            canvas.set_line_width(width)
+            canvas.set_source_rgba(*color)
             for _, line in contours:
                 if gpsmap.render_cancelled():
-                    cr.restore()
+                    canvas.restore()
                     return
-                cr.move_to(line[0][0], line[0][1])
+                canvas.move_to(line[0][0], line[0][1])
                 for x, y in line[1:]:
-                    cr.line_to(x, y)
-                cr.stroke()
-            cr.restore()
+                    canvas.line_to(x, y)
+                canvas.stroke()
+            canvas.restore()
 
-    def _draw_isobar_block(self, gpsmap, cr, lats, lons, values):
+    def _draw_isobar_block(self, gpsmap, canvas, lats, lons, values):
         levels = self._isobar_levels(
             values, getattr(self.settings_manager, "gribIsobarInterval", 4.0)
         )
@@ -818,12 +830,12 @@ class WindPainter:
         if not contours or gpsmap.render_cancelled():
             return
         opacity = getattr(self.settings_manager, "gribIsobarOpacity", 0.85)
-        self._stroke_contours(cr, gpsmap, contours, opacity)
+        self._stroke_contours(canvas, gpsmap, contours, opacity)
         if getattr(self.settings_manager, "gribIsobarLabels", True):
-            self._draw_isobar_labels(cr, contours, opacity, gpsmap)
+            self._draw_isobar_labels(canvas, contours, opacity, gpsmap)
 
     @staticmethod
-    def _draw_isobar_labels(cr, contours, opacity, gpsmap):
+    def _draw_isobar_labels(canvas, contours, opacity, gpsmap):
         by_level: dict = {}
         for level, line in contours:
             length = float(np.abs(np.diff(line, axis=0)).sum())
@@ -833,23 +845,23 @@ class WindPainter:
                 by_level[level] = (length, line)
         if not by_level:
             return
-        cr.save()
-        cr.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
-        cr.set_font_size(10)
+        canvas.save()
+        canvas.set_font_face("Sans", SLANT_NORMAL, WEIGHT_BOLD)
+        canvas.set_font_size(10)
         for level in sorted(by_level)[:15]:
             if gpsmap.render_cancelled():
                 break
             _, line = by_level[level]
             mid = line[len(line) // 2]
             text = "%d" % round(level)
-            cr.move_to(mid[0] + 3, mid[1] - 3)
-            cr.text_path(text)
-            cr.set_source_rgba(0, 0, 0, opacity)
-            cr.set_line_width(3)
-            cr.stroke_preserve()
-            cr.set_source_rgba(1, 1, 1, opacity)
-            cr.fill()
-        cr.restore()
+            canvas.move_to(mid[0] + 3, mid[1] - 3)
+            canvas.text_path(text)
+            canvas.set_source_rgba(0, 0, 0, opacity)
+            canvas.set_line_width(3)
+            canvas.stroke_preserve()
+            canvas.set_source_rgba(1, 1, 1, opacity)
+            canvas.fill()
+        canvas.restore()
 
     def _barb_points(self, gpsmap, data, scale):
         points = []
@@ -892,14 +904,33 @@ class WindPainter:
             offset += count
         return xs_columns, ys_columns
 
-    def _draw_color_fill(self, gpsmap, cr, data, scale):
-        """Draw interpolated color fill between grid points."""
+    def _draw_color_fill(self, gpsmap, canvas, data, scale):
+        """Draw interpolated color fill between grid points.
+
+        The Cairo backend keeps the shared ``cairo.MeshPattern``: it is the
+        byte-exact reference and the production backend until Phase 5. Every
+        other backend takes the single-image approximation in
+        :meth:`_draw_color_fill_image`.
+        """
         opacity = self.settings_manager.gribArrowOpacity * 0.3
         projected = self._grid_screen_points(gpsmap, data, scale)
         if projected is None:
             return
         screen_xs, screen_ys = projected
+        if isinstance(canvas, CairoCanvas):
+            self._draw_color_fill_mesh(
+                gpsmap, canvas, data, scale, opacity, screen_xs, screen_ys
+            )
+        else:
+            self._draw_color_fill_image(
+                gpsmap, canvas, data, scale, opacity, screen_xs, screen_ys
+            )
 
+    def _draw_color_fill_mesh(
+        self, gpsmap, canvas, data, scale, opacity, screen_xs, screen_ys
+    ):
+        """The cairo mesh: one straight-edged quad per sampled grid cell."""
+        cr = canvas.context
         # A shared mesh avoids independently composited, antialiased cell edges.
         pat = cairo.MeshPattern()
         patches = 0
@@ -933,6 +964,186 @@ class WindPainter:
             cr.set_source(pat)
             cr.paint()
             cr.restore()
+
+    def _draw_color_fill_image(
+        self, gpsmap, canvas, data, scale, opacity, screen_xs, screen_ys
+    ):
+        """Approximate the mesh with one RGBA image of the sampled grid.
+
+        The image is built in grid space, one pixel per sampled grid node, from
+        the same ``wind_color`` values the mesh sets as corner colours. It is
+        blitted once into the run's screen-space bounding box so the backend's
+        bilinear filter does the interpolation the mesh used to do: the fill is
+        smooth and has no per-row seams, because there is no per-row blit to
+        fade at its top and bottom edge.
+
+        Columns are grouped into runs that share their sampled latitudes, and
+        every cell inside a run passes the mesh's own ragged-grid guard
+        (:meth:`_strip_cell_is_regular`). A partial forecast coverage therefore
+        never joins different latitude intervals, exactly as it broke a strip
+        run before.
+
+        Opacity is folded into the image alpha, matching the alpha the mesh
+        gives each corner colour, so the blit itself is opaque.
+
+        Node colours are placed on their screen positions by drawing the image
+        half a pixel-step outside its top-left corner and half a step past its
+        bottom-right one, with edge padding. That keeps node *k* at node *k*'s
+        real x/y instead of the half-cell shift a plain bounding-box blit
+        gives. The overdraw is clipped back to the grid's exact screen
+        bounding box, so the fill still stops where the mesh stops.
+
+        Known geometric error: the blit scales uniformly in y, so interior rows
+        sit evenly between the first and last latitude instead of at their true
+        mercator offsets. ``test_canvas_equivalence`` records that error for a
+        mercator-projected grid.
+        """
+        backend = "qt" if isinstance(canvas, QPainterCanvas) else "cairo"
+        lats_by_column = [column[1].tolist() for column in data]
+        speeds_by_column = [column[3].tolist() for column in data]
+        column_count = len(screen_xs)
+        if column_count < 2 or len(speeds_by_column) < 2:
+            return
+        alpha = int(round(min(1.0, max(0.0, opacity)) * 255))
+
+        for first, last in self._regular_column_runs(lats_by_column, screen_xs, scale):
+            if gpsmap.render_cancelled():
+                return
+            self._blit_grid_image(
+                canvas,
+                backend,
+                alpha,
+                speeds_by_column,
+                screen_xs,
+                screen_ys,
+                first,
+                last,
+                scale,
+            )
+
+    @staticmethod
+    def _regular_column_runs(lats_by_column, screen_xs, scale):
+        """Maximal column ranges whose adjacent cells all pass the guard."""
+        column_count = len(screen_xs)
+        runs = []
+        first = 0
+        for column in range(1, column_count):
+            rows = min(len(screen_xs[column - 1]), len(screen_xs[column]))
+            joins = rows > 1 and all(
+                WindPainter._strip_cell_is_regular(
+                    lats_by_column, screen_xs, column - 1, row, scale
+                )
+                for row in range(rows - 1)
+            )
+            if joins:
+                continue
+            runs.append((first, column - 1))
+            first = column
+        runs.append((first, column_count - 1))
+        return runs
+
+    @staticmethod
+    def _strip_row_count(screen_xs):
+        return min(len(column) for column in screen_xs)
+
+    @staticmethod
+    def _strip_cell_is_regular(lats_by_column, screen_xs, column, row, scale):
+        """The mesh's ragged-grid guard, per cell.
+
+        Never join different latitude intervals when partial forecast coverage
+        leaves a ragged grid.
+        """
+        right = (column + 1) * scale
+        if right >= len(lats_by_column) or row + 1 >= len(screen_xs[column]):
+            return False
+        if row + 1 >= len(screen_xs[column + 1]):
+            return False
+        if row * scale >= len(lats_by_column[column * scale]):
+            return False
+        if row * scale >= len(lats_by_column[right]):
+            return False
+        try:
+            return (
+                lats_by_column[column * scale][row * scale]
+                == lats_by_column[right][row * scale]
+                and lats_by_column[column * scale][(row + 1) * scale]
+                == lats_by_column[right][(row + 1) * scale]
+            )
+        except IndexError:
+            return False
+
+    @staticmethod
+    def _blit_grid_image(
+        canvas,
+        backend,
+        alpha,
+        speeds_by_column,
+        screen_xs,
+        screen_ys,
+        first_column,
+        last_column,
+        scale,
+    ):
+        """Blit one run of regular columns as a single grid-space RGBA image."""
+        width = last_column - first_column + 1
+        height = min(
+            len(screen_xs[column]) for column in range(first_column, last_column + 1)
+        )
+        if width < 2 or height < 2:
+            return
+
+        # RGBA rows are premultiplied, as ``CanvasImage.from_rgba`` expects.
+        coverage = alpha / 255.0
+        pixels = np.empty((height, width, 4), dtype=np.uint8)
+        try:
+            for row in range(height):
+                for index, column in enumerate(range(first_column, last_column + 1)):
+                    r, g, b = wind_color(speeds_by_column[column * scale][row * scale])
+                    pixels[row, index, 0] = int(round(r * coverage * 255.0))
+                    pixels[row, index, 1] = int(round(g * coverage * 255.0))
+                    pixels[row, index, 2] = int(round(b * coverage * 255.0))
+                    pixels[row, index, 3] = alpha
+        except IndexError:
+            return
+
+        xs = np.concatenate(
+            [
+                screen_xs[column][:height]
+                for column in range(first_column, last_column + 1)
+            ]
+        )
+        ys = np.concatenate(
+            [
+                screen_ys[column][:height]
+                for column in range(first_column, last_column + 1)
+            ]
+        )
+        x0, x1 = float(xs.min()), float(xs.max())
+        y0, y1 = float(ys.min()), float(ys.max())
+        if x1 <= x0 or y1 <= y0:
+            return
+        # Row 0 is the first latitude. When the projection puts it below the
+        # last one, flip the image so image space and screen space agree.
+        if ys[0] > ys[-1]:
+            pixels = np.ascontiguousarray(pixels[::-1])
+
+        step_x = (x1 - x0) / (width - 1)
+        step_y = (y1 - y0) / (height - 1)
+        image = CanvasImage.from_rgba(width, height, pixels, backend=backend)
+        canvas.save()
+        canvas.rectangle(x0, y0, x1 - x0, y1 - y0)
+        canvas.clip()
+        canvas.draw_image(
+            image,
+            x0 - step_x / 2.0,
+            y0 - step_y / 2.0,
+            width=(x1 - x0) + step_x,
+            height=(y1 - y0) + step_y,
+            alpha=1.0,
+            smooth=True,
+            pad=True,
+        )
+        canvas.restore()
 
     def _fill_column(
         self,

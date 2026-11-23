@@ -11,6 +11,7 @@ import sys
 import pytest
 from osgeo import ogr, osr
 
+from sailworks.rendering.scene import policy
 from sailworks.rendering.vectordrawer import encscene
 from sailworks.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
 from test.enc_scene_fixtures import (
@@ -97,8 +98,26 @@ def test_records_keep_layer_fid_order_and_source_identity(scene):
 
 
 def test_scene_uses_drawer_layer_rules(scene):
-    assert encscene.SKIP_LAYERS == S57ChartDrawer.SKIP_LAYERS
-    assert encscene.ATTRIBUTE_FIELDS == S57ChartDrawer.ATTRIBUTE_FIELDS
+    # The rule itself, written out: an accidental change is caught here even
+    # though every consumer now imports the one definition.
+    assert policy.SKIP_LAYERS == {
+        "DSID",
+        "M_COVR",
+        "M_QUAL",
+        "M_NSYS",
+        "M_CSCL",
+        "M_SDAT",
+        "M_VDAT",
+    }
+    assert policy.ATTRIBUTE_FIELDS == {
+        "DEPARE": ("DRVAL1", "DRVAL2"),
+        "BOYLAT": ("COLOUR",),
+    }
+    # Each reader holds that same definition, not a copy of it.
+    assert encscene.SKIP_LAYERS is policy.SKIP_LAYERS
+    assert encscene.ATTRIBUTE_FIELDS is policy.ATTRIBUTE_FIELDS
+    assert S57ChartDrawer.SKIP_LAYERS is policy.SKIP_LAYERS
+    assert S57ChartDrawer.ATTRIBUTE_FIELDS is policy.ATTRIBUTE_FIELDS
     names = {record.source_class for record in scene.records}
     assert names == {"DEPARE", "DEPCNT", "SOUNDG", "BOYLAT"}
     assert "ATTRONLY" not in names

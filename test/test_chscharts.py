@@ -17,6 +17,7 @@ from sailworks.core.chscharts import (
     tile_bbox,
     tile_in_canada,
 )
+from sailworks.rendering.canvas import CairoCanvas
 from sailworks.rendering.chsrenderer import CHSRenderer
 from test.map_helpers import MapCanvas as TestMap, QueuedScheduler
 
@@ -127,14 +128,14 @@ class TestCHSBackgroundRendering(unittest.TestCase):
             patch.object(
                 self.renderer, "_visible_tiles", return_value=([(key, 0, 0)], 1, 0, 0)
             ),
-            patch.object(self.renderer, "_draw_tile", return_value=(True, False)),
+            patch.object(self.renderer, "_draw_tile", return_value=True),
             patch.object(self.renderer, "_queue_tile"),
             patch.object(self.renderer, "_pump"),
             patch.object(self.renderer, "_attribution") as attribution,
         ):
             matrix = []
-            attribution.side_effect = lambda cr, w, h: matrix.append(
-                (cr.get_matrix().x0, cr.get_matrix().y0, w, h)
+            attribution.side_effect = lambda target, w, h: matrix.append(
+                (target._cr.get_matrix().x0, target._cr.get_matrix().y0, w, h)
             )
             self.draw()
             self.assertEqual(matrix, [(100, 80, 200, 140)])
@@ -172,11 +173,6 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         self.draw()
         self.drain(lambda: not self.renderer._inflight and not self.renderer._pending)
         self.draw()
-        with patch(
-            "sailworks.rendering.chsrenderer.time.monotonic",
-            return_value=time.monotonic() + 1,
-        ):
-            self.draw()
         self.renderer.source.fetch.assert_not_called()
         self.surface.flush()
         offset = 150 * self.surface.get_stride() + 200 * 4
@@ -210,7 +206,9 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         child = tile_key(zoom=15)
         parent = (14, child[1] // 2, child[2] // 2, 1)
         self.renderer._tiles[parent] = (CHSRenderer._decode(parent, png()), time.time())
-        self.assertTrue(self.renderer._parent_preview(self.cr, child, 0, 0, 1))
+        self.assertTrue(
+            self.renderer._parent_preview(CairoCanvas(self.cr), child, 0, 0, 1)
+        )
         self.canvas._zoom_animating = False
         self.draw()
         self.assertTrue(all(key[0] == 15 for key in self.renderer._pending))
@@ -232,8 +230,8 @@ class TestCHSBackgroundRendering(unittest.TestCase):
 
     def test_retina_surface_and_disabled_layer(self):
         key = tile_key(factor=2)
-        surface = CHSRenderer._decode(key, png(2))
-        self.assertEqual(surface.get_device_scale(), (2, 2))
+        image = CHSRenderer._decode(key, png(2))
+        self.assertEqual((image.width, image.height), (512, 512))
         with self.assertRaises(ValueError):
             CHSRenderer._decode(key, png(1))
         self.renderer.set_enabled(False)
@@ -244,7 +242,9 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         parent = tile_key(zoom=13)
         child = (14, parent[1] * 2, parent[2] * 2, 1)
         self.renderer._tiles[child] = (CHSRenderer._decode(child, png()), time.time())
-        self.assertTrue(self.renderer._fallback_preview(self.cr, parent, 0, 0, 1))
+        self.assertTrue(
+            self.renderer._fallback_preview(CairoCanvas(self.cr), parent, 0, 0, 1)
+        )
         self.surface.flush()
         data = bytes(self.surface.get_data())
         self.assertEqual(
@@ -265,71 +265,19 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         self.assertLess(len(self.renderer._wanted[self.canvas]), 64)
         self.assertFalse(self.renderer._pending)
 
-    def pixel(self, x=64, y=64):
-        self.surface.flush()
-        offset = y * self.surface.get_stride() + x * 4
-        return tuple(bytes(self.surface.get_data())[offset : offset + 4])
-
-    def test_crossfade_preserves_brightness_and_transparent_replacement(self):
-        old = CHSRenderer._decode(tile_key(), png())
-        new = cairo.ImageSurface(cairo.FORMAT_ARGB32, 256, 256)
-        context = cairo.Context(new)
-        context.set_source_rgb(0, 0, 1)
-        context.rectangle(0, 0, 128, 256)
-        context.fill()
-        for alpha in (0, 0.5, 1):
-            self.cr.set_source_rgb(1, 1, 1)
-            self.cr.paint()
-            self.renderer._crossfade(self.cr, old, new, 0, 0, 1, alpha)
-            blue, green, red, opacity = self.pixel()
-            self.assertEqual(opacity, 255)
-            self.assertEqual(green, 0)
-            self.assertLessEqual(abs(red - 255 * (1 - alpha)), 1)
-            self.assertLessEqual(abs(blue - 255 * alpha), 1)
-            # The transparent half gradually reveals the white base map.
-            blue, green, red, opacity = self.pixel(x=192)
-            self.assertEqual((red, opacity), (255, 255))
-            self.assertLessEqual(abs(green - 255 * alpha), 1)
-            self.assertEqual(blue, green)
-
-    def test_arrival_and_refresh_fade_then_release_previous_image(self):
-        self.renderer._pump = Mock()
-        self.draw()
-        key = tile_key()
-        old = CHSRenderer._decode(key, png())
-        parent = (key[0] - 1, key[1] // 2, key[2] // 2, 1)
-        self.renderer._tiles[parent] = (old, time.time())
-        new = cairo.ImageSurface(cairo.FORMAT_ARGB32, 256, 256)
-        self.renderer._tiles[key] = (new, time.time())
-        with patch("sailworks.rendering.chsrenderer.time.monotonic", return_value=10):
-            self.draw()
-            previous = self.renderer._blends[self.canvas][key][2]
-            self.assertIsNotNone(previous)
-            self.canvas.add_tick_callback.assert_called_once()
-        with patch("sailworks.rendering.chsrenderer.time.monotonic", return_value=10.1):
-            self.assertTrue(self.renderer._tick(self.canvas, None))
-        with patch("sailworks.rendering.chsrenderer.time.monotonic", return_value=10.3):
-            self.assertFalse(self.renderer._tick(self.canvas, None))
-            self.draw()
-            self.assertIsNone(self.renderer._blends[self.canvas][key][2])
-        replacement = CHSRenderer._decode(key, png())
-        self.renderer._tiles[key] = (replacement, time.time())
-        self.draw()
-        self.assertIs(self.renderer._blends[self.canvas][key][2], new)
-        self.renderer.forget(self.canvas)
-        self.canvas.remove_tick_callback.assert_called_once_with(1)
-        self.assertNotIn(self.canvas, self.renderer._blends)
-
-    def test_cached_zoom_level_crossfades_and_disabling_stops_ticks(self):
+    def test_cached_zoom_level_draws_at_once_and_disabling_clears_work(self):
+        # The CHS cross-fade was removed: a cached tile is painted in the frame
+        # it becomes visible, with no blend state and no animation callback.
         self.renderer._pump = Mock()
         self.draw()
         self.canvas._zoom = 15
         key = tile_key(zoom=15)
         self.renderer._tiles[key] = (CHSRenderer._decode(key, png()), time.time())
-        self.draw()
-        self.assertIn(key, self.renderer._blends[self.canvas])
-        self.assertIn(self.canvas, self.renderer._ticks)
+        with patch.object(self.renderer, "_paint") as paint:
+            self.draw()
+        paint.assert_called()
+        self.assertIn(key, self.renderer._wanted[self.canvas])
+        self.canvas.add_tick_callback.assert_not_called()
         self.renderer.set_enabled(False)
-        self.assertFalse(self.renderer._ticks)
-        self.assertFalse(self.renderer._blends)
-        self.canvas.remove_tick_callback.assert_called_once_with(1)
+        self.assertFalse(self.renderer._wanted)
+        self.assertFalse(self.renderer._views)

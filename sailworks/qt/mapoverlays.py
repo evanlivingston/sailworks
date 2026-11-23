@@ -7,6 +7,8 @@ import weakref
 import cairo
 from PySide6.QtGui import QImage
 
+from sailworks.rendering.canvas import CairoCanvas
+
 
 class MapOverlayServices:
     """Reusable construction boundary for non-CPU map overlay renderers."""
@@ -307,7 +309,9 @@ class RetainedOverlayMixin:
         surface.set_device_scale(factor, factor)
         cr = cairo.Context(surface)
         self.navigation.draw_race_tracks(
-            self, cr, draw_pois=not getattr(self, "_qml_navigation_overlay", False)
+            self,
+            CairoCanvas(cr),
+            draw_pois=not getattr(self, "_qml_navigation_overlay", False),
         )
         surface.flush()
         image = QImage(
@@ -413,7 +417,7 @@ class RetainedOverlayMixin:
             try:
                 navigation.draw_routes(
                     self,
-                    cr,
+                    CairoCanvas(cr),
                     self.time_control.time.timestamp(),
                     draw_routes=not getattr(self, "_qml_navigation_overlay", False),
                 )
@@ -424,7 +428,7 @@ class RetainedOverlayMixin:
             try:
                 navigation.draw_navigation(
                     self,
-                    cr,
+                    CairoCanvas(cr),
                     draw_tracks=not getattr(self, "_qml_navigation_overlay", False),
                 )
             except Exception as error:
@@ -474,7 +478,7 @@ class RetainedOverlayMixin:
             elif navigation is not None and hasattr(navigation, "draw_race_tracks"):
                 navigation.draw_race_tracks(
                     self,
-                    cr,
+                    CairoCanvas(cr),
                     draw_pois=not getattr(self, "_qml_navigation_overlay", False),
                 )
         if getattr(self, "ais_visible", False) and not getattr(
@@ -484,7 +488,7 @@ class RetainedOverlayMixin:
             ais_targets = getattr(self, "ais_targets", ())
             if ais_renderer is not None:
                 try:
-                    ais_renderer.draw_targets(self, cr, ais_targets)
+                    ais_renderer.draw_targets(self, CairoCanvas(cr), ais_targets)
                 except Exception as error:
                     _record_overlay_failure(self, "AIS", error)
                 else:
@@ -537,7 +541,7 @@ class RetainedOverlayMixin:
         )
         surface.set_device_scale(factor, factor)
         self.dashboard.boat_info = self.controller.core.boat_info
-        self.dashboard._draw_dashboard(self, cairo.Context(surface))
+        self.dashboard._draw_dashboard(self, CairoCanvas(cairo.Context(surface)))
         surface.flush()
         image = QImage(
             surface.get_data(),

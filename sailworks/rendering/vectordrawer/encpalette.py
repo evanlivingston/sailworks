@@ -11,10 +11,11 @@ data.  It deliberately does not reproduce the other half of the Cairo style:
   are flat colours only (see :func:`marker_colour`), with no texture or atlas.
 
 The colour rules mirror :meth:`CM93ChartDrawer._get_area_styles` and
-``_render_line``.  The constants and the two depth thresholds are duplicated
-rather than imported because ``cm93chartdrawer`` imports ``cairo`` and the
-mesh path must stay usable without it.  Keep them in step if the drawer's
-palette changes.
+``_render_line``.  The depth bands and their colours are shared through
+:mod:`sailworks.rendering.scene.policy`; the remaining constants are duplicated
+rather than imported because ``cm93chartdrawer`` imports ``cairo`` and the mesh
+path must stay usable without it.  Keep them in step if the drawer's palette
+changes.
 
 Nothing here is wired into the default renderer; it is opt-in context for
 :func:`encmesh.build_scene_mesh`.
@@ -24,15 +25,17 @@ from __future__ import annotations
 
 import numpy as np
 
+from sailworks.rendering.scene.policy import (
+    BAND_MEDIUM,
+    BAND_SHALLOW,
+    DEPTH_ABSENT_DRVAL1,
+    DEPTH_ABSENT_DRVAL2,
+    DEPTH_BAND_COLOURS,
+    depare_band,
+)
 from sailworks.rendering.style import ChartPalette, Style
 
-#: DEPARE bands from ``cm93chartdrawer`` (metres).
-DEPTH_SHALLOW = 5.0
-DEPTH_MEDIUM = 20.0
-
 #: Mirrors of the drawer's module-level styles, as straight RGBA floats.
-DEPTH_MEDIUM_COLOUR = (0.65, 0.85, 0.95, 1.0)
-DEPTH_DEEP_COLOUR = (0.83, 0.92, 0.93, 1.0)
 CONTOUR_COLOUR = (0.5, 0.6, 0.7, 0.6)
 DASHED_COLOUR = (0.4, 0.4, 0.5, 0.6)
 BUILDUP_FILL = (0.7, 0.65, 0.55, 1.0)
@@ -110,14 +113,14 @@ def resolve_palette(palette) -> ChartPalette:
 
 
 def _depth_style(drval1, drval2, palette) -> tuple:
-    """The CM93 DEPARE band, including its absent-value defaults."""
-    value1 = 0 if drval1 is None else drval1
-    value2 = 100 if drval2 is None else drval2
-    if isinstance(value1, (int, float)) and value1 < DEPTH_SHALLOW:
+    """The DEPARE band's fill, with the mesh path's absent-value defaults."""
+    band = depare_band(
+        DEPTH_ABSENT_DRVAL1 if drval1 is None else drval1,
+        DEPTH_ABSENT_DRVAL2 if drval2 is None else drval2,
+    )
+    if band == BAND_SHALLOW:
         return palette.shallow_sea
-    if isinstance(value2, (int, float)) and value2 < DEPTH_MEDIUM:
-        return DEPTH_MEDIUM_COLOUR
-    return DEPTH_DEEP_COLOUR
+    return DEPTH_BAND_COLOURS[band]
 
 
 def area_colours(source_class, drval1, drval2, palette):
@@ -128,7 +131,7 @@ def area_colours(source_class, drval1, drval2, palette):
     if source_class == "DEPARE":
         return rgba(_depth_style(drval1, drval2, palette)), rgba(CONTOUR_COLOUR)
     if source_class == "DRGARE":
-        return rgba(DEPTH_MEDIUM_COLOUR), rgba(CONTOUR_COLOUR)
+        return rgba(DEPTH_BAND_COLOURS[BAND_MEDIUM]), rgba(CONTOUR_COLOUR)
     if source_class in ("BUAARE", "BUISGL"):
         return rgba(BUILDUP_FILL), rgba(palette.land_stroke)
     if source_class in ("LAKARE", "RIVERS"):

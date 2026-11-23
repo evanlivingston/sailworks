@@ -74,6 +74,7 @@ from shapely.geometry import (
     Polygon,
 )
 
+from ..scene.policy import AREA_LAYERS, AREA_ORDER, VIEW_TOLERANCE_PIXELS
 from . import _earcut, encmarkers
 from .encpalette import (
     ROLE_FILL,
@@ -182,19 +183,6 @@ def _stage(timings, name, started):
     """Accumulate one opt-in stage duration; a no-op when ``timings`` is None."""
     if timings is not None:
         timings[name] = timings.get(name, 0.0) + (time.perf_counter() - started)
-
-
-#: Simplification budget for the scene path, in logical pixels of screen space.
-#:
-#: The cascade floors the budget to a power of two, so the *effective*
-#: tolerance is always a bucket below it - a nominal half pixel lands at a
-#: quarter pixel wherever the floor bites.  Measured on the two heaviest cells
-#: (US3WA1EF, US3WA1ED) at zoom 9.5, 11 and 13, the vertex count falls steeply
-#: up to ~0.45 px and flattens past 0.5 px, and 0.6 px is the largest budget
-#: that leaves zoom 13 on today's bucket (its next bucket starts at 0.712 px).
-#: Any view therefore simplifies by at most 0.6 px of error, and zoom 11 and 13
-#: keep exactly the 0.356 px they had under the previous half-pixel rule.
-VIEW_TOLERANCE_PIXELS = 0.6
 
 
 def quantize_tolerance(tolerance: float) -> float:
@@ -390,28 +378,6 @@ AREA_OUTLINE_STYLES = {
     "ANCBRT": (0.5, None),
     "RESARE": (0.5, (3.0, 3.0)),
     "CTNARE": (0.5, (3.0, 3.0)),
-}
-
-#: Area paint order, mirroring ``S57ChartDrawer.AREA_ORDER``: depth areas
-#: first, then dredged areas, then land, then every other area class.
-AREA_ORDER = {"DEPARE": 0, "DRGARE": 1, "LNDARE": 2}
-
-#: The polygon classes the Cairo drawer fills, mirroring
-#: ``S57ChartDrawer.AREA_LAYERS``.  Every other polygon record is administrative
-#: or meta geometry (``ADMARE``, ``SEAARE``, ``MAGVAR``, ``M_NPUB``) and must not
-#: be filled: an ``ADMARE`` covers the whole cell and paints over the chart.
-AREA_LAYERS = {
-    "LNDARE",
-    "DEPARE",
-    "DRGARE",
-    "BUAARE",
-    "BUISGL",
-    "LAKARE",
-    "RIVERS",
-    "ACHARE",
-    "ANCBRT",
-    "RESARE",
-    "CTNARE",
 }
 
 

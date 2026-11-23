@@ -25,11 +25,13 @@ from typing import List, Optional
 import cairo
 import numpy as np
 from osgeo import gdal, osr
+from PySide6.QtGui import QImage
 
 from sailworks.core.scheduling import schedule_idle
 
 from sailworks.core.mapviewport import MapPoint
 
+from .canvas import CanvasImage, QPainterCanvas
 from .chartlayer import ChartLayer
 
 logger = logging.getLogger("sailworks")
@@ -178,15 +180,49 @@ class GDALSingleRasterChart:
         self.dataset = dataset
         self.bbox = dataset_bbox(dataset)
 
-        surface, band_x_size, band_y_size = self.band_to_surface(1)
-        surf = cairo.ImageSurface.create_for_data(
-            surface,
-            cairo.Format.ARGB32,
-            band_x_size,
-            band_y_size,
-            cairo.Format.RGB24.stride_for_width(band_x_size),
-        )
-        self.surface = surf
+        data, band_x_size, band_y_size = self.band_to_surface(1)
+        # The decoded raster is a uint32 ARGB32 buffer. Cairo and QImage both
+        # keep only a raw pointer to it, so the chart instance holds the
+        # reference for as long as either backend image can be drawn.
+        self.data = data
+        self.width = band_x_size
+        self.height = band_y_size
+        # ARGB32 and RGB24 strides are identical for every width (both are
+        # 4-byte aligned); the pre-seam surface used the RGB24 helper, so this
+        # keeps the effective stride unchanged rather than "fixing" it.
+        self._stride = cairo.Format.ARGB32.stride_for_width(band_x_size)
+        self._surface_image = None
+        self._qimage = None
+
+    def image_for(self, canvas):
+        """The decoded raster as a :class:`CanvasImage` for *canvas*'s backend.
+
+        The Cairo view is the historical one, built on demand; the Qt view
+        wraps the same NumPy buffer without a copy. Each is cached, and both
+        stay valid only while ``self.data`` is alive.
+        """
+        if isinstance(canvas, QPainterCanvas):
+            if self._qimage is None:
+                self._qimage = CanvasImage.from_qimage(
+                    QImage(
+                        self.data,
+                        self.width,
+                        self.height,
+                        self._stride,
+                        QImage.Format.Format_ARGB32_Premultiplied,
+                    )
+                )
+            return self._qimage
+        if self._surface_image is None:
+            surface = cairo.ImageSurface.create_for_data(
+                self.data,
+                cairo.Format.ARGB32,
+                self.width,
+                self.height,
+                self._stride,
+            )
+            self._surface_image = CanvasImage.from_cairo_surface(surface)
+        return self._surface_image
 
     def band_to_surface(self, i):
         band = self.dataset.GetRasterBand(i)
@@ -209,8 +245,8 @@ class GDALSingleRasterChart:
         data = np.vectorize(lambda x: colors[x], otypes=[np.uint32])(band.ReadAsArray())
         return data, band.XSize, band.YSize
 
-    def do_draw(self, gpsmap, cr):
-        cr.save()
+    def do_draw(self, gpsmap, canvas):
+        canvas.save()
         xx, yy = gpsmap.convert_geographic_to_screen(
             MapPoint.new_degrees(self.bbox[0][0], self.bbox[0][1])
         )
@@ -219,11 +255,12 @@ class GDALSingleRasterChart:
         )
         scalingy = (yy2 - yy) / self.dataset.RasterYSize
         scalingx = (xx2 - xx) / self.dataset.RasterXSize
-        cr.translate(xx, yy)
-        cr.scale(scalingx, scalingy)
-        cr.set_source_surface(self.surface, 0, 0)
-        cr.paint()
-        cr.restore()
+        canvas.translate(xx, yy)
+        canvas.scale(scalingx, scalingy)
+        # smooth=None keeps the backend's default filter, which is what the
+        # pre-seam code inherited by never calling set_filter.
+        canvas.draw_image(self.image_for(canvas), 0, 0, smooth=None)
+        canvas.restore()
 
 
 class GDALRasterChart(ChartLayer):
@@ -314,7 +351,7 @@ class GDALRasterChart(ChartLayer):
             self.last_rasters.append(r)
             self.schedule(gpsmap.queue_draw)
 
-    def do_draw(self, gpsmap, cr):
+    def do_draw(self, gpsmap, canvas):
         p1, p2 = gpsmap.get_bbox()
         p1lat, p1lon = p1.get_degrees()
         p2lat, p2lon = p2.get_degrees()
@@ -322,7 +359,7 @@ class GDALRasterChart(ChartLayer):
         # Check if bounds hasn't changed
         if self.last_rasters and self.last_rect == [p1lat, p1lon, p2lat, p2lon]:
             for x in self.last_rasters:
-                x.do_draw(gpsmap, cr)
+                x.do_draw(gpsmap, canvas)
             return
 
         # Estimate which raster is necessary given bound and zoom
@@ -407,7 +444,7 @@ class GDALRasterChart(ChartLayer):
         self.last_rasters = rasters
 
         for x in rasters:
-            x.do_draw(gpsmap, cr)
+            x.do_draw(gpsmap, canvas)
 
     def do_render(self, gpsmap):
         pass

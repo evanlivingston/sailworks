@@ -65,6 +65,7 @@ def color_error(gpu, cpu, radius=3):
 def cpu_image(field, selection, blend, width, height, dpr, opacity):
     import cairo
     from PySide6.QtGui import QImage
+    from sailworks.rendering.canvas import CairoCanvas
     from sailworks.rendering.windpainter import WindPainter
 
     picks = selection.reshape(-1, 3)
@@ -90,7 +91,7 @@ def cpu_image(field, selection, blend, width, height, dpr, opacity):
     geometry = WindPainter.build_barb_geometry(
         picks[:, 1], picks[:, 2], dirs, np.hypot(uv[:, 0], uv[:, 1])
     )
-    WindPainter.paint_barb_geometry(cr, geometry, opacity)
+    WindPainter.paint_barb_geometry(CairoCanvas(cr), geometry, opacity)
     surface.flush()
     return QImage(
         surface.get_data(),

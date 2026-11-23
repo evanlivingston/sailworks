@@ -1201,9 +1201,15 @@ class _TextSizes:
 
             def show_text(self, text):
                 extents = self.context.text_extents(text)
-                dimensions = self.context.user_to_device_distance(
-                    extents[2], extents[3]
-                )
+                # The drawer hands a canvas or a raw context depending on the
+                # ported path; both expose the extents, only the raw context
+                # has user_to_device_distance.
+                converter = getattr(self.context, "user_to_device_distance", None)
+                if converter is not None:
+                    dimensions = converter(extents[2], extents[3])
+                else:
+                    scale = self.context.device_scale()
+                    dimensions = (extents[2] * scale, extents[3] * scale)
                 observer.sizes.setdefault(observer.stage, {})[text] = tuple(dimensions)
                 return self.context.show_text(text)
 

@@ -30,6 +30,11 @@ from __future__ import annotations
 
 import math
 
+from sailworks.rendering.scene.policy import (
+    BOYLAT_PORT_COLOUR,
+    BOYLAT_STARBOARD_COLOUR,
+)
+
 LIGHT = "light"
 BEACON = "beacon"
 BUOY = "buoy"
@@ -48,10 +53,6 @@ _BEACON_NAMES = frozenset({"BCNCAR", "BCNLAT", "BCNISD", "BCNSAW", "BCNSPP"})
 _BUOY_NAMES = frozenset({"BOYCAR", "BOYISD", "BOYSAW", "BOYSPP"})
 _WRECK_NAMES = frozenset({"WRECKS", "UWTROC", "OBSTRN"})
 _LANDMARK_NAMES = frozenset({"LNDMRK", "SILTNK", "CHIMNY", "TOWERS"})
-
-#: BOYLAT ``COLOUR`` values remapped by the S-57 drawer (3 port, 4 starboard).
-_PORT_COLOUR = "3"
-_STARBOARD_COLOUR = "4"
 
 
 def _disc(radius):
@@ -230,9 +231,9 @@ def classify(source_class, colours=None) -> str | None:
         return BEACON
     if source_class == "BOYLAT":
         colour = _first_colour(colours)
-        if colour == _PORT_COLOUR:
+        if colour == BOYLAT_PORT_COLOUR:
             return BUOY_PORT
-        if colour == _STARBOARD_COLOUR:
+        if colour == BOYLAT_STARBOARD_COLOUR:
             return BUOY_STARBOARD
         return BUOY
     if source_class in _BUOY_NAMES:

@@ -9,6 +9,7 @@ import cairo
 import numpy as np
 
 from sailworks.core.mapviewport import MapViewport
+from sailworks.rendering.canvas import CairoCanvas
 from sailworks.rendering.windpainter import (
     BARB_MAX_COUNT,
     BARB_DENSITIES,
@@ -236,7 +237,10 @@ class TestLiveWindBarbs(unittest.TestCase):
             )
             surface.set_device_scale(factor, factor)
             self.assertEqual(
-                painter.draw_barbs_live(view, cairo.Context(surface), flat), 1
+                painter.draw_barbs_live(
+                    view, CairoCanvas(cairo.Context(surface)), flat
+                ),
+                1,
             )
             surface.flush()
             alpha = np.ndarray(

@@ -125,7 +125,7 @@ class GDALVectorChart(ChartLayer):
     def on_register(self, on_tick_handler=None):
         return True
 
-    def do_draw(self, gpsmap, cr):
+    def do_draw(self, gpsmap, canvas):
         bounding_geometry = self.get_bounding_geometry(gpsmap)
         if isinstance(self.drawer, S57ChartDrawer):
             if not chart_scale_visible(self._native_scale, gpsmap.get_scale()):
@@ -136,7 +136,11 @@ class GDALVectorChart(ChartLayer):
             ):
                 return
         self.drawer.draw(
-            gpsmap, cr, self.vector_file, bounding_geometry, coverage=self._coverage
+            gpsmap,
+            canvas,
+            self.vector_file,
+            bounding_geometry,
+            coverage=self._coverage,
         )
 
     def do_render(self, gpsmap):

@@ -1491,12 +1491,11 @@ class QtPreviewChecks(unittest.TestCase):
         band.WriteArray(np.array([[1, 2], [2, 1]], dtype=np.uint8))
         band = dataset = None
         chart = GDALSingleRasterChart(path)
-        chart.surface.flush()
         self.assertEqual(
-            bytes(chart.surface.get_data())[:8],
+            bytes(chart.data.tobytes())[:8],
             bytes((11, 22, 33, 255, 44, 55, 66, 255)),
         )
-        self.assertEqual(chart.surface.get_width(), 2)
+        self.assertEqual(chart.width, 2)
 
     def wait_for_route(self):
         # The current-coverage preflight samples a corridor and checks it

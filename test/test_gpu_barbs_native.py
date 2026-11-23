@@ -25,6 +25,7 @@ def test_barb_mesh_matches_cpu_geometry_and_reuses_textures(missing):
         WeatherTexturePair,
         encode_component,
     )
+    from sailworks.rendering.canvas import CairoCanvas
     from sailworks.rendering.windpainter import WindPainter
 
     app = QGuiApplication.instance() or QGuiApplication([])
@@ -120,7 +121,7 @@ def test_barb_mesh_matches_cpu_geometry_and_reuses_textures(missing):
             )
             cr = cairo.Context(surface)
             cr.scale(image.width() / 128, image.height() / 128)
-            WindPainter.paint_barb_geometry(cr, geometry, 1.0)
+            WindPainter.paint_barb_geometry(CairoCanvas(cr), geometry, 1.0)
             surface.flush()
             reference = np.frombuffer(surface.get_data(), np.uint8).reshape(
                 image.height(), image.width(), 4
