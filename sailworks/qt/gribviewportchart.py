@@ -5,8 +5,8 @@ The base chart is composed by ``BaseChartRenderer`` -- the application's own
 worker-side composition with private GDAL handles, the application's chart
 drawers and the application's palette -- the installed and enabled ENC cells
 are composed by the application's own ``ENCOverlayRenderer`` on the same
-cairo surface, and the mean-sea-level pressure contours are the
-application's own ``WindPainter.draw_isobars`` on that same surface.  No
+image, and the mean-sea-level pressure contours are the
+application's own ``WindPainter.draw_isobars`` on that same canvas.  No
 chart portrayal is re-implemented here.
 
 The order is the application's own: the base chart first, the ENC second and
@@ -53,7 +53,7 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from sailworks.core.mapviewport import MercatorProjection
-from sailworks.rendering.canvas import CairoCanvas
+from sailworks.rendering.canvas import CairoCanvas, Canvas, CanvasImage
 from sailworks.rendering.overlayrenderer import MARGIN, RenderJob, covers
 
 if TYPE_CHECKING:
@@ -286,16 +286,13 @@ def _exposed_regions(width, height, overlap):
 
 
 def _empty_surface(viewport, factor):
-    """A transparent surface of the composition's own device size."""
-    import cairo
+    """A transparent image of the composition's own device size.
 
-    surface = cairo.ImageSurface(
-        cairo.FORMAT_ARGB32,
-        max(1, int(round(viewport.width * factor))),
-        max(1, int(round(viewport.height * factor))),
-    )
-    surface.set_device_scale(factor, factor)
-    return surface
+    The carrier holds the composition's device scale, so a caller paints in
+    the viewport's logical pixels and one device pixel serves one display
+    pixel at that factor.
+    """
+    return CanvasImage.empty(viewport.width, viewport.height, factor)
 
 
 def _static_shift(frame, viewport, factor):
@@ -363,37 +360,38 @@ def _paint_static(surface, frame, viewport, factor):
 
     The caller has already established, through :func:`_static_shift`, that
     the frame lands within ``STATIC_SNAP_PX`` of a whole device pixel, so the
-    blit translates exactly ``shift / factor`` user-space units: the source is
-    copied pixel for pixel and is never resampled.
-    """
-    import cairo
+    blit translates exactly ``shift / factor`` user-space units with nearest
+    sampling: the source is copied pixel for pixel and is never resampled.
 
+    ``surface`` is a fresh (:func:`_empty_surface`) image, which the canvas
+    factory clears; the retained pixels are then painted onto it.  The canvas
+    is returned still open so a caller that composes regions afterwards draws
+    them through the same one instead of opening a second canvas over the
+    same image.
+    """
     shift = _static_shift(frame, viewport, factor)
     if shift is None:  # pragma: no cover - unreachable within the bound
         raise ValueError("a retained frame may not be resampled")
-    cr = cairo.Context(surface)
-    cr.set_source_surface(frame.surface, shift[0] / factor, shift[1] / factor)
-    cr.paint()
-    surface.flush()
+    canvas = Canvas.for_image(surface)
+    canvas.draw_image(frame.surface, shift[0] / factor, shift[1] / factor, smooth=False)
+    return canvas
 
 
 def _copy_surface(surface, factor):
     """A writable copy of a retained surface, for this instant's contours.
 
     The retained frame stays isobar-free, so a later instant never inherits
-    the previous contours.  The copy is one fast paint of the surface.
-    """
-    import cairo
+    the previous contours.  The copy is one nearest-neighbour paint of the
+    surface, which is a byte-for-byte translation at an integer offset.
 
-    copy = cairo.ImageSurface(
-        cairo.FORMAT_ARGB32, surface.get_width(), surface.get_height()
-    )
-    copy.set_device_scale(factor, factor)
-    cr = cairo.Context(copy)
-    cr.set_source_surface(surface, 0, 0)
-    cr.paint()
-    copy.flush()
-    return copy
+    Returns the copy and the canvas it was painted through, still open: the
+    contours are drawn on that canvas, because a Qt canvas clears the image
+    it wraps and a second one would erase the chart the copy carries.
+    """
+    copy = CanvasImage.empty(surface.width, surface.height, factor)
+    canvas = Canvas.for_image(copy)
+    canvas.draw_image(surface, 0, 0, smooth=False)
+    return copy, canvas
 
 
 def _surface_bytes(surface):
@@ -674,26 +672,13 @@ class _ChartComposer:
         return self._painter
 
     def render(self, job, isobars=None, enc=None):
-        import cairo
-
         if self._sources:
             surface = self._renderer._render(job)
-            if surface is not None and hasattr(surface, "copy_as"):
-                # The rest of this composer (ENC and isobars) still draws
-                # through cairo, so convert the base chart once at the
-                # boundary.  Removed when this path is ported.
-                surface = surface.copy_as("cairo")
         else:
             # No installed coastline: the layer composes the isobars alone,
-            # on an empty surface of the same size and scale.
+            # on an empty image of the same size and scale.
             viewport = job.viewport
-            surface = cairo.ImageSurface(
-                cairo.FORMAT_ARGB32,
-                max(1, int(round(viewport.width * job.factor))),
-                max(1, int(round(viewport.height * job.factor))),
-            )
-            surface.set_device_scale(job.factor, job.factor)
-            surface.flush()
+            surface = CanvasImage.empty(viewport.width, viewport.height, job.factor)
         if surface is None:
             return None, None
         enc_metadata = None
@@ -702,8 +687,16 @@ class _ChartComposer:
             if surface is None:
                 return None, None
         if isobars:
-            cr = cairo.Context(surface)
+            # Temporary: the contour pass still draws through a cairo copy of
+            # the composition and converts it back.  Removed when the contour
+            # pass takes the viewport's canvas.
+            import cairo
+
+            cairo_surface = surface.copy_as("cairo")
+            cr = cairo.Context(cairo_surface)
             self.painter().draw_isobars(job.viewport, CairoCanvas(cr), isobars)
+            cairo_surface.flush()
+            surface = CanvasImage.from_cairo_surface(cairo_surface)
         surface.flush()
         return surface, enc_metadata
 
@@ -1477,8 +1470,6 @@ class ViewportChartLayer:
         """
         from sailworks.core.mapviewport import MapViewport
 
-        import cairo
-
         factor = _composition_factor(self._dpr, preview)
         canvas = ChartCamera(camera, factor)
         viewport = MapViewport(canvas, MARGIN, lambda: None)
@@ -1534,12 +1525,11 @@ class ViewportChartLayer:
             with self._condition:
                 self.counters["isobars"] += 1
             started = time.perf_counter()
-            surface = _copy_surface(surface, factor)
+            surface, canvas = _copy_surface(surface, factor)
             copy_ms = (time.perf_counter() - started) * 1000.0
             started = time.perf_counter()
-            cr = cairo.Context(surface)
-            self._composer().painter().draw_isobars(viewport, CairoCanvas(cr), columns)
-            surface.flush()
+            self._composer().painter().draw_isobars(viewport, canvas, columns)
+            canvas.finish()
             isobar_ms = (time.perf_counter() - started) * 1000.0
         if self._view_moved(camera):
             with self._condition:
@@ -1614,7 +1604,6 @@ class ViewportChartLayer:
         The reuse is unchanged for every other demand.
         """
         key = (self._palette, factor, self._base_sources())
-        import cairo
 
         report = {
             "mode": "full",
@@ -1693,7 +1682,7 @@ class ViewportChartLayer:
                     report["retained_bytes"] = self._retained_static_bytes()
                     return frame.surface, frame.enc_metadata, report
                 surface = _empty_surface(viewport, factor)
-                _paint_static(surface, frame, viewport, factor)
+                _paint_static(surface, frame, viewport, factor).finish()
                 enc_metadata = self._enc_report(job, self._enc_composer())
                 if enc_metadata is None:
                     return None
@@ -1709,7 +1698,7 @@ class ViewportChartLayer:
                 report["retained_bytes"] = self._retained_static_bytes()
                 return surface, enc_metadata, report
             surface = _empty_surface(viewport, factor)
-            _paint_static(surface, frame, viewport, factor)
+            canvas = _paint_static(surface, frame, viewport, factor)
             regions = _exposed_regions(
                 int(viewport.width), int(viewport.height), overlap
             )
@@ -1725,11 +1714,10 @@ class ViewportChartLayer:
                 if region is None:
                     return None
                 region_surface, x, y = region
-                cr = cairo.Context(surface)
-                cr.set_source_surface(region_surface, x, y)
-                cr.paint()
+                canvas.draw_image(region_surface, x, y, smooth=False)
                 report["regions"] += 1
                 report["composed_pixels"] += _device_rect_area(rect, factor)
+            canvas.finish()
             report["reused_pixels"] = _device_rect_area(overlap, factor)
             enc_metadata = self._enc_report(job, enc)
             if enc_metadata is None:
@@ -2051,18 +2039,27 @@ def _image_bytes(image):
 
 
 def _surface_image(surface, dpr=1):
-    """The composed cairo surface as a Qt image.
+    """The composed image as a Qt image.
 
-    The surface is ARGB32 and premultiplied, the same layout as the
-    application's own framebuffer readback, so the bytes are copied without
-    a conversion.  The copy is the surface's bytes and nothing else: the
-    image shares them, so the composed surface is published with one copy
-    instead of two.
+    A composition carried as a Qt image is already premultiplied ARGB32 at
+    the composition's own device scale, so it is published as it is (or as a
+    copy when the requested ratio differs); no bytes are converted.  A cairo
+    surface is ARGB32 and premultiplied too, the same layout as the
+    application's own framebuffer readback, so its bytes are copied without a
+    conversion.  Either way the copy is the image's bytes and nothing else,
+    so the composition is published with one copy instead of two.
 
     The image carries the composition's device pixel ratio, so the scene
     shows one device pixel per display pixel and never rescales the
     composition.
     """
+    if getattr(surface, "backend", None) == "qt":
+        image = surface.qimage
+        if image.devicePixelRatio() != dpr:
+            image = image.copy()
+            image.setDevicePixelRatio(dpr)
+        return image
+
     from PySide6.QtGui import QImage
 
     surface.flush()
