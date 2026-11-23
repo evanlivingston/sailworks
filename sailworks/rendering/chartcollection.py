@@ -31,6 +31,7 @@ from sailworks.core.scheduling import schedule_idle
 from sailworks.core.mapviewport import MapViewport
 
 from .chartlayer import ChartLayer
+from .canvas import CairoCanvas
 from .chartclasses import (
     CHART_CLASSES,
     chart_class,
@@ -44,6 +45,7 @@ from .encrenderer import ENCOverlayRenderer
 from .mbtilesrenderer import MBTilesChart, MBTilesRenderer
 from sailworks.rendering.overlayrenderer import paint_viewport
 from .vectordrawer.s57chartdrawer import S57ChartDrawer
+from .vectordrawer.simplechartdrawer import SimpleChartDrawer
 from .gshhs import GSHHSVectorChart
 
 logger = logging.getLogger("sailworks")
@@ -481,7 +483,14 @@ class ChartCollection:
             chart_cr = cairo.Context(surface)
             for chart in filter(lambda c: c.enabled, charts):
                 chart_cr.save()
-                chart.do_draw(viewport, chart_cr)
+                # Only the ported drawers accept the seam; raster and OSM
+                # charts keep the raw context.
+                target = chart_cr
+                if type(chart) is GSHHSVectorChart or (
+                    type(getattr(chart, "drawer", None)) is SimpleChartDrawer
+                ):
+                    target = CairoCanvas(chart_cr)
+                chart.do_draw(viewport, target)
                 chart_cr.restore()
             cached = (signature, viewport, surface)
             self._chart_surfaces[gpsmap] = cached

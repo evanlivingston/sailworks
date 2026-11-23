@@ -52,6 +52,10 @@ JOIN_MITER = "miter"
 JOIN_ROUND = "round"
 JOIN_BEVEL = "bevel"
 
+# Fill rules, named rather than re-exporting either backend's constants.
+FILL_EVEN_ODD = "even-odd"
+FILL_WINDING = "winding"
+
 
 class Canvas:
     """The drawing operations the dashboard and numeric gauges need.
@@ -90,6 +94,9 @@ class Canvas:
     def new_sub_path(self):
         raise NotImplementedError
 
+    def new_path(self):
+        raise NotImplementedError
+
     def move_to(self, x, y):
         raise NotImplementedError
 
@@ -105,6 +112,9 @@ class Canvas:
     def close_path(self):
         raise NotImplementedError
 
+    def set_fill_rule(self, rule):
+        raise NotImplementedError
+
     def fill(self):
         raise NotImplementedError
 
@@ -114,7 +124,13 @@ class Canvas:
     def stroke(self):
         raise NotImplementedError
 
+    def stroke_preserve(self):
+        raise NotImplementedError
+
     def clip(self):
+        raise NotImplementedError
+
+    def device_scale(self):
         raise NotImplementedError
 
     def text_extents(self, text):
@@ -169,6 +185,9 @@ class CairoCanvas(Canvas):
     def new_sub_path(self):
         self._cr.new_sub_path()
 
+    def new_path(self):
+        self._cr.new_path()
+
     def move_to(self, x, y):
         self._cr.move_to(x, y)
 
@@ -184,6 +203,17 @@ class CairoCanvas(Canvas):
     def close_path(self):
         self._cr.close_path()
 
+    def set_fill_rule(self, rule):
+        # Imported lazily so importing this module never imports cairo.
+        import cairo
+
+        self._cr.set_fill_rule(
+            {
+                FILL_EVEN_ODD: cairo.FILL_RULE_EVEN_ODD,
+                FILL_WINDING: cairo.FILL_RULE_WINDING,
+            }[rule]
+        )
+
     def fill(self):
         self._cr.fill()
 
@@ -193,8 +223,14 @@ class CairoCanvas(Canvas):
     def stroke(self):
         self._cr.stroke()
 
+    def stroke_preserve(self):
+        self._cr.stroke_preserve()
+
     def clip(self):
         self._cr.clip()
+
+    def device_scale(self):
+        return max(self._cr.get_target().get_device_scale())
 
     def text_extents(self, text):
         return self._cr.text_extents(text)
@@ -217,7 +253,8 @@ class QPainterCanvas(Canvas):
         self._painter = QPainter(image)
         self._painter.setRenderHint(QPainter.Antialiasing, True)
         self._painter.setRenderHint(QPainter.TextAntialiasing, True)
-        self._path = self._new_path()
+        self._fill_rule = Qt.WindingFill
+        self._path = self._new_path(self._fill_rule)
         self._started = False
         self._color = QColor.fromRgbF(0.0, 0.0, 0.0, 1.0)
         self._line_width = 1.0
@@ -227,11 +264,11 @@ class QPainterCanvas(Canvas):
         self._current = QPointF(0.0, 0.0)
 
     @staticmethod
-    def _new_path():
+    def _new_path(fill_rule=Qt.WindingFill):
         path = QPainterPath()
         # Cairo's default fill rule is winding (non-zero); Qt defaults to
         # odd-even, so set it explicitly.
-        path.setFillRule(Qt.WindingFill)
+        path.setFillRule(fill_rule)
         return path
 
     def finish(self):
@@ -295,8 +332,23 @@ class QPainterCanvas(Canvas):
         # Cairo starts a fresh subpath with no current point. QPainterPath
         # always has one, so the closest equivalent for this operation set is
         # an empty path; both modules call new_sub_path at the start of a path.
-        self._path = self._new_path()
+        self._path = self._new_path(self._fill_rule)
         self._started = False
+
+    def new_path(self):
+        # cairo_new_path clears the current path entirely; the fill rule is
+        # context state, so it survives and seeds the fresh path.
+        self._path = self._new_path(self._fill_rule)
+        self._started = False
+
+    def set_fill_rule(self, rule):
+        # Cairo applies the rule at fill time; QPainterPath stores it on the
+        # path, so record it for later paths and apply it to the current one.
+        self._fill_rule = {
+            FILL_EVEN_ODD: Qt.OddEvenFill,
+            FILL_WINDING: Qt.WindingFill,
+        }[rule]
+        self._path.setFillRule(self._fill_rule)
 
     def move_to(self, x, y):
         self._path.moveTo(x, y)
@@ -334,13 +386,13 @@ class QPainterCanvas(Canvas):
 
     def fill(self):
         self._painter.fillPath(self._path, QBrush(self._color))
-        self._path = self._new_path()
+        self._path = self._new_path(self._fill_rule)
         self._started = False
 
     def fill_preserve(self):
         self._painter.fillPath(self._path, QBrush(self._color))
 
-    def stroke(self):
+    def _stroke_path(self):
         pen = QPen(self._color)
         pen.setWidthF(self._line_width)
         # Cairo's defaults: butt caps, miter joins.
@@ -351,15 +403,25 @@ class QPainterCanvas(Canvas):
         else:
             pen.setStyle(Qt.SolidLine)
         self._painter.strokePath(self._path, pen)
-        self._path = self._new_path()
+
+    def stroke(self):
+        self._stroke_path()
+        self._path = self._new_path(self._fill_rule)
         self._started = False
+
+    def stroke_preserve(self):
+        # cairo_stroke_preserve leaves the current path intact.
+        self._stroke_path()
 
     def clip(self):
         self._painter.setClipPath(self._path, Qt.IntersectClip)
         # cairo_clip consumes the current path (cairo_clip_preserve is the one
         # that keeps it), so drop it here too.
-        self._path = self._new_path()
+        self._path = self._new_path(self._fill_rule)
         self._started = False
+
+    def device_scale(self):
+        return self._image.devicePixelRatio()
 
     def text_extents(self, text):
         metrics = QFontMetricsF(self._font)

@@ -7,6 +7,7 @@ import cairo
 from osgeo import ogr
 
 from sailworks.core.mapviewport import MapPoint
+from sailworks.rendering.canvas import CairoCanvas
 from sailworks.rendering.style import CairoStyle
 from sailworks.rendering.vectordrawer.simplechartdrawer import SimpleChartDrawer
 from test.map_helpers import MapCanvas
@@ -44,18 +45,18 @@ class TestCoastlineHoles(unittest.TestCase):
         surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 10, 10)
         cr = cairo.Context(surface)
         simplify = SimpleChartDrawer._simplify_polygon
-        self.assertIs(simplify(canvas, cr, geom), simplified)
+        self.assertIs(simplify(canvas, CairoCanvas(cr), geom), simplified)
         first = geom.SimplifyPreserveTopology.call_args.args[0]
         surface.set_device_scale(2, 2)
-        self.assertIs(simplify(canvas, cr, geom), simplified)
+        self.assertIs(simplify(canvas, CairoCanvas(cr), geom), simplified)
         self.assertAlmostEqual(
             geom.SimplifyPreserveTopology.call_args.args[0], first / 2
         )
         simplified.IsValid.return_value = False
-        self.assertIs(simplify(canvas, cr, geom), geom)
+        self.assertIs(simplify(canvas, CairoCanvas(cr), geom), geom)
         ring.GetPointCount.return_value = 5
         geom.SimplifyPreserveTopology.reset_mock()
-        self.assertIs(simplify(canvas, cr, geom), geom)
+        self.assertIs(simplify(canvas, CairoCanvas(cr), geom), geom)
         geom.SimplifyPreserveTopology.assert_not_called()
 
     def test_polygon_and_multipolygon_holes_keep_the_background(self):
@@ -76,7 +77,7 @@ class TestCoastlineHoles(unittest.TestCase):
                 drawer = SimpleChartDrawer.__new__(SimpleChartDrawer)
                 drawer.feature_render(
                     canvas,
-                    cr,
+                    CairoCanvas(cr),
                     geometry,
                     None,
                     None,

@@ -18,10 +18,10 @@ import math
 from collections import OrderedDict
 from threading import Lock, Thread
 
-import cairo
 import numpy as np
 
 from sailworks.core.geo.shoreline import ShorelineGeometryCache
+from sailworks.rendering.canvas import FILL_EVEN_ODD, JOIN_ROUND
 from sailworks.rendering.style import Style
 
 from .coastlinearrays import COASTLINE_ARRAYS, clip_ring
@@ -43,14 +43,14 @@ class SimpleChartDrawer(VectorChartDrawer):
         self._shorelines = ShorelineGeometryCache()
         self._coordinate_cache = OrderedDict()
 
-    def draw(self, gpsmap, cr, vector_file, bounding):
+    def draw(self, gpsmap, canvas, vector_file, bounding):
         stroke_style = Style.chart_palettes[self.palette].land_stroke
         fill_style = Style.chart_palettes[self.palette].land_fill
         sea_style = Style.chart_palettes[self.palette].sea
         contourn_style = Style.chart_palettes[self.palette].shallow_sea
 
-        self.background_render(gpsmap, cr, sea_style)
-        cr.set_line_join(cairo.LINE_JOIN_ROUND)
+        self.background_render(gpsmap, canvas, sea_style)
+        canvas.set_line_join(JOIN_ROUND)
 
         if getattr(self, "use_coastline_arrays", True):
             arrays = COASTLINE_ARRAYS.peek(vector_file)
@@ -58,7 +58,7 @@ class SimpleChartDrawer(VectorChartDrawer):
                 self._warm_arrays(vector_file)
             elif self._draw_arrays(
                 gpsmap,
-                cr,
+                canvas,
                 vector_file,
                 arrays,
                 bounding,
@@ -70,7 +70,7 @@ class SimpleChartDrawer(VectorChartDrawer):
 
         self._draw_features(
             gpsmap,
-            cr,
+            canvas,
             vector_file,
             bounding,
             stroke_style,
@@ -81,7 +81,7 @@ class SimpleChartDrawer(VectorChartDrawer):
     def _draw_feature(
         self,
         gpsmap,
-        cr,
+        canvas,
         vector_file,
         layer_index,
         feat,
@@ -94,7 +94,7 @@ class SimpleChartDrawer(VectorChartDrawer):
         geom = self._shorelines.clip(feature_key, feat.GetGeometryRef(), bounding)
         self.feature_render(
             gpsmap,
-            cr,
+            canvas,
             geom,
             feat,
             None,
@@ -107,7 +107,7 @@ class SimpleChartDrawer(VectorChartDrawer):
     def _draw_features(
         self,
         gpsmap,
-        cr,
+        canvas,
         vector_file,
         bounding,
         stroke_style,
@@ -127,7 +127,7 @@ class SimpleChartDrawer(VectorChartDrawer):
 
                 self._draw_feature(
                     gpsmap,
-                    cr,
+                    canvas,
                     vector_file,
                     i,
                     feat,
@@ -159,7 +159,7 @@ class SimpleChartDrawer(VectorChartDrawer):
     def _draw_arrays(
         self,
         gpsmap,
-        cr,
+        canvas,
         vector_file,
         arrays,
         bounding,
@@ -222,20 +222,20 @@ class SimpleChartDrawer(VectorChartDrawer):
                 fallback.setdefault(layer_index, []).append(fid)
                 continue
             for rings in projected:
-                cr.new_path()
+                canvas.new_path()
                 for xs, ys in rings:
                     points = clip_ring(xs, ys, 0.0, 0.0, width, height)
                     if points is None:
                         continue
-                    cr.move_to(points[0, 0], points[0, 1])
+                    canvas.move_to(points[0, 0], points[0, 1])
                     for x, y in points[1:]:
-                        cr.line_to(x, y)
-                    cr.close_path()
-                cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
-                fill_style.apply(cr)
-                cr.fill_preserve()
-                stroke_style.apply(cr)
-                cr.stroke()
+                        canvas.line_to(x, y)
+                    canvas.close_path()
+                canvas.set_fill_rule(FILL_EVEN_ODD)
+                fill_style.apply_canvas(canvas)
+                canvas.fill_preserve()
+                stroke_style.apply_canvas(canvas)
+                canvas.stroke()
 
         # Unsupported geometry keeps the repaired, geographically clipped path.
         for layer_index, fids in fallback.items():
@@ -246,7 +246,7 @@ class SimpleChartDrawer(VectorChartDrawer):
                     continue
                 self._draw_feature(
                     gpsmap,
-                    cr,
+                    canvas,
                     vector_file,
                     layer_index,
                     feat,
@@ -258,13 +258,13 @@ class SimpleChartDrawer(VectorChartDrawer):
 
         return True
 
-    def background_render(self, gpsmap, cr, sea_style):
+    def background_render(self, gpsmap, canvas, sea_style):
         width = float(gpsmap.get_allocated_width())
         height = float(gpsmap.get_allocated_height())
-        sea_style.apply(cr)
-        cr.rectangle(0, 0, width, height)
-        cr.stroke_preserve()
-        cr.fill()
+        sea_style.apply_canvas(canvas)
+        canvas.rectangle(0, 0, width, height)
+        canvas.stroke_preserve()
+        canvas.fill()
 
     def _geom_to_screen_batch(self, gpsmap, g, feature_key=None, ring_key=None):
         """Extract OGR geometry points and batch-convert to screen coords."""
@@ -289,7 +289,7 @@ class SimpleChartDrawer(VectorChartDrawer):
         return gpsmap.convert_geographic_to_screen_batch(lats, lons)
 
     @staticmethod
-    def _simplify_polygon(gpsmap, cr, geom):
+    def _simplify_polygon(gpsmap, canvas, geom):
         if not all(hasattr(gpsmap, name) for name in ("_zoom", "TILE_SIZE", "MAX_LAT")):
             return geom
         if not geom.GetGeometryCount() or any(
@@ -299,7 +299,7 @@ class SimpleChartDrawer(VectorChartDrawer):
             return geom
         _, _, south, north = geom.GetEnvelope()
         latitude = min(gpsmap.MAX_LAT, max(abs(south), abs(north)))
-        factor = max(cr.get_target().get_device_scale())
+        factor = canvas.device_scale()
         try:
             # 0.3 device pixels at the most distorted latitude keeps the
             # topology-preserving approximation below a visible pixel.
@@ -321,7 +321,7 @@ class SimpleChartDrawer(VectorChartDrawer):
     def feature_render(
         self,
         gpsmap,
-        cr,
+        canvas,
         geom,
         feat,
         layer,
@@ -336,7 +336,7 @@ class SimpleChartDrawer(VectorChartDrawer):
             for i in range(geom.GetGeometryCount()):
                 self.feature_render(
                     gpsmap,
-                    cr,
+                    canvas,
                     geom.GetGeometryRef(i),
                     feat,
                     layer,
@@ -347,9 +347,9 @@ class SimpleChartDrawer(VectorChartDrawer):
                 )
             return
         if geom.GetGeometryName() == "POLYGON":
-            geom = self._simplify_polygon(gpsmap, cr, geom)
+            geom = self._simplify_polygon(gpsmap, canvas, geom)
         polygon_key = bytes(geom.ExportToWkb())
-        cr.new_path()
+        canvas.new_path()
         for i in range(geom.GetGeometryCount()):
             ring = geom.GetGeometryRef(i)
             xs, ys = self._geom_to_screen_batch(
@@ -357,12 +357,12 @@ class SimpleChartDrawer(VectorChartDrawer):
             )
             if xs is None:
                 continue
-            cr.move_to(xs[0], ys[0])
+            canvas.move_to(xs[0], ys[0])
             for x, y in zip(xs[1:], ys[1:]):
-                cr.line_to(x, y)
-            cr.close_path()
-        cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
-        fill_style.apply(cr)
-        cr.fill_preserve()
-        stroke_style.apply(cr)
-        cr.stroke()
+                canvas.line_to(x, y)
+            canvas.close_path()
+        canvas.set_fill_rule(FILL_EVEN_ODD)
+        fill_style.apply_canvas(canvas)
+        canvas.fill_preserve()
+        stroke_style.apply_canvas(canvas)
+        canvas.stroke()

@@ -25,7 +25,11 @@ from PySide6.QtGui import QGuiApplication, QImage  # noqa: E402
 
 from sailworks.core.core import BoatInfo  # noqa: E402
 from sailworks.rendering.ais import AISRenderer  # noqa: E402
-from sailworks.rendering.canvas import CairoCanvas, QPainterCanvas  # noqa: E402
+from sailworks.rendering.canvas import (  # noqa: E402
+    FILL_EVEN_ODD,
+    CairoCanvas,
+    QPainterCanvas,
+)
 from sailworks.rendering.dashboard import DashboardRenderer  # noqa: E402
 from sailworks.rendering.isochrones import (  # noqa: E402
     IsochroneFrame,
@@ -429,3 +433,43 @@ def test_qpainter_ais_target_with_label_stays_within_text_tolerance():
     assert (
         abs(measured["fraction"] - AIS_BASELINE_DIFF_FRACTION) <= SCENE_FRACTION_MARGIN
     )
+
+
+def _draw_fill_rule(canvas):
+    """Sea background plus a land ring with a piercing ring, filled even-odd."""
+    canvas.set_source_rgba(0.0, 0.0, 1.0, 1.0)
+    canvas.rectangle(0, 0, WIDTH, HEIGHT)
+    canvas.fill()
+
+    canvas.new_path()
+    for x0, y0, x1, y1 in (
+        (80, 60, 400, 260),
+        (180, 110, 300, 210),
+    ):
+        canvas.move_to(x0, y0)
+        canvas.line_to(x1, y0)
+        canvas.line_to(x1, y1)
+        canvas.line_to(x0, y1)
+        canvas.close_path()
+    # Set after building the path, as the chart drawer does: the rule applies
+    # at fill time, not when the rings are added.
+    canvas.set_fill_rule(FILL_EVEN_ODD)
+    canvas.set_source_rgba(1.0, 0.0, 0.0, 1.0)
+    canvas.fill()
+
+
+def test_qpainter_fill_rule_punches_the_same_hole_as_cairo():
+    cairo_image = _cairo_scene(_draw_fill_rule)
+    painter_image = _qpainter_scene(_draw_fill_rule)
+
+    measured = _compare_composited(cairo_image, painter_image)
+    _report("fill rule", measured)
+    assert measured["max"] <= NON_TEXT_MAX_DIFF_CEILING
+
+    # Semantics, not tolerance: the inner ring must be a hole in both
+    # backends, so the sea shows through, while the outer ring stays land.
+    for name, image in (("cairo", cairo_image), ("qt", painter_image)):
+        hole = image.pixelColor(WIDTH // 2, HEIGHT // 2)
+        assert (hole.red(), hole.green(), hole.blue()) == (0, 0, 255), name
+        land = image.pixelColor(120, HEIGHT // 2)
+        assert (land.red(), land.green(), land.blue()) == (255, 0, 0), name
