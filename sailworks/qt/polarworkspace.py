@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from sailworks.core.polarfiles import read_polar
 from sailworks.core.polarperformance import wind_band
+from sailworks.rendering.canvas import CairoCanvas
 from sailworks.rendering.polar import PolarRenderer, POLAR_COLORS
 from .dropdown import Dropdown
 
@@ -41,7 +42,9 @@ class PolarCanvas(QWidget, PolarRenderer):
             cairo.FORMAT_ARGB32, self.width() * factor, self.height() * factor
         )
         surface.set_device_scale(factor, factor)
-        self.draw_polar(cairo.Context(surface), self.width(), self.height())
+        self.draw_polar(
+            CairoCanvas(cairo.Context(surface)), self.width(), self.height()
+        )
         surface.flush()
         image = QImage(
             surface.get_data(),

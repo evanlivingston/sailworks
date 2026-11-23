@@ -21,6 +21,8 @@ from typing import List, Optional, Tuple
 
 from sailworks.core.polarperformance import PerformanceSample, wind_band
 
+from .canvas import CairoCanvas, Canvas
+
 logger = logging.getLogger("sailworks")
 
 POLAR_COLORS = [
@@ -135,11 +137,13 @@ class PolarRenderer:
                 closest = (tws, angle)
         return closest
 
-    def draw_polar(self, cr, width, height):
+    def draw_polar(self, canvas, width, height):
+        if not isinstance(canvas, Canvas):
+            canvas = CairoCanvas(canvas)
         self._point_positions = []
         self._curve_segments = []
-        cr.set_source_rgb(0.15, 0.17, 0.20)
-        cr.paint()
+        canvas.set_source_rgb(0.15, 0.17, 0.20)
+        canvas.paint()
         if not self.polar:
             return
         max_r, margin = 80.0, 25.0
@@ -150,9 +154,9 @@ class PolarRenderer:
             return
         dx = (width - logical_w * s) / 2
         dy = (height - logical_h * s) / 2
-        cr.save()
-        cr.translate(dx, dy)
-        cr.scale(s, s)
+        canvas.save()
+        canvas.translate(dx, dy)
+        canvas.scale(s, s)
         cx = margin + (max_r if self.full_circle else 0)
         cy = max_r + margin
         self._chart_center = (dx + cx * s, dy + cy * s)
@@ -165,71 +169,71 @@ class PolarRenderer:
         ring_step = max(1, math.ceil(max_speed / 8))
         max_speed = math.ceil(max_speed / ring_step) * ring_step
         speed_scale = max_r / max_speed
-        self._draw_grid(cr, cx, cy, max_r, max_speed, ring_step, speed_scale)
-        self._draw_curves(cr, cx, cy, speed_scale, s, dx, dy)
-        self._draw_samples(cr, cx, cy, speed_scale, s, dx, dy)
-        cr.restore()
-        self._draw_hover(cr, width, height)
+        self._draw_grid(canvas, cx, cy, max_r, max_speed, ring_step, speed_scale)
+        self._draw_curves(canvas, cx, cy, speed_scale, s, dx, dy)
+        self._draw_samples(canvas, cx, cy, speed_scale, s, dx, dy)
+        canvas.restore()
+        self._draw_hover(canvas, width, height)
 
-    def _draw_hover(self, cr, width, height):
+    def _draw_hover(self, canvas, width, height):
         # Draw on pointer motion instead of waiting for a tooltip timeout.
         if self.hover_text is None or self.mousePos is None:
             return
-        cr.save()
-        cr.set_font_size(12)
+        canvas.save()
+        canvas.set_font_size(12)
         lines = self.hover_text.splitlines()
-        box_w = max(cr.text_extents(line)[2] for line in lines) + 16
+        box_w = max(canvas.text_extents(line)[2] for line in lines) + 16
         box_h = 18 * len(lines) + 12
         x = min(self.mousePos[0] + 14, width - box_w - 4)
         y = min(self.mousePos[1] + 18, height - box_h - 4)
         x, y = max(4, x), max(4, y)
-        cr.set_source_rgba(0.06, 0.07, 0.09, 0.97)
-        cr.rectangle(x, y, box_w, box_h)
-        cr.fill_preserve()
-        cr.set_source_rgba(1, 1, 1, 0.4)
-        cr.set_line_width(1)
-        cr.stroke()
-        cr.set_source_rgb(1, 1, 1)
+        canvas.set_source_rgba(0.06, 0.07, 0.09, 0.97)
+        canvas.rectangle(x, y, box_w, box_h)
+        canvas.fill_preserve()
+        canvas.set_source_rgba(1, 1, 1, 0.4)
+        canvas.set_line_width(1)
+        canvas.stroke()
+        canvas.set_source_rgb(1, 1, 1)
         for i, line in enumerate(lines):
-            cr.move_to(x + 8, y + 19 + i * 18)
-            cr.show_text(line)
-        cr.restore()
+            canvas.move_to(x + 8, y + 19 + i * 18)
+            canvas.show_text(line)
+        canvas.restore()
 
-    def _draw_grid(self, cr, cx, cy, max_r, max_speed, ring_step, speed_scale):
+    def _draw_grid(self, canvas, cx, cy, max_r, max_speed, ring_step, speed_scale):
         for speed in range(ring_step, int(max_speed) + 1, ring_step):
             r = speed * speed_scale
-            cr.set_line_width(0.2)
-            cr.set_source_rgba(1, 1, 1, 0.15)
-            cr.set_dash([2, 2])
-            cr.arc(
+            canvas.set_line_width(0.2)
+            canvas.set_source_rgba(1, 1, 1, 0.15)
+            canvas.set_dash([2, 2])
+            canvas.arc(
                 cx,
                 cy,
                 r,
                 -math.pi / 2,
                 3 * math.pi / 2 if self.full_circle else math.pi / 2,
             )
-            cr.stroke()
-            cr.set_dash([])
-            cr.set_source_rgba(1, 1, 1, 0.6)
-            cr.set_font_size(5)
-            cr.move_to(cx + 2, cy - r + 5)
-            cr.show_text(f"{speed} kt")
+            canvas.stroke()
+            canvas.set_dash([])
+            canvas.set_source_rgba(1, 1, 1, 0.6)
+            canvas.set_font_size(5)
+            canvas.move_to(cx + 2, cy - r + 5)
+            canvas.show_text(f"{speed} kt")
         for angle in range(0, 360 if self.full_circle else 181, 30):
             rad = math.radians(angle)
-            cr.set_line_width(0.2)
-            cr.set_source_rgba(1, 1, 1, 0.15)
-            cr.move_to(cx, cy)
-            cr.line_to(cx + math.sin(rad) * max_r, cy - math.cos(rad) * max_r)
-            cr.stroke()
-            cr.set_font_size(5)
-            cr.set_source_rgba(1, 1, 1, 0.65)
-            cr.move_to(
+            canvas.set_line_width(0.2)
+            canvas.set_source_rgba(1, 1, 1, 0.15)
+            canvas.move_to(cx, cy)
+            canvas.line_to(cx + math.sin(rad) * max_r, cy - math.cos(rad) * max_r)
+            canvas.stroke()
+            canvas.set_font_size(5)
+            canvas.set_source_rgba(1, 1, 1, 0.65)
+            canvas.move_to(
                 cx + math.sin(rad) * (max_r + 9) - 4,
                 cy - math.cos(rad) * (max_r + 9) + 2,
             )
-            cr.show_text(f"{angle}°")
+            canvas.show_text(f"{angle}°")
 
-    def _draw_curves(self, cr, cx, cy, speed_scale, scale, dx, dy):
+    def _draw_curves(self, canvas, cx, cy, speed_scale, scale, dx, dy):
         assert self.polar is not None
         polar = self.polar
         indices = sorted(
@@ -247,8 +251,8 @@ class PolarRenderer:
             dimmed = (
                 self.hover_wind is not None or self.isolated_wind is not None
             ) and not focused
-            cr.set_source_rgba(*color, 0.15 if dimmed else 0.9)
-            cr.set_line_width(1.0 if focused else 0.7)
+            canvas.set_source_rgba(*color, 0.15 if dimmed else 0.9)
+            canvas.set_line_width(1.0 if focused else 0.7)
             for side in ((1, -1) if self.full_circle else (1,)):
                 previous = None
                 for angle, row in zip(self.polar.twa, self.polar.speed_table):
@@ -258,9 +262,9 @@ class PolarRenderer:
                     px = cx + side * speed_scale * row[i] * math.sin(angle)
                     py = cy - speed_scale * row[i] * math.cos(angle)
                     if previous is None:
-                        cr.move_to(px, py)
+                        canvas.move_to(px, py)
                     else:
-                        cr.line_to(px, py)
+                        canvas.line_to(px, py)
                         self._curve_segments.append(
                             (
                                 dx + previous[0] * scale,
@@ -271,9 +275,9 @@ class PolarRenderer:
                             )
                         )
                     previous = (px, py)
-                cr.stroke()
+                canvas.stroke()
 
-    def _draw_samples(self, cr, cx, cy, speed_scale, scale, dx, dy):
+    def _draw_samples(self, canvas, cx, cy, speed_scale, scale, dx, dy):
         assert self.polar is not None
         for sample in self.samples:
             # Skip observations from when the boat is not moving, or when there
@@ -305,7 +309,7 @@ class PolarRenderer:
             dimmed = (
                 self.hover_wind is not None or self.isolated_wind is not None
             ) and not focused
-            cr.set_source_rgba(*color, 0.15 if dimmed else 0.8)
-            cr.arc(px, py, 0.65, 0, 2 * math.pi)
-            cr.fill()
+            canvas.set_source_rgba(*color, 0.15 if dimmed else 0.8)
+            canvas.arc(px, py, 0.65, 0, 2 * math.pi)
+            canvas.fill()
             self._point_positions.append((dx + px * scale, dy + py * scale, sample))

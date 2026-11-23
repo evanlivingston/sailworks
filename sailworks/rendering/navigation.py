@@ -25,7 +25,7 @@ import dateutil.parser
 from sailworks.core import utils
 
 from sailworks.core.mapviewport import MapPoint
-from .canvas import CairoCanvas
+from .canvas import CairoCanvas, Canvas
 from .style import (
     CairoStyle,
     ROUTE_SAIL_CHANGE_COLOUR,
@@ -240,13 +240,15 @@ def parse_track_colour(value):
     return (red / 255.0, green / 255.0, blue / 255.0, 1.0)
 
 
-def _apply_track_style(cr, style, track):
+def _apply_track_style(canvas, style, track):
     """Stroke a track with its own colour when it has one, else the default."""
     colour = parse_track_colour(getattr(track, "color", None))
     if colour is None:
-        style.apply(cr)
+        style.apply_canvas(canvas)
         return
-    CairoStyle(color=colour, line_width=style.line_width, dash=style.dash).apply(cr)
+    CairoStyle(color=colour, line_width=style.line_width, dash=style.dash).apply_canvas(
+        canvas
+    )
 
 
 def track_mark_count(count):
@@ -314,32 +316,32 @@ def routing_summary(r):
     return " | ".join(value for _, value in fields) + _routing_source_note(r)
 
 
-def _draw_route_legend(cr, title, entries, x=12.0, y=12.0):
+def _draw_route_legend(canvas, title, entries, x=12.0, y=12.0):
     """Draw a compact on-map legend for the highlighted saved routing."""
-    cr.save()
-    cr.set_font_size(10)
+    canvas.save()
+    canvas.set_font_size(10)
     rows = list(entries)
-    width = cr.text_extents(title).width
+    width = canvas.text_extents(title).width
     for label, _colour in rows:
-        width = max(width, cr.text_extents(label).width)
+        width = max(width, canvas.text_extents(label).width)
     row_height = 15.0
     box_width = width + 38.0
     box_height = row_height * (len(rows) + 1) + 10.0
-    cr.set_source_rgba(0.0, 0.0, 0.0, 0.55)
-    cr.rectangle(x, y, box_width, box_height)
-    cr.fill()
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.9)
-    cr.move_to(x + 8.0, y + 15.0)
-    cr.show_text(title)
+    canvas.set_source_rgba(0.0, 0.0, 0.0, 0.55)
+    canvas.rectangle(x, y, box_width, box_height)
+    canvas.fill()
+    canvas.set_source_rgba(1.0, 1.0, 1.0, 0.9)
+    canvas.move_to(x + 8.0, y + 15.0)
+    canvas.show_text(title)
     for index, (label, colour) in enumerate(rows):
         row_y = y + 18.0 + row_height * (index + 1)
-        cr.set_source_rgba(colour[0], colour[1], colour[2], 1.0)
-        cr.rectangle(x + 8.0, row_y - 8.0, 10.0, 10.0)
-        cr.fill()
-        cr.set_source_rgba(1.0, 1.0, 1.0, 0.9)
-        cr.move_to(x + 24.0, row_y)
-        cr.show_text(label)
-    cr.restore()
+        canvas.set_source_rgba(colour[0], colour[1], colour[2], 1.0)
+        canvas.rectangle(x + 8.0, row_y - 8.0, 10.0, 10.0)
+        canvas.fill()
+        canvas.set_source_rgba(1.0, 1.0, 1.0, 0.9)
+        canvas.move_to(x + 24.0, row_y)
+        canvas.show_text(label)
+    canvas.restore()
 
 
 class NavigationRenderer:
@@ -378,7 +380,9 @@ class NavigationRenderer:
             getattr(route, "uid", None) in self.hl_routes
         )
 
-    def draw_routes(self, gpsmap, cr, display_time, draw_routes=True):  # noqa: C901
+    def draw_routes(self, gpsmap, canvas, display_time, draw_routes=True):  # noqa: C901
+        if not isinstance(canvas, Canvas):
+            canvas = CairoCanvas(canvas)
         # Legacy route times and the map clock are local and naive; newer
         # routes carry UTC offsets. Compare instants without discarding offsets.
 
@@ -391,7 +395,7 @@ class NavigationRenderer:
                 if highlight:
                     draw_current_exclusions(
                         gpsmap,
-                        CairoCanvas(cr),
+                        canvas,
                         (tr.provenance or {}).get("excluded_current_samples", ()),
                     )
 
@@ -412,20 +416,20 @@ class NavigationRenderer:
 
                     # Route name label at start with background
                     if prevp is None and highlight:
-                        cr.set_font_size(10)
-                        ext = cr.text_extents(tr.name)
-                        cr.set_source_rgba(0.0, 0.0, 0.0, 0.6)
-                        cr.rectangle(x + 8, y - 12, ext.width + 8, 16)
-                        cr.fill()
-                        cr.set_source_rgba(1.0, 1.0, 1.0, 0.9)
-                        cr.move_to(x + 12, y)
-                        cr.show_text(tr.name)
-                        cr.stroke()
+                        canvas.set_font_size(10)
+                        ext = canvas.text_extents(tr.name)
+                        canvas.set_source_rgba(0.0, 0.0, 0.0, 0.6)
+                        canvas.rectangle(x + 8, y - 12, ext.width + 8, 16)
+                        canvas.fill()
+                        canvas.set_source_rgba(1.0, 1.0, 1.0, 0.9)
+                        canvas.move_to(x + 12, y)
+                        canvas.show_text(tr.name)
+                        canvas.stroke()
                     elif prevp is None:
-                        Style.Track.RoutingTrackFont.apply(cr)
-                        cr.move_to(x + 10, y)
-                        cr.show_text(tr.name)
-                        cr.stroke()
+                        Style.Track.RoutingTrackFont.apply_canvas(canvas)
+                        canvas.move_to(x + 10, y)
+                        canvas.show_text(tr.name)
+                        canvas.stroke()
 
                     # Interpolated boat position on route. A point without a
                     # recorded heading still draws, but cannot place the boat.
@@ -449,13 +453,13 @@ class NavigationRenderer:
                                 MapPoint.new_degrees(rp[0], rp[1])
                             )
                             # Boat marker: filled circle with border
-                            cr.set_source_rgba(0.1, 0.6, 0.1, 1.0)
-                            cr.arc(xx, yy, 8, 0, 2 * math.pi)
-                            cr.fill()
-                            cr.set_source_rgba(1.0, 1.0, 1.0, 0.9)
-                            cr.set_line_width(1.5)
-                            cr.arc(xx, yy, 8, 0, 2 * math.pi)
-                            cr.stroke()
+                            canvas.set_source_rgba(0.1, 0.6, 0.1, 1.0)
+                            canvas.arc(xx, yy, 8, 0, 2 * math.pi)
+                            canvas.fill()
+                            canvas.set_source_rgba(1.0, 1.0, 1.0, 0.9)
+                            canvas.set_line_width(1.5)
+                            canvas.arc(xx, yy, 8, 0, 2 * math.pi)
+                            canvas.stroke()
 
                     # Draw segment line colored by the selected per-leg mode
                     if prevx is not None and prevy is not None:
@@ -468,11 +472,11 @@ class NavigationRenderer:
                             r, g, b, a = segment_colours[i - 1]
                         else:
                             r, g, b, a = ROUTE_UNKNOWN_COLOUR
-                        cr.set_source_rgba(r, g, b, a if highlight else a * 0.7)
-                        cr.set_line_width(lw)
-                        cr.move_to(prevx, prevy)
-                        cr.line_to(x, y)
-                        cr.stroke()
+                        canvas.set_source_rgba(r, g, b, a if highlight else a * 0.7)
+                        canvas.set_line_width(lw)
+                        canvas.move_to(prevx, prevy)
+                        canvas.line_to(x, y)
+                        canvas.stroke()
 
                     # Waypoint markers
                     speed = p[5] if p[5] is not None else 0
@@ -484,22 +488,22 @@ class NavigationRenderer:
                         r, g, b, a = ROUTE_UNKNOWN_COLOUR
                     radius = 3 if highlight else 2
 
-                    cr.set_source_rgba(r, g, b, 1.0)
-                    cr.arc(x, y, radius, 0, 2 * math.pi)
-                    cr.fill()
+                    canvas.set_source_rgba(r, g, b, 1.0)
+                    canvas.arc(x, y, radius, 0, 2 * math.pi)
+                    canvas.fill()
 
                     # A recorded sail-plan transition sits on the shared point
                     # between two legs. A square keeps it distinct from the
                     # circular waypoint dots without changing the geometry.
                     if i in sail_changes:
                         side = 6.0 if highlight else 5.0
-                        cr.set_source_rgba(*ROUTE_SAIL_CHANGE_COLOUR)
-                        cr.rectangle(x - side / 2, y - side / 2, side, side)
-                        cr.fill()
-                        cr.set_source_rgba(0.1, 0.1, 0.1, 0.9)
-                        cr.set_line_width(1.0)
-                        cr.rectangle(x - side / 2, y - side / 2, side, side)
-                        cr.stroke()
+                        canvas.set_source_rgba(*ROUTE_SAIL_CHANGE_COLOUR)
+                        canvas.rectangle(x - side / 2, y - side / 2, side, side)
+                        canvas.fill()
+                        canvas.set_source_rgba(0.1, 0.1, 0.1, 0.9)
+                        canvas.set_line_width(1.0)
+                        canvas.rectangle(x - side / 2, y - side / 2, side, side)
+                        canvas.stroke()
 
                     prevx = x
                     prevy = y
@@ -509,7 +513,7 @@ class NavigationRenderer:
                     entries = tuple(legend)
                     if sail_changes:
                         entries += (("Sail change", ROUTE_SAIL_CHANGE_COLOUR),)
-                    _draw_route_legend(cr, metric_label(mode), entries)
+                    _draw_route_legend(canvas, metric_label(mode), entries)
 
     def _route_overlay_geometry(self, route):
         """Static route geometry, cached until its revision or artifact changes.
@@ -682,7 +686,9 @@ class NavigationRenderer:
                 del self._route_styles[stale]
         return routes
 
-    def draw_navigation(self, gpsmap, cr, draw_tracks=True):  # noqa: C901
+    def draw_navigation(self, gpsmap, canvas, draw_tracks=True):  # noqa: C901
+        if not isinstance(canvas, Canvas):
+            canvas = CairoCanvas(canvas)
         if draw_tracks:
             for tr in self.core.trackManager:
                 if not tr.visible:
@@ -712,24 +718,24 @@ class NavigationRenderer:
 
                     if prevx is None:
                         if active:
-                            Style.Track.TrackActiveFont.apply(cr)
+                            Style.Track.TrackActiveFont.apply_canvas(canvas)
                         else:
-                            Style.Track.TrackInactiveFont.apply(cr)
+                            Style.Track.TrackInactiveFont.apply_canvas(canvas)
 
-                        cr.move_to(x - 10, y - 10)
-                        cr.show_text(tr.name)
-                        cr.stroke()
+                        canvas.move_to(x - 10, y - 10)
+                        canvas.show_text(tr.name)
+                        canvas.stroke()
 
                     if item_hl:
-                        Style.Track.TrackItemHLFont.apply(cr)
+                        Style.Track.TrackItemHLFont.apply_canvas(canvas)
                     elif active:
-                        Style.Track.TrackActivePoiFont.apply(cr)
+                        Style.Track.TrackActivePoiFont.apply_canvas(canvas)
                     else:
-                        Style.Track.TrackInactivePoiFont.apply(cr)
+                        Style.Track.TrackInactivePoiFont.apply_canvas(canvas)
 
-                    cr.move_to(x - 4, y + 18)
-                    cr.show_text(str(i))
-                    cr.stroke()
+                    canvas.move_to(x - 4, y + 18)
+                    canvas.show_text(str(i))
+                    canvas.stroke()
 
                     if prevx is not None and prevy is not None:
                         default = (
@@ -737,30 +743,32 @@ class NavigationRenderer:
                             if active
                             else Style.Track.TrackInactive
                         )
-                        _apply_track_style(cr, default, tr)
+                        _apply_track_style(canvas, default, tr)
 
-                        cr.move_to(prevx, prevy)
-                        cr.line_to(x, y)
-                        cr.stroke()
+                        canvas.move_to(prevx, prevy)
+                        canvas.line_to(x, y)
+                        canvas.stroke()
 
                     if item_hl:
-                        Style.Track.TrackItemHL.apply(cr)
+                        Style.Track.TrackItemHL.apply_canvas(canvas)
                     elif active:
-                        Style.Track.TrackActive.apply(cr)
+                        Style.Track.TrackActive.apply_canvas(canvas)
                     else:
-                        Style.Track.TrackInactive.apply(cr)
+                        Style.Track.TrackInactive.apply_canvas(canvas)
 
-                    Style.reset_dash(cr)
+                    Style.reset_dash_canvas(canvas)
 
                     if self.edit_track is tr:
-                        cr.arc(x, y, 7 if item_hl else 5, 0, 2 * math.pi)
-                        cr.stroke()
+                        canvas.arc(x, y, 7 if item_hl else 5, 0, 2 * math.pi)
+                        canvas.stroke()
 
                     prevx = x
                     prevy = y
 
-    def draw_race_tracks(self, gpsmap, cr, draw_pois=True):  # noqa: C901
+    def draw_race_tracks(self, gpsmap, canvas, draw_pois=True):  # noqa: C901
         """Draw race-track geometry without per-fix number labels."""
+        if not isinstance(canvas, Canvas):
+            canvas = CairoCanvas(canvas)
         for tr in self.core.trackManager:
             if not tr.visible or not getattr(tr, "race_track", False):
                 continue
@@ -777,13 +785,13 @@ class NavigationRenderer:
 
                 if prevx is None:
                     if active:
-                        Style.Track.TrackActiveFont.apply(cr)
+                        Style.Track.TrackActiveFont.apply_canvas(canvas)
                     else:
-                        Style.Track.TrackInactiveFont.apply(cr)
+                        Style.Track.TrackInactiveFont.apply_canvas(canvas)
 
-                    cr.move_to(x - 10, y - 10)
-                    cr.show_text(tr.name)
-                    cr.stroke()
+                    canvas.move_to(x - 10, y - 10)
+                    canvas.show_text(tr.name)
+                    canvas.stroke()
 
                 color = getattr(tr, "color", None)
                 if color is None:
@@ -791,14 +799,14 @@ class NavigationRenderer:
                     color = (rng.random(), rng.random(), rng.random())
 
                 if prevx is not None and prevy is not None:
-                    cr.set_source_rgba(
+                    canvas.set_source_rgba(
                         color[0], color[1], color[2], 1.0 if active else 0.6
                     )
-                    cr.set_line_width(2.0 if active else 1.2)
-                    Style.reset_dash(cr)
-                    cr.move_to(prevx, prevy)
-                    cr.line_to(x, y)
-                    cr.stroke()
+                    canvas.set_line_width(2.0 if active else 1.2)
+                    Style.reset_dash_canvas(canvas)
+                    canvas.move_to(prevx, prevy)
+                    canvas.line_to(x, y)
+                    canvas.stroke()
 
                 prevx = x
                 prevy = y
@@ -814,37 +822,37 @@ class NavigationRenderer:
                 )
 
                 if poi_hl:
-                    Style.Poi.QuadHL.apply(cr)
+                    Style.Poi.QuadHL.apply_canvas(canvas)
                 else:
-                    Style.Poi.Quad.apply(cr)
-                cr.rectangle(x + 3, y - 5, len(tr.name) * 6.7, 12)
-                cr.stroke_preserve()
+                    Style.Poi.Quad.apply_canvas(canvas)
+                canvas.rectangle(x + 3, y - 5, len(tr.name) * 6.7, 12)
+                canvas.stroke_preserve()
                 if poi_hl:
-                    Style.Poi.QuadIntHL.apply(cr)
+                    Style.Poi.QuadIntHL.apply_canvas(canvas)
                 else:
-                    Style.Poi.QuadInt.apply(cr)
-                cr.fill()
+                    Style.Poi.QuadInt.apply_canvas(canvas)
+                canvas.fill()
 
                 if poi_hl:
-                    Style.Poi.FontHL.apply(cr)
+                    Style.Poi.FontHL.apply_canvas(canvas)
                 else:
-                    Style.Poi.Font.apply(cr)
-                cr.move_to(x + 5, y + 5)
-                cr.show_text(tr.name)
-                cr.stroke()
+                    Style.Poi.Font.apply_canvas(canvas)
+                canvas.move_to(x + 5, y + 5)
+                canvas.show_text(tr.name)
+                canvas.stroke()
 
                 if poi_hl:
-                    Style.Poi.DotHL.apply(cr)
+                    Style.Poi.DotHL.apply_canvas(canvas)
                 else:
-                    Style.Poi.Dot.apply(cr)
-                cr.arc(x, y, 4 if poi_hl else 2, 0, 2 * math.pi)
-                cr.fill()
+                    Style.Poi.Dot.apply_canvas(canvas)
+                canvas.arc(x, y, 4 if poi_hl else 2, 0, 2 * math.pi)
+                canvas.fill()
 
             # Triangle
-            # cr.move_to(x-5, y-5)
-            # cr.line_to(x,y+5)
-            # cr.move_to(x+5, y-5)
-            # cr.line_to(x,y+5)
-            # cr.move_to(x-5, y-5)
-            # cr.line_to(x+5,y-5)
-            # cr.stroke()
+            # canvas.move_to(x-5, y-5)
+            # canvas.line_to(x,y+5)
+            # canvas.move_to(x+5, y-5)
+            # canvas.line_to(x,y+5)
+            # canvas.move_to(x-5, y-5)
+            # canvas.line_to(x+5,y-5)
+            # canvas.stroke()
