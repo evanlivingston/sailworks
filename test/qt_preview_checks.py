@@ -1231,12 +1231,13 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(events)  # Queued position predates the source reset.
 
     def test_chart_layer_panel_switches_sources_on_both_maps_during_gesture(self):
+        from sailworks.rendering.chartclasses import CHART_CLASSES
         from sailworks.rendering.gdalrasterchart import GDALRasterChart
 
         object.__setattr__(self.controller.settings, "_Storage__init", True)
         self.window.show_library()
         panel = self.window.library_dialog.chart_layers_panel
-        self.assertEqual(len(panel.checkboxes), 8)
+        self.assertEqual(len(panel.checkboxes), len(CHART_CLASSES))
         chart = GDALRasterChart("/disabled", self.controller.settings, enabled=False)
         self.controller.charts.charts.append(chart)
         for canvas in (self.window.map, self.window.log_map):
@@ -1273,6 +1274,28 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertFalse(reloaded.chartENCVisible)
             self.assertFalse(reloaded.canadianCharts)
             self.assertTrue(reloaded.chartWorldVisible)
+
+    def test_main_window_chart_layers_panel_mirrors_data_library(self):
+        main = self.window.chart_layers_panel
+        self.assertIn("chart-layers", self.window.panel_actions)
+        self.assertTrue(self.window.panel_actions["chart-layers"].isChecked())
+        self.assertTrue(self.window._panel_visible("chart-layers"))
+        self.assertIn("chartENCVisible", main.checkboxes)
+        # The View/panels entry closes and restores the panel.
+        self.window.panel_actions["chart-layers"].setChecked(False)
+        self.assertFalse(self.window._panel_visible("chart-layers"))
+        self.window.panel_actions["chart-layers"].setChecked(True)
+        self.assertTrue(self.window._panel_visible("chart-layers"))
+        self.window.show_library()
+        library_panel = self.window.library_dialog.chart_layers_panel
+        self.assertIsNot(main, library_panel)
+        object.__setattr__(self.controller.settings, "_Storage__init", True)
+        main.checkboxes["chartENCVisible"].setChecked(False)
+        self.assertFalse(self.controller.settings.chartENCVisible)
+        self.assertFalse(library_panel.checkboxes["chartENCVisible"].isChecked())
+        library_panel.checkboxes["chartENCVisible"].setChecked(True)
+        self.assertTrue(self.controller.settings.chartENCVisible)
+        self.assertTrue(main.checkboxes["chartENCVisible"].isChecked())
 
     def test_mbtiles_import_toggle_persistence_and_remove_keeps_file(self):
         from sailworks.core.settings import SettingsManager
@@ -1328,10 +1351,11 @@ class QtPreviewChecks(unittest.TestCase):
             ],
             ["Sources && appearance", "Local files", "Downloads && base maps"],
         )
-        self.assertEqual(
-            len(library.chart_layers_panel.checkboxes), len(CHART_CLASSES) + 2
-        )
-        self.assertNotIn("chart-layers", self.window.panels)
+        self.assertEqual(len(library.chart_layers_panel.checkboxes), len(CHART_CLASSES))
+        self.assertIn("chart-layers", self.window.panels)
+        self.assertIn("chart-layers", self.window.panel_actions)
+        self.assertIsNot(self.window.chart_layers_panel, library.chart_layers_panel)
+        self.assertTrue(self.window._panel_visible("chart-layers"))
         self.assertFalse(self.window.chart_debug_panel.findChildren(QCheckBox))
         self.window.show_settings()
         settings = self.window.settings_dialog
