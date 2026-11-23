@@ -5,13 +5,11 @@ import math
 import sqlite3
 from collections import OrderedDict
 
-import cairo
-
 from sailworks.core.mapviewport import MapViewport
 from sailworks.core.mbtiles import MBTilesInfo, open_archive, png_size, read_info
 from sailworks.core.scheduling import schedule_idle
 
-from .canvas import CairoCanvas, Canvas, CanvasImage
+from .canvas import Canvas, CanvasImage
 from .chartlayer import ChartLayer
 from .overlayrenderer import OverlayRenderer
 
@@ -87,8 +85,6 @@ class MBTilesRenderer(OverlayRenderer):
         self._tile_bytes = 0
 
     def draw(self, canvas, cr, charts, palette):
-        if not isinstance(cr, Canvas):
-            cr = CairoCanvas(cr)
         super().draw(canvas, cr, charts, palette)
         state = self._states.get(canvas)
         if not state or not state.frame or state.frame[0].key != state.key:

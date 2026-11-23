@@ -898,16 +898,6 @@ def _raster_chart(tmp_path):
     return GDALSingleRasterChart(path)
 
 
-def _cairo_raster_scene(chart, scale):
-    width, height = chart.width * scale, chart.height * scale
-    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
-    canvas = CairoCanvas(cairo.Context(surface))
-    canvas.draw_image(
-        chart.image_for(canvas), 0, 0, width=width, height=height, smooth=None
-    )
-    return _image_from_surface(surface)
-
-
 def _qpainter_raster_scene(chart, scale):
     width, height = chart.width * scale, chart.height * scale
     image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
@@ -919,20 +909,17 @@ def _qpainter_raster_scene(chart, scale):
     return image
 
 
-def test_raster_chart_image_matches_on_both_backends(tmp_path):
+def test_raster_chart_image_renders_through_the_qt_carrier(tmp_path):
     chart = _raster_chart(tmp_path)
-    scale = 3
-    cairo_image = _cairo_raster_scene(chart, scale)
-    painter_image = _qpainter_raster_scene(chart, scale)
+    image = _qpainter_raster_scene(chart, 3)
 
-    measured = _compare_composited(cairo_image, painter_image)
-    _report("raster chart image", measured)
-    regions = _quadrant_interior_regions(
-        chart.width, chart.height, scale, BLIT_INTERIOR_MARGIN
+    assert image.width() == chart.width * 3
+    assert image.height() == chart.height * 3
+    assert any(
+        image.pixelColor(x, y).alpha()
+        for x in range(0, image.width(), 16)
+        for y in range(0, image.height(), 16)
     )
-    interior = _interior_max_diff(cairo_image, painter_image, regions)
-    print(f"canvas equivalence (raster chart image): interior max={interior}")
-    assert interior <= IMAGE_INTERIOR_MAX_DIFF
 
 
 # --- PNG tile decode and labels through the seam (#267 Phase 2 slice 6) ----
@@ -1038,25 +1025,8 @@ def test_png_label_after_set_font_face_stays_within_text_tolerance():
 # ``WindPainter._draw_color_fill_image``): the same colours over the same
 # cells, but filter arithmetic instead of mesh arithmetic, and rows placed
 # evenly between the first and last latitude instead of at their true mercator
-# offsets. Production keeps the cairo mesh, so its own output is unaffected.
-#
-# The numbers below are measured, not a design target. Each backend records its
-# own measurement: the two use different filter implementations by design, so
-# there is no cross-backend agreement check. For comparison, the strips this
-# replaced measured max=61 mean=2.343 fraction=0.4446 on Qt.
-WIND_APPROX_BASELINE_MAX_DIFF = 61
-WIND_APPROX_BASELINE_MEAN_DIFF = 0.6444
-WIND_APPROX_BASELINE_FRACTION = 0.3958
-WIND_APPROX_MAX_MARGIN = 8
-WIND_APPROX_MEAN_MARGIN = 0.35
-WIND_APPROX_FRACTION_MARGIN = 0.03
-
-# The same approximation measured on the Cairo backend as well. It is recorded
-# separately because Cairo and Qt filter independently; it is not expected to
-# match the Qt numbers and nothing asserts that it does.
-WIND_APPROX_CAIRO_MAX_DIFF = 61
-WIND_APPROX_CAIRO_MEAN_DIFF = 0.4794
-WIND_APPROX_CAIRO_FRACTION = 0.2634
+# offsets. The mesh path is gone; this is the only implementation, so there is
+# no cross-backend comparison left to make.
 
 # Mercator row spacing is non-uniform, so a uniformly scaled image misplaces
 # interior rows between the first and last latitude. Measured on a 5-row grid
@@ -1100,67 +1070,15 @@ def _wind_settings():
     return SimpleNamespace(gribArrowOpacity=0.8, gribWindGradient=True)
 
 
-def _wind_scene(backend, path):
+def _wind_scene():
     columns = _wind_columns()
     painter = WindPainter(_wind_settings())
     view = _WindView()
-    if backend == "qt":
-        image = QImage(WIDTH, HEIGHT, QImage.Format.Format_ARGB32_Premultiplied)
-        canvas = QPainterCanvas(image)
-        painter._draw_color_fill(view, canvas, columns, 1)
-        canvas.finish()
-        return image
-    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, WIDTH, HEIGHT)
-    canvas = CairoCanvas(cairo.Context(surface))
-    if path == "mesh":
-        painter._draw_color_fill(view, canvas, columns, 1)
-    else:
-        projected = painter._grid_screen_points(view, columns, 1)
-        opacity = painter.settings_manager.gribArrowOpacity * 0.3
-        painter._draw_color_fill_image(view, canvas, columns, 1, opacity, *projected)
-    surface.flush()
-    return QImage(
-        surface.get_data(),
-        surface.get_width(),
-        surface.get_height(),
-        surface.get_stride(),
-        QImage.Format.Format_ARGB32_Premultiplied,
-    ).copy()
-
-
-def test_wind_colour_fill_approximation_distance_is_recorded():
-    mesh = _wind_scene("cairo", "mesh")
-    cairo_image = _wind_scene("cairo", "image")
-    painter_image = _wind_scene("qt", "image")
-
-    mesh_measured = _compare_composited(mesh, mesh)
-    assert mesh_measured["non_blank_fraction"] > MIN_NON_BLANK_FRACTION
-
-    cairo_measured = _compare_composited(mesh, cairo_image)
-    painter_measured = _compare_composited(mesh, painter_image)
-    _report("wind fill image on cairo vs mesh", cairo_measured)
-    _report("wind fill image on qt vs cairo mesh", painter_measured)
-
-    # Each backend is recorded against the mesh with its own measured numbers.
-    # The two backends filter independently by design, so nothing requires
-    # them to agree with each other.
-    for measured, max_diff, mean_diff, fraction in (
-        (
-            painter_measured,
-            WIND_APPROX_BASELINE_MAX_DIFF,
-            WIND_APPROX_BASELINE_MEAN_DIFF,
-            WIND_APPROX_BASELINE_FRACTION,
-        ),
-        (
-            cairo_measured,
-            WIND_APPROX_CAIRO_MAX_DIFF,
-            WIND_APPROX_CAIRO_MEAN_DIFF,
-            WIND_APPROX_CAIRO_FRACTION,
-        ),
-    ):
-        assert abs(measured["max"] - max_diff) <= WIND_APPROX_MAX_MARGIN
-        assert abs(measured["mean"] - mean_diff) <= WIND_APPROX_MEAN_MARGIN
-        assert abs(measured["fraction"] - fraction) <= WIND_APPROX_FRACTION_MARGIN
+    image = QImage(WIDTH, HEIGHT, QImage.Format.Format_ARGB32_Premultiplied)
+    canvas = QPainterCanvas(image)
+    painter._draw_color_fill(view, canvas, columns, 1)
+    canvas.finish()
+    return image
 
 
 def test_wind_colour_fill_has_no_transparent_band_seams_in_qt():
@@ -1171,9 +1089,7 @@ def test_wind_colour_fill_has_no_transparent_band_seams_in_qt():
     such edge, so every pixel between the first and last covered pixel of a
     sampled vertical line carries the fill.
     """
-    image = _wind_scene("qt", "image").convertToFormat(
-        QImage.Format.Format_ARGB32_Premultiplied
-    )
+    image = _wind_scene().convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
     checked = 0
     # The grid spans x=40..400; stay inside so the exact edge pixel of the
     # clip is not what the assertion is about.

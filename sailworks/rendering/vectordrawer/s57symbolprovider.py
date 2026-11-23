@@ -18,9 +18,7 @@ import json
 import logging
 from typing import cast
 
-import cairo
-
-from ..canvas import Canvas, CanvasImage, QPainterCanvas
+from ..canvas import Canvas, CanvasImage
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
@@ -49,11 +47,8 @@ class S57SymbolProvider:
         self._p_dark_path = resource_path(
             "sailworks", "data/s57/rastersymbols-dark.png"
         )
-        self.p_day = cairo.ImageSurface.create_from_png(self._p_day_path)
-        self.p_dark = cairo.ImageSurface.create_from_png(self._p_dark_path)
 
-        self.p_select = self.p_day
-        self._sprites = {}
+        self.p_select = "day"
         self._qt_sheets = {}
         self._qt_sprites = {}
         self.on_chart_palette_changed(settings_manager.chartPalette)
@@ -130,42 +125,23 @@ class S57SymbolProvider:
             logger.debug("Saved cached S57 symbols")
 
     def on_chart_palette_changed(self, v):
-        if v == "dark":
-            self.p_select = self.p_dark
-        else:
-            self.p_select = self.p_day
+        self.p_select = "dark" if v == "dark" else "day"
 
     def draw(self, cr, n, xx, yy):
         s = self.symbols[n]
-        if isinstance(cr, QPainterCanvas):
-            # A Qt buffer is written only by QPainterCanvas, so the sprite is
-            # composited from a Qt-backed sheet instead of a cairo surface.
-            cr.draw_image(self._qt_sprite(n), xx - s["pivot"][0], yy - s["pivot"][1])
-            return
-        key = (id(self.p_select), n)
-        img = self._sprites.get(key)
-        if img is None:
-            img = cairo.ImageSurface(cairo.FORMAT_ARGB32, *s["dim"])
-            sprite_cr = cairo.Context(img)
-            sprite_cr.set_source_surface(self.p_select, -s["gloc"][0], -s["gloc"][1])
-            sprite_cr.paint()
-            self._sprites[key] = img
-        cr.set_source_surface(img, xx - s["pivot"][0], yy - s["pivot"][1])
-        cr.paint()
+        cr.draw_image(self._qt_sprite(n), xx - s["pivot"][0], yy - s["pivot"][1])
 
     def _qt_sheet(self):
         """The current symbol sheet decoded for Qt, cached per palette."""
-        image = self._qt_sheets.get(id(self.p_select))
+        image = self._qt_sheets.get(self.p_select)
         if image is None:
             # Imported here so a process that never draws a Qt surface does
             # not load PySide6 just by importing this module.
             from PySide6.QtGui import QImage
 
-            path = (
-                self._p_dark_path if self.p_select is self.p_dark else self._p_day_path
-            )
+            path = self._p_dark_path if self.p_select == "dark" else self._p_day_path
             image = CanvasImage.from_qimage(QImage(path))
-            self._qt_sheets[id(self.p_select)] = image
+            self._qt_sheets[self.p_select] = image
         return image
 
     def _qt_sprite(self, n):

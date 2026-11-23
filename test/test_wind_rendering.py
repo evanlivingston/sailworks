@@ -228,7 +228,7 @@ class TestWindOverlay(unittest.TestCase):
     def draw(self):
         self.renderer.draw(
             self.canvas,
-            self.cr,
+            CairoCanvas(self.cr),
             tuple((grib,) for grib in self.manager.gribs),
             (
                 self.clock.time,
