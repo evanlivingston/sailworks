@@ -34,6 +34,7 @@ from sailworks.rendering.canvas import (  # noqa: E402
     SLANT_NORMAL,
     WEIGHT_BOLD,
     CairoCanvas,
+    Canvas,
     CanvasImage,
     QPainterCanvas,
 )
@@ -1321,3 +1322,41 @@ def test_rgba_carrier_preserves_channel_order_on_both_backends():
             for x in range(4)
         )
         assert observed == expected, (backend, observed)
+
+
+def _filled_probe(backend):
+    image = CanvasImage.new(2, 2, 1.0, backend=backend)
+    canvas = Canvas.for_image(image)
+    canvas.set_source_rgba(0.25, 0.2, 0.1, 1.0)
+    canvas.rectangle(0, 0, 2, 2)
+    canvas.fill()
+    canvas.finish()
+    image.flush()
+    return image
+
+
+def test_get_data_byte_order_and_stride_agree_across_backends():
+    """``get_data`` must be the same premultiplied BGRA buffer for both.
+
+    The Qt carrier hands out premultiplied ARGB32 bits and cairo hands out
+    ``FORMAT_ARGB32`` bytes; both are the packed ``0xAARRGGBB`` word, so the
+    bytes run blue, green, red, alpha. An opaque pixel premultiplies to
+    itself, so the two backends agree to within the one rounding step where
+    they convert ``0.1 * 255`` differently (25 versus 26).
+    """
+    cairo_image = _filled_probe("cairo")
+    qt_image = _filled_probe("qt")
+
+    assert (cairo_image.get_width(), cairo_image.get_height()) == (2, 2)
+    assert (qt_image.get_width(), qt_image.get_height()) == (2, 2)
+    assert cairo_image.get_stride() == qt_image.get_stride() == 8
+
+    cairo_px = bytes(cairo_image.get_data())[:4]
+    qt_px = bytes(qt_image.get_data())[:4]
+    assert cairo_px[3] == qt_px[3] == 0xFF
+    # Cairo and Qt round 0.1 * 255 differently (25 or 26), so the blue
+    # channel may differ by one; green and red agree byte for byte.
+    for px in (cairo_px, qt_px):
+        assert px[0] < px[1] < px[2]
+    for left, right in zip(cairo_px, qt_px):
+        assert abs(left - right) <= 1, (cairo_px, qt_px)

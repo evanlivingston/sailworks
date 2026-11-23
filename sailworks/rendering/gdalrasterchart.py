@@ -224,11 +224,6 @@ class GDALSingleRasterChart:
             self._surface_image = CanvasImage.from_cairo_surface(surface)
         return self._surface_image
 
-    @property
-    def surface(self):
-        """Cairo view of the raster, for callers that still own a context."""
-        return self.image_for(None).surface
-
     def band_to_surface(self, i):
         band = self.dataset.GetRasterBand(i)
 
