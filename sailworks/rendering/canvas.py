@@ -29,6 +29,7 @@ QPainter-only path never loads it.
 
 import io
 import math
+import sys
 from collections import namedtuple
 
 # Qt is imported on first use by ``QPainterCanvas``, never at module import
@@ -94,6 +95,19 @@ JOIN_BEVEL = "bevel"
 FILL_EVEN_ODD = "even-odd"
 FILL_WINDING = "winding"
 
+# Line caps, named rather than re-exporting either backend's constants.
+CAP_BUTT = "butt"
+CAP_ROUND = "round"
+CAP_SQUARE = "square"
+
+# Font slants and weights, named rather than re-exporting either backend's
+# constants. ``None`` means the backend's default, which is normal/normal.
+SLANT_NORMAL = "normal"
+SLANT_ITALIC = "italic"
+
+WEIGHT_NORMAL = "normal"
+WEIGHT_BOLD = "bold"
+
 
 class CanvasImage:
     """A decoded raster image, carried between the two canvas backends.
@@ -108,12 +122,16 @@ class CanvasImage:
     for as long as the carrier can be drawn; this object does not own it.
     """
 
-    def __init__(self, width, height, device_scale=1.0, surface=None, qimage=None):
+    def __init__(
+        self, width, height, device_scale=1.0, surface=None, qimage=None, buffer=None
+    ):
         self._width = width
         self._height = height
         self._device_scale = device_scale
         self._surface = surface
         self._qimage = qimage
+        # Kept alive for images built over a caller-provided pixel buffer.
+        self._buffer = buffer
 
     @property
     def width(self):
@@ -176,6 +194,84 @@ class CanvasImage:
             if image.isNull():
                 raise ValueError("Unable to decode image bytes")
             return cls.from_qimage(image)
+        raise ValueError(f"Unknown canvas backend: {backend!r}")
+
+    @classmethod
+    def from_rgba(cls, width, height, data, device_scale=1.0, backend="cairo"):
+        """Build a carrier from a row-major, **premultiplied** RGBA byte array.
+
+        ``data`` holds four bytes per pixel in R, G, B, A order, row-major,
+        with no padding between rows; a contiguous ``numpy.uint8`` array of
+        shape ``(height, width, 4)`` is accepted. ``width``/``height`` are the
+        pixel dimensions of that array and ``device_scale`` divides them into
+        the logical size the carrier reports, mirroring
+        :meth:`from_cairo_surface`.
+
+        Both backends store ARGB32, i.e. a packed ``0xAARRGGBB`` word, so the
+        memory order is the same on both and depends only on the machine's
+        endianness (BGRA on little-endian, ARGB on big-endian). The caller's
+        RGBA rows are reordered once, here, and the resulting buffer is held
+        alive by the carrier. The channel order is proven by
+        ``test_canvas_equivalence`` rather than assumed.
+        """
+        raw = data.tobytes() if hasattr(data, "tobytes") else bytes(data)
+        expected = width * height * 4
+        if len(raw) != expected:
+            raise ValueError(
+                f"RGBA data is {len(raw)} bytes, expected {expected} "
+                f"for {width}x{height}"
+            )
+        buffer = bytearray(expected)
+        if sys.byteorder == "little":
+            # ARGB32 low byte first: B, G, R, A.
+            buffer[0::4] = raw[2::4]
+            buffer[1::4] = raw[1::4]
+            buffer[2::4] = raw[0::4]
+            buffer[3::4] = raw[3::4]
+        else:
+            # ARGB32 high byte first: A, R, G, B.
+            buffer[0::4] = raw[3::4]
+            buffer[1::4] = raw[0::4]
+            buffer[2::4] = raw[1::4]
+            buffer[3::4] = raw[2::4]
+        logical_width = width / device_scale
+        logical_height = height / device_scale
+        if backend == "cairo":
+            # Imported lazily so importing this module never imports cairo.
+            import cairo
+
+            surface = cairo.ImageSurface.create_for_data(
+                memoryview(buffer), cairo.FORMAT_ARGB32, width, height
+            )
+            surface.set_device_scale(device_scale, device_scale)
+            return cls(
+                logical_width,
+                logical_height,
+                device_scale,
+                surface=surface,
+                buffer=buffer,
+            )
+        if backend == "qt":
+            _qt()
+            # ``QImage`` does not own the Python buffer it is built over, and
+            # the binding does not guarantee a reference to it, so copy the
+            # pixels into an image Qt owns.
+            raw_buffer = bytes(buffer)
+            image = QImage(
+                raw_buffer,
+                width,
+                height,
+                width * 4,
+                QImage.Format.Format_ARGB32_Premultiplied,
+            ).copy()
+            image.setDevicePixelRatio(device_scale)
+            return cls(
+                logical_width,
+                logical_height,
+                device_scale,
+                qimage=image,
+                buffer=raw_buffer,
+            )
         raise ValueError(f"Unknown canvas backend: {backend!r}")
 
     @classmethod
@@ -250,13 +346,16 @@ class Canvas:
     def set_line_join(self, join):
         raise NotImplementedError
 
+    def set_line_cap(self, cap):
+        raise NotImplementedError
+
     def set_dash(self, pattern):
         raise NotImplementedError
 
     def set_font_size(self, size):
         raise NotImplementedError
 
-    def set_font_face(self, family):
+    def set_font_face(self, family, slant=None, weight=None):
         raise NotImplementedError
 
     def translate(self, x, y):
@@ -343,12 +442,32 @@ class Canvas:
     def show_text(self, text):
         raise NotImplementedError
 
+    def text_path(self, text):
+        """Append the glyph outlines of ``text`` to the current path.
+
+        The path then carries the text, so ``fill``/``stroke``/``stroke_preserve``
+        can draw it — the outlined isobar labels depend on this.
+        """
+        raise NotImplementedError
+
 
 class CairoCanvas(Canvas):
     """Pure delegation to a ``cairo.Context``; output must not change."""
 
     def __init__(self, context):
         self._cr = context
+
+    @property
+    def context(self):
+        """The wrapped ``cairo.Context``, for the one cairo-only operation.
+
+        The wind colour mesh uses ``cairo.MeshPattern``, which has no Qt
+        equivalent, so it is not part of the seam: ``CairoCanvas`` keeps it and
+        reaches its own context here. This property is that single documented
+        escape hatch and disappears with this class in Phase 5. Do not route
+        ordinary drawing through it.
+        """
+        return self._cr
 
     def save(self):
         self._cr.save()
@@ -377,14 +496,41 @@ class CairoCanvas(Canvas):
             }[join]
         )
 
+    def set_line_cap(self, cap):
+        # Imported lazily so importing this module never imports cairo.
+        import cairo
+
+        self._cr.set_line_cap(
+            {
+                CAP_BUTT: cairo.LINE_CAP_BUTT,
+                CAP_ROUND: cairo.LINE_CAP_ROUND,
+                CAP_SQUARE: cairo.LINE_CAP_SQUARE,
+            }[cap]
+        )
+
     def set_dash(self, pattern):
         self._cr.set_dash(list(pattern))
 
     def set_font_size(self, size):
         self._cr.set_font_size(size)
 
-    def set_font_face(self, family):
-        self._cr.select_font_face(family)
+    def set_font_face(self, family, slant=None, weight=None):
+        # Imported lazily so importing this module never imports cairo.
+        import cairo
+
+        self._cr.select_font_face(
+            family,
+            {
+                None: cairo.FONT_SLANT_NORMAL,
+                SLANT_NORMAL: cairo.FONT_SLANT_NORMAL,
+                SLANT_ITALIC: cairo.FONT_SLANT_ITALIC,
+            }[slant],
+            {
+                None: cairo.FONT_WEIGHT_NORMAL,
+                WEIGHT_NORMAL: cairo.FONT_WEIGHT_NORMAL,
+                WEIGHT_BOLD: cairo.FONT_WEIGHT_BOLD,
+            }[weight],
+        )
 
     def translate(self, x, y):
         self._cr.translate(x, y)
@@ -488,6 +634,9 @@ class CairoCanvas(Canvas):
     def show_text(self, text):
         self._cr.show_text(text)
 
+    def text_path(self, text):
+        self._cr.text_path(text)
+
 
 class QPainterCanvas(Canvas):
     """Paints onto an ARGB32-premultiplied ``QImage`` through ``QPainter``.
@@ -510,6 +659,7 @@ class QPainterCanvas(Canvas):
         self._color = QColor(0, 0, 0, 255)
         self._line_width = 1.0
         self._join = Qt.MiterJoin
+        self._cap = Qt.FlatCap
         self._dash = []
         self._font = QFont()
         self._current = QPointF(0.0, 0.0)
@@ -575,6 +725,13 @@ class QPainterCanvas(Canvas):
             JOIN_BEVEL: Qt.BevelJoin,
         }[join]
 
+    def set_line_cap(self, cap):
+        self._cap = {
+            CAP_BUTT: Qt.FlatCap,
+            CAP_ROUND: Qt.RoundCap,
+            CAP_SQUARE: Qt.SquareCap,
+        }[cap]
+
     def set_dash(self, pattern):
         """Set a Cairo-style dash pattern, mapping it onto Qt's pen units.
 
@@ -602,9 +759,23 @@ class QPainterCanvas(Canvas):
         font.setPixelSize(max(1, int(round(size))))
         self._font = font
 
-    def set_font_face(self, family):
+    def set_font_face(self, family, slant=None, weight=None):
         font = QFont(self._font)
         font.setFamily(family)
+        if slant is not None:
+            font.setStyle(
+                {
+                    SLANT_NORMAL: QFont.Style.StyleNormal,
+                    SLANT_ITALIC: QFont.Style.StyleItalic,
+                }[slant]
+            )
+        if weight is not None:
+            font.setWeight(
+                {
+                    WEIGHT_NORMAL: QFont.Weight.Normal,
+                    WEIGHT_BOLD: QFont.Weight.Bold,
+                }[weight]
+            )
         self._font = font
 
     def translate(self, x, y):
@@ -722,8 +893,7 @@ class QPainterCanvas(Canvas):
     def _stroke_path(self):
         pen = QPen(self._color)
         pen.setWidthF(self._line_width)
-        # Cairo's defaults: butt caps, miter joins.
-        pen.setCapStyle(Qt.FlatCap)
+        pen.setCapStyle(self._cap)
         pen.setJoinStyle(self._join)
         if self._dash:
             pen.setDashPattern(self._dash)
@@ -777,3 +947,19 @@ class QPainterCanvas(Canvas):
         self._painter.setFont(self._font)
         self._painter.setPen(self._color)
         self._painter.drawText(self._current, text)
+
+    def text_path(self, text):
+        """Append glyph outlines at the current point, as ``cairo_text_path``.
+
+        ``QPainterPath.addText`` places baseline text at an absolute origin, so
+        the glyphs are built at the origin and translated to the current point
+        before being merged into the active path. Cairo leaves the current
+        point at the end of the text, and so does this.
+        """
+        glyphs = QPainterPath()
+        glyphs.addText(0.0, 0.0, self._font, text)
+        glyphs.translate(self._current.x(), self._current.y())
+        self._path.addPath(glyphs)
+        self._path.setFillRule(self._fill_rule)
+        self._started = True
+        self._current = glyphs.currentPosition()

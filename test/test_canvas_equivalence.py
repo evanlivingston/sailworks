@@ -10,6 +10,7 @@ distance is, together with a ceiling that keeps a real regression visible.
 """
 
 import io
+import math
 import os
 import threading
 from types import SimpleNamespace
@@ -30,6 +31,8 @@ from osgeo import ogr  # noqa: E402
 from sailworks.rendering.ais import AISRenderer  # noqa: E402
 from sailworks.rendering.canvas import (  # noqa: E402
     FILL_EVEN_ODD,
+    SLANT_NORMAL,
+    WEIGHT_BOLD,
     CairoCanvas,
     CanvasImage,
     QPainterCanvas,
@@ -40,6 +43,7 @@ from sailworks.rendering.isochrones import (  # noqa: E402
     render_isochrones,
 )
 from sailworks.rendering.style import Style  # noqa: E402
+from sailworks.rendering.windpainter import WindPainter  # noqa: E402
 from sailworks.rendering.vectordrawer.cm93chartdrawer import (  # noqa: E402
     CM93ChartDrawer,
 )
@@ -1022,3 +1026,103 @@ def test_png_label_after_set_font_face_stays_within_text_tolerance():
     assert measured["mean"] <= TEXT_MEAN_DIFF_CEILING
     assert measured["fraction"] <= TEXT_DIFF_FRACTION_CEILING
     assert abs(measured["max"] - PNG_LABEL_BASELINE_MAX_DIFF) <= PNG_LABEL_MAX_MARGIN
+
+
+# --- Outlined text: the isobar label's stroke-then-fill of a text path ------
+
+
+def _draw_outlined_label(canvas):
+    canvas.set_font_face("Sans", SLANT_NORMAL, WEIGHT_BOLD)
+    canvas.set_font_size(28)
+    canvas.move_to(60, 170)
+    canvas.text_path("1016")
+    canvas.set_source_rgba(0, 0, 0, 0.85)
+    canvas.set_line_width(3)
+    canvas.stroke_preserve()
+    canvas.set_source_rgba(1, 1, 1, 0.85)
+    canvas.fill()
+
+
+def test_outlined_text_path_label_stays_within_text_tolerance():
+    cairo_image = _cairo_scene(_draw_outlined_label)
+    painter_image = _qpainter_scene(_draw_outlined_label)
+
+    measured = _compare_composited(cairo_image, painter_image)
+    _report("outlined label", measured)
+
+    assert measured["non_blank_fraction"] > 0.0005
+    assert measured["mean"] <= TEXT_MEAN_DIFF_CEILING
+    assert measured["fraction"] <= TEXT_DIFF_FRACTION_CEILING
+
+
+# --- The RGBA carrier's channel order ----------------------------------------
+
+
+def _rgba_probe_cairo():
+    image = CanvasImage.from_rgba(4, 1, _RGBA_PROBE, backend="cairo")
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 4, 1)
+    canvas = CairoCanvas(cairo.Context(surface))
+    canvas.draw_image(image, 0, 0)
+    surface.flush()
+    return QImage(
+        surface.get_data(),
+        4,
+        1,
+        surface.get_stride(),
+        QImage.Format.Format_ARGB32_Premultiplied,
+    ).copy()
+
+
+def _rgba_probe_qt():
+    image = CanvasImage.from_rgba(4, 1, _RGBA_PROBE, backend="qt")
+    target = QImage(4, 1, QImage.Format.Format_ARGB32_Premultiplied)
+    canvas = QPainterCanvas(target)
+    canvas.draw_image(image, 0, 0)
+    canvas.finish()
+    return target
+
+
+# Row-major premultiplied RGBA: red, green, blue, then red at 50% alpha.
+_RGBA_PROBE = bytes(
+    (
+        255,
+        0,
+        0,
+        255,
+        0,
+        255,
+        0,
+        255,
+        0,
+        0,
+        255,
+        255,
+        128,
+        0,
+        0,
+        128,
+    )
+)
+
+
+def test_rgba_carrier_preserves_channel_order_on_both_backends():
+    expected = (
+        (255, 0, 0, 255),
+        (0, 255, 0, 255),
+        (0, 0, 255, 255),
+        (255, 0, 0, 128),
+    )
+    for backend, image in (
+        ("cairo", _rgba_probe_cairo()),
+        ("qt", _rgba_probe_qt()),
+    ):
+        observed = tuple(
+            (
+                image.pixelColor(x, 0).red(),
+                image.pixelColor(x, 0).green(),
+                image.pixelColor(x, 0).blue(),
+                image.pixelColor(x, 0).alpha(),
+            )
+            for x in range(4)
+        )
+        assert observed == expected, (backend, observed)
