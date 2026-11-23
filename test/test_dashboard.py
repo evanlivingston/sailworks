@@ -5,10 +5,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-import cairo
-
 from sailworks.core.core import BoatInfo
-from sailworks.rendering.canvas import CairoCanvas
+from sailworks.rendering.canvas import Canvas, CanvasImage
 from sailworks.rendering.dashboard import DashboardRenderer
 
 
@@ -75,7 +73,7 @@ class TestDashboard(unittest.TestCase):
             (1200, 600),
         ):
             with self.subTest(width=width):
-                surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+                image = CanvasImage.new(width, height)
                 view = SimpleNamespace(
                     get_allocated_width=lambda: width,
                     get_allocated_height=lambda: height,
@@ -83,7 +81,7 @@ class TestDashboard(unittest.TestCase):
                 gauges = self.renderer._gauges
                 for gauge in gauges:
                     gauge.draw = Mock()
-                self.renderer._draw_dashboard(view, CairoCanvas(cairo.Context(surface)))
+                self.renderer._draw_dashboard(view, Canvas.for_image(image))
                 positions = []
                 for gauge in gauges:
                     gauge.draw.assert_called_once()

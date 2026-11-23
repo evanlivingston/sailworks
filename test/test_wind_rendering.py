@@ -9,12 +9,11 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-import cairo
 import numpy as np
 from osgeo import gdal, ogr
 
 from sailworks.core.grib import Grib
-from sailworks.rendering.canvas import CairoCanvas
+from sailworks.rendering.canvas import Canvas, CanvasImage
 from sailworks.rendering.windpainter import (
     WindPainter,
     wind_on_ground,
@@ -210,8 +209,7 @@ class TestWindOverlay(unittest.TestCase):
         self.schedule = QueuedScheduler()
         self.renderer = WindOverlayRenderer(WindPainter, schedule=self.schedule)
         self.renderer._land_mask.contains = Mock(return_value=False)
-        self.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 400, 300)
-        self.cr = cairo.Context(self.surface)
+        self.image = CanvasImage.new(400, 300)
         self.renderer._load_wind = Mock(
             return_value=[
                 (
@@ -226,9 +224,12 @@ class TestWindOverlay(unittest.TestCase):
         self.addCleanup(self.renderer.forget, self.canvas)
 
     def draw(self):
+        # A fresh transparent target per draw, as the widget layer supplies.
+        self.image = CanvasImage.new(400, 300)
+        target = Canvas.for_image(self.image)
         self.renderer.draw(
             self.canvas,
-            CairoCanvas(self.cr),
+            target,
             tuple((grib,) for grib in self.manager.gribs),
             (
                 self.clock.time,
@@ -244,6 +245,7 @@ class TestWindOverlay(unittest.TestCase):
             ),
             barb_density=getattr(self.settings, "gribBarbDensity", "standard"),
         )
+        target.finish()
 
     def drain(self):
         # CI runners can take several seconds to finish the retained-wind render.
@@ -482,19 +484,15 @@ class TestWindOverlay(unittest.TestCase):
         self.draw()
         self.drain()
         job, background = self.renderer._states[self.canvas].frame
-        background.flush()
         self.assertFalse(any(bytes(background.get_data())))
         self.canvas._zoom_animating = True
         for zoom in (12, 12.3, 13, 14):
             self.canvas._zoom = zoom
             self.clear_output()
             self.draw()
-            self.surface.flush()
-            pixels = np.ndarray(
-                (300, 400, 4),
-                dtype=np.uint8,
-                buffer=self.surface.get_data(),
-                strides=(self.surface.get_stride(), 4, 1),
+            self.image.flush()
+            pixels = np.frombuffer(self.image.get_data(), dtype=np.uint8).reshape(
+                300, 400, 4
             )
             ys, xs = np.nonzero(pixels[:, :, 3])
             self.assertGreater(len(xs), 0)
@@ -573,9 +571,8 @@ class TestWindOverlay(unittest.TestCase):
             self.drain()
         self.assertEqual(self.renderer._load_wind.call_count, 5)
         job, image = self.renderer._states[self.canvas].frame
-        surface = image.copy_as("cairo").surface
-        self.assertEqual(surface.get_device_scale(), (2, 2))
-        self.assertEqual(surface.get_width(), job.viewport.width * 2)
+        self.assertEqual(image.device_scale(), 2.0)
+        self.assertEqual(image.get_width(), job.viewport.width * 2)
 
     def test_disabling_cancels_running_job_and_cannot_publish_stale_frame(self):
         self.renderer._start_next = Mock()
@@ -583,7 +580,7 @@ class TestWindOverlay(unittest.TestCase):
         job = self.renderer._states[self.canvas].requested
         self.renderer.forget(self.canvas)
         self.assertTrue(job.cancel.is_set())
-        self.renderer._completed(self.canvas, job, self.surface, None)
+        self.renderer._completed(self.canvas, job, self.image, None)
         self.assertNotIn(self.canvas, self.renderer._states)
         self.assertFalse(self.renderer._pending)
 
@@ -603,7 +600,7 @@ class TestWindOverlay(unittest.TestCase):
         self.clock.time += timedelta(hours=1)
         self.draw()
         self.assertTrue(old.cancel.is_set())
-        self.renderer._completed(self.canvas, old, self.surface, None)
+        self.renderer._completed(self.canvas, old, self.image, None)
         self.assertIsNone(self.renderer._states[self.canvas].frame)
 
     def test_continuous_scrubbing_publishes_running_frame_and_queues_latest(self):
@@ -649,22 +646,20 @@ class TestWindOverlay(unittest.TestCase):
         self.renderer.forget(self.canvas)
         self.assertTrue(running.cancel.is_set())
         self.assertTrue(queued.cancel.is_set())
-        self.renderer._completed(self.canvas, running, self.surface, None)
+        self.renderer._completed(self.canvas, running, self.image, None)
         self.assertNotIn(self.canvas, self.renderer._states)
 
     def clear_output(self):
-        self.cr.save()
-        self.cr.set_operator(cairo.OPERATOR_CLEAR)
-        self.cr.paint()
-        self.cr.restore()
+        # Wipe the blit target the way the widget's next paint starts blank.
+        self.image.qimage.fill(0)
 
     def test_playback_keeps_gradient_until_latest_forecast_is_complete(self):
         self.draw()
         self.drain()
         self.clear_output()
         self.draw()
-        self.surface.flush()
-        initial = bytes(self.surface.get_data())
+        self.image.flush()
+        initial = bytes(self.image.get_data())
         self.assertTrue(any(initial))
         self.renderer._start_next = Mock()
         jobs = []
@@ -672,28 +667,27 @@ class TestWindOverlay(unittest.TestCase):
             self.clock.time += timedelta(hours=1)
             self.clear_output()
             self.draw()
-            self.surface.flush()
-            self.assertEqual(bytes(self.surface.get_data()), initial)
+            self.image.flush()
+            self.assertEqual(bytes(self.image.get_data()), initial)
             jobs.append(self.renderer._states[self.canvas].requested)
         # An obsolete forecast must not replace the visible image.
         latest = jobs[-1]
-        replacement = cairo.ImageSurface(
-            cairo.FORMAT_ARGB32, latest.viewport.width, latest.viewport.height
-        )
-        context = cairo.Context(replacement)
-        context.set_source_rgba(0, 0, 1, 0.3)
-        context.paint()
+        replacement = CanvasImage.new(latest.viewport.width, latest.viewport.height)
+        replacement_canvas = Canvas.for_image(replacement)
+        replacement_canvas.set_source_rgba(0, 0, 1, 0.3)
+        replacement_canvas.paint()
+        replacement_canvas.finish()
         self.renderer._completed(self.canvas, jobs[0], replacement, None)
         self.clear_output()
         self.draw()
-        self.surface.flush()
-        self.assertEqual(bytes(self.surface.get_data()), initial)
+        self.image.flush()
+        self.assertEqual(bytes(self.image.get_data()), initial)
         self.renderer._completed(self.canvas, latest, replacement, None)
         self.clear_output()
         self.draw()
-        self.surface.flush()
-        self.assertNotEqual(bytes(self.surface.get_data()), initial)
-        self.assertTrue(any(bytes(self.surface.get_data())))
+        self.image.flush()
+        self.assertNotEqual(bytes(self.image.get_data()), initial)
+        self.assertTrue(any(bytes(self.image.get_data())))
 
     def test_playback_preview_never_keeps_removed_sources_or_old_style(self):
         self.draw()
@@ -711,8 +705,8 @@ class TestWindOverlay(unittest.TestCase):
             change()
             self.clear_output()
             self.draw()
-            self.surface.flush()
-            self.assertFalse(any(bytes(self.surface.get_data())))
+            self.image.flush()
+            self.assertFalse(any(bytes(self.image.get_data())))
 
     def test_forecast_without_data_replaces_preview_with_empty_image(self):
         self.draw()
@@ -721,13 +715,13 @@ class TestWindOverlay(unittest.TestCase):
         self.renderer._load_wind.return_value = []
         self.clear_output()
         self.draw()
-        self.surface.flush()
-        self.assertTrue(any(bytes(self.surface.get_data())))
+        self.image.flush()
+        self.assertTrue(any(bytes(self.image.get_data())))
         self.drain()
         self.clear_output()
         self.draw()
-        self.surface.flush()
-        self.assertFalse(any(bytes(self.surface.get_data())))
+        self.image.flush()
+        self.assertFalse(any(bytes(self.image.get_data())))
 
     def test_land_mask_is_reused_between_painters(self):
         wind_on_ground.cache_clear()
@@ -808,15 +802,11 @@ class TestWindOverlay(unittest.TestCase):
             )
             for lon in range(3)
         ]
-        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 200, 200)
-        painter._draw_color_fill(view, CairoCanvas(cairo.Context(surface)), data, 1)
-        surface.flush()
-        pixels = np.ndarray(
-            (200, 200, 4),
-            dtype=np.uint8,
-            buffer=surface.get_data(),
-            strides=(surface.get_stride(), 4, 1),
-        )
+        image = CanvasImage.new(200, 200)
+        target = Canvas.for_image(image)
+        painter._draw_color_fill(view, target, data, 1)
+        target.finish()
+        pixels = np.frombuffer(image.get_data(), dtype=np.uint8).reshape(200, 200, 4)
         # Cross a cell edge and the intersection of four cells. Equal wind
         # speeds should give equal opacity even at subpixel mesh boundaries.
         alpha = pixels[98:103, 98:103, 3]
@@ -826,7 +816,6 @@ class TestWindOverlay(unittest.TestCase):
     def test_painter_keeps_colored_fill_and_barbs(self):
         self.draw()
         self.drain()
-        job, surface = self.renderer._states[self.canvas].frame
-        surface.flush()
-        self.assertTrue(any(bytes(surface.get_data())))
+        job, image = self.renderer._states[self.canvas].frame
+        self.assertTrue(any(bytes(image.get_data())))
         self.assertIsInstance(self.renderer._painter(self.settings), WindPainter)

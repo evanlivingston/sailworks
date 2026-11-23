@@ -11,13 +11,12 @@ fill and every non-DEPARE area outline stay exactly as they were.
 import math
 from types import SimpleNamespace
 
-import cairo
 import numpy as np
 import pytest
 from osgeo import ogr
 
 from sailworks.core.mapviewport import MercatorProjection
-from sailworks.rendering.canvas import CairoCanvas
+from sailworks.rendering.canvas import Canvas, CanvasImage, QPainterCanvas
 from sailworks.rendering.style import Style
 from sailworks.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
 
@@ -89,17 +88,17 @@ def _edge_filter():
     return drawer._coverage_edge_filter([COVERAGE], EPSILON / 2.0)
 
 
-class RecordingCanvas(CairoCanvas):
+class RecordingCanvas(QPainterCanvas):
     """A canvas that remembers the path it was asked to stroke.
 
-    ``stroke()`` consumes the current path in cairo, so the stroke path has
-    to be captured before the drawer's own ``stroke()`` clears it.  Reading
-    the seam's own calls is what the drawer now issues; no cairo path item is
+    A canvas stroke consumes the current path, so the stroke path has to be
+    captured before the drawer's own ``stroke()`` clears it.  Reading the
+    seam's own calls is what the drawer now issues; no path item is
     inspected.
     """
 
-    def __init__(self, context):
-        super().__init__(context)
+    def __init__(self, image):
+        super().__init__(image)
         self.events = []
         self.path = []
         self.stroke_path = None
@@ -144,12 +143,11 @@ class RecordingCanvas(CairoCanvas):
 
 def _edge_path(feature, edge_filter):
     """The stroke path ``_render_area`` lays down, as canvas operations."""
-    surface = cairo.ImageSurface(
-        cairo.FORMAT_ARGB32,
+    image = CanvasImage.new(
         CANVAS.get_allocated_width(),
         CANVAS.get_allocated_height(),
     )
-    recorder = RecordingCanvas(cairo.Context(surface))
+    recorder = RecordingCanvas(image.qimage)
     drawer = S57ChartDrawer(_Settings())
     drawer._render_area(CANVAS, recorder, feature, PALETTE, edge_filter)
     return recorder.stroke_path
@@ -312,18 +310,19 @@ def test_quilted_cell_draw_end_to_end_leaves_the_interior_contour():
         drawer = S57ChartDrawer(_Settings())
 
         def render(with_coverage):
-            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 140, 140)
-            cr = cairo.Context(surface)
+            image = CanvasImage.new(140, 140)
+            target = Canvas.for_image(image)
             drawer.draw(
                 canvas,
-                CairoCanvas(cr),
+                target,
                 source,
                 bounding,
                 coverage=coverage if with_coverage else None,
             )
-            surface.flush()
-            data = surface.get_data()
-            return np.frombuffer(data, dtype=np.uint32).reshape(140, 140)
+            target.finish()
+            data = image.get_data()
+            # The view points into the image buffer, so copy it out.
+            return np.frombuffer(data, dtype=np.uint32).reshape(140, 140).copy()
 
         suppressed = render(True)
         unsuppressed = render(False)

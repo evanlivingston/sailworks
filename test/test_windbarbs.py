@@ -5,11 +5,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import cairo
 import numpy as np
 
 from sailworks.core.mapviewport import MapViewport
-from sailworks.rendering.canvas import CairoCanvas
+from sailworks.rendering.canvas import Canvas, CanvasImage
 from sailworks.rendering.windpainter import (
     BARB_MAX_COUNT,
     BARB_DENSITIES,
@@ -216,7 +215,7 @@ class TestLiveWindBarbs(unittest.TestCase):
         shaft = next(iter(geometry.values()))[0][0]
         np.testing.assert_allclose(shaft[:2], [expected[0][0], expected[1][0]])
 
-    def test_cairo_retina_keeps_logical_size(self):
+    def test_retina_keeps_logical_size(self):
         painter = WindPainter(
             SimpleNamespace(
                 gribArrowOpacity=0.8,
@@ -232,22 +231,12 @@ class TestLiveWindBarbs(unittest.TestCase):
         )
         flat = flatten_wind_columns([[(0, 10, (0, 0))]])
         for factor in (1, 2):
-            surface = cairo.ImageSurface(
-                cairo.FORMAT_ARGB32, 100 * factor, 100 * factor
-            )
-            surface.set_device_scale(factor, factor)
-            self.assertEqual(
-                painter.draw_barbs_live(
-                    view, CairoCanvas(cairo.Context(surface)), flat
-                ),
-                1,
-            )
-            surface.flush()
-            alpha = np.ndarray(
-                (100 * factor, 100 * factor, 4),
-                dtype=np.uint8,
-                buffer=surface.get_data(),
-                strides=(surface.get_stride(), 4, 1),
+            image = CanvasImage.new(100, 100, factor)
+            canvas = Canvas.for_image(image)
+            self.assertEqual(painter.draw_barbs_live(view, canvas, flat), 1)
+            canvas.finish()
+            alpha = np.frombuffer(image.get_data(), dtype=np.uint8).reshape(
+                100 * factor, 100 * factor, 4
             )[:, :, 3]
             ys, _ = np.nonzero(alpha)
             self.assertAlmostEqual((ys.max() - ys.min() + 1) / factor, 20, delta=1)

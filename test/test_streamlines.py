@@ -7,10 +7,9 @@ from unittest.mock import patch
 import numpy as np
 
 from sailworks.core.mapviewport import MapViewport
-from sailworks.rendering.canvas import CairoCanvas
+from sailworks.rendering.canvas import Canvas, CanvasImage
 from sailworks.rendering.windpainter import WindPainter
 from sailworks.rendering.windgeometry import stroke_mesh
-import cairo
 from sailworks.rendering.streamlines import (
     WindGrid,
     trace_streamlines,
@@ -189,12 +188,11 @@ class TestStreamlines(unittest.TestCase):
     def test_geometry_paints_with_cpu_and_builds_finite_gpu_strokes(self):
         flat = trace_streamlines(self.view, self.field(), lambda lat, lon: False)
         geometry = geometry_for_view(flat, 0, 0, 8, 400, 300, True)
-        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 400, 300)
-        WindPainter.paint_barb_geometry(
-            CairoCanvas(cairo.Context(surface)), geometry, 0.8
-        )
-        surface.flush()
-        self.assertTrue(any(bytes(surface.get_data())))
+        image = CanvasImage.new(400, 300)
+        canvas = Canvas.for_image(image)
+        WindPainter.paint_barb_geometry(canvas, geometry, 0.8)
+        canvas.finish()
+        self.assertTrue(any(bytes(image.get_data())))
         for lines, triangles, dots in geometry.values():
             self.assertFalse(triangles)
             vertices = stroke_mesh(lines, dots)

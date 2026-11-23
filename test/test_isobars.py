@@ -20,12 +20,11 @@ class HashableViewport(SimpleNamespace):
 
 import unittest
 
-import cairo
 import numpy as np
 from osgeo import gdal
 
 from sailworks.core.grib import Grib
-from sailworks.rendering.canvas import CairoCanvas
+from sailworks.rendering.canvas import Canvas, CanvasImage
 from sailworks.rendering.windpainter import WindPainter
 from sailworks.rendering.windrenderer import DisplayGrib, WindOverlayRenderer
 
@@ -236,12 +235,11 @@ class TestIsobarPainting(unittest.TestCase):
         )
 
     def paint(self, pressure):
-        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 300, 200)
-        WindPainter(self.settings).draw(
-            self.view, CairoCanvas(cairo.Context(surface)), [], pressure
-        )
-        surface.flush()
-        return bytes(surface.get_data())
+        image = CanvasImage.new(300, 200)
+        canvas = Canvas.for_image(image)
+        WindPainter(self.settings).draw(self.view, canvas, [], pressure)
+        canvas.finish()
+        return bytes(image.get_data())
 
     def test_isobars_draw_lines_and_labels(self):
         self.assertTrue(any(self.paint(pressure_columns())))
