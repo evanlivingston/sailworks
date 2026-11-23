@@ -52,7 +52,6 @@ def summary(values):
 
 
 def environment(app, widget):
-    import cairo
     import numpy as np
     import PySide6
 
@@ -64,7 +63,6 @@ def environment(app, widget):
         "python": platform.python_version(),
         "qt": PySide6.__version__,
         "numpy": np.__version__,
-        "cairo": cairo.cairo_version_string(),
         "qt_platform": app.platformName(),
         "dpr": widget.devicePixelRatioF(),
         "refresh_rate_hz": app.primaryScreen().refreshRate(),

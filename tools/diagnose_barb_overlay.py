@@ -63,9 +63,7 @@ def color_error(gpu, cpu, radius=3):
 
 
 def cpu_image(field, selection, blend, width, height, dpr, opacity):
-    import cairo
-    from PySide6.QtGui import QImage
-    from sailworks.rendering.canvas import CairoCanvas
+    from sailworks.rendering.canvas import Canvas, CanvasImage
     from sailworks.rendering.windpainter import WindPainter
 
     picks = selection.reshape(-1, 3)
@@ -82,24 +80,15 @@ def cpu_image(field, selection, blend, width, height, dpr, opacity):
     )
     valid = np.isfinite(uv).all(axis=1) & np.isfinite(picks[:, 1:]).all(axis=1)
     picks, uv = picks[valid], uv[valid]
-    surface = cairo.ImageSurface(
-        cairo.FORMAT_ARGB32, round(width * dpr), round(height * dpr)
-    )
-    cr = cairo.Context(surface)
-    cr.scale(dpr, dpr)
+    image = CanvasImage.new(width, height, dpr)
+    canvas = Canvas.for_image(image)
     dirs = np.degrees(np.arctan2(-uv[:, 0], -uv[:, 1]))
     geometry = WindPainter.build_barb_geometry(
         picks[:, 1], picks[:, 2], dirs, np.hypot(uv[:, 0], uv[:, 1])
     )
-    WindPainter.paint_barb_geometry(CairoCanvas(cr), geometry, opacity)
-    surface.flush()
-    return QImage(
-        surface.get_data(),
-        surface.get_width(),
-        surface.get_height(),
-        surface.get_stride(),
-        QImage.Format.Format_ARGB32_Premultiplied,
-    ).copy()
+    WindPainter.paint_barb_geometry(canvas, geometry, opacity)
+    canvas.finish()
+    return image.qimage.copy()
 
 
 def controls():

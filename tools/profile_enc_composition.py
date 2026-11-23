@@ -70,11 +70,11 @@ def main():
 
 
 def _measure(report, data_dir, iterations):  # noqa: C901 - one bounded measurement
-    import cairo
     from sailworks.core.mapviewport import MapViewport
     from sailworks.qt.gribviewport import ViewportCamera
     from sailworks.qt.gribviewportchart import ChartCamera
     from sailworks.qt.viewportenc import ViewportEncSource
+    from sailworks.rendering.canvas import CanvasImage
     from sailworks.rendering.overlayrenderer import MARGIN, RenderJob
     from threading import Event
 
@@ -97,10 +97,7 @@ def _measure(report, data_dir, iterations):  # noqa: C901 - one bounded measurem
             palette="dark",
             cancel=cancel,
         )
-        surface = cairo.ImageSurface(
-            cairo.FORMAT_ARGB32, viewport.width * FACTOR, viewport.height * FACTOR
-        )
-        surface.set_device_scale(FACTOR, FACTOR)
+        surface = CanvasImage.new(viewport.width, viewport.height, FACTOR)
         began = time.perf_counter()
         surface, metadata = source.compose(job, surface)
         elapsed = time.perf_counter() - began

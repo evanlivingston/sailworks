@@ -9,7 +9,6 @@ import sys
 import tempfile
 import time
 
-import cairo
 import numpy as np
 from osgeo import ogr
 
@@ -20,6 +19,7 @@ if str(ROOT) not in sys.path:
 from sailworks.core.mapviewport import MercatorProjection
 from sailworks.core.storage import DATA_DIR
 from sailworks.qt.basecharts import BaseChartRenderer, BaseSource
+from sailworks.rendering.canvas import FILL_EVEN_ODD, JOIN_ROUND, Canvas, CanvasImage
 from sailworks.rendering.overlayrenderer import RenderJob
 from sailworks.rendering.style import Style
 
@@ -84,13 +84,11 @@ def render(renderer, source, viewport, factor):
 
 
 def composite(tiles, layout, factor):
-    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 912 * factor, 812 * factor)
-    surface.set_device_scale(factor, factor)
-    cr = cairo.Context(surface)
+    image = CanvasImage.new(912, 812, factor)
+    canvas = Canvas.for_image(image)
     for x, y, dx, dy in layout:
-        cr.set_source_surface(tiles[x, y], dx, dy)
-        cr.paint()
-    surface.flush()
+        canvas.draw_image(tiles[x, y], dx, dy)
+    canvas.finish()
 
 
 def measure_grid(renderer, source, viewport, factor, size, iterations):
@@ -253,17 +251,14 @@ def numpy_render(data, viewport, factor):
     )
     timing["cull"] += time.perf_counter() - start
     start = time.perf_counter()
-    surface = cairo.ImageSurface(
-        cairo.FORMAT_ARGB32, viewport.width * factor, viewport.height * factor
-    )
-    surface.set_device_scale(factor, factor)
-    cr = cairo.Context(surface)
+    image = CanvasImage.new(viewport.width, viewport.height, factor)
+    canvas = Canvas.for_image(image)
     palette = Style.chart_palettes["dark"]
-    palette.sea.apply(cr)
-    cr.rectangle(0, 0, viewport.width, viewport.height)
-    cr.stroke_preserve()
-    cr.fill()
-    cr.set_line_join(cairo.LINE_JOIN_ROUND)
+    palette.sea.apply_canvas(canvas)
+    canvas.rectangle(0, 0, viewport.width, viewport.height)
+    canvas.stroke_preserve()
+    canvas.fill()
+    canvas.set_line_join(JOIN_ROUND)
     timing["draw"] += time.perf_counter() - start
     clipped = ring_count = 0
     for index in selected:
@@ -286,22 +281,22 @@ def numpy_render(data, viewport, factor):
                 if len(points):
                     paths.append(points)
             start = time.perf_counter()
-            cr.new_path()
+            canvas.new_path()
             for points in paths:
-                cr.move_to(*points[0])
+                canvas.move_to(*points[0])
                 for x, y in points[1:]:
-                    cr.line_to(x, y)
-                cr.close_path()
-            cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
-            palette.land_fill.apply(cr)
-            cr.fill_preserve()
-            palette.land_stroke.apply(cr)
-            cr.stroke()
+                    canvas.line_to(x, y)
+                canvas.close_path()
+            canvas.set_fill_rule(FILL_EVEN_ODD)
+            palette.land_fill.apply_canvas(canvas)
+            canvas.fill_preserve()
+            palette.land_stroke.apply_canvas(canvas)
+            canvas.stroke()
             timing["draw"] += time.perf_counter() - start
     start = time.perf_counter()
-    surface.flush()
+    canvas.finish()
     timing["draw"] += time.perf_counter() - start
-    return surface, timing, clipped, ring_count
+    return image, timing, clipped, ring_count
 
 
 def verify(renderer, source, viewport, factor):

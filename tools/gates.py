@@ -773,7 +773,7 @@ GATES = {
         "tool": "tools/benchmark_startup_rendering.py",
         "endpoint": ENDPOINT_PROBE,
         "requires": ["snapshot"],
-        "dependencies": ["PySide6", "numpy", "cairo", "osgeo.gdal"],
+        "dependencies": ["PySide6", "numpy", "osgeo.gdal"],
         "timeout_s": 110,
         "env": {"GWR_GPU_WEATHER": "1", "GWR_GPU_RESIDENT_FIELDS": "1"},
         "command": [
@@ -1423,7 +1423,7 @@ GATES = {
         "tool": "tools/benchmark_startup_rendering.py",
         "endpoint": ENDPOINT_PROBE,
         "requires": ["snapshot"],
-        "dependencies": ["PySide6", "numpy", "cairo", "osgeo.gdal"],
+        "dependencies": ["PySide6", "numpy", "osgeo.gdal"],
         "timeout_s": 110,
         "env": {"GWR_GPU_WEATHER": "1"},
         "command": [
@@ -1549,7 +1549,7 @@ GATES = {
         "tool": "tools/benchmark_startup_rendering.py",
         "endpoint": ENDPOINT_PROBE,
         "requires": ["snapshot"],
-        "dependencies": ["PySide6", "numpy", "cairo", "osgeo.gdal"],
+        "dependencies": ["PySide6", "numpy", "osgeo.gdal"],
         "timeout_s": 110,
         "env": {"GWR_GPU_WEATHER": "1"},
         "command": [
@@ -1660,7 +1660,7 @@ GATES = {
         "tool": "tools/benchmark_startup_rendering.py",
         "endpoint": ENDPOINT_GRAB,
         "requires": ["snapshot"],
-        "dependencies": ["PySide6", "numpy", "cairo", "osgeo.gdal"],
+        "dependencies": ["PySide6", "numpy", "osgeo.gdal"],
         "timeout_s": 110,
         "env": {"GWR_GPU_WEATHER": "1"},
         "command": [
@@ -1817,7 +1817,7 @@ GATES = {
             "probe, not a presentation measurement."
         ),
         "requires": ["snapshot"],
-        "dependencies": ["PySide6", "numpy", "cairo", "osgeo.gdal"],
+        "dependencies": ["PySide6", "numpy", "osgeo.gdal"],
         "timeout_s": 115,
         "command": [
             "{python}",
@@ -1908,7 +1908,7 @@ GATES = {
         "tool": "tools/benchmark_startup_rendering.py",
         "endpoint": ENDPOINT_GRAB,
         "requires": ["snapshot"],
-        "dependencies": ["PySide6", "numpy", "cairo", "osgeo.gdal"],
+        "dependencies": ["PySide6", "numpy", "osgeo.gdal"],
         "timeout_s": 110,
         "env": {"GWR_GPU_WEATHER": "1"},
         "command": [
@@ -2171,7 +2171,7 @@ GATES["native-weather-integration"] = {
     "tool": "tools/check_native_weather_integration.py",
     "endpoint": ENDPOINT_GRAB,
     "requires": [],
-    "dependencies": ["PySide6", "numpy", "osgeo.gdal", "cairo"],
+    "dependencies": ["PySide6", "numpy", "osgeo.gdal"],
     "timeout_s": 120,
     "env": {},
     "command": ["{python}", "{tool}", "--output", "{tool_output}"],
