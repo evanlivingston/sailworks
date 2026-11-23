@@ -72,7 +72,9 @@ class TestChartSurfaceCache(unittest.TestCase):
         self.render()
         self.assertEqual(self.layer.draws, 5)
         cache = self.manager._chart_surfaces[self.canvas]
-        self.assertEqual(cache[2].get_device_scale(), (2.0, 2.0))
+        self.assertEqual(
+            cache[2].copy_as("cairo").surface.get_device_scale(), (2.0, 2.0)
+        )
 
     def test_layer_toggle_and_async_completion_invalidate(self):
         self.render()
@@ -314,6 +316,7 @@ class TestBackgroundENC(unittest.TestCase):
         job = RenderJob((), viewport, (), 2, "cm93")
         viewport.render_cancelled = job.cancel.is_set
         surface = self.renderer._render(job)
+        surface = surface.copy_as("cairo").surface
         self.assertEqual(surface.get_device_scale(), (2.0, 2.0))
         self.assertEqual(surface.get_width(), viewport.width * 2)
         self.assertEqual(surface.get_height(), viewport.height * 2)

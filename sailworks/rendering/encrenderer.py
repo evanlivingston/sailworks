@@ -10,7 +10,7 @@ from sailworks.core.enccharts import chart_scale_rank, chart_scale_visible
 from sailworks.core.mapviewport import MapPoint
 from sailworks.rendering.overlayrenderer import OverlayRenderer
 
-from .canvas import FILL_EVEN_ODD, CairoCanvas, Canvas
+from .canvas import FILL_EVEN_ODD, CairoCanvas, Canvas, CanvasImage
 from .chartlayer import ChartLayer
 from .gdalvectorchart import GDALVectorChart
 from .vectordrawer.s57chartdrawer import S57ChartDrawer
@@ -44,14 +44,8 @@ class ENCOverlayRenderer(OverlayRenderer):
 
     def _render(self, job):
         viewport = job.viewport
-        surface = cairo.ImageSurface(
-            cairo.FORMAT_ARGB32,
-            max(1, int(round(viewport.width * job.factor))),
-            max(1, int(round(viewport.height * job.factor))),
-        )
-        surface.set_device_scale(job.factor, job.factor)
-        cr = cairo.Context(surface)
-        canvas = CairoCanvas(cr)
+        image = CanvasImage.new(viewport.width, viewport.height, job.factor)
+        canvas = Canvas.for_image(image)
         p1, p2 = viewport.get_bbox()
         bounding = ogr.CreateGeometryFromWkt(
             ChartLayer.get_bounding_wkt_of_coords(*p1.get_degrees(), *p2.get_degrees())
@@ -97,8 +91,8 @@ class ENCOverlayRenderer(OverlayRenderer):
             canvas.restore()
             if known_coverage:
                 covered = region if covered is None else covered.Union(region)
-        surface.flush()
-        return None if job.cancel.is_set() else surface
+        canvas.finish()
+        return None if job.cancel.is_set() else image
 
     def _worker_chart(self, path, native_scale, palette):
         chart = self._charts.get(path)

@@ -155,8 +155,9 @@ class TestMBTilesPixels(unittest.TestCase):
 
     @staticmethod
     def pixel(image, x, y):
-        # The carrier keeps the cairo surface; read the pixels the worker wrote.
-        surface = image.surface
+        # The worker buffer follows the destination backend; copy it to cairo
+        # so the read stays backend neutral.
+        surface = image.copy_as("cairo").surface
         surface.flush()
         offset = y * surface.get_stride() + x * 4
         return tuple(bytes(surface.get_data())[offset : offset + 4])
@@ -364,7 +365,8 @@ class TestMBTilesPixels(unittest.TestCase):
         ):
             second = self.render(info)
         self.assertEqual(
-            bytes(first.surface.get_data()), bytes(second.surface.get_data())
+            bytes(first.copy_as("cairo").surface.get_data()),
+            bytes(second.copy_as("cairo").surface.get_data()),
         )
         self.renderer.CACHE_ENTRIES = 2
         self.renderer.CACHE_BYTES = 8192

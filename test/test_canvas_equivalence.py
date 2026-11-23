@@ -967,7 +967,7 @@ def _png_tile_bytes():
 
 
 def _cairo_png_scene(data, scale):
-    source = CanvasImage.from_png_bytes(data)
+    source = CanvasImage.from_png_bytes(data, backend="cairo")
     width, height = int(source.width) * scale, int(source.height) * scale
     surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
     canvas = CairoCanvas(cairo.Context(surface))

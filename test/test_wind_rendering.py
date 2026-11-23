@@ -572,7 +572,8 @@ class TestWindOverlay(unittest.TestCase):
             self.draw()
             self.drain()
         self.assertEqual(self.renderer._load_wind.call_count, 5)
-        job, surface = self.renderer._states[self.canvas].frame
+        job, image = self.renderer._states[self.canvas].frame
+        surface = image.copy_as("cairo").surface
         self.assertEqual(surface.get_device_scale(), (2, 2))
         self.assertEqual(surface.get_width(), job.viewport.width * 2)
 

@@ -19,7 +19,7 @@ from osgeo import ogr
 from sailworks.core.grib import Grib
 from sailworks.core.storage import DATA_DIR
 from sailworks.core.utils import COUNTRY_SHAPES, point_in_bbox
-from sailworks.rendering.canvas import CairoCanvas
+from sailworks.rendering.canvas import CairoCanvas, Canvas, CanvasImage
 from sailworks.rendering.overlayrenderer import OverlayRenderer, covers
 from sailworks.rendering.panprefetch import PanPreparationTime
 from sailworks.rendering.streamlines import trace_streamlines, geometry_for_view
@@ -1260,25 +1260,21 @@ class WindOverlayRenderer(OverlayRenderer):
         if not self._prepare_vectors(job, data, fill_data):
             return None
         viewport = job.viewport
-        surface = cairo.ImageSurface(
-            cairo.FORMAT_ARGB32,
-            viewport.width * job.factor,
-            viewport.height * job.factor,
-        )
-        surface.set_device_scale(job.factor, job.factor)
+        image = CanvasImage.new(viewport.width, viewport.height, job.factor)
+        canvas = Canvas.for_image(image)
         settings = self._settings_for(job.palette)
         # Barbs stay out of the cached raster so zoom previews only stretch
         # the smooth fill; the foreground repaints barbs live at fixed size.
         self._painter(settings, self._land_mask.contains).draw(
             viewport,
-            CairoCanvas(cairo.Context(surface)),
+            canvas,
             data,
             pressure,
             fill_data=fill_data,
             draw_barbs=False,
         )
-        surface.flush()
-        return None if job.cancel.is_set() else surface
+        canvas.finish()
+        return None if job.cancel.is_set() else image
 
     def draw(
         self, canvas, cr, charts, palette, live_barbs=True, barb_density="standard"
@@ -1330,7 +1326,9 @@ class WindOverlayRenderer(OverlayRenderer):
             canvas._zoom,
             density=density,
         )
-        WindPainter.paint_barb_geometry(CairoCanvas(cr), geometry, opacity)
+        WindPainter.paint_barb_geometry(
+            cr if isinstance(cr, Canvas) else CairoCanvas(cr), geometry, opacity
+        )
 
     def live_geometry_for_view(
         self, canvas, width, height, center_lat, center_lon, zoom, density="standard"
