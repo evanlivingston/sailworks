@@ -2055,40 +2055,18 @@ def _image_bytes(image):
 def _surface_image(surface, dpr=1):
     """The composed image as a Qt image.
 
-    A composition carried as a Qt image is already premultiplied ARGB32 at
-    the composition's own device scale, so it is published as it is (or as a
-    copy when the requested ratio differs); no bytes are converted.  A cairo
-    surface is ARGB32 and premultiplied too, the same layout as the
-    application's own framebuffer readback, so its bytes are copied without a
-    conversion.  Either way the copy is the image's bytes and nothing else,
-    so the composition is published with one copy instead of two.
+    A composition is carried as premultiplied ARGB32 at its own device scale,
+    so it is published as it is, or as a copy when the requested ratio
+    differs.  No bytes are converted and nothing is copied twice.
 
     The image carries the composition's device pixel ratio, so the scene
     shows one device pixel per display pixel and never rescales the
     composition.
     """
-    if getattr(surface, "backend", None) == "qt":
-        image = surface.qimage
-        if image.devicePixelRatio() != dpr:
-            image = image.copy()
-            image.setDevicePixelRatio(dpr)
-        return image
-
-    from PySide6.QtGui import QImage
-
-    surface.flush()
-    width = surface.get_width()
-    height = surface.get_height()
-    stride = surface.get_stride()
-    data = bytes(surface.get_data())
-    image = QImage(
-        data,
-        width,
-        height,
-        stride,
-        QImage.Format.Format_ARGB32_Premultiplied,
-    )
-    image.setDevicePixelRatio(dpr)
+    image = surface.qimage
+    if image.devicePixelRatio() != dpr:
+        image = image.copy()
+        image.setDevicePixelRatio(dpr)
     return image
 
 
