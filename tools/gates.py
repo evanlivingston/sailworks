@@ -89,7 +89,7 @@ GATES = {
         "tool": "tools/check_enc_viewport.py",
         "endpoint": ENDPOINT_PROBE,
         "requires": ["snapshot"],
-        "dependencies": ["cairo", "numpy", "osgeo.gdal", "PySide6"],
+        "dependencies": ["numpy", "osgeo.gdal", "PySide6"],
         "timeout_s": 110,
         "env": {"QT_QPA_PLATFORM": "cocoa", "QSG_RHI_BACKEND": "metal"},
         "command": [

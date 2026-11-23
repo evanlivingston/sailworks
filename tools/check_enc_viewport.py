@@ -280,7 +280,7 @@ def _grab(widget):
 
 
 def _surface_array(surface):
-    """A cairo ARGB32 surface as BGRA bytes, the same layout as the framebuffer."""
+    """A ``CanvasImage`` as BGRA bytes, the same layout as the framebuffer."""
     import numpy as np
 
     surface.flush()
@@ -291,18 +291,16 @@ def _surface_array(surface):
     return data.reshape(height, stride)[:, : width * 4].reshape(height, width, 4).copy()
 
 
-def _array_surface(array):
-    import cairo
-    import numpy as np
+def _image_copy(image):
+    """An independent copy of ``image`` at the same logical size and scale."""
+    from sailworks.rendering.canvas import CanvasImage
 
-    height, width = array.shape[:2]
-    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
-    target = np.frombuffer(surface.get_data(), np.uint8).reshape(
-        height, surface.get_stride()
+    return CanvasImage(
+        image.width,
+        image.height,
+        image.device_scale(),
+        qimage=image.qimage.copy(),
     )
-    target[:, : width * 4] = np.ascontiguousarray(array).reshape(height, width * 4)
-    surface.mark_dirty()
-    return surface
 
 
 def _ink(array):
@@ -687,8 +685,11 @@ def _base_job(camera, dpr, palette, sources, cancel):
 
 def _reference_composition(layer, camera, dpr, palette, data_dir, descriptors, probe):
     """Base, then ENC, then contours: the application's order, assembled here."""
-    import cairo
-    from sailworks.qt.gribviewportchart import _ChartComposer, base_sources
+    from sailworks.qt.gribviewportchart import (
+        _ChartComposer,
+        _canvas_preserving,
+        base_sources,
+    )
     from sailworks.rendering.encrenderer import ENCOverlayRenderer
     from sailworks.core.scheduling import schedule_idle
     from sailworks.rendering.overlayrenderer import MARGIN
@@ -712,11 +713,14 @@ def _reference_composition(layer, camera, dpr, palette, data_dir, descriptors, p
     job = _base_job(camera, dpr, palette, sources, cancel)
     composer = _ChartComposer(palette, sources)
     base, _none = composer.render(job, None, None)
-    off = _array_surface(_surface_array(base))
-    off.set_device_scale(dpr, dpr)
+    # The "off" control is an independent copy: the ENC and the contours are
+    # painted onto the base afterwards and must not reach it.
+    off = _image_copy(base)
     columns = layer._isobar_columns(job, camera, cancel)
     if columns:
-        composer.painter().draw_isobars(job.viewport, cairo.Context(off), columns)
+        canvas = _canvas_preserving(off)
+        composer.painter().draw_isobars(job.viewport, canvas, columns)
+        canvas.finish()
     enc_job = replace(job, charts=descriptors)
     oracle = ENCOverlayRenderer(schedule_idle)
     try:
@@ -732,12 +736,13 @@ def _reference_composition(layer, camera, dpr, palette, data_dir, descriptors, p
         annotation_renderer._charts.clear()
     on = base
     if enc is not None:
-        context = cairo.Context(on)
-        context.set_source_surface(enc, 0, 0)
-        context.paint()
-        on.flush()
+        canvas = _canvas_preserving(on)
+        canvas.draw_image(enc, 0, 0)
+        canvas.finish()
     if columns:
-        composer.painter().draw_isobars(job.viewport, cairo.Context(on), columns)
+        canvas = _canvas_preserving(on)
+        composer.painter().draw_isobars(job.viewport, canvas, columns)
+        canvas.finish()
     on.flush()
     offset = MARGIN * dpr
     width = camera.width * dpr

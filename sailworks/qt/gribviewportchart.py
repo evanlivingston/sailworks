@@ -399,11 +399,9 @@ def _canvas_preserving(image):
 
     The canvas factory assumes a fresh buffer and clears the image it wraps.
     A composition step that adds to drawn pixels therefore paints them back
-    through the same canvas first; a cairo surface paints in place and needs
-    no copy.  This mirrors the ENC composition's own bridge.
+    through the same canvas first.  This mirrors the ENC composition's own
+    bridge.
     """
-    if getattr(image, "backend", None) != "qt":
-        return Canvas.for_image(image)
     retained = CanvasImage(
         image.width,
         image.height,
