@@ -6,9 +6,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-import cairo
-
 from sailworks.core.mapviewport import MercatorProjection, MapViewport
+from sailworks.rendering.canvas import Canvas as DrawCanvas, CanvasImage
 from sailworks.rendering.overlayrenderer import MARGIN, covers
 from sailworks.rendering.windrenderer import WindOverlayRenderer
 
@@ -75,10 +74,10 @@ class Renderer(WindOverlayRenderer):
             canvas, job = self._speculative_active
         job.finished_at = time.monotonic()
         self._schedule_event("finish", job)
-        image = cairo.ImageSurface(
-            cairo.FORMAT_ARGB32,
-            job.viewport.width * job.factor,
-            job.viewport.height * job.factor,
+        image = CanvasImage.new(
+            job.viewport.width,
+            job.viewport.height,
+            job.factor,
         )
         self._completed(canvas, job, image, None)
         return job
@@ -90,8 +89,8 @@ class TestOverlayScheduling(unittest.TestCase):
         self.renderer = Renderer()
         self.sources = (("forecast",),)
         self.style = (datetime(2026, 1, 1), 0.8, True, True, True)
-        self.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 320, 240)
-        self.cr = cairo.Context(self.surface)
+        self.surface = CanvasImage.new(320, 240)
+        self.cr = DrawCanvas.for_image(self.surface)
 
     def draw(self, renderer=None, canvas=None):
         (renderer or self.renderer).draw(

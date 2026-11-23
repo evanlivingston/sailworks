@@ -1,12 +1,11 @@
-"""Rendering cache regression checks using Cairo and a map projection, without windows."""
+"""Rendering cache regression checks on Qt canvases and a map projection."""
 
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 from weakref import WeakKeyDictionary
 
-import cairo
-
+from sailworks.rendering.canvas import Canvas, CanvasImage
 from sailworks.rendering.chartcollection import ChartCollection
 from sailworks.rendering.gdalvectorchart import GDALVectorChart
 from sailworks.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
@@ -41,10 +40,9 @@ class TestChartSurfaceCache(unittest.TestCase):
         )
 
     def render(self):
-        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 400, 300)
-        self.draw(cairo.Context(surface))
-        surface.flush()
-        return surface
+        image = CanvasImage.new(400, 300)
+        self.draw(Canvas.for_image(image))
+        return image
 
     def test_repaint_and_small_pan_reuse_pixels(self):
         self.render()
@@ -72,9 +70,7 @@ class TestChartSurfaceCache(unittest.TestCase):
         self.render()
         self.assertEqual(self.layer.draws, 5)
         cache = self.manager._chart_surfaces[self.canvas]
-        self.assertEqual(
-            cache[2].copy_as("cairo").surface.get_device_scale(), (2.0, 2.0)
-        )
+        self.assertEqual(cache[2].device_scale(), 2.0)
 
     def test_layer_toggle_and_async_completion_invalidate(self):
         self.render()
@@ -188,8 +184,8 @@ class TestBackgroundENC(unittest.TestCase):
         self.schedule = QueuedScheduler()
         self.renderer = ENCOverlayRenderer(schedule=self.schedule)
         self.specs = (("test.000", 12000, ()),)
-        self.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 400, 300)
-        self.cr = cairo.Context(self.surface)
+        self.surface = CanvasImage.new(400, 300)
+        self.cr = Canvas.for_image(self.surface)
         self.addCleanup(self.renderer.forget, self.canvas)
 
     def test_draw_returns_while_background_render_is_blocked(self):
@@ -202,7 +198,7 @@ class TestBackgroundENC(unittest.TestCase):
             started.set()
             release.wait(2)
             finished.set()
-            return cairo.ImageSurface(cairo.FORMAT_ARGB32, 912, 812)
+            return CanvasImage.new(912, 812)
 
         self.renderer._render = slow_render
         self.renderer.draw(self.canvas, self.cr, self.specs, "cm93")
@@ -272,13 +268,12 @@ class TestBackgroundENC(unittest.TestCase):
         self.renderer.draw(self.canvas, self.cr, self.specs, "cm93")
         state = self.renderer._states[self.canvas]
         job = state.requested
-        image = cairo.ImageSurface(
-            cairo.FORMAT_ARGB32, job.viewport.width, job.viewport.height
-        )
-        context = cairo.Context(image)
-        context.set_source_rgb(1, 0, 0)
-        context.rectangle(200 + MARGIN - 2, 150 + MARGIN - 2, 4, 4)
-        context.fill()
+        image = CanvasImage.new(job.viewport.width, job.viewport.height)
+        preview = Canvas.for_image(image)
+        preview.set_source_rgb(1, 0, 0)
+        preview.rectangle(200 + MARGIN - 2, 150 + MARGIN - 2, 4, 4)
+        preview.fill()
+        preview.finish()
         state.frame = (job, image)
         self.canvas._zoom += 1
         self.canvas._center_lon = self.canvas._x_to_lon(
@@ -316,7 +311,6 @@ class TestBackgroundENC(unittest.TestCase):
         job = RenderJob((), viewport, (), 2, "cm93")
         viewport.render_cancelled = job.cancel.is_set
         surface = self.renderer._render(job)
-        surface = surface.copy_as("cairo").surface
-        self.assertEqual(surface.get_device_scale(), (2.0, 2.0))
+        self.assertEqual(surface.device_scale(), 2.0)
         self.assertEqual(surface.get_width(), viewport.width * 2)
         self.assertEqual(surface.get_height(), viewport.height * 2)

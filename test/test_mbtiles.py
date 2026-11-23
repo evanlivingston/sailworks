@@ -1,6 +1,5 @@
 """Read-only MBTiles import, tile orientation, sparse fallback and bounded I/O."""
 
-import io
 import sqlite3
 import threading
 import time
@@ -10,23 +9,26 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import cairo
+from PySide6.QtCore import QBuffer, QIODevice
 
 from sailworks.core.mapviewport import MapViewport
 from sailworks.core.mbtiles import MBTilesInfo, open_archive, read_info
+from sailworks.rendering.canvas import Canvas, CanvasImage
 from sailworks.rendering.mbtilesrenderer import MBTilesRenderer
 from sailworks.rendering.overlayrenderer import RenderJob
 from test.map_helpers import MapCanvas, QueuedScheduler
 
 
 def png(color, size=32):
-    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, size, size)
-    cr = cairo.Context(surface)
-    cr.set_source_rgb(*color)
-    cr.paint()
-    buffer = io.BytesIO()
-    surface.write_to_png(buffer)
-    return buffer.getvalue()
+    image = CanvasImage.new(size, size)
+    canvas = Canvas.for_image(image)
+    canvas.set_source_rgb(*color)
+    canvas.paint()
+    canvas.finish()
+    buffer = QBuffer()
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    image.qimage.save(buffer, "PNG")
+    return bytes(buffer.data())
 
 
 def make_mbtiles(path, tiles=None, scheme="tms", metadata=None):
@@ -155,12 +157,9 @@ class TestMBTilesPixels(unittest.TestCase):
 
     @staticmethod
     def pixel(image, x, y):
-        # The worker buffer follows the destination backend; copy it to cairo
-        # so the read stays backend neutral.
-        surface = image.copy_as("cairo").surface
-        surface.flush()
-        offset = y * surface.get_stride() + x * 4
-        return tuple(bytes(surface.get_data())[offset : offset + 4])
+        # Read the frame's bytes, copying them out of the image's buffer.
+        offset = y * image.get_stride() + x * 4
+        return tuple(bytes(image.get_data())[offset : offset + 4])
 
     def test_tms_orientation_fractional_zoom_and_retina(self):
         make_mbtiles(self.path)
@@ -215,11 +214,11 @@ class TestMBTilesPixels(unittest.TestCase):
             threads.append(threading.get_ident())
             return open_archive(path)
 
-        cr = cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 400, 300))
+        target = Canvas.for_image(CanvasImage.new(400, 300))
         with patch(
             "sailworks.rendering.mbtilesrenderer.open_archive", side_effect=opened
         ):
-            renderer.draw(self.canvas, cr, ((info,),), "cm93")
+            renderer.draw(self.canvas, target, ((info,),), "cm93")
             deadline = time.monotonic() + 3
             while renderer._running and time.monotonic() < deadline:
                 scheduler.drain()
@@ -365,8 +364,8 @@ class TestMBTilesPixels(unittest.TestCase):
         ):
             second = self.render(info)
         self.assertEqual(
-            bytes(first.copy_as("cairo").surface.get_data()),
-            bytes(second.copy_as("cairo").surface.get_data()),
+            bytes(first.get_data()),
+            bytes(second.get_data()),
         )
         self.renderer.CACHE_ENTRIES = 2
         self.renderer.CACHE_BYTES = 8192

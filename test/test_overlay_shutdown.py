@@ -3,8 +3,7 @@
 from threading import Event, get_ident
 import unittest
 
-import cairo
-
+from sailworks.rendering.canvas import Canvas as DrawCanvas, CanvasImage
 from sailworks.rendering.overlayrenderer import OverlayRenderer
 from test.test_overlay_scheduling import Canvas
 
@@ -40,12 +39,11 @@ class TestOverlayShutdown(unittest.TestCase):
         self.addCleanup(self.renderer.close)
         self.addCleanup(self.renderer.resume.set)
         self.canvas = Canvas()
-        self.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 320, 240)
+        self.image = CanvasImage.new(320, 240)
+        self.target = DrawCanvas.for_image(self.image)
 
     def start(self):
-        self.renderer.draw(
-            self.canvas, cairo.Context(self.surface), (("chart",),), "palette"
-        )
+        self.renderer.draw(self.canvas, self.target, (("chart",),), "palette")
         self.assertTrue(self.renderer.entered.wait(2))
 
     def test_close_during_worker_releases_without_scheduling_completion(self):
@@ -75,9 +73,7 @@ class TestOverlayShutdown(unittest.TestCase):
     def test_idle_close_prevents_new_visible_and_speculative_jobs(self):
         self.renderer.close()
         self.renderer.close()
-        self.renderer.draw(
-            self.canvas, cairo.Context(self.surface), (("chart",),), "palette"
-        )
+        self.renderer.draw(self.canvas, self.target, (("chart",),), "palette")
         self.assertFalse(
             self.renderer.prefetch(self.canvas, (), None, (), 1, "palette")
         )
