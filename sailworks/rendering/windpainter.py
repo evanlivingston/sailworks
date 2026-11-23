@@ -15,6 +15,8 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
 import math
+import threading
+from collections import OrderedDict
 from functools import lru_cache
 
 import cairo
@@ -275,6 +277,19 @@ def wind_on_ground(lat, lon):
 class WindPainter:
     """Draw a frozen set of wind samples without accessing the GUI or live settings."""
 
+    # Reprojected live barb arrays, bounded by entry count and memory. One
+    # entry covers a (field, camera, allocation, selection) combination, so a
+    # stationary repaint reuses the world pixels. The key includes the palette,
+    # so a palette change conservatively invalidates the entry even though the
+    # geometry is identical for the same field and camera. A hit also checks
+    # object identity, so a recycled id() can never serve another field's
+    # pixels, land mask, projection or on-ground callable.
+    _LIVE_GEOMETRY_CACHE_ENTRIES = 4
+    _LIVE_GEOMETRY_CACHE_BYTES = 64 * 1024 * 1024
+    _live_geometry_cache = OrderedDict()
+    _live_geometry_cache_bytes = 0
+    _live_geometry_lock = threading.Lock()
+
     def __init__(self, settings_manager, on_ground=wind_on_ground):
         self.settings_manager = settings_manager
         self._on_ground = on_ground
@@ -524,6 +539,53 @@ class WindPainter:
                 canvas.fill()
         canvas.restore()
 
+    @classmethod
+    def clear_live_geometry_cache(cls):
+        """Drop every cached reprojection; used by tests and view resets."""
+        with cls._live_geometry_lock:
+            cls._live_geometry_cache.clear()
+            cls._live_geometry_cache_bytes = 0
+
+    @classmethod
+    def _store_live_geometry(
+        cls, key, flat, land_mask, projected, on_ground, xxs, yys, idx
+    ):
+        """Insert one reprojection entry, evicting LRU entries past the limits."""
+        xxs.setflags(write=False)
+        yys.setflags(write=False)
+        idx.setflags(write=False)
+        # The entry pins every object whose id() is in the key, so account for
+        # all of them; only the callable is free.
+        nbytes = int(xxs.nbytes + yys.nbytes + idx.nbytes)
+        nbytes += sum(int(getattr(array, "nbytes", 0)) for array in flat)
+        if land_mask is not None:
+            nbytes += int(getattr(land_mask, "nbytes", 0))
+        if projected is not None:
+            nbytes += sum(int(getattr(array, "nbytes", 0)) for array in projected)
+        if nbytes > cls._LIVE_GEOMETRY_CACHE_BYTES:
+            return
+        with cls._live_geometry_lock:
+            previous = cls._live_geometry_cache.pop(key, None)
+            if previous is not None:
+                cls._live_geometry_cache_bytes -= previous[7]
+            cls._live_geometry_cache[key] = (
+                flat,
+                land_mask,
+                projected,
+                on_ground,
+                xxs,
+                yys,
+                idx,
+                nbytes,
+            )
+            cls._live_geometry_cache_bytes += nbytes
+            while (
+                len(cls._live_geometry_cache) > cls._LIVE_GEOMETRY_CACHE_ENTRIES
+                or cls._live_geometry_cache_bytes > cls._LIVE_GEOMETRY_CACHE_BYTES
+            ):
+                _, evicted = cls._live_geometry_cache.popitem(last=False)
+                cls._live_geometry_cache_bytes -= evicted[7]
+
     @staticmethod
     def live_geometry_for_view(
         flat,
@@ -538,35 +600,79 @@ class WindPainter:
         max_count=BARB_MAX_COUNT,
         land_mask=None,
         projected=None,
+        palette_key=None,
     ):
         """Toolkit-independent live barb geometry for an explicit viewport.
 
         Returns ``(geometry, count)`` where geometry groups screen-space
         lines/triangles/dots by color bucket. Used by the Qt foreground
         painter; the cairo path above shares the same math.
+
+        Reprojected world pixels are cached per field, camera, allocation and
+        selection. ``palette_key`` participates in the key so a palette change
+        never reuses geometry drawn for another palette; callers that omit it
+        keep the previous behaviour.
         """
         if flat is None:
             return {}, 0
         dirs, speeds, lats, lons = flat
         if len(dirs) == 0:
             return {}, 0
-        xxs, yys = mercator_project_flat(
-            lats, lons, center_lat, center_lon, zoom, width, height, projected=projected
+        key = (
+            id(flat),
+            (center_lat, center_lon, zoom, width, height),
+            step,
+            max_count,
+            bool(hide_on_ground),
+            id(land_mask) if land_mask is not None else None,
+            id(on_ground) if on_ground is not None else None,
+            id(projected) if projected is not None else None,
+            palette_key,
         )
-        xxs = np.asarray(xxs, dtype=np.float64)
-        yys = np.asarray(yys, dtype=np.float64)
+        xxs = None
+        yys = None
+        idx = None
+        with WindPainter._live_geometry_lock:
+            entry = WindPainter._live_geometry_cache.get(key)
+            if (
+                entry is not None
+                and entry[0] is flat
+                and entry[1] is land_mask
+                and entry[2] is projected
+                and entry[3] is on_ground
+            ):
+                WindPainter._live_geometry_cache.move_to_end(key)
+                _, _, _, _, xxs, yys, idx, _nbytes = entry
         margin = BARB_SHAFT_LEN + BARB_LEN + 4.0
-        visible = (
-            (xxs >= -margin)
-            & (xxs <= width + margin)
-            & (yys >= -margin)
-            & (yys <= height + margin)
-            & np.isfinite(xxs)
-            & np.isfinite(yys)
-            & np.isfinite(dirs)
-            & np.isfinite(speeds)
-        )
-        idx = np.flatnonzero(visible)
+        if xxs is None or yys is None or idx is None:
+            xxs, yys = mercator_project_flat(
+                lats,
+                lons,
+                center_lat,
+                center_lon,
+                zoom,
+                width,
+                height,
+                projected=projected,
+            )
+            xxs = np.asarray(xxs, dtype=np.float64)
+            yys = np.asarray(yys, dtype=np.float64)
+            visible = (
+                (xxs >= -margin)
+                & (xxs <= width + margin)
+                & (yys >= -margin)
+                & (yys <= height + margin)
+                & np.isfinite(xxs)
+                & np.isfinite(yys)
+                & np.isfinite(dirs)
+                & np.isfinite(speeds)
+            )
+            idx = np.flatnonzero(visible)
+            if len(idx) == 0:
+                return {}, 0
+            WindPainter._store_live_geometry(
+                key, flat, land_mask, projected, on_ground, xxs, yys, idx
+            )
         if len(idx) == 0:
             return {}, 0
         # Select one native sample per cell in NumPy, avoiding a Python

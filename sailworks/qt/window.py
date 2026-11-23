@@ -86,6 +86,7 @@ from .routingpanel import RoutingPanel
 from .routinginspector import RoutingInspectorPanel
 from .settingsdialog import SettingsDialog
 from .datalibrary import DataLibrary
+from .chartlayerspanel import ChartLayersPanel
 from .plotdata import elapsed_offsets
 from .workspace import WorkspacePreferences
 from .polarworkspace import PolarWorkspace
@@ -456,6 +457,7 @@ class PreviewWindow(QMainWindow):
         self.chart_debug_panel = ChartDebugPanel(
             controller, self._active_map, (self.map,)
         )
+        self.chart_layers_panel = ChartLayersPanel(controller)
         self._build_panel_stacks()
         self._create_drawer_flags()
         view_menu = self.menuBar().addMenu("View")
@@ -560,6 +562,7 @@ class PreviewWindow(QMainWindow):
             ("right", "weather", "Weather", self.weather_panel),
             ("right", "polars", "Polars", self.polar_manager_panel),
             ("right", "performance", "Performance", self.polar_workspace.performance),
+            ("right", "chart-layers", "Chart Layers", self.chart_layers_panel),
             ("right", "chart-debug", "Chart Debug", self.chart_debug_panel),
         )
         definitions += tuple(

@@ -131,8 +131,43 @@ class MBTilesRenderer(OverlayRenderer):
         cr.show_text(text)
         cr.restore()
 
+    @staticmethod
+    def _tile_key(info, zoom, x, y):
+        return (info.path, info.mtime_ns, info.size, zoom, x, y)
+
+    def _remember_tile(self, key, surface):
+        """Insert one decoded tile (or miss) and enforce the bounded cache."""
+        self._tiles[key] = surface
+        self._tiles.move_to_end(key)
+        self._tile_bytes += (
+            0 if surface is None else surface.get_stride() * surface.get_height()
+        )
+        while (
+            len(self._tiles) > self.CACHE_ENTRIES or self._tile_bytes > self.CACHE_BYTES
+        ):
+            _, old = self._tiles.popitem(last=False)
+            self._tile_bytes -= (
+                0 if old is None else old.get_stride() * old.get_height()
+            )
+
+    @staticmethod
+    def _decode(info, zoom, x, y, data):
+        try:
+            png_size(data)
+            return CanvasImage.from_png_bytes(data)
+        except ValueError as error:
+            logger.warning(
+                "Unable to decode MBTiles tile %s/%s/%s in %s: %s",
+                zoom,
+                x,
+                y,
+                info.path,
+                error,
+            )
+            return None
+
     def _tile(self, db, info, zoom, x, y):
-        key = (info.path, info.mtime_ns, info.size, zoom, x, y)
+        key = self._tile_key(info, zoom, x, y)
         if key in self._tiles:
             self._tiles.move_to_end(key)
             return self._tiles[key]
@@ -142,28 +177,64 @@ class MBTilesRenderer(OverlayRenderer):
             " WHERE zoom_level=? AND tile_column=? AND tile_row=? LIMIT 1",
             (zoom, x, row),
         ).fetchone()
-        surface = None
-        if result:
-            try:
-                png_size(result[0])
-                surface = CanvasImage.from_png_bytes(result[0])
-            except ValueError as error:
-                logger.warning(
-                    "Unable to decode MBTiles tile %s/%s/%s in %s: %s",
-                    zoom,
-                    x,
-                    y,
-                    info.path,
-                    error,
-                )
-        self._tiles[key] = surface
-        self._tile_bytes += 0 if surface is None else surface.width * surface.height * 4
-        while (
-            len(self._tiles) > self.CACHE_ENTRIES or self._tile_bytes > self.CACHE_BYTES
-        ):
-            _, old = self._tiles.popitem(last=False)
-            self._tile_bytes -= 0 if old is None else old.width * old.height * 4
+        surface = None if result is None else self._decode(info, zoom, x, y, result[0])
+        self._remember_tile(key, surface)
         return surface
+
+    def _first_tile(self, db, info, target, x, y):
+        """Finest tile covering a display tile, resolved in one tile lookup."""
+        candidates = []
+        for zoom in reversed(info.zooms):
+            if zoom > target:
+                continue
+            distance = 2 ** (target - zoom)
+            px, py = x // distance, y // distance
+            column = px % 2**zoom
+            row = 2**zoom - 1 - py if info.scheme == "tms" else py
+            candidates.append((zoom, px, py, column, row))
+        # Collect cached candidates without returning: a cached coarse tile must
+        # not mask a finer tile that the batched lookup below is about to read.
+        known = {}
+        missing = []
+        for zoom, px, py, column, row in candidates:
+            key = self._tile_key(info, zoom, column, py)
+            if key in self._tiles:
+                self._tiles.move_to_end(key)
+                known[key] = self._tiles[key]
+            else:
+                missing.append((zoom, px, py, column, row))
+        rows = {}
+        if missing:
+            query = (
+                "SELECT zoom_level, tile_column, tile_row, tile_data FROM tiles"
+                " WHERE "
+                + " OR ".join(
+                    "(zoom_level=? AND tile_column=? AND tile_row=?)" for _ in missing
+                )
+            )
+            parameters = [
+                value
+                for zoom, _, _, column, row in missing
+                for value in (zoom, column, row)
+            ]
+            rows = {
+                (zoom, column, row): data
+                for zoom, column, row, data in db.execute(query, parameters).fetchall()
+            }
+        for zoom, px, py, column, row in candidates:
+            key = self._tile_key(info, zoom, column, py)
+            if key in known:
+                surface = known[key]
+            else:
+                data = rows.get((zoom, column, row))
+                surface = (
+                    None if data is None else self._decode(info, zoom, column, py, data)
+                )
+                # A missing row is cached as a miss for the next frame.
+                self._remember_tile(key, surface)
+            if surface is not None:
+                return zoom, px, py, surface
+        return None
 
     def _render(self, job):
         viewport = job.viewport
@@ -221,15 +292,13 @@ class MBTilesRenderer(OverlayRenderer):
         return True
 
     def _paint_tile(self, cr, db, info, target, x, y, ratio, left, top):
-        for zoom in reversed(info.zooms):
-            if zoom > target:
-                continue
-            distance = 2 ** (target - zoom)
-            px, py = x // distance, y // distance
-            tile = self._tile(db, info, zoom, px % 2**zoom, py)
-            if tile is None:
-                continue
-            cr.save()
+        tile = self._first_tile(db, info, target, x, y)
+        if tile is None:
+            return
+        zoom, px, py, surface = tile
+        distance = 2 ** (target - zoom)
+        cr.save()
+        try:
             cr.rectangle(
                 (x * TILE_SIZE - left) * ratio,
                 (y * TILE_SIZE - top) * ratio,
@@ -243,7 +312,7 @@ class MBTilesRenderer(OverlayRenderer):
             )
             cr.scale(ratio * distance, ratio * distance)
             cr.draw_image(
-                tile,
+                surface,
                 0,
                 0,
                 width=TILE_SIZE,
@@ -251,5 +320,5 @@ class MBTilesRenderer(OverlayRenderer):
                 smooth=True,
                 pad=True,
             )
+        finally:
             cr.restore()
-            break

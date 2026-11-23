@@ -1087,6 +1087,13 @@ def test_the_application_never_imports_the_enc_source():
     """The ENC source is the viewport's own; the application never uses it."""
     package = Path(gribviewport.__file__).parent
     for path in sorted(package.glob("*.py")):
-        if path.name in ("gribviewport.py", "gribviewportchart.py", "viewportenc.py"):
+        # The ENC presenters and their scene cache are the viewport's own code;
+        # every other application module must not reach into the source.
+        if path.name in (
+            "gribviewport.py",
+            "gribviewportchart.py",
+            "viewportenc.py",
+            "encscenelayer.py",
+        ):
             continue
         assert "viewportenc" not in path.read_text(), path.name
