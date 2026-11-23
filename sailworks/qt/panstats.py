@@ -146,7 +146,8 @@ def reset():
     global _hitch_kind_counts, _hitch_records
     global _camera_ms, _camera_ms_pending, _camera_ms_moving
     global _paint_ms, _paint_ring, _render_ms, _render_ring
-    global _render_basis, _render_connections
+    global _render_basis, _render_gap_ms, _last_render_complete_at
+    global _render_connections
     global _heartbeat_at, _stall_dumped, _stall_dumps
     _stop_heartbeat_timer()
     _stop_watchdog()
@@ -380,7 +381,9 @@ def _render_started():
     beforeRendering: the time Qt spends between presenting one frame and
     starting the next (QML prep, Metal submit, vsync wait, event loop).
     """
-    global _render_basis, _render_gap_ms, _last_render_complete_at
+    global _render_basis
+    # The gap list is only appended to and the completion stamp only read, so
+    # neither name is rebound here and neither needs a global declaration.
     if not enabled():
         return
     now = time.perf_counter()
